@@ -6,12 +6,12 @@
  * invoke them with `@agent-name` or via the `/team-*` commands.
  */
 
-import type { AgentConfig } from "./types.js"
+import type { AgentItem } from "./types.js"
 
 /* ------------------------------------------------------------------ */
 /*  Team Lead — orchestrator                                          */
 /* ------------------------------------------------------------------ */
-const teamLead: AgentConfig = {
+const teamLead: AgentItem = {
   mode: "all",
   description:
     "Team lead orchestrator — decomposes complex tasks, dispatches sub-agents " +
@@ -50,7 +50,7 @@ specialist agents via the Task tool.
 /* ------------------------------------------------------------------ */
 /*  Architect                                                         */
 /* ------------------------------------------------------------------ */
-const architect: AgentConfig = {
+const architect: AgentItem = {
   mode: "subagent",
   description:
     "System architect — designs module structure, API contracts, data models, " +
@@ -83,7 +83,7 @@ For every design task, produce:
 /* ------------------------------------------------------------------ */
 /*  Implementer                                                       */
 /* ------------------------------------------------------------------ */
-const implementer: AgentConfig = {
+const implementer: AgentItem = {
   mode: "subagent",
   description:
     "Core implementer — writes production code, creates files, and builds " +
@@ -111,7 +111,7 @@ closely and produce working, well-structured implementations.
 /* ------------------------------------------------------------------ */
 /*  Reviewer                                                          */
 /* ------------------------------------------------------------------ */
-const reviewer: AgentConfig = {
+const reviewer: AgentItem = {
   mode: "subagent",
   description:
     "Code reviewer — audits code for correctness, performance, security, " +
@@ -153,7 +153,7 @@ For each finding, include:
 /* ------------------------------------------------------------------ */
 /*  Tester                                                            */
 /* ------------------------------------------------------------------ */
-const tester: AgentConfig = {
+const tester: AgentItem = {
   mode: "subagent",
   description:
     "Test engineer — writes unit tests, integration tests, and edge-case " +
@@ -190,7 +190,7 @@ to ship.
 /* ------------------------------------------------------------------ */
 /*  Researcher                                                        */
 /* ------------------------------------------------------------------ */
-const researcher: AgentConfig = {
+const researcher: AgentItem = {
   mode: "subagent",
   description:
     "Researcher — investigates libraries, APIs, best practices, and " +
@@ -222,7 +222,7 @@ decisions.  You consult documentation, source code, and reliable references.
 /*  Export all agents keyed by name                                   */
 /* ------------------------------------------------------------------ */
 
-export const agents: Record<string, AgentConfig> = {
+export const agents: Record<string, AgentItem> = {
   "team-lead": teamLead,
   architect,
   implementer,

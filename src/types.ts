@@ -1,71 +1,60 @@
 /**
- * OpenCode Plugin type definitions.
+ * OpenCode v2 Plugin type definitions.
  *
- * These are minimal structural types matching the OpenCode plugin API so the
- * plugin compiles without a hard dependency on `@opencode-ai/plugin`.
- * When the official package is available as a peer dependency you can swap
- * these for the real imports.
+ * These types match the v2 Promise plugin API used by OpenCode Desktop.
+ * The v2 format requires an `id` field which controls the display name
+ * shown in the Desktop UI.
  */
 
-// ---------- plugin input ----------
+// ---------- plugin context ----------
 
-export interface PluginInput {
-  /** HTTP client for the local OpenCode instance */
-  client: unknown
-  /** Absolute path to the project root */
-  project: string
-  /** Working directory (may differ from project in monorepos) */
-  directory: string
-  /** Shell helper (backtick-style command execution) */
-  $: unknown
-}
-
-// ---------- config shapes we mutate ----------
-
-export interface AgentPermission {
-  [tool: string]: string | Record<string, string>
-}
-
-export interface AgentConfig {
-  model?: string
-  variant?: string
-  mode?: "primary" | "subagent" | "all"
+export interface AgentItem {
   description?: string
+  mode?: "primary" | "subagent" | "all"
   prompt?: string
-  hidden?: boolean
+  model?: string
   color?: string
-  steps?: number
-  options?: Record<string, unknown>
-  permission?: AgentPermission
-  disable?: boolean
-  temperature?: number
-  top_p?: number
+  hidden?: boolean
+  permission?: Record<string, unknown>
+  [key: string]: unknown
 }
 
-export interface CommandConfig {
+export interface CommandItem {
   description?: string
   template?: string
   agent?: string
   model?: string
-  variant?: string
-  subtask?: boolean
-}
-
-export interface OpenCodeConfig {
-  agent?: Record<string, AgentConfig>
-  command?: Record<string, CommandConfig>
   [key: string]: unknown
 }
 
-// ---------- hooks & plugin ----------
-
-export interface Hooks {
-  config?: (cfg: OpenCodeConfig) => void
-  tool?: Record<string, unknown>
-  [hook: string]: unknown
+export interface TransformEditor<T> {
+  update(name: string, updater: (item: T) => void): void
 }
 
-export type Plugin = (
-  input: PluginInput,
-  options?: Record<string, unknown>,
-) => Promise<Hooks>
+export interface PluginContext {
+  agent: {
+    transform<T = void>(
+      callback: (editor: TransformEditor<AgentItem>) => T | Promise<T>,
+    ): Promise<T>
+    reload(): Promise<void>
+  }
+  command: {
+    transform<T = void>(
+      callback: (editor: TransformEditor<CommandItem>) => T | Promise<T>,
+    ): Promise<T>
+    reload(): Promise<void>
+  }
+  options?: Record<string, unknown>
+  [key: string]: unknown
+}
+
+// ---------- plugin definition ----------
+
+export interface PluginDefinition {
+  readonly id: string
+  readonly setup: (ctx: PluginContext) => Promise<void>
+}
+
+export function define(plugin: PluginDefinition): PluginDefinition {
+  return plugin
+}

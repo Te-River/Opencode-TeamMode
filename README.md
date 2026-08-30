@@ -1,5 +1,9 @@
 # OpenCode TeamMode
 
+# OpenCode TeamMode
+
+**[English](./README.md)** | **[中文](./README.zh-CN.md)**
+
 > 🤝 **Multi-agent team collaboration plugin for [OpenCode Desktop](https://opencode.ai)**
 >
 > Adds a complete team of specialized AI agents — Architect, Implementer, Reviewer, Tester, Researcher — orchestrated by a Team Lead, all accessible via simple slash commands.
@@ -175,22 +179,24 @@ opencode-team-mode/
 ├── package.json          ← npm package definition
 ├── tsconfig.json         ← TypeScript config
 ├── src/
-│   ├── index.ts          ← Plugin entry — registers agents & commands via config hook
+│   ├── index.ts          ← Plugin entry (v2 format, id: "team-mode")
 │   ├── agents.ts         ← Agent definitions (prompts, modes, colors)
 │   ├── commands.ts       ← Command definitions (templates, agent bindings)
-│   └── types.ts          ← Plugin API type definitions
+│   └── types.ts          ← v2 Plugin API type definitions
 ├── scripts/
 │   └── install.sh        ← One-click installer
 ├── LICENSE               ← Apache 2.0
-└── README.md             ← This file
+├── README.md             ← English documentation
+└── README.zh-CN.md       ← Chinese documentation
 ```
 
 ### How it works
 
 1. OpenCode Desktop starts and loads `opencode.json`.
 2. It sees `"opencode-team-mode"` in the `plugin` array and loads the npm package.
-3. The plugin's `config` hook fires, injecting 6 agents and 6 commands into the live config.
-4. Agents and commands are immediately available in the Desktop UI — no file copying needed.
+3. The plugin's v2 `setup` function runs, using `ctx.agent.transform()` and `ctx.command.transform()` to inject 6 agents and 6 commands.
+4. The plugin's `id: "team-mode"` is displayed as the plugin name in the Desktop UI.
+5. Agents and commands are immediately available in the Desktop UI — no file copying needed.
 
 ---
 

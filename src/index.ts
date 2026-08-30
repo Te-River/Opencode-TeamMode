@@ -1,42 +1,42 @@
 /**
- * opencode-team-mode — OpenCode plugin entry point.
+ * opencode-team-mode — OpenCode v2 plugin entry point.
  *
- * Registers specialized team agents and workflow commands into the
- * OpenCode config via the `config` hook.  Works in both OpenCode Desktop
- * (Electron) and the terminal TUI.
+ * Uses the v2 Promise API with an explicit `id` field.  The `id` is the
+ * display name shown in OpenCode Desktop's plugin list (instead of the
+ * raw file path).
  */
 
-import type { Plugin, OpenCodeConfig } from "./types.js"
+import { define } from "./types.js"
 import { agents } from "./agents.js"
 import { commands } from "./commands.js"
 
-const plugin: Plugin = async (_input, _options?) => {
-  return {
-    /**
-     * Mutate the merged OpenCode config at startup.
-     * We inject our team agents and commands so users see them
-     * immediately — no manual file copying required.
-     */
-    config(cfg: OpenCodeConfig) {
-      // ---------- inject agents ----------
-      if (!cfg.agent) cfg.agent = {}
+export const Plugin = define({
+  id: "team-mode",
+
+  setup: async (ctx) => {
+    // ---------- inject team agents ----------
+    await ctx.agent.transform((agent) => {
       for (const [name, def] of Object.entries(agents)) {
-        // Respect user overrides: only inject if the user has not
-        // already defined an agent with the same name.
-        if (!cfg.agent[name]) {
-          cfg.agent[name] = def
-        }
+        agent.update(name, (item) => {
+          item.description = def.description
+          item.mode = def.mode
+          item.prompt = def.prompt
+          item.color = def.color
+        })
       }
+    })
 
-      // ---------- inject commands ----------
-      if (!cfg.command) cfg.command = {}
+    // ---------- inject team commands ----------
+    await ctx.command.transform((command) => {
       for (const [name, def] of Object.entries(commands)) {
-        if (!cfg.command[name]) {
-          cfg.command[name] = def
-        }
+        command.update(name, (item) => {
+          item.description = def.description
+          item.template = def.template
+          item.agent = def.agent
+        })
       }
-    },
-  }
-}
+    })
+  },
+})
 
-export default plugin
+export default Plugin
