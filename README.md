@@ -1,8 +1,10 @@
 # OpenCode TeamMode
 
-# OpenCode TeamMode
-
 **[English](./README.md)** | **[中文](./README.zh-CN.md)**
+
+[![npm version](https://img.shields.io/npm/v/opencode-team-mode.svg)](https://www.npmjs.com/package/opencode-team-mode)
+[![npm downloads](https://img.shields.io/npm/dm/opencode-team-mode.svg)](https://www.npmjs.com/package/opencode-team-mode)
+[![license](https://img.shields.io/npm/l/opencode-team-mode.svg)](./LICENSE)
 
 > 🤝 **Multi-agent team collaboration plugin for [OpenCode Desktop](https://opencode.ai)**
 >
@@ -56,7 +58,7 @@ Instead of one agent trying to do everything, you get:
 **Option A — One-line installer (recommended):**
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/user/Opencode-TeamMode/main/scripts/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/Te-River/Opencode-TeamMode/main/scripts/install.sh | bash
 ```
 
 This script installs the npm package and automatically registers the plugin in your project's `opencode.json`.
@@ -276,6 +278,7 @@ Contributions are welcome! Areas where we need help:
 
 ## 🔗 Links
 
+- [npm Package](https://www.npmjs.com/package/opencode-team-mode) — `opencode-team-mode` on npm
 - [OpenCode Desktop](https://opencode.ai) — Official website & download
 - [OpenCode Docs](https://opencode.ai/docs) — Configuration & plugin documentation
 - [OpenCode Plugin API](https://opencode.ai/docs/plugins) — Build your own plugins

@@ -2,6 +2,10 @@
 
 **[English](./README.md)** | **[中文](./README.zh-CN.md)**
 
+[![npm version](https://img.shields.io/npm/v/opencode-team-mode.svg)](https://www.npmjs.com/package/opencode-team-mode)
+[![npm downloads](https://img.shields.io/npm/dm/opencode-team-mode.svg)](https://www.npmjs.com/package/opencode-team-mode)
+[![license](https://img.shields.io/npm/l/opencode-team-mode.svg)](./LICENSE)
+
 > 🤝 **[OpenCode 桌面版](https://opencode.ai) 多 Agent 团队协作插件**
 >
 > 为你的 OpenCode 桌面版添加一整支 AI 专家团队 —— 架构师、实现者、审查员、测试员、调研员，由 Team Lead 统一调度，通过简单的斜杠命令即可调用。
@@ -54,7 +58,7 @@ TeamMode 将 OpenCode 桌面版从一个单 Agent 编码助手，升级为**一�
 **方式 A — 一键安装脚本（推荐）：**
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/user/Opencode-TeamMode/main/scripts/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/Te-River/Opencode-TeamMode/main/scripts/install.sh | bash
 ```
 
 此脚本会自动安装 npm 包，并将插件注册到你的项目 `opencode.json` 中。
@@ -273,6 +277,7 @@ npm publish          # 发布到 npm 仓库
 
 ## 🔗 链接
 
+- [npm 包](https://www.npmjs.com/package/opencode-team-mode) — `opencode-team-mode`
 - [OpenCode 桌面版](https://opencode.ai) — 官网 & 下载
 - [OpenCode 文档](https://opencode.ai/docs) — 配置 & 插件文档
 - [OpenCode 插件 API](https://opencode.ai/docs/plugins) — 构建你自己的插件
