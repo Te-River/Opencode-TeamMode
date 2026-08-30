@@ -2,9 +2,9 @@
 
 **[English](./README.md)** | **[中文](./README.zh-CN.md)**
 
-[![npm version](https://img.shields.io/npm/v/opencode-team-mode.svg)](https://www.npmjs.com/package/opencode-team-mode)
-[![npm downloads](https://img.shields.io/npm/dm/opencode-team-mode.svg)](https://www.npmjs.com/package/opencode-team-mode)
-[![license](https://img.shields.io/npm/l/opencode-team-mode.svg)](./LICENSE)
+[![npm version](https://img.shields.io/npm/v/@te-river/opencode-team-mode.svg)](https://www.npmjs.com/package/@te-river/opencode-team-mode)
+[![npm downloads](https://img.shields.io/npm/dm/@te-river/opencode-team-mode.svg)](https://www.npmjs.com/package/@te-river/opencode-team-mode)
+[![license](https://img.shields.io/npm/l/@te-river/opencode-team-mode.svg)](./LICENSE)
 
 > 🤝 **[OpenCode 桌面版](https://opencode.ai) 多 Agent 团队协作插件**
 >
@@ -57,19 +57,25 @@ TeamMode 将 OpenCode 桌面版从一个单 Agent 编码助手，升级为**一�
 
 **方式 A — 一键安装脚本（推荐）：**
 
+macOS / Linux（bash）：
 ```bash
 curl -fsSL https://raw.githubusercontent.com/Te-River/Opencode-TeamMode/main/scripts/install.sh | bash
 ```
 
-此脚本会自动安装 npm 包，并将插件注册到你的项目 `opencode.json` 中。
+Windows（PowerShell）：
+```powershell
+irm https://raw.githubusercontent.com/Te-River/Opencode-TeamMode/main/scripts/install.ps1 | iex
+```
+
+脚本会自动安装 npm 包，并将插件注册到你的 `opencode.jsonc` 中。
 
 **方式 B — 手动 npm 安装：**
 
 ```bash
 # 1. 安装插件包
-npm install -g opencode-team-mode
+npm install -g @te-river/opencode-team-mode
 
-# 2. 将插件添加到项目的 opencode.json
+# 2. 将插件添加到 opencode.jsonc
 #    （见下方"配置"章节）
 ```
 
@@ -87,13 +93,13 @@ npm link
 
 ## ⚙️ 配置
 
-安装后，将插件添加到项目的 `opencode.json`：
+安装后，将插件添加到你的 `opencode.jsonc`：
 
 ```jsonc
 {
   "$schema": "https://opencode.ai/config.json",
   "plugin": [
-    "opencode-team-mode"
+    "@te-river/opencode-team-mode"
   ]
 }
 ```
@@ -107,11 +113,11 @@ npm link
 要在所有项目中启用 TeamMode，将插件添加到全局配置：
 
 ```jsonc
-// ~/.config/opencode/opencode.json
+// ~/.config/opencode/opencode.jsonc
 {
   "$schema": "https://opencode.ai/config.json",
   "plugin": [
-    "opencode-team-mode"
+    "@te-river/opencode-team-mode"
   ]
 }
 ```
@@ -186,7 +192,8 @@ opencode-team-mode/
 │   ├── commands.ts       ← 命令定义（模板、Agent 绑定）
 │   └── types.ts          ← v2 Plugin API 类型定义
 ├── scripts/
-│   └── install.sh        ← 一键安装脚本
+│   ├── install.sh        ← 一键安装脚本（bash）
+│   └── install.ps1       ← 一键安装脚本（PowerShell）
 ├── LICENSE               ← Apache 2.0
 └── README.md             ← 英文文档
     README.zh-CN.md       ← 中文文档
@@ -195,7 +202,7 @@ opencode-team-mode/
 ### 工作原理
 
 1. OpenCode 桌面版启动，加载 `opencode.json`
-2. 检测到 `plugin` 数组中的 `"opencode-team-mode"`，加载 npm 包
+2. 检测到 `plugin` 数组中的 `"@te-river/opencode-team-mode"`，加载 npm 包
 3. 插件的 `setup` 函数执行，通过 `ctx.agent.transform()` 和 `ctx.command.transform()` 注入 6 个 Agent 和 6 个命令
 4. Agent 和命令立即在桌面版 UI 中可用 —— 无需复制任何文件
 
@@ -277,7 +284,7 @@ npm publish          # 发布到 npm 仓库
 
 ## 🔗 链接
 
-- [npm 包](https://www.npmjs.com/package/opencode-team-mode) — `opencode-team-mode`
+- [npm 包](https://www.npmjs.com/package/@te-river/opencode-team-mode) — `@te-river/opencode-team-mode`
 - [OpenCode 桌面版](https://opencode.ai) — 官网 & 下载
 - [OpenCode 文档](https://opencode.ai/docs) — 配置 & 插件文档
 - [OpenCode 插件 API](https://opencode.ai/docs/plugins) — 构建你自己的插件

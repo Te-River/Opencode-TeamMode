@@ -14,7 +14,7 @@
 # ─────────────────────────────────────────────────────────────────────────────
 set -euo pipefail
 
-PLUGIN_NAME="opencode-team-mode"
+PLUGIN_NAME="@te-river/opencode-team-mode"
 CONFIG_FILE="opencode.json"
 
 # ── colours ──────────────────────────────────────────────────────────────────

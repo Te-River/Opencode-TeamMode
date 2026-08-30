@@ -2,9 +2,9 @@
 
 **[English](./README.md)** | **[中文](./README.zh-CN.md)**
 
-[![npm version](https://img.shields.io/npm/v/opencode-team-mode.svg)](https://www.npmjs.com/package/opencode-team-mode)
-[![npm downloads](https://img.shields.io/npm/dm/opencode-team-mode.svg)](https://www.npmjs.com/package/opencode-team-mode)
-[![license](https://img.shields.io/npm/l/opencode-team-mode.svg)](./LICENSE)
+[![npm version](https://img.shields.io/npm/v/@te-river/opencode-team-mode.svg)](https://www.npmjs.com/package/@te-river/opencode-team-mode)
+[![npm downloads](https://img.shields.io/npm/dm/@te-river/opencode-team-mode.svg)](https://www.npmjs.com/package/@te-river/opencode-team-mode)
+[![license](https://img.shields.io/npm/l/@te-river/opencode-team-mode.svg)](./LICENSE)
 
 > 🤝 **Multi-agent team collaboration plugin for [OpenCode Desktop](https://opencode.ai)**
 >
@@ -57,19 +57,25 @@ Instead of one agent trying to do everything, you get:
 
 **Option A — One-line installer (recommended):**
 
+macOS / Linux (bash):
 ```bash
 curl -fsSL https://raw.githubusercontent.com/Te-River/Opencode-TeamMode/main/scripts/install.sh | bash
 ```
 
-This script installs the npm package and automatically registers the plugin in your project's `opencode.json`.
+Windows (PowerShell):
+```powershell
+irm https://raw.githubusercontent.com/Te-River/Opencode-TeamMode/main/scripts/install.ps1 | iex
+```
+
+These scripts install the npm package and automatically register the plugin in your `opencode.jsonc`.
 
 **Option B — Manual npm install:**
 
 ```bash
 # 1. Install the plugin package
-npm install -g opencode-team-mode
+npm install -g @te-river/opencode-team-mode
 
-# 2. Add the plugin to your project's opencode.json
+# 2. Add the plugin to your opencode.jsonc
 #    (see "Configuration" below)
 ```
 
@@ -87,13 +93,13 @@ npm link
 
 ## ⚙️ Configuration
 
-After installing, add the plugin to your project's `opencode.json`:
+After installing, add the plugin to your `opencode.jsonc`:
 
 ```jsonc
 {
   "$schema": "https://opencode.ai/config.json",
   "plugin": [
-    "opencode-team-mode"
+    "@te-river/opencode-team-mode"
   ]
 }
 ```
@@ -107,11 +113,11 @@ That's it. The plugin automatically injects all team agents and commands when Op
 To enable TeamMode in every project, add the plugin to your global config:
 
 ```jsonc
-// ~/.config/opencode/opencode.json
+// ~/.config/opencode/opencode.jsonc
 {
   "$schema": "https://opencode.ai/config.json",
   "plugin": [
-    "opencode-team-mode"
+    "@te-river/opencode-team-mode"
   ]
 }
 ```
@@ -186,7 +192,8 @@ opencode-team-mode/
 │   ├── commands.ts       ← Command definitions (templates, agent bindings)
 │   └── types.ts          ← v2 Plugin API type definitions
 ├── scripts/
-│   └── install.sh        ← One-click installer
+│   ├── install.sh        ← One-click installer (bash)
+│   └── install.ps1       ← One-click installer (PowerShell)
 ├── LICENSE               ← Apache 2.0
 ├── README.md             ← English documentation
 └── README.zh-CN.md       ← Chinese documentation
@@ -195,7 +202,7 @@ opencode-team-mode/
 ### How it works
 
 1. OpenCode Desktop starts and loads `opencode.json`.
-2. It sees `"opencode-team-mode"` in the `plugin` array and loads the npm package.
+2. It sees `"@te-river/opencode-team-mode"` in the `plugin` array and loads the npm package.
 3. The plugin's v2 `setup` function runs, using `ctx.agent.transform()` and `ctx.command.transform()` to inject 6 agents and 6 commands.
 4. The plugin's `id: "team-mode"` is displayed as the plugin name in the Desktop UI.
 5. Agents and commands are immediately available in the Desktop UI — no file copying needed.
@@ -278,7 +285,7 @@ Contributions are welcome! Areas where we need help:
 
 ## 🔗 Links
 
-- [npm Package](https://www.npmjs.com/package/opencode-team-mode) — `opencode-team-mode` on npm
+- [npm Package](https://www.npmjs.com/package/@te-river/opencode-team-mode) — `@te-river/opencode-team-mode` on npm
 - [OpenCode Desktop](https://opencode.ai) — Official website & download
 - [OpenCode Docs](https://opencode.ai/docs) — Configuration & plugin documentation
 - [OpenCode Plugin API](https://opencode.ai/docs/plugins) — Build your own plugins
