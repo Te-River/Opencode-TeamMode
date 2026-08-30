@@ -16,6 +16,7 @@
  *  - Research findings carry confidence tags and critical ones are verified.
  */
 
+import { RULE } from "./types.js"
 import type { AgentItem } from "./types.js"
 
 /* ------------------------------------------------------------------ */
@@ -40,14 +41,14 @@ const BLACKBOARD_GUARANTEE = `
 /*  Team Lead — orchestrator                                          */
 /* ------------------------------------------------------------------ */
 const teamLead: AgentItem = {
-  mode: "all",
+  mode: "primary",
   description:
     "Team lead orchestrator — decomposes complex tasks, dispatches sub-agents " +
     "(architect, implementer, reviewer, tester, researcher), enforces a " +
     "review/test feedback loop, and synthesises their outputs into a coherent " +
     "deliverable.  Use when the task requires multi-step collaboration across " +
     "different expertise areas.",
-  prompt: `You are the **Team Lead** in a multi-agent coding team.
+  system: `You are the **Team Lead** in a multi-agent coding team.
 
 ## Role
 You orchestrate the team: decompose work, dispatch it to specialist agents
@@ -155,13 +156,12 @@ adoption:
 - Your final output is a structured summary, not raw agent transcripts.
 `,
   color: "#E879F9", // purple
-  permission: {
-    edit: "allow",
-    bash: "allow",
-    webfetch: "allow",
-    task: "allow",
-    todowrite: "allow",
-  },
+  permissions: [
+    RULE("edit", "*", "allow"),
+    RULE("bash", "*", "allow"),
+    RULE("webfetch", "*", "allow"),
+    RULE("task", "*", "allow"),
+  ],
 }
 
 /* ------------------------------------------------------------------ */
@@ -174,7 +174,7 @@ const architect: AgentItem = {
     "and technical strategy; revises designs when review or testing exposes a " +
     "flaw.  Use when you need a design doc, architecture decision record, or " +
     "module breakdown before implementation.",
-  prompt: `You are the **Architect** on a multi-agent coding team.
+  system: `You are the **Architect** on a multi-agent coding team.
 
 ## Role
 You produce clear, implementable technical designs.  You think in systems:
@@ -213,7 +213,11 @@ When the team lead sends back a design flaw found in review or testing:
   color: "#38BDF8", // sky blue
   // Read-only on PROJECT sources; the blackboard artifact is explicitly
   // writable (see Blackboard write guarantee).
-  permission: { edit: "allow", bash: "deny", webfetch: "allow" },
+  permissions: [
+    RULE("edit", "*", "allow"),
+    RULE("bash", "*", "deny"),
+    RULE("webfetch", "*", "allow"),
+  ],
 }
 
 /* ------------------------------------------------------------------ */
@@ -225,7 +229,7 @@ const implementer: AgentItem = {
     "Core implementer — writes production code, creates files, and builds " +
     "features according to the architect's design; applies review-driven fix " +
     "tasks.  Use when you need clean, working code written quickly.",
-  prompt: `You are the **Implementer** on a multi-agent coding team.
+  system: `You are the **Implementer** on a multi-agent coding team.
 
 ## Role
 You write clean, production-quality code following the design spec handed
@@ -258,7 +262,11 @@ to you by the team lead.
   check, the previously failing test).
 `,
   color: "#4ADE80", // green
-  permission: { edit: "allow", bash: "allow", webfetch: "allow" },
+  permissions: [
+    RULE("edit", "*", "allow"),
+    RULE("bash", "*", "allow"),
+    RULE("webfetch", "*", "allow"),
+  ],
 }
 
 /* ------------------------------------------------------------------ */
@@ -270,7 +278,7 @@ const reviewer: AgentItem = {
     "Code reviewer — audits code for correctness, performance, security, " +
     "maintainability, and best practices with severity-graded, actionable " +
     "findings.  Use when you want a thorough review before merging.",
-  prompt: `You are the **Reviewer** on a multi-agent coding team.
+  system: `You are the **Reviewer** on a multi-agent coding team.
 
 ## Role
 You perform thorough, constructive code reviews.  You catch bugs, security
@@ -313,7 +321,11 @@ by item (fixed / not fixed / partial).
   color: "#FB923C", // orange
   // May edit ONLY the blackboard artifact; never the reviewed code
   // (see Blackboard write guarantee + role rules).
-  permission: { edit: "allow", bash: "allow", webfetch: "allow" },
+  permissions: [
+    RULE("edit", "*", "allow"),
+    RULE("bash", "*", "allow"),
+    RULE("webfetch", "*", "allow"),
+  ],
 }
 
 /* ------------------------------------------------------------------ */
@@ -325,7 +337,7 @@ const tester: AgentItem = {
     "Test engineer — writes and runs unit/integration tests, classifies " +
     "failures (product bug vs bad test vs environment), and reports a clear " +
     "verdict.  Use to validate correctness or raise coverage.",
-  prompt: `You are the **Tester** on a multi-agent coding team.
+  system: `You are the **Tester** on a multi-agent coding team.
 
 ## Role
 You write comprehensive, maintainable tests and give the team a trustworthy
@@ -365,7 +377,11 @@ pass/fail signal.
   refactor instead of contorting the test.
 `,
   color: "#F472B6", // pink
-  permission: { edit: "allow", bash: "allow", webfetch: "allow" },
+  permissions: [
+    RULE("edit", "*", "allow"),
+    RULE("bash", "*", "allow"),
+    RULE("webfetch", "*", "allow"),
+  ],
 }
 
 /* ------------------------------------------------------------------ */
@@ -378,7 +394,7 @@ const researcher: AgentItem = {
     "documentation; every finding carries a source and confidence tag so " +
     "the team can decide what needs verification.  Use for information that " +
     "must inform a technical decision.",
-  prompt: `You are the **Researcher** on a multi-agent coding team.
+  system: `You are the **Researcher** on a multi-agent coding team.
 
 ## Role
 You find accurate, actionable information so the team can make informed
@@ -414,17 +430,17 @@ by the team — flag prominently if that is the case.
 - State which product/version each finding applies to.
 `,
   color: "#A78BFA", // violet
-  permission: {
-    edit: "allow",
-    bash: "allow",
-    webfetch: "allow",
-    websearch: "allow",
-  },
+  permissions: [
+    RULE("edit", "*", "allow"),
+    RULE("bash", "*", "allow"),
+    RULE("webfetch", "*", "allow"),
+    RULE("websearch", "*", "allow"),
+  ],
 }
 
 /* Append the blackboard write guarantee to every specialist prompt. */
 for (const a of [architect, implementer, reviewer, tester, researcher]) {
-  a.prompt = (a.prompt ?? "") + BLACKBOARD_GUARANTEE
+  a.system = (a.system ?? "") + BLACKBOARD_GUARANTEE
 }
 
 /* ------------------------------------------------------------------ */

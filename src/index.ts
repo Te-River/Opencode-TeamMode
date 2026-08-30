@@ -1,17 +1,19 @@
 /**
- * opencode-team-mode — OpenCode v2 plugin entry point.
+ * opencode-team-mode — OpenCode plugin entry point.
  *
- * Uses the v2 Promise API with an explicit `id` field.  The `id` is the
- * display name shown in OpenCode Desktop's plugin list (instead of the
- * raw file path).
+ * Exports the hybrid object shape required by the current OpenCode Desktop
+ * loader (v1.18.x):
+ *  - `id`      → display name in the Desktop plugin list
+ *  - `server`  → v1 loader gate; MUST exist or loading is rejected with
+ *                "must default export an object with server()"
+ *  - `setup`   → v2 domain injection (agent/command transform), real payload
  *
  * Options (via the tuple plugin form):
- *   "plugin": [["@te-river/opencode-team-mode", { "ttlDays": 7 }]]
+ *   "plugin": [["@te-river/opencode-team-mode@latest", { "ttlDays": 7 }]]
  * `ttlDays` controls blackboard auto-cleanup; default 5.
  */
 
-import { define } from "./types.js"
-import type { PluginContext } from "./types.js"
+import type { OpenCodePlugin } from "./types.js"
 import { agents } from "./agents.js"
 import { commands } from "./commands.js"
 import {
@@ -21,7 +23,7 @@ import {
 } from "./blackboard.js"
 
 /** Best-effort workspace directory from plugin context, else cwd. */
-function resolveDirectory(ctx: PluginContext): string {
+function resolveDirectory(ctx: { directory?: unknown; project?: unknown }): string {
   for (const candidate of [ctx.directory, ctx.project]) {
     if (typeof candidate === "string" && candidate.length > 0) return candidate
   }
@@ -41,8 +43,11 @@ function blackboardNote(root: string, ttlDays: number): string {
   ].join("\n")
 }
 
-export const Plugin = define({
+const plugin: OpenCodePlugin = {
   id: "team-mode",
+
+  /** v1 loader gate — no v1 hooks needed, the v2 setup does everything. */
+  server: async () => ({}),
 
   setup: async (ctx) => {
     // ---------- blackboard maintenance (code-level TTL sweeper) ----------
@@ -51,35 +56,36 @@ export const Plugin = define({
     const ttlDays = Math.round(ttlMs / (24 * 60 * 60 * 1000)) || DEFAULT_TTL_DAYS
     const boardRoot = startBlackboardMaintenance(directory, ttlMs)
 
-    // ---------- inject team agents ----------
+    // ---------- inject team agents (v2 AgentV2Info fields) ----------
     await ctx.agent.transform((agent) => {
       for (const [name, def] of Object.entries(agents)) {
         agent.update(name, (item) => {
           item.description = def.description
           item.mode = def.mode
-          item.prompt =
+          item.system =
             name === "team-lead"
-              ? def.prompt + blackboardNote(boardRoot, ttlDays)
-              : def.prompt
+              ? (def.system ?? "") + blackboardNote(boardRoot, ttlDays)
+              : def.system
           item.color = def.color
-          // Authoritative permission from the plugin — overrides any stale
-          // file-based agent definition that might deny blackboard writes.
-          if (def.permission) item.permission = def.permission
+          // Authoritative v2 ruleset — overrides any stale file-based agent
+          // definition that might deny blackboard writes.
+          if (def.permissions) item.permissions = def.permissions
         })
       }
     })
 
-    // ---------- inject team commands ----------
+    // ---------- inject team commands (v2 CommandV2Info fields) ----------
     await ctx.command.transform((command) => {
       for (const [name, def] of Object.entries(commands)) {
         command.update(name, (item) => {
+          item.name = name
           item.description = def.description
-          item.template = def.template
+          item.template = def.template ?? ""
           item.agent = def.agent
         })
       }
     })
   },
-})
+}
 
-export default Plugin
+export default plugin

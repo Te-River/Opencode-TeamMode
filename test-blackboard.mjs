@@ -86,27 +86,40 @@ const fakeCtx = {
     reload: async () => {},
   },
 }
+const rule = (list, action) => list.find((r) => r.action === action)
 assert.equal(plugin.id, "team-mode", "display id")
+assert.equal(typeof plugin.server, "function", "v1 loader gate: server() present")
+assert.deepEqual(await plugin.server(), {}, "server() returns hooks object")
+assert.equal(typeof plugin.setup, "function", "v2 setup present")
 await plugin.setup(fakeCtx)
 
-const leadPrompt = captured["team-lead"].prompt
+const leadPrompt = captured["team-lead"].system
 assert.ok(leadPrompt.includes("opencode-team"), "board root injected")
 assert.ok(leadPrompt.includes("idle for more than 9 days"), "custom TTL in note")
 assert.ok(leadPrompt.includes("Shared blackboard"), "blackboard protocol present")
 assert.ok(leadPrompt.includes("TodoList discipline"), "v1.2 todolist hard rule")
 assert.ok(leadPrompt.includes("BLACKBOARD WRITE FAILED"), "lead fallback rule")
+assert.equal(captured["team-lead"].mode, "primary", "team-lead visible in Desktop switcher")
 assert.ok(captured["cmd:team-run"].template.includes("blackboard"), "team-run template updated")
+assert.ok(captured["cmd:team-plan"].agent === "architect", "command agent binding")
 
-/* v1.2.1: permissions authoritative + no-transcribe guarantee on all experts */
+/* v1.3: v2 shapes — system (not prompt), permissions ruleset array */
+for (const [name, a] of Object.entries(captured)) {
+  if (name.startsWith("cmd:")) continue
+  assert.equal(a.prompt, undefined, name + ": no v1 prompt field")
+  assert.ok(typeof a.system === "string" && a.system.length > 0, name + ": v2 system field set")
+  assert.ok(Array.isArray(a.permissions), name + ": v2 permissions ruleset")
+  assert.ok(a.permissions.every((r) => r.action && r.resource && r.effect), name + ": rules well-formed")
+}
 for (const expert of ["architect", "implementer", "reviewer", "tester", "researcher"]) {
   const a = captured[expert]
-  assert.ok(a.prompt.includes("Blackboard write guarantee"), expert + " has write guarantee")
-  assert.ok(a.prompt.includes("NEVER reply \"append this verbatim"), expert + " blocks transcribe-escape")
-  assert.equal(a.permission.edit, "allow", expert + " edit allowed (for blackboard)")
+  assert.ok(a.system.includes("Blackboard write guarantee"), expert + " has write guarantee")
+  assert.ok(a.system.includes("NEVER reply \"append this verbatim"), expert + " blocks transcribe-escape")
+  assert.equal(rule(a.permissions, "edit").effect, "allow", expert + " edit allowed (for blackboard)")
 }
-assert.equal(captured["architect"].permission.bash, "deny", "architect stays bash-denied")
-assert.equal(captured["team-lead"].permission.task, "allow", "lead task dispatch allowed")
-console.log("5. permissions + anti-transcribe guarantee: OK (all 6 agents authoritative)")
+assert.equal(rule(captured["architect"].permissions, "bash").effect, "deny", "architect stays bash-denied")
+assert.equal(rule(captured["team-lead"].permissions, "task").effect, "allow", "lead task dispatch allowed")
+console.log("5. hybrid shape + v2 fields + permissions: OK (server gate, system, rulesets, primary)")
 console.log("4. setup injection: OK (id=team-mode, root + 9d TTL in prompt, protocols wired)")
 
 console.log("\nALL BLACKBOARD TESTS PASSED ✅")

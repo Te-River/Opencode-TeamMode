@@ -1,6 +1,6 @@
 {
   "name": "@te-river/opencode-team-mode",
-  "version": "1.2.1",
+  "version": "1.3.0",
   "description": "Team collaboration mode plugin for OpenCode Desktop — injects specialized agents (architect, reviewer, implementer, tester, researcher) and team workflow commands into your OpenCode workspace.",
   "type": "module",
   "main": "dist/index.js",
