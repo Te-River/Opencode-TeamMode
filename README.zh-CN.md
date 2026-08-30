@@ -99,7 +99,7 @@ npm link
 {
   "$schema": "https://opencode.ai/config.json",
   "plugin": [
-    "@te-river/opencode-team-mode"
+    "@te-river/opencode-team-mode@latest"
   ]
 }
 ```
@@ -117,7 +117,7 @@ npm link
 {
   "$schema": "https://opencode.ai/config.json",
   "plugin": [
-    "@te-river/opencode-team-mode"
+    "@te-river/opencode-team-mode@latest"
   ]
 }
 ```
@@ -203,7 +203,7 @@ opencode-team-mode/
 ### 工作原理
 
 1. OpenCode 桌面版启动，加载 `opencode.json`
-2. 检测到 `plugin` 数组中的 `"@te-river/opencode-team-mode"`，加载 npm 包
+2. 检测到 `plugin` 数组中的 `"@te-river/opencode-team-mode@latest"`，加载 npm 包
 3. 插件的 `setup` 函数执行，通过 `ctx.agent.transform()` 和 `ctx.command.transform()` 注入 6 个 Agent 和 6 个命令
 4. Agent 和命令立即在桌面版 UI 中可用 —— 无需复制任何文件
 
@@ -238,7 +238,7 @@ opencode-team-mode/
 {
   "$schema": "https://opencode.ai/config.json",
   "plugin": [
-    ["@te-river/opencode-team-mode", { "ttlDays": 7 }]
+    ["@te-river/opencode-team-mode@latest", { "ttlDays": 7 }]
   ]
 }
 ```

@@ -14,7 +14,7 @@
 
 $ErrorActionPreference = "Stop"
 $utf8Bom = New-Object System.Text.UTF8Encoding($true)
-$PLUGIN_NAME = "@te-river/opencode-team-mode"
+$PLUGIN_NAME = "@te-river/opencode-team-mode@latest"
 $OPENCODE_CONFIG_DIR = Join-Path $env:USERPROFILE ".config" "opencode"
 $CONFIG_FILE = Join-Path $OPENCODE_CONFIG_DIR "opencode.jsonc"
 

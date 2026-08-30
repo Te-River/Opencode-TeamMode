@@ -99,7 +99,7 @@ After installing, add the plugin to your `opencode.jsonc`:
 {
   "$schema": "https://opencode.ai/config.json",
   "plugin": [
-    "@te-river/opencode-team-mode"
+    "@te-river/opencode-team-mode@latest"
   ]
 }
 ```
@@ -117,7 +117,7 @@ To enable TeamMode in every project, add the plugin to your global config:
 {
   "$schema": "https://opencode.ai/config.json",
   "plugin": [
-    "@te-river/opencode-team-mode"
+    "@te-river/opencode-team-mode@latest"
   ]
 }
 ```
@@ -203,7 +203,7 @@ opencode-team-mode/
 ### How it works
 
 1. OpenCode Desktop starts and loads `opencode.json`.
-2. It sees `"@te-river/opencode-team-mode"` in the `plugin` array and loads the npm package.
+2. It sees `"@te-river/opencode-team-mode@latest"` in the `plugin` array and loads the npm package.
 3. The plugin's v2 `setup` function runs, using `ctx.agent.transform()` and `ctx.command.transform()` to inject 6 agents and 6 commands.
 4. The plugin's `id: "team-mode"` is displayed as the plugin name in the Desktop UI.
 5. Agents and commands are immediately available in the Desktop UI — no file copying needed.
@@ -246,7 +246,7 @@ Default is **5 days**. To choose your own, use the tuple plugin form in
 {
   "$schema": "https://opencode.ai/config.json",
   "plugin": [
-    ["@te-river/opencode-team-mode", { "ttlDays": 7 }]
+    ["@te-river/opencode-team-mode@latest", { "ttlDays": 7 }]
   ]
 }
 ```
