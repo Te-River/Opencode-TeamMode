@@ -190,6 +190,7 @@ opencode-team-mode/
 │   ├── index.ts          ← Plugin entry (v2 format, id: "team-mode")
 │   ├── agents.ts         ← Agent definitions (prompts, modes, colors)
 │   ├── commands.ts       ← Command definitions (templates, agent bindings)
+│   ├── blackboard.ts     ← Shared blackboard + TTL auto-cleanup sweeper
 │   └── types.ts          ← v2 Plugin API type definitions
 ├── scripts/
 │   ├── install.sh        ← One-click installer (bash)
@@ -206,6 +207,52 @@ opencode-team-mode/
 3. The plugin's v2 `setup` function runs, using `ctx.agent.transform()` and `ctx.command.transform()` to inject 6 agents and 6 commands.
 4. The plugin's `id: "team-mode"` is displayed as the plugin name in the Desktop UI.
 5. Agents and commands are immediately available in the Desktop UI — no file copying needed.
+
+---
+
+## 🗂️ Shared Blackboard (with automatic cleanup)
+
+Sub-agents cannot message each other live (platform limitation), so TeamMode coordinates them through a **file blackboard**:
+
+- Each multi-agent task gets its own directory under
+  `<repo>/.git/opencode-team/<task-slug>/` — inside `.git/`, so your working
+  tree and commits are **never polluted**. (Non-git workspaces fall back to
+  the OS temp dir.)
+- Every agent writes its full deliverable to a designated artifact
+  (`01-architect-design.md`, `03-review-findings.md`, …); the Team Lead
+  relays *summary + file path* in each dispatch and keeps `MANIFEST.md` as
+  the index. Full documents are shared verbatim — no lossy telephone game,
+  and fewer tokens.
+- The Team Lead also enforces a review/test **feedback loop**: Critical/Major
+  findings and product bugs automatically become tracked fix tasks until the
+  deliverable converges.
+
+### Cleanup — two layers
+
+| Layer | Who | When |
+|---|---|---|
+| Fast path | Team Lead (prompt rule) | Deletes the task directory right after the final report |
+| Safety net | Plugin code (in-process sweeper) | At startup + every hour: removes task directories idle **beyond the TTL** |
+
+The sweeper is pure code — it never relies on the model remembering to
+delete, and it also cleans up leftovers from crashes or force-kills.
+
+### Configure the TTL
+
+Default is **5 days**. To choose your own, use the tuple plugin form in
+`opencode.jsonc`:
+
+```jsonc
+{
+  "$schema": "https://opencode.ai/config.json",
+  "plugin": [
+    ["@te-river/opencode-team-mode", { "ttlDays": 7 }]
+  ]
+}
+```
+
+`ttlDays` accepts any number of days in `(0, 365]`; invalid values silently
+fall back to 5.
 
 ---
 

@@ -190,6 +190,7 @@ opencode-team-mode/
 │   ├── index.ts          ← 插件入口（v2 格式，id: "team-mode"）
 │   ├── agents.ts         ← Agent 定义（prompts、模式、颜色）
 │   ├── commands.ts       ← 命令定义（模板、Agent 绑定）
+│   ├── blackboard.ts     ← 共享黑板 + TTL 自动清理清扫器
 │   └── types.ts          ← v2 Plugin API 类型定义
 ├── scripts/
 │   ├── install.sh        ← 一键安装脚本（bash）
@@ -205,6 +206,44 @@ opencode-team-mode/
 2. 检测到 `plugin` 数组中的 `"@te-river/opencode-team-mode"`，加载 npm 包
 3. 插件的 `setup` 函数执行，通过 `ctx.agent.transform()` 和 `ctx.command.transform()` 注入 6 个 Agent 和 6 个命令
 4. Agent 和命令立即在桌面版 UI 中可用 —— 无需复制任何文件
+
+---
+
+## 🗂️ 共享黑板（带自动清理）
+
+子代理之间无法实时互发消息（平台限制），TeamMode 通过**文件黑板**让它们协作：
+
+- 每个多 Agent 任务在 `<repo>/.git/opencode-team/<task-slug>/` 下拥有独立目录 ——
+  位于 `.git/` 内，**绝不污染**你的工作区和 commit（非 git 工作区自动回退到系统临时目录）。
+- 每个 Agent 把完整产出写入指定文件（`01-architect-design.md`、`03-review-findings.md`
+  等），Team Lead 在派发时传递*摘要 + 文件路径*，并维护 `MANIFEST.md` 索引。
+  全文档原文共享 —— 没有"传话失真"，还省 token。
+- Team Lead 同时强制执行审查/测试**反馈闭环**：Critical/Major 问题和产品 bug
+  自动转化为跟踪的修复任务，直到交付物收敛。
+
+### 清理 —— 两层防御
+
+| 层级 | 责任方 | 时机 |
+|---|---|---|
+| 快速路径 | Team Lead（prompt 规则） | 最终报告交付后立即删除任务目录 |
+| 安全网 | 插件代码（进程内清扫器） | 启动时 + 每小时：清除空闲超过 **TTL** 的任务目录 |
+
+清扫器是纯代码实现 —— 从不依赖模型"记得删"，还能兜底清理崩溃/强杀留下的残骸。
+
+### 自定义 TTL
+
+默认为 **5 天**。想自定义，在 `opencode.jsonc` 中使用元组形式的插件声明：
+
+```jsonc
+{
+  "$schema": "https://opencode.ai/config.json",
+  "plugin": [
+    ["@te-river/opencode-team-mode", { "ttlDays": 7 }]
+  ]
+}
+```
+
+`ttlDays` 接受 `(0, 365]` 内的天数；非法值静默回退到 5 天。
 
 ---
 

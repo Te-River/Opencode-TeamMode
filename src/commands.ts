@@ -116,16 +116,26 @@ $ARGUMENTS
 
 ## Workflow
 1. Understand the goal and acceptance criteria.
-2. Create a todo list of all sub-tasks.
+2. **Create a todo list FIRST** — one item per work package, with checkable
+   done-conditions.  Update statuses live (exactly one in_progress).
 3. Dispatch sub-tasks to the appropriate agents:
    - Design / architecture → architect
    - Implementation → implementer
    - Code review → reviewer
    - Testing → tester
    - Research → researcher
-4. Run independent sub-tasks in parallel.
-5. Collect all outputs, resolve conflicts, and synthesize a final result.
-6. Present a structured summary to the user.`,
+   Each dispatch must be self-contained (embed relevant prior outputs).
+4. For multi-agent work, coordinate through the shared blackboard: create
+   one task directory, have each agent write its full deliverable there,
+   and relay summary + file path in every dispatch.  Run independent
+   sub-tasks in parallel.
+5. Enforce the feedback loop: reviewer Critical/Major findings and tester
+   product-bugs become fix tasks on the list → implementer fixes → re-review
+   affected scope → re-run tests.  Repeat until clean (max 2 loops, then
+   escalate).
+6. Collect all outputs, resolve conflicts, synthesize a final result.
+7. Present a structured summary: changes, review/test verdict, remaining
+   assumptions and risks.  Then delete the task blackboard directory.`,
 }
 
 /* ------------------------------------------------------------------ */

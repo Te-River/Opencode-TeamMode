@@ -1,6 +1,6 @@
 {
   "name": "@te-river/opencode-team-mode",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "description": "Team collaboration mode plugin for OpenCode Desktop — injects specialized agents (architect, reviewer, implementer, tester, researcher) and team workflow commands into your OpenCode workspace.",
   "type": "module",
   "main": "dist/index.js",
@@ -18,6 +18,7 @@
   ],
   "scripts": {
     "build": "tsc",
+    "test": "tsc && node test-blackboard.mjs",
     "prepublishOnly": "tsc",
     "dev": "tsc --watch"
   },
@@ -40,6 +41,7 @@
     "@opencode-ai/plugin": ">=0.1.0"
   },
   "devDependencies": {
+    "@types/node": "^26.4.0",
     "typescript": "^5.5.0"
   },
   "repository": {
