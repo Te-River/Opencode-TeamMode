@@ -3,7 +3,7 @@
 # OpenCode TeamMode — one-click installer
 #
 # Usage:
-#   curl -fsSL https://raw.githubusercontent.com/user/Opencode-TeamMode/main/scripts/install.sh | bash
+#   curl -fsSL https://raw.githubusercontent.com/Te-River/Opencode-TeamMode/main/scripts/install.sh | bash
 #   # or locally:
 #   bash scripts/install.sh
 #

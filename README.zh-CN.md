@@ -72,7 +72,7 @@ npm install -g opencode-team-mode
 **方式 C — 本地开发安装（从本仓库）：**
 
 ```bash
-git clone https://github.com/user/Opencode-TeamMode.git
+git clone https://github.com/Te-River/Opencode-TeamMode.git
 cd Opencode-TeamMode
 npm install
 npm run build

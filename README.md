@@ -74,7 +74,7 @@ npm install -g opencode-team-mode
 **Option C — Local dev install (from this repo):**
 
 ```bash
-git clone https://github.com/user/Opencode-TeamMode.git
+git clone https://github.com/Te-River/Opencode-TeamMode.git
 cd Opencode-TeamMode
 npm install
 npm run build
