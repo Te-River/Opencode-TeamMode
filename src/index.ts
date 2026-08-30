@@ -16,7 +16,9 @@
  *
  * Options (via the tuple plugin form):
  *   "plugin": [["@te-river/opencode-team-mode@latest", { "ttlDays": 7 }]]
- * `ttlDays` controls blackboard auto-cleanup; default 5.
+ * - `ttlDays`      → blackboard auto-cleanup TTL; default 5.
+ * - `defaultAgent` → promote Team as the default agent (replacing the
+ *                    built-in `build`); set `false` to opt out.
  */
 
 import type { OpenCodePlugin, OpenCodeConfig } from "./types.js"
@@ -72,6 +74,12 @@ const plugin: OpenCodePlugin = {
         for (const [name, def] of Object.entries(commands)) {
           if (cfg.command[name]) continue
           cfg.command[name] = def
+        }
+
+        // ---------- make Team the default agent (opt-out: defaultAgent:false)
+        const promote = options?.defaultAgent !== false
+        if (promote && (!cfg.default_agent || cfg.default_agent === "build")) {
+          cfg.default_agent = "team"
         }
       },
     }

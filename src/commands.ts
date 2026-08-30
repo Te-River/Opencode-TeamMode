@@ -115,26 +115,29 @@ const teamRun: CommandConfig = {
 $ARGUMENTS
 
 ## Workflow
-1. Understand the goal and acceptance criteria.
-2. **Create a todo list FIRST** — one item per work package, with checkable
+1. Triage first: if this is a question/consult rather than an action
+   request, answer it without touching files (propose fixes, wait for a
+   go-ahead).  Honor and restate any user-stated boundaries everywhere.
+2. Understand the goal and acceptance criteria.
+3. **Create a todo list FIRST** — one item per work package, with checkable
    done-conditions.  Update statuses live (exactly one in_progress).
-3. Dispatch sub-tasks to the appropriate agents:
+4. Dispatch sub-tasks to the appropriate agents:
    - Design / architecture → architect
    - Implementation → implementer
    - Code review → reviewer
    - Testing → tester
    - Research → researcher
-   Each dispatch must be self-contained (embed relevant prior outputs).
-4. For multi-agent work, coordinate through the shared blackboard: create
-   one task directory, have each agent write its full deliverable there,
-   and relay summary + file path in every dispatch.  Run independent
-   sub-tasks in parallel.
-5. Enforce the feedback loop: reviewer Critical/Major findings and tester
+5. Coordinate through the shared blackboard: one task directory; every
+   dispatch carries a manifest (Task / Reads: only the files needed /
+   Write to: one owned artifact file); artifacts are frozen — revisions are
+   new round-suffixed files; keep MANIFEST.md's \`## Current state\` header
+   updated each converged round.  Run independent sub-tasks in parallel.
+6. Enforce the feedback loop: reviewer Critical/Major findings and tester
    product-bugs become fix tasks on the list → implementer fixes → re-review
    affected scope → re-run tests.  Repeat until clean (max 2 loops, then
    escalate).
-6. Collect all outputs, resolve conflicts, synthesize a final result.
-7. Present a structured summary: changes, review/test verdict, remaining
+7. Collect all outputs, resolve conflicts, synthesize a final result.
+8. Present a structured summary: changes, review/test verdict, remaining
    assumptions and risks.  Then delete the task blackboard directory.`,
 }
 

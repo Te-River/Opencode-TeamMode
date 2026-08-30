@@ -212,20 +212,35 @@ opencode-team-mode/
 
 ## 🗂️ Shared Blackboard (with automatic cleanup)
 
-Sub-agents cannot message each other live (platform limitation), so TeamMode coordinates them through a **file blackboard**:
+Sub-agents cannot message each other live (platform limitation), so TeamMode coordinates them through a **file blackboard** with strict ownership:
 
 - Each multi-agent task gets its own directory under
   `<repo>/.git/opencode-team/<task-slug>/` — inside `.git/`, so your working
   tree and commits are **never polluted**. (Non-git workspaces fall back to
   the OS temp dir.)
-- Every agent writes its full deliverable to a designated artifact
-  (`01-architect-design.md`, `03-review-findings.md`, …); the Team Lead
-  relays *summary + file path* in each dispatch and keeps `MANIFEST.md` as
-  the index. Full documents are shared verbatim — no lossy telephone game,
-  and fewer tokens.
+- **File ownership:** every artifact is one topic-sized file written by
+  exactly one agent (`01-architect-auth-design.md`, `03-reviewer-auth-r1.md`).
+  ~100 lines max per file — split topics instead of letting files balloon.
+- **Writes are frozen:** a revision is a new round-suffixed file
+  (`…-r2.md`); nothing is ever appended to or later agents reading stale rounds.
+- **The Team Lead is the router:** every dispatch carries a manifest —
+  `Task:` (self-contained brief), `Reads:` (only the files that work package
+  needs), `Write to:` (the one file the agent owns). Specialists read nothing
+  that isn't listed, so long tasks never drown sub-agents in unnecessary context.
+- **`MANIFEST.md` is the lead's state board:** a file index plus a ≤50-line
+  `## Current state` section (phase, decisions still valid, next steps),
+  updated every converged round — the lead's compressed memory across long tasks.
 - The Team Lead also enforces a review/test **feedback loop**: Critical/Major
   findings and product bugs automatically become tracked fix tasks until the
   deliverable converges.
+
+### Triage — questions don't become code edits
+
+The Team Lead classifies every incoming message before acting: a question or
+consult gets an answer (zero file changes, fixes merely proposed and awaiting
+your go-ahead); only explicit action requests enter the workflow. And whenever
+you spell out what may or may not be touched, **those boundaries outrank
+everything else** — the lead restates them in every single dispatch.
 
 ### Cleanup — two layers
 
@@ -253,6 +268,24 @@ Default is **5 days**. To choose your own, use the tuple plugin form in
 
 `ttlDays` accepts any number of days in `(0, 365]`; invalid values silently
 fall back to 5.
+
+### Default agent
+
+TeamMode makes **`team` the default agent** (replacing the built-in `build`)
+so every new chat starts with the team orchestrator — it appears above the
+rest in the switcher's default slot.  To keep `build` (or any other agent)
+as the default, or pin a different one:
+
+```jsonc
+{
+  "plugin": [
+    ["@te-river/opencode-team-mode@latest", { "defaultAgent": false }]
+  ]
+}
+```
+
+An explicitly configured non-`build` `default_agent` is always respected
+untouched.
 
 ---
 

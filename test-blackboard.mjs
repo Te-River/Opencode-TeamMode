@@ -97,7 +97,7 @@ for (const [name, a] of Object.entries(cfg.agent)) {
 for (const expert of ["architect", "implementer", "reviewer", "tester", "researcher"]) {
   const a = cfg.agent[expert]
   assert.equal(a.mode, "subagent", expert + " is subagent")
-  assert.ok(a.prompt.includes("Blackboard write guarantee"), expert + " has write guarantee")
+  assert.ok(a.prompt.includes("## Blackboard rules"), expert + " has blackboard rules")
   assert.ok(a.prompt.includes("NEVER reply \"append this verbatim"), expert + " blocks transcribe-escape")
   assert.equal(a.permission.edit, "allow", expert + " edit allowed (for blackboard)")
 }
@@ -118,6 +118,36 @@ const cfg2 = {}
 const hooks3 = await plugin.server({ directory: process.cwd() }, undefined)
 await hooks3.config(cfg2)
 assert.ok(cfg2.agent["team"].prompt.includes("idle for more than 5 days"), "default TTL 5d without options")
+
+/* v1.4.2: Team promoted to default agent (opt-out + user-choice respected) */
+assert.equal(cfg2.default_agent, "team", "team becomes the default agent")
+const cfg3 = { default_agent: "build" }
+const hooks4 = await plugin.server({ directory: process.cwd() }, { defaultAgent: false })
+await hooks4.config(cfg3)
+assert.equal(cfg3.default_agent, "build", "defaultAgent:false opts out")
+const cfg4 = { default_agent: "my-custom-agent" }
+const hooks5 = await plugin.server({ directory: process.cwd() }, undefined)
+await hooks5.config(cfg4)
+assert.equal(cfg4.default_agent, "my-custom-agent", "explicit non-build default respected")
+
+/* v1.4.2: blackboard context discipline (long-task anti-patterns) */
+assert.ok(leadPrompt.includes("round suffix"), "lead: revision round-suffix rule")
+assert.ok(leadPrompt.includes("everything in the directory"), "lead: scoped dispatch rule")
+
+/* v1.4.3: ownership model + triage gate + user boundaries */
+assert.ok(leadPrompt.includes("FILE OWNERSHIP"), "lead: file ownership rule")
+assert.ok(leadPrompt.includes("WRITES ARE FROZEN"), "lead: frozen-artifact rule")
+assert.ok(leadPrompt.includes("Reads:") && leadPrompt.includes("Write to:"), "lead: dispatch manifest fields")
+assert.ok(leadPrompt.includes("## Current state"), "lead: MANIFEST state header")
+assert.ok(leadPrompt.includes("Triage — classify before acting"), "lead: triage gate")
+assert.ok(leadPrompt.includes("Question ≠ work order"), "lead: question-not-workorder rule")
+assert.ok(leadPrompt.includes("USER-STATED BOUNDARIES ARE SUPREME"), "lead: user boundary supremacy")
+assert.ok(cfg2.agent["architect"].prompt.includes("You own exactly ONE artifact file"), "expert: single-file ownership")
+assert.ok(cfg2.agent["architect"].prompt.includes("Read ONLY the files listed"), "expert: Reads-list-only scoping")
+assert.ok(cfg.command["team-run"].template.includes("Triage first"), "team-run: triage step")
+assert.ok(cfg.command["team-run"].template.includes("Reads:"), "team-run: manifest fields")
+console.log("7. ownership + triage + boundaries: OK (lead, experts, team-run)")
+console.log("6. default-agent promotion + context discipline: OK")
 console.log("5. loader contract + v1 config injection: OK (server->config, 6 agents, 6 commands, override-safe)")
 
 console.log("\nALL BLACKBOARD TESTS PASSED ✅")
