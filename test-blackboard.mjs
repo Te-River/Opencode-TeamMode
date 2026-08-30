@@ -68,58 +68,56 @@ assert.ok(bb.teamRootFor(nonGit).includes("opencode-team"), "non-git falls back 
 fs.rmSync(nonGit, { recursive: true, force: true })
 console.log("3. paths: OK (.git/opencode-team, tmpdir fallback)")
 
-/* ---------- 4. plugin setup injects board + TTL into team-lead prompt ---------- */
-const captured = {}
-const fakeCtx = {
-  directory: process.cwd(),
-  options: { ttlDays: 9 },
-  agent: {
-    transform: async (cb) => cb({
-      update: (name, fn) => { const item = {}; fn(item); captured[name] = item },
-    }),
-    reload: async () => {},
-  },
-  command: {
-    transform: async (cb) => cb({
-      update: (name, fn) => { const item = {}; fn(item); captured["cmd:" + name] = item },
-    }),
-    reload: async () => {},
-  },
-}
-const rule = (list, action) => list.find((r) => r.action === action)
+/* ---------- 4. loader contract: server(input, options) -> config hook ---------- */
+const cfg = { $schema: "https://opencode.ai/config.json", plugin: [] }
 assert.equal(plugin.id, "team-mode", "display id")
 assert.equal(typeof plugin.server, "function", "v1 loader gate: server() present")
-assert.deepEqual(await plugin.server(), {}, "server() returns hooks object")
-assert.equal(typeof plugin.setup, "function", "v2 setup present")
-await plugin.setup(fakeCtx)
+assert.ok(!("setup" in plugin), "no dead setup property (1.18.x loader ignores it)")
+const hooks = await plugin.server({ directory: process.cwd(), project: process.cwd() }, { ttlDays: 9 })
+assert.equal(typeof hooks.config, "function", "server returns { config } hooks")
+await hooks.config(cfg)
 
-const leadPrompt = captured["team-lead"].system
+const lead = cfg.agent["team-lead"]
+const leadPrompt = lead.prompt
 assert.ok(leadPrompt.includes("opencode-team"), "board root injected")
 assert.ok(leadPrompt.includes("idle for more than 9 days"), "custom TTL in note")
 assert.ok(leadPrompt.includes("Shared blackboard"), "blackboard protocol present")
 assert.ok(leadPrompt.includes("TodoList discipline"), "v1.2 todolist hard rule")
 assert.ok(leadPrompt.includes("BLACKBOARD WRITE FAILED"), "lead fallback rule")
-assert.equal(captured["team-lead"].mode, "primary", "team-lead visible in Desktop switcher")
-assert.ok(captured["cmd:team-run"].template.includes("blackboard"), "team-run template updated")
-assert.ok(captured["cmd:team-plan"].agent === "architect", "command agent binding")
+assert.equal(lead.mode, "primary", "team-lead visible in Desktop switcher")
+assert.ok(cfg.command["team-run"].template.includes("blackboard"), "team-run template updated")
+assert.ok(cfg.command["team-plan"].agent === "architect", "command agent binding")
 
-/* v1.3: v2 shapes — system (not prompt), permissions ruleset array */
-for (const [name, a] of Object.entries(captured)) {
-  if (name.startsWith("cmd:")) continue
-  assert.equal(a.prompt, undefined, name + ": no v1 prompt field")
-  assert.ok(typeof a.system === "string" && a.system.length > 0, name + ": v2 system field set")
-  assert.ok(Array.isArray(a.permissions), name + ": v2 permissions ruleset")
-  assert.ok(a.permissions.every((r) => r.action && r.resource && r.effect), name + ": rules well-formed")
+/* v1 config shapes: prompt (string) + permission (object) */
+for (const [name, a] of Object.entries(cfg.agent)) {
+  assert.equal(typeof a.prompt, "string", name + ": v1 prompt field set")
+  assert.equal(a.system, undefined, name + ": no stray v2 system field")
+  assert.ok(a.permission && typeof a.permission === "object", name + ": v1 permission object")
 }
 for (const expert of ["architect", "implementer", "reviewer", "tester", "researcher"]) {
-  const a = captured[expert]
-  assert.ok(a.system.includes("Blackboard write guarantee"), expert + " has write guarantee")
-  assert.ok(a.system.includes("NEVER reply \"append this verbatim"), expert + " blocks transcribe-escape")
-  assert.equal(rule(a.permissions, "edit").effect, "allow", expert + " edit allowed (for blackboard)")
+  const a = cfg.agent[expert]
+  assert.equal(a.mode, "subagent", expert + " is subagent")
+  assert.ok(a.prompt.includes("Blackboard write guarantee"), expert + " has write guarantee")
+  assert.ok(a.prompt.includes("NEVER reply \"append this verbatim"), expert + " blocks transcribe-escape")
+  assert.equal(a.permission.edit, "allow", expert + " edit allowed (for blackboard)")
 }
-assert.equal(rule(captured["architect"].permissions, "bash").effect, "deny", "architect stays bash-denied")
-assert.equal(rule(captured["team-lead"].permissions, "task").effect, "allow", "lead task dispatch allowed")
-console.log("5. hybrid shape + v2 fields + permissions: OK (server gate, system, rulesets, primary)")
-console.log("4. setup injection: OK (id=team-mode, root + 9d TTL in prompt, protocols wired)")
+assert.equal(cfg.agent["architect"].permission.bash, "deny", "architect stays bash-denied")
+assert.equal(cfg.agent["team-lead"].permission.task, "allow", "lead task dispatch allowed")
+assert.equal(Object.keys(cfg.agent).length, 6, "exactly 6 agents injected")
+assert.equal(Object.keys(cfg.command).length, 6, "exactly 6 commands injected")
+
+/* idempotence + user override respected */
+cfg.agent["reviewer"] = { description: "user's own", mode: "subagent", prompt: "mine" }
+const hooks2 = await plugin.server({ directory: process.cwd() }, undefined)
+await hooks2.config(cfg)
+assert.equal(cfg.agent["reviewer"].prompt, "mine", "existing user agent not clobbered")
+assert.ok(cfg.agent["team-lead"].prompt.includes("idle for more than 9 days"), "already-injected entry kept")
+
+/* fresh config without options -> default 5d TTL */
+const cfg2 = {}
+const hooks3 = await plugin.server({ directory: process.cwd() }, undefined)
+await hooks3.config(cfg2)
+assert.ok(cfg2.agent["team-lead"].prompt.includes("idle for more than 5 days"), "default TTL 5d without options")
+console.log("5. loader contract + v1 config injection: OK (server->config, 6 agents, 6 commands, override-safe)")
 
 console.log("\nALL BLACKBOARD TESTS PASSED ✅")

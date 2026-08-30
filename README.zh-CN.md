@@ -187,11 +187,11 @@ opencode-team-mode/
 ├── package.json          ← npm 包定义
 ├── tsconfig.json         ← TypeScript 配置
 ├── src/
-│   ├── index.ts          ← 插件入口（v2 格式，id: "team-mode"）
+│   ├── index.ts          ← 插件入口（server() + config hook，id: "team-mode"）
 │   ├── agents.ts         ← Agent 定义（prompts、模式、颜色）
 │   ├── commands.ts       ← 命令定义（模板、Agent 绑定）
 │   ├── blackboard.ts     ← 共享黑板 + TTL 自动清理清扫器
-│   └── types.ts          ← v2 Plugin API 类型定义
+│   └── types.ts          ← 加载器契约类型定义（1.18.x）
 ├── scripts/
 │   ├── install.sh        ← 一键安装脚本（bash）
 │   └── install.ps1       ← 一键安装脚本（PowerShell）
@@ -202,10 +202,11 @@ opencode-team-mode/
 
 ### 工作原理
 
-1. OpenCode 桌面版启动，加载 `opencode.json`
+1. OpenCode 桌面版启动，加载 `opencode.json(c)`
 2. 检测到 `plugin` 数组中的 `"@te-river/opencode-team-mode@latest"`，加载 npm 包
-3. 插件的 `setup` 函数执行，通过 `ctx.agent.transform()` 和 `ctx.command.transform()` 注入 6 个 Agent 和 6 个命令
-4. Agent 和命令立即在桌面版 UI 中可用 —— 无需复制任何文件
+3. 加载器调用插件的 `server(input, options)`，注册 `config` hook；hook 向合并后的配置注入 6 个 Agent 和 6 个命令
+4. 插件的 `id: "team-mode"` 作为插件名显示在桌面版 UI
+5. Agent 和命令立即在桌面版 UI 中可用 —— 无需复制任何文件；同名 Agent 以用户自定义优先（插件绝不覆盖）
 
 ---
 

@@ -1,107 +1,86 @@
 /**
- * OpenCode plugin type definitions (1.18.x dual-stack loader).
+ * OpenCode plugin type definitions — contract for the shipped 1.18.x loader.
  *
- * IMPORTANT: the current OpenCode Desktop loader validates plugins with the
- * v1 schema (default export MUST have `server()`) while ALSO invoking an
- * optional v2-style `setup(context)` on the same object. The only shape that
- * actually loads is the hybrid:
+ * Verified against the desktop binary's own loader code
+ * (app.asar/out/main/chunks/node-*.js, readV1Plugin + applyPlugin):
  *
- *   export default { id, server: async () => ({}), setup: async (ctx) => {} }
+ *   async function applyPlugin(load, input, hooks) {
+ *     const plugin = readV1Plugin(load.mod, load.spec, "server", "detect");
+ *     if (plugin) {
+ *       hooks.push(await plugin.server(input, load.options));   // ← only server()
+ *       return;
+ *     }
+ *     // legacy: bare function default export also works
+ *   }
  *
- * A pure v2 `define({ id, setup })` export is REJECTED with
- * "must default export an object with server()".
- *
- * v2 agent/command item shapes below are taken from
- * @opencode-ai/sdk/v2/types (AgentV2Info / CommandV2Info).
+ * Facts encoded here:
+ *  - `setup` is NEVER called on this loader version (v1.1-v1.3 died here).
+ *  - default export MUST be an object with a `server(input, options)`
+ *    function; `id` on the object controls the Desktop plugin display name.
+ *  - server() returns v1 Hooks; the `config(cfg)` hook receives the merged
+ *    opencode config and is the working mechanism to inject agents/commands.
+ *  - Agent/command entries inside cfg use the v1 config shape:
+ *    prompt (string) + permission (object keyed by tool).
  */
 
-// ---------- v2 permission ruleset ----------
+// ---------- v1 config shapes (what we mutate in the config hook) ----------
 
-export type PermissionEffect = "allow" | "deny" | "ask"
-
-export interface PermissionRule {
-  action: string
-  resource: string
-  effect: PermissionEffect
+export interface AgentPermission {
+  [tool: string]: string | Record<string, string>
 }
 
-export const RULE = (
-  action: string,
-  resource: string,
-  effect: PermissionEffect,
-): PermissionRule => ({ action, resource, effect })
-
-// ---------- v2 agent / command shapes ----------
-
-export interface AgentItem {
+export interface AgentConfig {
   description?: string
-  /** "primary" shows in the Desktop agent switcher; sub-agents use "subagent". */
   mode?: "primary" | "subagent" | "all"
-  /** System prompt — v2 field name is `system`, NOT `prompt`. */
-  system?: string
+  /** v1 config field for the system prompt (NOT `system`). */
+  prompt?: string
+  model?: string
   color?: string
   hidden?: boolean
   steps?: number
   temperature?: number
-  /** v2 ruleset array — NOT the v1 permission object. */
-  permissions?: PermissionRule[]
+  permission?: AgentPermission
   [key: string]: unknown
 }
 
-export interface CommandItem {
-  name?: string
+export interface CommandConfig {
   description?: string
   template?: string
   agent?: string
-  subtask?: boolean
   [key: string]: unknown
 }
 
-// ---------- v2 draft editors ----------
-
-export interface AgentDraft {
-  list(): readonly AgentItem[]
-  get(id: string): AgentItem | undefined
-  default(id: string | undefined): void
-  /** Upsert: creates the entry when missing, then applies the updater. */
-  update(id: string, update: (agent: AgentItem) => void): void
-  remove(id: string): void
-}
-
-export interface CommandDraft {
-  list(): readonly CommandItem[]
-  get(name: string): CommandItem | undefined
-  update(name: string, update: (command: CommandItem) => void): void
-  remove(name: string): void
-}
-
-// ---------- v2 plugin context ----------
-
-export interface PluginContext {
-  agent: {
-    transform<T>(
-      cb: (draft: AgentDraft) => T | Promise<T>,
-    ): Promise<T | undefined>
-    reload(): Promise<void>
-  }
-  command: {
-    transform<T>(
-      cb: (draft: CommandDraft) => T | Promise<T>,
-    ): Promise<T | undefined>
-    reload(): Promise<void>
-  }
-  options?: Record<string, unknown>
-  directory?: string
-  project?: string
+export interface OpenCodeConfig {
+  agent?: Record<string, AgentConfig>
+  command?: Record<string, CommandConfig>
   [key: string]: unknown
 }
 
-// ---------- hybrid plugin shape required by the 1.18.x loader ----------
+// ---------- v1 hooks returned from server() ----------
+
+export interface Hooks {
+  config?: (cfg: OpenCodeConfig) => void | Promise<void>
+  [hook: string]: unknown
+}
+
+// ---------- input passed to server() ----------
+
+export interface PluginInput {
+  client: unknown
+  project: string
+  directory: string
+  worktree?: string
+  $?: unknown
+  serverUrl?: URL
+  [key: string]: unknown
+}
+
+// ---------- the hybrid plugin object the loader accepts ----------
 
 export interface OpenCodePlugin {
   readonly id: string
-  /** v1 loader gate: MUST exist. Return the (empty) v1 hooks object. */
-  readonly server: () => Promise<Record<string, unknown>>
-  /** v2 domain injection: the real payload. */
-  readonly setup: (ctx: PluginContext) => Promise<void>
+  readonly server: (
+    input: PluginInput,
+    options?: Record<string, unknown>,
+  ) => Promise<Hooks>
 }

@@ -6,10 +6,10 @@
  * in both OpenCode Desktop and the TUI.
  */
 
-import type { CommandItem } from "./types.js"
+import type { CommandConfig } from "./types.js"
 
 /* ------------------------------------------------------------------ */
-const teamPlan: CommandItem = {
+const teamPlan: CommandConfig = {
   description:
     "Create a comprehensive implementation plan — architecture, task breakdown, and risk analysis.",
   agent: "architect",
@@ -30,7 +30,7 @@ Do not write implementation code — only the plan.`,
 }
 
 /* ------------------------------------------------------------------ */
-const teamImplement: CommandItem = {
+const teamImplement: CommandConfig = {
   description:
     "Implement a feature or task — write production code following the project's conventions.",
   agent: "implementer",
@@ -46,7 +46,7 @@ $ARGUMENTS
 }
 
 /* ------------------------------------------------------------------ */
-const teamReview: CommandItem = {
+const teamReview: CommandConfig = {
   description:
     "Review code for correctness, security, performance, and maintainability.",
   agent: "reviewer",
@@ -67,7 +67,7 @@ Include file paths, line numbers, and concrete fix suggestions.`,
 }
 
 /* ------------------------------------------------------------------ */
-const teamTest: CommandItem = {
+const teamTest: CommandConfig = {
   description:
     "Generate comprehensive tests — unit, integration, and edge-case coverage.",
   agent: "tester",
@@ -86,7 +86,7 @@ If no specific scope is given, identify the most recently modified source files 
 }
 
 /* ------------------------------------------------------------------ */
-const teamResearch: CommandItem = {
+const teamResearch: CommandConfig = {
   description:
     "Research a topic — libraries, APIs, best practices, or documentation.",
   agent: "researcher",
@@ -105,7 +105,7 @@ Cite your sources.  Do not fabricate URLs or API details.`,
 }
 
 /* ------------------------------------------------------------------ */
-const teamRun: CommandItem = {
+const teamRun: CommandConfig = {
   description:
     "Full team workflow — the team lead orchestrates all agents to complete a complex task end-to-end.",
   agent: "team-lead",
@@ -142,7 +142,7 @@ $ARGUMENTS
 /*  Export all commands keyed by name                                 */
 /* ------------------------------------------------------------------ */
 
-export const commands: Record<string, CommandItem> = {
+export const commands: Record<string, CommandConfig> = {
   "team-plan": teamPlan,
   "team-implement": teamImplement,
   "team-review": teamReview,

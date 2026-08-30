@@ -187,11 +187,11 @@ opencode-team-mode/
 ├── package.json          ← npm package definition
 ├── tsconfig.json         ← TypeScript config
 ├── src/
-│   ├── index.ts          ← Plugin entry (v2 format, id: "team-mode")
+│   ├── index.ts          ← Plugin entry (server() + config hook, id: "team-mode")
 │   ├── agents.ts         ← Agent definitions (prompts, modes, colors)
 │   ├── commands.ts       ← Command definitions (templates, agent bindings)
 │   ├── blackboard.ts     ← Shared blackboard + TTL auto-cleanup sweeper
-│   └── types.ts          ← v2 Plugin API type definitions
+│   └── types.ts          ← Loader-contract type definitions (1.18.x)
 ├── scripts/
 │   ├── install.sh        ← One-click installer (bash)
 │   └── install.ps1       ← One-click installer (PowerShell)
@@ -202,11 +202,11 @@ opencode-team-mode/
 
 ### How it works
 
-1. OpenCode Desktop starts and loads `opencode.json`.
+1. OpenCode Desktop starts and loads `opencode.json(c)`.
 2. It sees `"@te-river/opencode-team-mode@latest"` in the `plugin` array and loads the npm package.
-3. The plugin's v2 `setup` function runs, using `ctx.agent.transform()` and `ctx.command.transform()` to inject 6 agents and 6 commands.
+3. The loader calls the plugin's `server(input, options)`, which registers a `config` hook; the hook injects 6 agents and 6 commands into the merged config.
 4. The plugin's `id: "team-mode"` is displayed as the plugin name in the Desktop UI.
-5. Agents and commands are immediately available in the Desktop UI — no file copying needed.
+5. Agents and commands are immediately available in the Desktop UI — no file copying needed. User-defined agents with the same name always win (the plugin never clobbers them).
 
 ---
 

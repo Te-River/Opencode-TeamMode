@@ -1,19 +1,25 @@
 /**
  * opencode-team-mode — OpenCode plugin entry point.
  *
- * Exports the hybrid object shape required by the current OpenCode Desktop
- * loader (v1.18.x):
- *  - `id`      → display name in the Desktop plugin list
- *  - `server`  → v1 loader gate; MUST exist or loading is rejected with
- *                "must default export an object with server()"
- *  - `setup`   → v2 domain injection (agent/command transform), real payload
+ * Contract with the SHIPPED OpenCode Desktop loader (1.18.x, verified by
+ * reading the binary's own applyPlugin/readV1Plugin code):
+ *
+ *   export default {
+ *     id: "team-mode",                     → Desktop plugin display name
+ *     server: async (input, options) => ({ config(cfg) { ...inject... } })
+ *   }
+ *
+ * `server()` is the ONLY function the loader calls; a `setup` property is
+ * silently ignored (root cause of v1.1-v1.3 not appearing in the picker).
+ * The v1 `config` hook receives the merged opencode config and is the
+ * supported way to add agents/commands.
  *
  * Options (via the tuple plugin form):
  *   "plugin": [["@te-river/opencode-team-mode@latest", { "ttlDays": 7 }]]
  * `ttlDays` controls blackboard auto-cleanup; default 5.
  */
 
-import type { OpenCodePlugin } from "./types.js"
+import type { OpenCodePlugin, OpenCodeConfig } from "./types.js"
 import { agents } from "./agents.js"
 import { commands } from "./commands.js"
 import {
@@ -21,14 +27,6 @@ import {
   resolveTtlMs,
   DEFAULT_TTL_DAYS,
 } from "./blackboard.js"
-
-/** Best-effort workspace directory from plugin context, else cwd. */
-function resolveDirectory(ctx: { directory?: unknown; project?: unknown }): string {
-  for (const candidate of [ctx.directory, ctx.project]) {
-    if (typeof candidate === "string" && candidate.length > 0) return candidate
-  }
-  return process.cwd()
-}
 
 /** Runtime addendum to the team-lead prompt: concrete board + TTL. */
 function blackboardNote(root: string, ttlDays: number): string {
@@ -46,45 +44,37 @@ function blackboardNote(root: string, ttlDays: number): string {
 const plugin: OpenCodePlugin = {
   id: "team-mode",
 
-  /** v1 loader gate — no v1 hooks needed, the v2 setup does everything. */
-  server: async () => ({}),
-
-  setup: async (ctx) => {
+  server: async (input, options) => {
     // ---------- blackboard maintenance (code-level TTL sweeper) ----------
-    const directory = resolveDirectory(ctx)
-    const ttlMs = resolveTtlMs(ctx.options)
+    const directory =
+      typeof input?.directory === "string" && input.directory.length > 0
+        ? input.directory
+        : process.cwd()
+    const ttlMs = resolveTtlMs(options)
     const ttlDays = Math.round(ttlMs / (24 * 60 * 60 * 1000)) || DEFAULT_TTL_DAYS
     const boardRoot = startBlackboardMaintenance(directory, ttlMs)
+    const note = blackboardNote(boardRoot, ttlDays)
 
-    // ---------- inject team agents (v2 AgentV2Info fields) ----------
-    await ctx.agent.transform((agent) => {
-      for (const [name, def] of Object.entries(agents)) {
-        agent.update(name, (item) => {
-          item.description = def.description
-          item.mode = def.mode
-          item.system =
-            name === "team-lead"
-              ? (def.system ?? "") + blackboardNote(boardRoot, ttlDays)
-              : def.system
-          item.color = def.color
-          // Authoritative v2 ruleset — overrides any stale file-based agent
-          // definition that might deny blackboard writes.
-          if (def.permissions) item.permissions = def.permissions
-        })
-      }
-    })
+    return {
+      // ---------- v1 config hook: inject agents & commands ----------
+      config(cfg: OpenCodeConfig) {
+        if (!cfg.agent) cfg.agent = {}
+        for (const [name, def] of Object.entries(agents)) {
+          // Respect user-defined overrides: never clobber an existing entry.
+          if (cfg.agent[name]) continue
+          cfg.agent[name] = {
+            ...def,
+            prompt: name === "team-lead" ? (def.prompt ?? "") + note : def.prompt,
+          }
+        }
 
-    // ---------- inject team commands (v2 CommandV2Info fields) ----------
-    await ctx.command.transform((command) => {
-      for (const [name, def] of Object.entries(commands)) {
-        command.update(name, (item) => {
-          item.name = name
-          item.description = def.description
-          item.template = def.template ?? ""
-          item.agent = def.agent
-        })
-      }
-    })
+        if (!cfg.command) cfg.command = {}
+        for (const [name, def] of Object.entries(commands)) {
+          if (cfg.command[name]) continue
+          cfg.command[name] = def
+        }
+      },
+    }
   },
 }
 
