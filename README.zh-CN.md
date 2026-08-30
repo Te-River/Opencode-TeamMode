@@ -162,7 +162,7 @@ TeamMode 为 OpenCode 添加了六个斜杠命令，在聊天输入框中输入�
 
 你也可以在 OpenCode 桌面版中使用 `@` 直接调用 Agent：
 
-- `@team-lead` — 调度复杂任务
+- `@team` — 调度复杂任务
 - `@architect` — 设计系统或模块
 - `@implementer` — 编写代码
 - `@reviewer` — 审查代码质量

@@ -28,7 +28,7 @@ import {
   DEFAULT_TTL_DAYS,
 } from "./blackboard.js"
 
-/** Runtime addendum to the team-lead prompt: concrete board + TTL. */
+/** Runtime addendum to the team prompt: concrete board + TTL. */
 function blackboardNote(root: string, ttlDays: number): string {
   return [
     "",
@@ -64,7 +64,7 @@ const plugin: OpenCodePlugin = {
           if (cfg.agent[name]) continue
           cfg.agent[name] = {
             ...def,
-            prompt: name === "team-lead" ? (def.prompt ?? "") + note : def.prompt,
+            prompt: name === "team" ? (def.prompt ?? "") + note : def.prompt,
           }
         }
 

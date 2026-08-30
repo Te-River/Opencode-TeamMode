@@ -77,14 +77,14 @@ const hooks = await plugin.server({ directory: process.cwd(), project: process.c
 assert.equal(typeof hooks.config, "function", "server returns { config } hooks")
 await hooks.config(cfg)
 
-const lead = cfg.agent["team-lead"]
+const lead = cfg.agent["team"]
 const leadPrompt = lead.prompt
 assert.ok(leadPrompt.includes("opencode-team"), "board root injected")
 assert.ok(leadPrompt.includes("idle for more than 9 days"), "custom TTL in note")
 assert.ok(leadPrompt.includes("Shared blackboard"), "blackboard protocol present")
 assert.ok(leadPrompt.includes("TodoList discipline"), "v1.2 todolist hard rule")
 assert.ok(leadPrompt.includes("BLACKBOARD WRITE FAILED"), "lead fallback rule")
-assert.equal(lead.mode, "primary", "team-lead visible in Desktop switcher")
+assert.equal(lead.mode, "primary", "team visible in Desktop switcher")
 assert.ok(cfg.command["team-run"].template.includes("blackboard"), "team-run template updated")
 assert.ok(cfg.command["team-plan"].agent === "architect", "command agent binding")
 
@@ -102,7 +102,7 @@ for (const expert of ["architect", "implementer", "reviewer", "tester", "researc
   assert.equal(a.permission.edit, "allow", expert + " edit allowed (for blackboard)")
 }
 assert.equal(cfg.agent["architect"].permission.bash, "deny", "architect stays bash-denied")
-assert.equal(cfg.agent["team-lead"].permission.task, "allow", "lead task dispatch allowed")
+assert.equal(cfg.agent["team"].permission.task, "allow", "lead task dispatch allowed")
 assert.equal(Object.keys(cfg.agent).length, 6, "exactly 6 agents injected")
 assert.equal(Object.keys(cfg.command).length, 6, "exactly 6 commands injected")
 
@@ -111,13 +111,13 @@ cfg.agent["reviewer"] = { description: "user's own", mode: "subagent", prompt: "
 const hooks2 = await plugin.server({ directory: process.cwd() }, undefined)
 await hooks2.config(cfg)
 assert.equal(cfg.agent["reviewer"].prompt, "mine", "existing user agent not clobbered")
-assert.ok(cfg.agent["team-lead"].prompt.includes("idle for more than 9 days"), "already-injected entry kept")
+assert.ok(cfg.agent["team"].prompt.includes("idle for more than 9 days"), "already-injected entry kept")
 
 /* fresh config without options -> default 5d TTL */
 const cfg2 = {}
 const hooks3 = await plugin.server({ directory: process.cwd() }, undefined)
 await hooks3.config(cfg2)
-assert.ok(cfg2.agent["team-lead"].prompt.includes("idle for more than 5 days"), "default TTL 5d without options")
+assert.ok(cfg2.agent["team"].prompt.includes("idle for more than 5 days"), "default TTL 5d without options")
 console.log("5. loader contract + v1 config injection: OK (server->config, 6 agents, 6 commands, override-safe)")
 
 console.log("\nALL BLACKBOARD TESTS PASSED ✅")

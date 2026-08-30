@@ -162,7 +162,7 @@ TeamMode adds six slash commands to OpenCode. Type them in the chat input:
 
 You can also invoke agents directly using the `@` mention in OpenCode Desktop:
 
-- `@team-lead` — Orchestrate a complex task
+- `@team` — Orchestrate a complex task
 - `@architect` — Design a system or module
 - `@implementer` — Write code
 - `@reviewer` — Review code quality

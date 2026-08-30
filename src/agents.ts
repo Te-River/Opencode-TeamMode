@@ -427,7 +427,7 @@ for (const a of [architect, implementer, reviewer, tester, researcher]) {
 /* ------------------------------------------------------------------ */
 
 export const agents: Record<string, AgentConfig> = {
-  "team-lead": teamLead,
+  "team": teamLead,
   architect,
   implementer,
   reviewer,

@@ -108,7 +108,7 @@ Cite your sources.  Do not fabricate URLs or API details.`,
 const teamRun: CommandConfig = {
   description:
     "Full team workflow — the team lead orchestrates all agents to complete a complex task end-to-end.",
-  agent: "team-lead",
+  agent: "team",
   template: `Execute the full team workflow for the following task.
 
 ## Task
