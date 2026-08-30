@@ -62,6 +62,9 @@ export const Plugin = define({
               ? def.prompt + blackboardNote(boardRoot, ttlDays)
               : def.prompt
           item.color = def.color
+          // Authoritative permission from the plugin — overrides any stale
+          // file-based agent definition that might deny blackboard writes.
+          if (def.permission) item.permission = def.permission
         })
       }
     })

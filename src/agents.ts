@@ -19,6 +19,24 @@
 import type { AgentItem } from "./types.js"
 
 /* ------------------------------------------------------------------ */
+/*  Blackboard write guarantee (appended to every specialist prompt)   */
+/* ------------------------------------------------------------------ */
+const BLACKBOARD_GUARANTEE = `
+
+## Blackboard write guarantee
+- Writing your designated blackboard artifact is ALWAYS within your role.
+  Any read-only constraint applies to PROJECT SOURCES and the code under
+  review — NEVER to the blackboard directory. Your tools can write there;
+  do it yourself, in the file the dispatch names.
+- NEVER reply "append this verbatim for me" or hand the full deliverable
+  back to the dispatcher to transcribe — that defeats the entire point of
+  the blackboard. Reply with your summary + the file path, nothing else.
+- If a write genuinely fails (permissions, missing directory), start your
+  reply with the line \`BLACKBOARD WRITE FAILED: <reason>\` and only then
+  include the full content as fallback, so the lead can retry the write
+  deliberately instead of guessing.`
+
+/* ------------------------------------------------------------------ */
 /*  Team Lead — orchestrator                                          */
 /* ------------------------------------------------------------------ */
 const teamLead: AgentItem = {
@@ -88,6 +106,10 @@ file blackboard (root path is appended at the end of this prompt):
   never rely on an agent "knowing" what another produced.
 - Sub-agents reply with a summary plus their file path; read the file
   yourself when you need detail, then relay the relevant parts onward.
+- A specialist asking you to transcribe its output verbatim is a protocol
+  violation — send it back to write the file itself.  Only if its reply
+  contains \`BLACKBOARD WRITE FAILED\` may you write the artifact as a
+  fallback; note the failure in MANIFEST.md so it is not silently tolerated.
 - Maintain \`MANIFEST.md\` in the task directory: one line per artifact
   (file — role — status — one-line summary).
 - After you deliver the final report, DELETE the task directory (use the
@@ -133,6 +155,13 @@ adoption:
 - Your final output is a structured summary, not raw agent transcripts.
 `,
   color: "#E879F9", // purple
+  permission: {
+    edit: "allow",
+    bash: "allow",
+    webfetch: "allow",
+    task: "allow",
+    todowrite: "allow",
+  },
 }
 
 /* ------------------------------------------------------------------ */
@@ -182,6 +211,9 @@ When the team lead sends back a design flaw found in review or testing:
   of guessing about the codebase.
 `,
   color: "#38BDF8", // sky blue
+  // Read-only on PROJECT sources; the blackboard artifact is explicitly
+  // writable (see Blackboard write guarantee).
+  permission: { edit: "allow", bash: "deny", webfetch: "allow" },
 }
 
 /* ------------------------------------------------------------------ */
@@ -226,6 +258,7 @@ to you by the team lead.
   check, the previously failing test).
 `,
   color: "#4ADE80", // green
+  permission: { edit: "allow", bash: "allow", webfetch: "allow" },
 }
 
 /* ------------------------------------------------------------------ */
@@ -278,6 +311,9 @@ plus regressions introduced by the fixes; confirm each prior finding item
 by item (fixed / not fixed / partial).
 `,
   color: "#FB923C", // orange
+  // May edit ONLY the blackboard artifact; never the reviewed code
+  // (see Blackboard write guarantee + role rules).
+  permission: { edit: "allow", bash: "allow", webfetch: "allow" },
 }
 
 /* ------------------------------------------------------------------ */
@@ -329,6 +365,7 @@ pass/fail signal.
   refactor instead of contorting the test.
 `,
   color: "#F472B6", // pink
+  permission: { edit: "allow", bash: "allow", webfetch: "allow" },
 }
 
 /* ------------------------------------------------------------------ */
@@ -377,6 +414,17 @@ by the team — flag prominently if that is the case.
 - State which product/version each finding applies to.
 `,
   color: "#A78BFA", // violet
+  permission: {
+    edit: "allow",
+    bash: "allow",
+    webfetch: "allow",
+    websearch: "allow",
+  },
+}
+
+/* Append the blackboard write guarantee to every specialist prompt. */
+for (const a of [architect, implementer, reviewer, tester, researcher]) {
+  a.prompt = (a.prompt ?? "") + BLACKBOARD_GUARANTEE
 }
 
 /* ------------------------------------------------------------------ */

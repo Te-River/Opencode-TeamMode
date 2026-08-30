@@ -94,8 +94,19 @@ assert.ok(leadPrompt.includes("opencode-team"), "board root injected")
 assert.ok(leadPrompt.includes("idle for more than 9 days"), "custom TTL in note")
 assert.ok(leadPrompt.includes("Shared blackboard"), "blackboard protocol present")
 assert.ok(leadPrompt.includes("TodoList discipline"), "v1.2 todolist hard rule")
-assert.ok(captured["architect"].prompt.includes("Blackboard protocol"), "architect protocol")
+assert.ok(leadPrompt.includes("BLACKBOARD WRITE FAILED"), "lead fallback rule")
 assert.ok(captured["cmd:team-run"].template.includes("blackboard"), "team-run template updated")
+
+/* v1.2.1: permissions authoritative + no-transcribe guarantee on all experts */
+for (const expert of ["architect", "implementer", "reviewer", "tester", "researcher"]) {
+  const a = captured[expert]
+  assert.ok(a.prompt.includes("Blackboard write guarantee"), expert + " has write guarantee")
+  assert.ok(a.prompt.includes("NEVER reply \"append this verbatim"), expert + " blocks transcribe-escape")
+  assert.equal(a.permission.edit, "allow", expert + " edit allowed (for blackboard)")
+}
+assert.equal(captured["architect"].permission.bash, "deny", "architect stays bash-denied")
+assert.equal(captured["team-lead"].permission.task, "allow", "lead task dispatch allowed")
+console.log("5. permissions + anti-transcribe guarantee: OK (all 6 agents authoritative)")
 console.log("4. setup injection: OK (id=team-mode, root + 9d TTL in prompt, protocols wired)")
 
 console.log("\nALL BLACKBOARD TESTS PASSED ✅")
