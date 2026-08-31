@@ -169,6 +169,80 @@ You can also invoke agents directly using the `@` mention in OpenCode Desktop:
 - `@tester` — Write tests
 - `@researcher` — Research a topic
 
+### 🎬 Demo: one full team run inside OpenCode Desktop
+
+Here is what actually happens when you switch the agent picker to **`team`**
+(it's also the promoted default, so often no switch is needed) and type:
+
+> *Add token-bucket rate limiting to our Express API: 100 requests/min per
+> user, return 429 when exceeded. Don't touch anything under `src/legacy/`.*
+
+**① Triage.** An explicit action request → the workflow starts. Your
+`src/legacy/` boundary is captured and **restated inside every dispatch**.
+
+**② Plan.** A todo list appears in the chat — one item per work package
+(design → implement → review → fix → re-review → test → report), statuses
+moving one at a time.
+
+**③ First dispatch.** A task directory is created and the architect gets a
+manifest, not a wall of text:
+
+```
+Task:     Design a token-bucket rate limiter for the Express API …
+          (2–5 line brief + user boundary: src/legacy/** is off-limits)
+Reads:    (none — this is the first artifact)
+Write to: 01-architect-design.md
+```
+
+While the team works, you can **watch the blackboard fill up** under
+`.git/opencode-team/rate-limiter/` — inside `.git/`, so it never pollutes
+your working tree or commits:
+
+```
+.git/opencode-team/rate-limiter/
+├── MANIFEST.md                     ← lead-only index + live state header
+├── 01-architect-design.md          ← the full design; chat shows only a summary
+├── 02-implementer-middleware.md
+├── 03-reviewer-findings-r1.md      ← review round 1 …
+├── 04-implementer-fix-notes-r2.md  ← fixes = NEW file, old rounds are frozen
+├── 03-reviewer-findings-r2.md      ← … re-review of the fixed scope only
+└── 05-tester-report.md
+```
+
+`MANIFEST.md` is the Team's compressed memory across a long run:
+
+```markdown
+## Current state
+Phase: verify (loop 2/2) — review clean, tests running
+Decisions still valid: in-memory token bucket, per-user key, 429 + Retry-After
+Boundaries: src/legacy/** untouchable (user-stated, restated in all dispatches)
+Next: tester verdict → final report → delete task dir
+```
+
+**④ The feedback loop catches a bug.** The reviewer flags 🟠 **Major**:
+non-atomic bucket refill races under load. You asked for nothing — the Team
+turns the finding into a tracked fix task, sends the implementer the exact
+finding text, and the re-review covers only the touched scope.
+
+**⑤ Done.** One structured report lands in the chat:
+
+> **Rate limiter shipped.** Files: `src/middleware/rateLimit.ts` (new),
+> `src/app.ts` (+3), `tests/rateLimit.test.ts` (14 cases, pass). Review:
+> 1 Major found → fixed → clean. Assumption: in-memory store (Redis not
+> wired). Boundary honored: `src/legacy/` untouched.
+
+…then the task directory is deleted. Even if the Team ever forgets, the
+plugin's sweeper purges idle boards after the TTL (default 5 days).
+
+### Why the blackboard earns its keep
+
+| Naive relay (no blackboard) | TeamMode blackboard |
+|---|---|
+| 300-line design retyped through chat into every dispatch — token waste + drift | Full artifact written once; dispatches carry a scoped `Reads:` list |
+| Fix rounds append/overwrite; reviewers re-read stale conclusions | Writes are frozen — revisions are `…-r2.md`, only the latest round is ever referenced |
+| "Who decided what?" evaporates in long sessions | MANIFEST `## Current state` survives the entire run |
+| Sub-agents bounce work back: "please append this for me" | `Write to:` ownership — every agent files its own artifact or raises `BLACKBOARD WRITE FAILED` |
+
 ### Desktop-specific features
 
 In **OpenCode Desktop**, you get additional UX benefits:

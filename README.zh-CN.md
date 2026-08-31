@@ -169,6 +169,76 @@ TeamMode 为 OpenCode 添加了六个斜杠命令，在聊天输入框中输入�
 - `@tester` — 编写测试
 - `@researcher` — 调研主题
 
+### 🎬 演示：在 OpenCode 桌面版里跑一次完整的团队工作流
+
+把代理选择器切到 **`team`**（由于它是被提升的默认代理，通常不用切），输入：
+
+> *给我们的 Express API 加令牌桶限流：每用户每分钟 100 请求，超限返回 429。
+> 不要动 `src/legacy/` 下的任何东西。*
+
+**① Triage 分诊。** 这是明确的行动指令 → 进入工作流。你划的
+`src/legacy/` 红线被记录，并**在每一次派发中原样重申**。
+
+**② 规划。** 聊天窗口出现 todo 清单 —— 每个工作包一项
+（设计 → 实现 → 审查 → 修复 → 复审 → 测试 → 汇报），同一时刻只有一项进行中。
+
+**③ 首次派发。** 创建任务目录，architect 拿到的是一份清单而不是滚屏长文：
+
+```
+Task:     为 Express API 设计令牌桶限流器 …
+          （2–5 行任务书 + 用户边界：src/legacy/** 禁改）
+Reads:    （无 —— 这是第一份制品）
+Write to: 01-architect-design.md
+```
+
+团队干活时，你可以**亲眼看着黑板逐渐写满** ——
+`.git/opencode-team/rate-limiter/` 位于 `.git/` 内，
+永不污染你的工作区和 commit：
+
+```
+.git/opencode-team/rate-limiter/
+├── MANIFEST.md                     ← lead 专属索引 + 实时状态头
+├── 01-architect-design.md          ← 完整设计原文；聊天里只有摘要
+├── 02-implementer-middleware.md
+├── 03-reviewer-findings-r1.md      ← 第 1 轮审查 …
+├── 04-implementer-fix-notes-r2.md  ← 修订 = 新文件，旧轮次冻结
+├── 03-reviewer-findings-r2.md      ← … 仅针对改动范围的复审
+└── 05-tester-report.md
+```
+
+`MANIFEST.md` 是团队跨长任务的压缩记忆：
+
+```markdown
+## Current state
+阶段：验证（闭环 2/2）—— 审查已清零，测试运行中
+仍然有效的决策：内存令牌桶、按用户键控、429 + Retry-After
+边界：src/legacy/** 禁改（用户声明，已随每次派发重申）
+下一步：测试结论 → 最终报告 → 删除任务目录
+```
+
+**④ 反馈闭环抓到 bug。** reviewer 标出 🟠 **Major**：桶回充非原子、高并发下有
+竞态。你没有提任何要求 —— Team 自动把这条发现转成跟踪的修复任务，把发现原文
+塞给 implementer，复审只看被改动的范围。
+
+**⑤ 完成。** 聊天里落出一份结构化报告：
+
+> **限流器已交付。** 文件：`src/middleware/rateLimit.ts`（新增）、
+> `src/app.ts`（+3 行）、`tests/rateLimit.test.ts`（14 用例，全过）。审查：
+> 1 个 Major → 已修复 → 清零。假设：内存存储（未接 Redis）。
+> 边界遵守：`src/legacy/` 未动。
+
+……随后任务目录被删除。就算 Team 哪次忘了，插件的清扫器也会在 TTL（默认
+5 天）后把闲置黑板一并收走。
+
+### 黑板为什么值钱
+
+| 朴素转述（没有黑板） | TeamMode 黑板 |
+|---|---|
+| 300 行设计在每次派发时被聊天重打一遍 —— 烧 token 还失真 | 全文只写一次；派发只带精确的 `Reads:` 清单 |
+| 修复轮次追加/覆盖，审查员反复读过时结论 | 写入即冻结 —— 修订是 `…-r2.md`，只引用最新轮 |
+| "当时是谁定的来着？"在长会话里蒸发 | MANIFEST 的 `## Current state` 全程存活 |
+| 子代理甩锅："请帮我把这段逐字贴进去"（我们真见过） | `Write to:` 所有权 —— 每个 agent 自己落盘，失败必须显式报 `BLACKBOARD WRITE FAILED` |
+
 ### 桌面版专属特性
 
 在 **OpenCode 桌面版** 中，你还能获得额外的 UX 体验：
