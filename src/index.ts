@@ -17,13 +17,12 @@
  * Options (via the tuple plugin form):
  *   "plugin": [["@te-river/opencode-team-mode@latest", { "ttlDays": 7 }]]
  * - `ttlDays`      → blackboard auto-cleanup TTL; default 5.
- * - `defaultAgent` → promote Team as the default agent (opt-in: set `true`
- *                    to enable).  Trade-off when NOT enabled: new chats
- *                    start on the built-in `build` agent, but the picker
- *                    keeps Team in plain alphabetical order — after `plan`
- *                    (the default agent is pinned first; everything else
- *                    sorts by name, so "team first" and "team after plan"
- *                    are mutually exclusive).
+ * - `defaultAgent` → Team is the default agent (opt-out: set `false`).
+ *                    Owning the default slot means the picker pins it
+ *                    FIRST — order becomes team, build, plan.  Set
+ *                    `false` for build-as-default with Team in its
+ *                    alphabetical slot: build, plan, team (the two are
+ *                    mutually exclusive by the server's sort).
  */
 
 import type { OpenCodePlugin, OpenCodeConfig } from "./types.js"
@@ -86,8 +85,8 @@ const plugin: OpenCodePlugin = {
           cfg.command[name] = def
         }
 
-        // ---------- make Team the default agent (opt-in: defaultAgent:true)
-        const promote = options?.defaultAgent === true
+        // ---------- make Team the default agent (opt-out: defaultAgent:false)
+        const promote = options?.defaultAgent !== false
         if (promote && (!cfg.default_agent || cfg.default_agent === "build")) {
           cfg.default_agent = "team"
         }

@@ -178,9 +178,9 @@ You can also invoke agents directly using the `@` mention in OpenCode Desktop:
 
 ### Demo
 
-A session transcript, recreated from how the flow actually looks. The user
-picks `team` in the agent switcher (or enables `defaultAgent`, see
-Configuration), then just types into a fresh chat:
+A session transcript, recreated from how the flow actually looks. Team is the
+default agent out of the box (see Configuration to opt out), so the user just
+types into a fresh chat:
 
 > **User:** Add token-bucket rate limiting to our Express API — 100 requests
 > per minute per user, return 429 when exceeded. Don't touch anything under
@@ -335,31 +335,32 @@ fall back to 5.
 
 ### Default agent
 
-By default TeamMode **does not** touch the default agent — new chats start
-on the built-in `build` as before.  This is a deliberate ordering trade-off:
-the switcher pins the default agent to the **first slot** and sorts
-everything else alphabetically, so "Team pinned as default (first)" and
-"Team shown after Plan" are mutually exclusive.  Leaving the default slot
-alone gives you the picker order **build, plan, team**.
+By default TeamMode **makes Team your default agent** — new chats open
+directly in the team orchestrator. One side effect comes with the default
+slot: the switcher pins the default agent to the **first position** and
+sorts everything else alphabetically, so the picker order is
+**team, build, plan**. (Want Team below Plan instead? That requires
+giving up the default slot — see the opt-out below; the two are
+mutually exclusive by the server's sort.)
 
-To promote Team as the default agent anyway (new chats start with the team
-orchestrator, and Team is pinned first — order becomes **team, build,
-plan**):
+To opt out (`build` stays the default, picker order **build, plan,
+team**):
 
 ```jsonc
 {
   "plugin": [
-    ["@te-river/opencode-team-mode@latest", { "defaultAgent": true }]
+    ["@te-river/opencode-team-mode@latest", { "defaultAgent": false }]
   ]
 }
 ```
 
 An explicitly configured non-`build` `default_agent` in your own config is
-always respected untouched, even with `defaultAgent: true`.
+always respected untouched — the plugin never clobbers it.
 
-**Upgrade note:** since v1.4.4 the plugin no longer claims the default-agent
-slot by default.  If you relied on Team being your default agent before
-(v1.4.2+), add `{ "defaultAgent": true }` to your plugin options.
+**Upgrade note:** v1.4.4 briefly made this promotion opt-in; v1.4.5 restores
+Team-as-default as the shipped behavior. If you pinned `{ "defaultAgent":
+true }` during v1.4.4, you can drop that option (or switch it to `false` to
+opt out).
 
 ---
 

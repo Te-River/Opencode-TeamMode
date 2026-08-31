@@ -154,24 +154,24 @@ const hooks3 = await plugin.server({ directory: process.cwd() }, undefined)
 await hooks3.config(cfg2)
 assert.ok(cfg2.agent["team"].prompt.includes("idle for more than 5 days"), "default TTL 5d without options")
 
-/* v1.5.0: Team default-agent promotion is opt-in (defaultAgent:true) */
-assert.equal(cfg2.default_agent, undefined, "no options -> default_agent untouched")
+/* v1.4.5: Team default-agent promotion is opt-OUT again (defaultAgent:false disables) */
+assert.equal(cfg2.default_agent, "team", "no options -> team becomes the default agent")
 const cfg3 = { default_agent: "build" }
 const hooks4 = await plugin.server({ directory: process.cwd() }, undefined)
 await hooks4.config(cfg3)
-assert.equal(cfg3.default_agent, "build", "build default kept without opt-in")
-const cfgP = {}
-const hooksP = await plugin.server({ directory: process.cwd() }, { defaultAgent: true })
-await hooksP.config(cfgP)
-assert.equal(cfgP.default_agent, "team", "defaultAgent:true promotes team")
-const cfgB = { default_agent: "build" }
-const hooksB = await plugin.server({ directory: process.cwd() }, { defaultAgent: true })
-await hooksB.config(cfgB)
-assert.equal(cfgB.default_agent, "team", "defaultAgent:true replaces build default")
+assert.equal(cfg3.default_agent, "team", "build default is replaced by the promotion")
+const cfgF = {}
+const hooksF = await plugin.server({ directory: process.cwd() }, { defaultAgent: false })
+await hooksF.config(cfgF)
+assert.ok(!("default_agent" in cfgF), "defaultAgent:false -> key must not be written")
+const cfgFB = { default_agent: "build" }
+const hooksFB = await plugin.server({ directory: process.cwd() }, { defaultAgent: false })
+await hooksFB.config(cfgFB)
+assert.equal(cfgFB.default_agent, "build", "defaultAgent:false keeps build default")
 const cfgU = { default_agent: "my-custom-agent" }
-const hooksU = await plugin.server({ directory: process.cwd() }, { defaultAgent: true })
+const hooksU = await plugin.server({ directory: process.cwd() }, undefined)
 await hooksU.config(cfgU)
-assert.equal(cfgU.default_agent, "my-custom-agent", "explicit non-build default respected even when promoted")
+assert.equal(cfgU.default_agent, "my-custom-agent", "explicit non-build default respected under promotion")
 
 /* v1.4.2: blackboard context discipline (long-task anti-patterns) */
 assert.ok(leadPrompt.includes("round suffix"), "lead: revision round-suffix rule")
@@ -198,7 +198,7 @@ assert.ok(leadPrompt.includes("<session-key>"), "lead: session layer in board pa
 assert.ok(cfg.command["team-run"].template.includes("session folder"), "team-run: session partitioning")
 assert.ok(cfg.command["team-run"].template.includes("never delete it yourself"), "team-run: TTL-only cleanup")
 console.log("7. ownership + triage + boundaries + ttl-only/session isolation: OK (lead, experts, team-run)")
-console.log("6. opt-in default-agent promotion + context discipline: OK")
+console.log("6. opt-out default-agent promotion + context discipline: OK")
 console.log("5. loader contract + v1 config injection: OK (server->config, 6 agents, 6 commands, override-safe)")
 
 console.log("\nALL BLACKBOARD TESTS PASSED ✅")
