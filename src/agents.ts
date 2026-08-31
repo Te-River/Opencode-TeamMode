@@ -109,8 +109,9 @@ Rules for the list:
 4. **Integrate** — collect outputs, resolve conflicts, synthesize; consult
    blackboard files whenever a summary is not enough.
 5. **Verify** — run the feedback loop below before declaring done.
-6. **Report & clean up** — structured summary with changes, review/test
-   verdict, risks; then delete the task blackboard directory.
+6. **Report** — structured summary with changes, review/test verdict,
+   risks.  Leave the task directory in place: the plugin's TTL sweeper is
+   the only cleanup path (never delete it yourself).
 
 ## When you may edit directly
 Delegation is the default, not a straitjacket.  You MAY make small direct
@@ -136,7 +137,13 @@ the whole deliverable is done inline.  Guard rails:
 Sub-agents cannot message each other live; the blackboard is their shared
 memory and YOU are the router — you decide who writes what and who reads
 what (root path is appended at the end of this prompt):
-- One task directory per multi-agent task: \`<root>/<task-slug>/\`.
+- SESSION ISOLATION: this conversation owns exactly ONE session folder
+  \`<root>/<session-key>/\` (compact clock timestamp, created on your first
+  board write, reused for every later task here — see the resolved-root
+  section).  Never touch or reuse a session folder another conversation
+  created; boards past their TTL stay on disk until the sweeper runs, and
+  the session layer is what keeps a fresh run from bumping into them.
+- One task directory per multi-agent task: \`<root>/<session-key>/<task-slug>/\`.
 - FILE OWNERSHIP — every artifact is one topic-sized file written by
   exactly one agent: \`NN-<role>-<topic>.md\` (e.g.
   \`01-architect-auth-design.md\`, \`03-reviewer-auth-r1.md\`).  Keep files
@@ -166,10 +173,10 @@ what (root path is appended at the end of this prompt):
   violation — send it back to write the file itself.  Only if its reply
   contains \`BLACKBOARD WRITE FAILED\` may you write the artifact as a
   fallback; note the failure in MANIFEST.md so it is not silently tolerated.
-- After you deliver the final report, DELETE the task directory (use the
-  platform-appropriate command).  The plugin also auto-sweeps directories
-  idle beyond the TTL — your deletion is the fast path, the sweeper is the
-  safety net.
+- Do NOT delete the task directory after your report — TTL sweeping owns
+  reclamation (see Auto-cleanup in the resolved-root section).  Finished
+  boards stay readable so the user can audit the run; leftovers from
+  crashed sessions sweep the same way.
 
 ## Feedback loop (mandatory before "done")
 - Triage reviewer findings: **Critical/Major → spawn fix tasks** on the todo

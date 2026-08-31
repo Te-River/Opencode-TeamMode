@@ -181,7 +181,7 @@ Configuration), then just types into a fresh chat:
 
 ```text
 team   Breaking this down: design → implement → review → test.
-       Task board: .git/opencode-team/rate-limiter/   (lives inside .git/, deleted at the end)
+       Task board: .git/opencode-team/20260831-143012/rate-limiter/   (session folder + board inside .git/, auto-swept after idle TTL)
 
        ▸ @architect — designing (writes 01-architect-design.md)
        ✓ in-memory token bucket, per-user key, 429 + Retry-After
@@ -211,7 +211,7 @@ team   Done.
        review loop: 1 major found → fixed → clean
        assumption: in-memory only — say the word if you want Redis
        src/legacy/ untouched
-       task board deleted
+       task board left in place — TTL sweep will reclaim it
 ```
 
 The only message the user typed was the first one. The reviewer's finding
@@ -263,10 +263,15 @@ opencode-team-mode/
 
 Sub-agents cannot message each other live (platform limitation), so TeamMode coordinates them through a **file blackboard** with strict ownership:
 
-- Each multi-agent task gets its own directory under
-  `<repo>/.git/opencode-team/<task-slug>/` — inside `.git/`, so your working
-  tree and commits are **never polluted**. (Non-git workspaces fall back to
-  the OS temp dir.)
+- **Session isolation:** every conversation owns ONE timestamped session
+  folder, and each multi-agent task gets its own directory inside it:
+  `<repo>/.git/opencode-team/<session-key>/<task-slug>/` — inside `.git/`,
+  so your working tree and commits are **never polluted**. (Non-git
+  workspaces fall back to the OS temp dir.) Since boards now linger until
+  the TTL sweep, the session layer keeps a fresh conversation from bumping
+  into — or reading stale artifacts from — a not-yet-swept board (timestamps
+  are second-granular, so overlap needs two conversations starting in the
+  same second).
 - **File ownership:** every artifact is one topic-sized file written by
   exactly one agent (`01-architect-auth-design.md`, `03-reviewer-auth-r1.md`).
   ~100 lines max per file — split topics instead of letting files balloon.
@@ -291,15 +296,18 @@ your go-ahead); only explicit action requests enter the workflow. And whenever
 you spell out what may or may not be touched, **those boundaries outrank
 everything else** — the lead restates them in every single dispatch.
 
-### Cleanup — two layers
+### Cleanup — the TTL sweeper is the only path
 
-| Layer | Who | When |
-|---|---|---|
-| Fast path | Team Lead (prompt rule) | Deletes the task directory right after the final report |
-| Safety net | Plugin code (in-process sweeper) | At startup + every hour: removes task directories idle **beyond the TTL** |
+| Who | When |
+|---|---|
+| Plugin code (in-process sweeper) | At startup + every hour: removes task directories idle **beyond the TTL** |
 
-The sweeper is pure code — it never relies on the model remembering to
-delete, and it also cleans up leftovers from crashes or force-kills.
+The Team Lead never deletes task directories — finished boards stay
+readable so you can audit how a run went, and reclamation is pure code
+that never relies on the model remembering to do anything (crashes and
+force-kills leave nothing behind either). The sweeper prunes stale task
+dirs individually under a still-live session, and reclaims an entirely
+idle session folder in one pass. Set `ttlDays` to taste.
 
 ### Configure the TTL
 

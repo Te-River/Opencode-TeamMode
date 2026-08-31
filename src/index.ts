@@ -42,9 +42,14 @@ function blackboardNote(root: string, ttlDays: number): string {
     "",
     "## Team Blackboard — resolved for this workspace",
     `Root directory: \`${root}\``,
-    `- Create exactly ONE task sub-directory per multi-agent task: \`<root>/<task-slug>/\`.`,
-    `- Auto-cleanup: the plugin sweeps task directories idle for more than ${ttlDays} days.`,
-    `  Your own delete-after-report is the fast path; the sweep is the safety net.`,
+    `- Session isolation: on the FIRST board write of this conversation create a session`,
+    `  folder \`<root>/<session-key>/\` where <session-key> is a compact clock timestamp`,
+    `  (PowerShell: \`Get-Date -Format yyyyMMdd-HHmmss\`; POSIX: \`date +%Y%m%d-%H%M%S\`).`,
+    `  Reuse that folder for every later task in the same conversation; never write into`,
+    `  a session folder created by a different conversation.`,
+    `- Create exactly ONE task sub-directory per multi-agent task: \`<root>/<session-key>/<task-slug>/\`.`,
+    `- Auto-cleanup: the plugin sweeps task directories idle for more than ${ttlDays} days (at startup and hourly).`,
+    `  This is the ONLY cleanup path — never delete task or session directories yourself.`,
   ].join("\n")
 }
 

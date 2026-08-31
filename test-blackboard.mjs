@@ -54,6 +54,41 @@ assert.equal(bb.sweepStale(root), 0, "recent inner file keeps dir")
 assert.equal(bb.sweepStale(root, 0.5 * 86400_000), 2, "0.5d ttl sweeps idle ones, keeps active")
 assert.ok(fs.existsSync(path.join(root, "touch-test")), "recently-written dir survives short ttl")
 fs.rmSync(path.join(root, "touch-test"), { recursive: true, force: true })
+
+/* session-partitioned layout: root/<session-key>/<task> (v1.5) */
+const mkTaskUnder = (sess, name, idleDays) => {
+  const dir = path.join(root, sess, name)
+  fs.mkdirSync(dir, { recursive: true })
+  fs.writeFileSync(path.join(dir, "01-artifact.md"), "x")
+  const t = new Date(Date.now() - idleDays * 86400_000)
+  fs.utimesSync(path.join(dir, "01-artifact.md"), t, t)
+  fs.utimesSync(dir, t, t)
+}
+mkTaskUnder("sess-dead", "old-a", 6)
+mkTaskUnder("sess-dead", "old-b", 6)
+{
+  const t = new Date(Date.now() - 6 * 86400_000)
+  fs.utimesSync(path.join(root, "sess-dead"), t, t) // whole session idle
+}
+mkTaskUnder("sess-alive", "dead-task", 6)
+mkTaskUnder("sess-alive", "live-task", 1) // its creation bumped sess-alive's mtime
+assert.equal(bb.sweepStale(root), 3, "2 tasks of fully-idle session + 1 stale task under live session")
+assert.ok(!fs.existsSync(path.join(root, "sess-dead")), "fully-idle session folder reclaimed")
+assert.ok(!fs.existsSync(path.join(root, "sess-alive", "dead-task")), "stale task pruned in place")
+assert.ok(fs.existsSync(path.join(root, "sess-alive", "live-task")), "live task kept")
+assert.ok(fs.existsSync(path.join(root, "sess-alive")), "session with live tasks kept")
+
+/* regression (reviewer C2): in-place artifact rewrite under old dirs is the
+   ONLY fresh signal — session-level staleness must look 2 levels deep */
+mkTaskUnder("sess-edit", "t", 6)
+{
+  const t = new Date(Date.now() - 6 * 86400_000)
+  fs.utimesSync(path.join(root, "sess-edit"), t, t) // session dir as idle as its task
+}
+fs.writeFileSync(path.join(root, "sess-edit", "t", "01-artifact.md"), "v2") // fresh file, old dirs
+assert.equal(bb.sweepStale(root), 0, "live session must NOT be reclaimed wholesale")
+assert.ok(fs.existsSync(path.join(root, "sess-edit", "t", "01-artifact.md")), "edited board survives")
+
 /* missing root -> no throw */
 assert.equal(bb.sweepStale(path.join(root, "nope")), 0, "missing root safe")
 fs.rmSync(root, { recursive: true, force: true })
@@ -154,7 +189,15 @@ assert.ok(cfg2.agent["architect"].prompt.includes("You own exactly ONE artifact 
 assert.ok(cfg2.agent["architect"].prompt.includes("Read ONLY the files listed"), "expert: Reads-list-only scoping")
 assert.ok(cfg.command["team-run"].template.includes("Triage first"), "team-run: triage step")
 assert.ok(cfg.command["team-run"].template.includes("Reads:"), "team-run: manifest fields")
-console.log("7. ownership + triage + boundaries: OK (lead, experts, team-run)")
+
+/* v1.5: TTL-only reclamation + session-partitioned boards */
+assert.ok(!leadPrompt.includes("DELETE the task directory"), "lead: no manual-delete instruction left")
+assert.ok(leadPrompt.includes("never delete it yourself"), "lead: TTL sweeper is sole cleanup path")
+assert.ok(leadPrompt.includes("SESSION ISOLATION"), "lead: session-folder rule")
+assert.ok(leadPrompt.includes("<session-key>"), "lead: session layer in board paths")
+assert.ok(cfg.command["team-run"].template.includes("session folder"), "team-run: session partitioning")
+assert.ok(cfg.command["team-run"].template.includes("never delete it yourself"), "team-run: TTL-only cleanup")
+console.log("7. ownership + triage + boundaries + ttl-only/session isolation: OK (lead, experts, team-run)")
 console.log("6. opt-in default-agent promotion + context discipline: OK")
 console.log("5. loader contract + v1 config injection: OK (server->config, 6 agents, 6 commands, override-safe)")
 

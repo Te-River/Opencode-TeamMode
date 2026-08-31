@@ -127,7 +127,9 @@ $ARGUMENTS
    - Code review → reviewer
    - Testing → tester
    - Research → researcher
-5. Coordinate through the shared blackboard: one task directory; every
+5. Coordinate through the shared blackboard: this conversation owns one
+   session folder (<root>/<session-key>/ — compact timestamp, created on
+   first board write), one task directory per task inside it; every
    dispatch carries a manifest (Task / Reads: only the files needed /
    Write to: one owned artifact file); artifacts are frozen — revisions are
    new round-suffixed files; keep MANIFEST.md's \`## Current state\` header
@@ -138,7 +140,8 @@ $ARGUMENTS
    escalate).
 7. Collect all outputs, resolve conflicts, synthesize a final result.
 8. Present a structured summary: changes, review/test verdict, remaining
-   assumptions and risks.  Then delete the task blackboard directory.`,
+   assumptions and risks.  Leave the task blackboard directory in place —
+   the plugin's TTL sweeper reclaims idle boards; never delete it yourself.`,
 }
 
 /* ------------------------------------------------------------------ */
