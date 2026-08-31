@@ -171,8 +171,9 @@ You can also invoke agents directly using the `@` mention in OpenCode Desktop:
 
 ### Demo
 
-A session transcript, recreated from how the flow actually looks. `team` is
-the default agent, so the user just types into a fresh chat:
+A session transcript, recreated from how the flow actually looks. The user
+picks `team` in the agent switcher (or enables `defaultAgent`, see
+Configuration), then just types into a fresh chat:
 
 > **User:** Add token-bucket rate limiting to our Express API — 100 requests
 > per minute per user, return 429 when exceeded. Don't touch anything under
@@ -319,21 +320,31 @@ fall back to 5.
 
 ### Default agent
 
-TeamMode makes **`team` the default agent** (replacing the built-in `build`)
-so every new chat starts with the team orchestrator — it appears above the
-rest in the switcher's default slot.  To keep `build` (or any other agent)
-as the default, or pin a different one:
+By default TeamMode **does not** touch the default agent — new chats start
+on the built-in `build` as before.  This is a deliberate ordering trade-off:
+the switcher pins the default agent to the **first slot** and sorts
+everything else alphabetically, so "Team pinned as default (first)" and
+"Team shown after Plan" are mutually exclusive.  Leaving the default slot
+alone gives you the picker order **build, plan, team**.
+
+To promote Team as the default agent anyway (new chats start with the team
+orchestrator, and Team is pinned first — order becomes **team, build,
+plan**):
 
 ```jsonc
 {
   "plugin": [
-    ["@te-river/opencode-team-mode@latest", { "defaultAgent": false }]
+    ["@te-river/opencode-team-mode@latest", { "defaultAgent": true }]
   ]
 }
 ```
 
-An explicitly configured non-`build` `default_agent` is always respected
-untouched.
+An explicitly configured non-`build` `default_agent` in your own config is
+always respected untouched, even with `defaultAgent: true`.
+
+**Upgrade note:** since v1.5.0 the plugin no longer claims the default-agent
+slot by default.  If you relied on Team being your default agent before
+(v1.4.2+), add `{ "defaultAgent": true }` to your plugin options.
 
 ---
 

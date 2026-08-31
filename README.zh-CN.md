@@ -171,7 +171,8 @@ TeamMode 为 OpenCode 添加了六个斜杠命令，在聊天输入框中输入�
 
 ### 演示
 
-以下是一段会话实录的还原。`team` 是默认代理，用户开新会话直接输入：
+以下是一段会话实录的还原。用户在代理选择器中选中 `team`（或按下方配置开启
+`defaultAgent`），开新会话直接输入：
 
 > **用户：** 给我们的 Express API 加令牌桶限流——每用户每分钟 100 请求，
 > 超限返回 429。不要动 `src/legacy/` 下的任何东西。
@@ -305,18 +306,26 @@ Team Lead 对每条消息先分类再行动：咨询/提问只得到回答（零
 
 ### 默认代理
 
-TeamMode 会将 **`team` 设为默认代理**（替代内建 `build`），新会话直接由团队
-调度者接管。若想保持 `build` 或其他代理为默认：
+TeamMode 默认**不再占用默认代理槽**——新会话仍从内建 `build` 开始。这是刻意的
+排序取舍：选择器会把**默认代理钉在第一位**，其余按名称字母升序，因此
+「Team 排默认（首位）」与「Team 显示在 Plan 之后」不可兼得。不占槽时顺序为
+**build, plan, team**。
+
+若希望新会话直接由团队调度者接管（Team 被钉在首位，顺序变为
+**team, build, plan**），开启 `defaultAgent`：
 
 ```jsonc
 {
   "plugin": [
-    ["@te-river/opencode-team-mode@latest", { "defaultAgent": false }]
+    ["@te-river/opencode-team-mode@latest", { "defaultAgent": true }]
   ]
 }
 ```
 
-用户显式配置的非 `build` 默认代理永远原样保留。
+即使用户显式配置了非 `build` 默认代理，也永远原样保留（开启与否都不覆写）。
+
+**升级提示**：自 v1.5.0 起，插件默认不再占用默认代理槽。此前依赖 Team 作为
+默认代理（v1.4.2+）的用户，请在插件选项中添加 `{ "defaultAgent": true }`。
 
 ---
 

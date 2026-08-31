@@ -119,16 +119,24 @@ const hooks3 = await plugin.server({ directory: process.cwd() }, undefined)
 await hooks3.config(cfg2)
 assert.ok(cfg2.agent["team"].prompt.includes("idle for more than 5 days"), "default TTL 5d without options")
 
-/* v1.4.2: Team promoted to default agent (opt-out + user-choice respected) */
-assert.equal(cfg2.default_agent, "team", "team becomes the default agent")
+/* v1.5.0: Team default-agent promotion is opt-in (defaultAgent:true) */
+assert.equal(cfg2.default_agent, undefined, "no options -> default_agent untouched")
 const cfg3 = { default_agent: "build" }
-const hooks4 = await plugin.server({ directory: process.cwd() }, { defaultAgent: false })
+const hooks4 = await plugin.server({ directory: process.cwd() }, undefined)
 await hooks4.config(cfg3)
-assert.equal(cfg3.default_agent, "build", "defaultAgent:false opts out")
-const cfg4 = { default_agent: "my-custom-agent" }
-const hooks5 = await plugin.server({ directory: process.cwd() }, undefined)
-await hooks5.config(cfg4)
-assert.equal(cfg4.default_agent, "my-custom-agent", "explicit non-build default respected")
+assert.equal(cfg3.default_agent, "build", "build default kept without opt-in")
+const cfgP = {}
+const hooksP = await plugin.server({ directory: process.cwd() }, { defaultAgent: true })
+await hooksP.config(cfgP)
+assert.equal(cfgP.default_agent, "team", "defaultAgent:true promotes team")
+const cfgB = { default_agent: "build" }
+const hooksB = await plugin.server({ directory: process.cwd() }, { defaultAgent: true })
+await hooksB.config(cfgB)
+assert.equal(cfgB.default_agent, "team", "defaultAgent:true replaces build default")
+const cfgU = { default_agent: "my-custom-agent" }
+const hooksU = await plugin.server({ directory: process.cwd() }, { defaultAgent: true })
+await hooksU.config(cfgU)
+assert.equal(cfgU.default_agent, "my-custom-agent", "explicit non-build default respected even when promoted")
 
 /* v1.4.2: blackboard context discipline (long-task anti-patterns) */
 assert.ok(leadPrompt.includes("round suffix"), "lead: revision round-suffix rule")
@@ -147,7 +155,7 @@ assert.ok(cfg2.agent["architect"].prompt.includes("Read ONLY the files listed"),
 assert.ok(cfg.command["team-run"].template.includes("Triage first"), "team-run: triage step")
 assert.ok(cfg.command["team-run"].template.includes("Reads:"), "team-run: manifest fields")
 console.log("7. ownership + triage + boundaries: OK (lead, experts, team-run)")
-console.log("6. default-agent promotion + context discipline: OK")
+console.log("6. opt-in default-agent promotion + context discipline: OK")
 console.log("5. loader contract + v1 config injection: OK (server->config, 6 agents, 6 commands, override-safe)")
 
 console.log("\nALL BLACKBOARD TESTS PASSED ✅")
