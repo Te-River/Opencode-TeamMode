@@ -350,7 +350,7 @@ plan**):
 An explicitly configured non-`build` `default_agent` in your own config is
 always respected untouched, even with `defaultAgent: true`.
 
-**Upgrade note:** since v1.5.0 the plugin no longer claims the default-agent
+**Upgrade note:** since v1.4.4 the plugin no longer claims the default-agent
 slot by default.  If you relied on Team being your default agent before
 (v1.4.2+), add `{ "defaultAgent": true }` to your plugin options.
 
