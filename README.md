@@ -108,6 +108,13 @@ That's it. The plugin automatically injects all team agents and commands when Op
 
 > 💡 **Tip:** After modifying `opencode.json`, **restart OpenCode Desktop** for changes to take effect.
 
+> ⚠️ **Model choice matters.** Every judgment in the workflow — triage,
+> decomposition, dispatch briefs, synthesis, review-loop verdicts — flows
+> through the **Team Lead**. A weak model in that seat degrades the whole
+> pipeline no matter how strong the specialists are. Pin your best
+> reasoning model to the `team` agent (recipe in
+> [Customization](#customization) below).
+
 ### Global install (all projects)
 
 To enable TeamMode in every project, add the plugin to your global config:
@@ -357,6 +364,33 @@ slot by default.  If you relied on Team being your default agent before
 ---
 
 ## 🔧 Customization
+
+### The Team Lead's model matters most
+
+The Lead is the orchestrating brain: it classifies every message, cuts the
+work into packages, writes each dispatch manifest, judges reviewer/tester
+findings, and synthesizes the final deliverable. Quality failures there
+**multiply down the pipeline** — a mediocre Lead mis-decomposes, briefs the
+experts vaguely, and waves weak work through; no specialist can rescue an
+assignment it was never correctly given.
+
+So run the strongest model you can afford **in the Lead seat**. The other
+roles tolerate cheaper models — they work from tight briefs with scoped
+reading. Pin models per agent:
+
+```jsonc
+{
+  "agent": {
+    // Team Lead — orchestration earns your best model
+    "team": { "model": "anthropic/claude-opus-4-5" },
+    // specialists — cheaper models are usually fine
+    "implementer": { "model": "anthropic/claude-sonnet-4-6" }
+  }
+}
+```
+
+(Model IDs above are placeholders — use whatever your provider exposes.
+Your own `agent.team` definition always takes precedence over the plugin's.)
 
 ### Override an agent
 
