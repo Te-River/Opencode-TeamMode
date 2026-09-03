@@ -5,6 +5,66 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 versioning is semver, with the working-label "1.5.0" feature train shipped
 under 1.4.x patch slots (the registry never saw a 1.5.0).
 
+## [1.4.7] — 2026-09-04
+
+The "subtraction" release: deterministic routing replaces free-form
+scheduling deliberation, a structured reply skeleton replaces the mandatory
+file blackboard, a count-based approval gate puts the user back in the loop,
+verification returns to static checks, and review depth adapts to risk.
+Tuned from a production run log that showed 80% of the effort going to
+management and synchronization instead of problem-solving.
+
+### Added — Team Lead
+- **Deterministic routing table**: the lead picks a fixed pipeline row by
+  task shape (question / docs-only / product change / multi-module feature /
+  unknown external tech). Pipelines have FIXED minimums — a product change
+  routed below 3 dispatches is a routing bug; splitting one request into
+  sub-3-dispatch pieces to dodge the gate is a protocol violation.
+- **Approval gate (count-based)**: ≥3 planned dispatches → research, present
+  a ≤30-line plan, END TURN, and wait for user approval before executing
+  anything. 0-2 dispatches run with a 1-2 line notice. Mid-run growth to a
+  third dispatch pauses for approval. Pre-authorized sessions skip the gate.
+- **Uncertainty policy**: blocking questions are batched into ONE message
+  and asked immediately (never drip-fed, never guessed); non-blocking ones
+  become plan assumptions.
+- **No-ceremony fast path**: a root cause the lead has already verified
+  (file:line evidence) goes straight to the implementer as a fix spec —
+  no investigation dispatches to re-derive known answers.
+- **Brevity discipline**: route selection is a table lookup; user-visible
+  planning text stays ≤5 lines.
+- **Reply-skeleton enforcement**: specialist replies must start with
+  `STATUS: / CHANGES: / FINDINGS: / EVIDENCE: / HANDOFF:`; a missing
+  skeleton is a PROTOCOL_VIOLATION → one re-dispatch with the skeleton
+  inline → then downgrade and report.
+- **Anti-drift tightening**: direct lead edits are now limited to
+  non-product text (≤10 lines); product behavior changes are always
+  dispatched.
+
+### Changed
+- **Blackboard demoted to hybrid**: the reply skeleton is the primary
+  transport (≤50 lines inline, zero file I/O); board files exist only for
+  oversized deliverables; `MANIFEST.md` is gone (the lead's todo list is its
+  state memory); the `Reads:`/`Write to:` per-dispatch manifest requirement
+  is dropped. The TTL sweeper (unchanged code) remains the sole cleanup path.
+- **Adaptive review replaces fixed Ultra Review**: default is ONE reviewer
+  dispatch (correctness); three parallel dimensions (completeness /
+  correctness / impact) only for high-risk profiles — auth/security surface,
+  cross-module data contracts, public APIs across ≥3 files.
+- **Tester verifies statically**: build + typecheck + static analysis +
+  API/unit tests. The UI verification mode is removed; improvised browser
+  automation (headless screenshots, DOM stubs) is explicitly banned;
+  user-visible frontend changes end with `UI NOT VERIFIED: <what needs
+  manual checking>` unless the project already ships real browser-test
+  tooling.
+- **Anti-transcription rule (kept, relocated)**: specialists never hand full
+  deliverables back for the lead to transcribe; the `BLACKBOARD WRITE
+  FAILED` fallback is now owned by the lead.
+- All six agents run at `temperature: 0.2` for format discipline.
+- `/team-run` template mirrors the new workflow (routing, approval gate,
+  skeleton relay, adaptive review, static verification, changelog step).
+- `test-blackboard.mjs` prompt assertions updated to pin the v1.4.7
+  contract (TTL sweeper tests unchanged).
+
 ## [1.4.6] — 2026-09-03
 
 Orchestration upgrade: hard pipeline gates, three-dimensional parallel

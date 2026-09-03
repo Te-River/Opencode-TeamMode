@@ -1,5 +1,11 @@
 /**
  * Blackboard end-to-end verification (run with node after `npm run build`).
+ *
+ * v1.4.7: sections 1-3 still pin the TTL sweeper semantics (unchanged code).
+ * Section 4's prompt assertions now pin the v1.4.7 contract: deterministic
+ * routing, count-based approval gate, structured reply skeleton (hybrid
+ * blackboard), adaptive review, static verification, MANIFEST/Ultra-Review
+ * removal, and temperature discipline.
  */
 import assert from "node:assert"
 import * as fs from "node:fs"
@@ -55,7 +61,7 @@ assert.equal(bb.sweepStale(root, 0.5 * 86400_000), 2, "0.5d ttl sweeps idle ones
 assert.ok(fs.existsSync(path.join(root, "touch-test")), "recently-written dir survives short ttl")
 fs.rmSync(path.join(root, "touch-test"), { recursive: true, force: true })
 
-/* session-partitioned layout: root/<session-key>/<task> (v1.5) */
+/* session-partitioned layout: root/<session-key>/<task> */
 const mkTaskUnder = (sess, name, idleDays) => {
   const dir = path.join(root, sess, name)
   fs.mkdirSync(dir, { recursive: true })
@@ -116,11 +122,11 @@ const lead = cfg.agent["team"]
 const leadPrompt = lead.prompt
 assert.ok(leadPrompt.includes("opencode-team"), "board root injected")
 assert.ok(leadPrompt.includes("idle for more than 9 days"), "custom TTL in note")
-assert.ok(leadPrompt.includes("Shared blackboard"), "blackboard protocol present")
+assert.ok(leadPrompt.includes("Hybrid blackboard"), "hybrid blackboard protocol present")
 assert.ok(leadPrompt.includes("TodoList discipline"), "v1.2 todolist hard rule")
 assert.ok(leadPrompt.includes("BLACKBOARD WRITE FAILED"), "lead fallback rule")
 assert.equal(lead.mode, "primary", "team visible in Desktop switcher")
-assert.ok(cfg.command["team-run"].template.includes("blackboard"), "team-run template updated")
+assert.ok(cfg.command["team-run"].template.includes("Approval gate"), "team-run template updated")
 assert.ok(cfg.command["team-plan"].agent === "architect", "command agent binding")
 
 /* v1 config shapes: prompt (string) + permission (object) */
@@ -129,12 +135,16 @@ for (const [name, a] of Object.entries(cfg.agent)) {
   assert.equal(a.system, undefined, name + ": no stray v2 system field")
   assert.ok(a.permission && typeof a.permission === "object", name + ": v1 permission object")
 }
-for (const expert of ["architect", "implementer", "reviewer", "tester", "researcher"]) {
+const EXPERTS = ["architect", "implementer", "reviewer", "tester", "researcher"]
+for (const expert of EXPERTS) {
   const a = cfg.agent[expert]
   assert.equal(a.mode, "subagent", expert + " is subagent")
   assert.ok(a.prompt.includes("## Blackboard rules"), expert + " has blackboard rules")
-  assert.ok(a.prompt.includes("NEVER reply \"append this verbatim"), expert + " blocks transcribe-escape")
+  assert.ok(a.prompt.includes("STATUS:"), expert + " reply skeleton opener")
+  assert.ok(a.prompt.includes("HANDOFF:"), expert + " handoff field")
+  assert.ok(a.prompt.includes("Never hand the full deliverable back"), expert + " blocks transcribe-escape")
   assert.equal(a.permission.edit, "allow", expert + " edit allowed (for blackboard)")
+  assert.equal(a.temperature, 0.2, expert + " low-temperature format discipline")
 }
 assert.equal(cfg.agent["architect"].permission.bash, "deny", "architect stays bash-denied")
 assert.equal(cfg.agent["team"].permission.task, "allow", "lead task dispatch allowed")
@@ -173,67 +183,90 @@ const hooksU = await plugin.server({ directory: process.cwd() }, undefined)
 await hooksU.config(cfgU)
 assert.equal(cfgU.default_agent, "my-custom-agent", "explicit non-build default respected under promotion")
 
-/* v1.4.2: blackboard context discipline (long-task anti-patterns) */
-assert.ok(leadPrompt.includes("round suffix"), "lead: revision round-suffix rule")
-assert.ok(leadPrompt.includes("everything in the directory"), "lead: scoped dispatch rule")
-
-/* v1.4.3: ownership model + triage gate + user boundaries */
-assert.ok(leadPrompt.includes("FILE OWNERSHIP"), "lead: file ownership rule")
-assert.ok(leadPrompt.includes("WRITES ARE FROZEN"), "lead: frozen-artifact rule")
-assert.ok(leadPrompt.includes("Reads:") && leadPrompt.includes("Write to:"), "lead: dispatch manifest fields")
-assert.ok(leadPrompt.includes("## Current state"), "lead: MANIFEST state header")
+/* v1.4.3 (kept): triage gate + user boundaries */
 assert.ok(leadPrompt.includes("Triage — classify before acting"), "lead: triage gate")
 assert.ok(leadPrompt.includes("Question ≠ work order"), "lead: question-not-workorder rule")
 assert.ok(leadPrompt.includes("USER-STATED BOUNDARIES ARE SUPREME"), "lead: user boundary supremacy")
-assert.ok(cfg2.agent["architect"].prompt.includes("You own exactly ONE artifact file"), "expert: single-file ownership")
-assert.ok(cfg2.agent["architect"].prompt.includes("Read ONLY the files listed"), "expert: Reads-list-only scoping")
-assert.ok(cfg.command["team-run"].template.includes("Triage first"), "team-run: triage step")
-assert.ok(cfg.command["team-run"].template.includes("Reads:"), "team-run: manifest fields")
 
-/* v1.5: TTL-only reclamation + session-partitioned boards */
-assert.ok(!leadPrompt.includes("DELETE the task directory"), "lead: no manual-delete instruction left")
-assert.ok(leadPrompt.includes("never delete it yourself"), "lead: TTL sweeper is sole cleanup path")
-assert.ok(leadPrompt.includes("SESSION ISOLATION"), "lead: session-folder rule")
+/* v1.4.7: deterministic routing table */
+assert.ok(leadPrompt.includes("## Routing table"), "lead: routing table present")
+assert.ok(leadPrompt.includes("PRODUCT BEHAVIOR CHANGE"), "lead: product-change definition")
+assert.ok(leadPrompt.includes("implementer → tester → reviewer"), "lead: fixed minimum pipeline")
+assert.ok(leadPrompt.includes("FIXED MINIMUM PIPELINES"), "lead: pipeline minimums")
+assert.ok(leadPrompt.includes("ANTI-SPLITTING"), "lead: anti-splitting rule")
+assert.ok(leadPrompt.includes("Discovery gate"), "lead: pre-implementation discovery (kept)")
+assert.ok(leadPrompt.includes("Brevity discipline"), "lead: <=5-line planning text")
+
+/* v1.4.7: approval gate + uncertainty policy + no-ceremony fast path */
+assert.ok(leadPrompt.includes("## Approval gate"), "lead: approval gate present")
+assert.ok(leadPrompt.includes("END YOUR TURN"), "lead: waits for user approval")
+assert.ok(leadPrompt.includes("MID-RUN UPGRADE"), "lead: mid-run escalation to the gate")
+assert.ok(leadPrompt.includes("ask early, ask once"), "lead: batched blocking questions")
+assert.ok(leadPrompt.includes("Skip the ceremony"), "lead: verified root cause goes straight to fix")
+assert.ok(leadPrompt.includes("≤30 lines"), "lead: plan length cap")
+
+/* v1.4.7: adaptive review replaces fixed Ultra Review */
+assert.ok(leadPrompt.includes("## Adaptive review"), "lead: adaptive review present")
+assert.ok(leadPrompt.includes("ONE reviewer dispatch"), "lead: single-reviewer default")
+assert.ok(leadPrompt.includes("EXACTLY 3 parallel reviewer dispatches"), "lead: 3-dim escalation count")
+assert.ok(!leadPrompt.includes("Ultra Review"), "lead: fixed ultra review removed")
+
+/* v1.4.7: reply-skeleton enforcement loop */
+assert.ok(leadPrompt.includes("PROTOCOL_VIOLATION"), "lead: skeleton enforcement retry")
+assert.ok(leadPrompt.includes("Relay the HANDOFF content verbatim"), "lead: handoff passthrough")
+
+/* v1.4.7: hybrid blackboard (JSON first, files only oversized) */
+assert.ok(leadPrompt.includes("NO MANIFEST"), "lead: MANIFEST.md removed")
+assert.ok(!leadPrompt.includes("MANIFEST.md is"), "lead: no MANIFEST state board")
 assert.ok(leadPrompt.includes("<session-key>"), "lead: session layer in board paths")
-assert.ok(cfg.command["team-run"].template.includes("session folder"), "team-run: session partitioning")
-assert.ok(cfg.command["team-run"].template.includes("never delete it yourself"), "team-run: TTL-only cleanup")
+assert.ok(!leadPrompt.includes("DELETE the task directory"), "lead: no manual-delete instruction left")
+assert.ok(leadPrompt.includes("TTL sweeper"), "lead: TTL sweeper is sole cleanup path")
+assert.ok(leadPrompt.includes("VERBATIM CONTRACTS"), "lead: api-contract verbatim rule (kept)")
+assert.ok(leadPrompt.includes("## Evidence standard"), "lead: evidence standard (kept)")
+assert.ok(leadPrompt.includes("CHANGELOG.md"), "lead: changelog maintenance (kept)")
+assert.ok(leadPrompt.includes("read the project's README"), "lead: README-first (kept)")
 
-/* v1.4.6: orchestration upgrade (gates, ultra review, evidence, UI mode) */
-assert.ok(leadPrompt.includes("## Pipeline gates"), "lead: hard pipeline gates")
-assert.ok(leadPrompt.includes("Research gates planning"), "lead: research->plan gate")
-assert.ok(leadPrompt.includes("Code gates verify"), "lead: code->verify gate")
-assert.ok(leadPrompt.includes("## Ultra Review"), "lead: 3-parallel-reviewer rule")
-assert.ok(leadPrompt.includes("EXACTLY 3 reviewer"), "lead: exactly-3 count")
-assert.ok(leadPrompt.includes("## Evidence standard"), "lead: evidence standard")
-assert.ok(leadPrompt.includes("Discovery gate"), "lead: pre-implementation discovery")
-assert.ok(leadPrompt.includes("VERBATIM CONTRACTS"), "lead: api-contract verbatim rule")
-assert.ok(leadPrompt.includes("CHANGELOG.md"), "lead: changelog maintenance")
-assert.ok(leadPrompt.includes("read the project's README first"), "lead: README-first")
-assert.ok(leadPrompt.includes("distinct") && leadPrompt.includes("lens"), "lead: parallel research perspectives")
+/* v1.4.7: specialist prompts */
 const reviewerP = cfg2.agent["reviewer"].prompt
 assert.ok(reviewerP.includes("EXACTLY ONE dimension"), "reviewer: single-dimension role")
 assert.ok(reviewerP.includes("completeness") && reviewerP.includes("correctness") && reviewerP.includes("impact"), "reviewer: three dimensions named")
 assert.ok(reviewerP.includes("review correctness and say so"), "reviewer: default-dimension fallback")
 assert.ok(reviewerP.includes("## Dimension checklists"), "reviewer: per-dimension checklists")
 const testerP = cfg2.agent["tester"].prompt
-assert.ok(testerP.includes("UI verification mode"), "tester: UI verification mode")
+assert.ok(testerP.includes("## Verification stack"), "tester: static verification stack")
+assert.ok(testerP.includes("typecheck"), "tester: typecheck layer")
+assert.ok(testerP.includes("## Prohibited improvisation"), "tester: no improvised environment hacks")
+assert.ok(testerP.includes("headless"), "tester: headless ban explicit")
+assert.ok(!testerP.includes("UI verification mode"), "tester: old UI automation mode removed")
 assert.ok(testerP.includes("UI NOT VERIFIED:"), "tester: honest no-tooling fallback")
-for (const expert of ["architect", "implementer", "reviewer", "tester", "researcher"]) {
+for (const expert of EXPERTS) {
+  assert.ok(cfg2.agent[expert].prompt.includes("STATUS: done | blocked | failed"), expert + ": skeleton status line")
   assert.ok(cfg2.agent[expert].prompt.includes("## Evidence rule"), expert + ": evidence rule")
   assert.ok(cfg2.agent[expert].prompt.includes("## Project conventions"), expert + ": README conventions rule")
 }
-assert.ok(cfg.command["team-run"].template.includes("Ultra Review"), "team-run: ultra review step")
-assert.ok(cfg.command["team-run"].template.includes("pipeline gates"), "team-run: pipeline gates")
-assert.ok(cfg.command["team-run"].template.includes("CHANGELOG.md"), "team-run: changelog step")
-assert.ok(cfg.command["team-run"].template.includes("README first"), "team-run: README-first step")
-assert.ok(cfg.command["team-review"].template.includes("Dimension"), "team-review: dimension selector")
-/* v1.4.6 fixes (external prompt review): fix-mode append contradiction + MANIFEST exemption */
+/* v1.4.6 fix (kept): fix-mode append contradiction stays dead, round files stay */
 assert.ok(!cfg2.agent["implementer"].prompt.includes("append to the same file"), "implementer: fix-mode append contradiction removed")
 assert.ok(cfg2.agent["implementer"].prompt.includes("round-suffixed"), "implementer: fix mode writes new round file")
-assert.ok(leadPrompt.includes("ONE artifact updated in place"), "lead: MANIFEST in-place exemption explicit")
-console.log("8. v1.4.6 orchestration upgrade: OK (gates, ultra review, evidence, UI mode, README-first, changelog)")
-console.log("7. ownership + triage + boundaries + ttl-only/session isolation: OK (lead, experts, team-run)")
-console.log("6. opt-out default-agent promotion + context discipline: OK")
-console.log("5. loader contract + v1 config injection: OK (server->config, 6 agents, 6 commands, override-safe)")
+
+/* v1.4.7: /team-run template mirrors the new workflow */
+const teamRun = cfg.command["team-run"].template
+assert.ok(teamRun.includes("routing table"), "team-run: deterministic routing")
+assert.ok(teamRun.includes("Approval gate"), "team-run: approval gate step")
+assert.ok(teamRun.includes(">=3 sub-agent dispatches"), "team-run: gate trigger count")
+assert.ok(teamRun.includes("END TURN"), "team-run: waits for approval")
+assert.ok(teamRun.includes("batched into ONE message"), "team-run: uncertainty batching")
+assert.ok(teamRun.includes("Skip"), "team-run: no-ceremony fast path")
+assert.ok(teamRun.includes("HANDOFF"), "team-run: skeleton handoff relay")
+assert.ok(teamRun.includes("PROTOCOL_VIOLATION"), "team-run: contract enforcement")
+assert.ok(teamRun.includes("Adaptive review"), "team-run: adaptive review step")
+assert.ok(teamRun.includes("UI NOT VERIFIED"), "team-run: honest UI relay")
+assert.ok(teamRun.includes("CHANGELOG.md"), "team-run: changelog step")
+assert.ok(teamRun.includes("TTL sweeper"), "team-run: TTL-only cleanup")
+assert.ok(cfg.command["team-review"].template.includes("Dimension"), "team-review: dimension selector")
+
+console.log("4. loader contract + v1 config injection: OK (server->config, 6 agents, 6 commands, override-safe)")
+console.log("5. v1.4.7 contract: OK (routing, approval gate, skeleton, hybrid board, adaptive review, static verify)")
+console.log("6. opt-out default-agent promotion + triage/boundaries: OK")
+console.log("7. TTL-only reclamation + session-partitioned boards: OK")
 
 console.log("\nALL BLACKBOARD TESTS PASSED ✅")

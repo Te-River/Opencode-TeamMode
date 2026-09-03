@@ -24,7 +24,7 @@ Instead of one agent trying to do everything, you get:
 | 🏗️ **Architect** | System designer | Design docs, module structure, API contracts |
 | 💻 **Implementer** | Code writer | Building features, writing production code |
 | 🔍 **Reviewer** | Dimension-focused auditor | Single-dimension review (completeness / correctness / impact) — the lead runs 3 in parallel |
-| 🧪 **Tester** | Test engineer | Unit tests, integration tests, edge-case coverage, UI verification |
+| 🧪 **Tester** | Test engineer | Unit tests, integration tests, edge-case coverage, static verification (build / typecheck / lint / API tests) |
 | 🔎 **Researcher** | Knowledge finder | Library evaluation, API docs, best practices |
 
 ---
@@ -187,43 +187,43 @@ types into a fresh chat:
 > `src/legacy/`.
 
 ```text
-team   Breaking this down: design → implement → review → test.
-       Task board: .git/opencode-team/20260831-143012/rate-limiter/   (session folder + board inside .git/, auto-swept after idle TTL)
+team   Route: product behavior change → implementer → tester → reviewer
+       (3 dispatches → approval gate applies)
 
-       ▸ @architect — designing (writes 01-architect-design.md)
-       ✓ in-memory token bucket, per-user key, 429 + Retry-After
-         summary above, full design on the board
+       Research: read README, src/app.ts, src/middleware/*
+       Blocking questions: none — 1 assumption listed below
 
-       ▸ @implementer — building (Reads: 01; writes 02-implementer-middleware.md)
-       ✓ src/middleware/rateLimit.ts (new), wired into src/app.ts (+3 lines)
+       PLAN
+       Goal: token-bucket limiter, 100 req/min/user, 429 + Retry-After
+       Scope: src/middleware/rateLimit.ts (new), src/app.ts (+3 lines)
+       Pipeline: implementer → tester → reviewer (correctness)
+       Assumption: in-memory bucket, not Redis — say the word to change
+       Boundary: src/legacy/** untouched
+       Approve to proceed?
 
-       ▸ @reviewer — auditing the diff (Reads: 01, 02; writes 03-reviewer-findings-r1.md)
-       ⚠ 1 MAJOR — bucket refill does read-modify-write in two steps;
-         races under concurrent requests
-         → converted to a fix task; dispatched to @implementer with the
-           finding text (the user was not asked to approve this step)
+user   approved, go
 
-       ▸ @implementer r2 — fixing the race (Reads: 03-r1 §MAJOR; writes 04-implementer-r2.md)
-       ✓ refill restructured to single atomic update
+team   ▸ @implementer — STATUS: done
+       CHANGES: src/middleware/rateLimit.ts (new) · src/app.ts (+3)
+       HANDOFF: bucket {tokens, lastRefill}; refill() is a single atomic pass
+       EVIDENCE: tsc clean (output above)
 
-       ▸ @reviewer r2 — re-review of fixed scope only
-       ✓ clean — r1 finding resolved, no regressions
+       ▸ @tester — STATUS: done · VERDICT: pass (14/14)
+       FINDINGS: burst edge, window expiry, concurrent refill covered;
+                 src/legacy/** byte-identical
+       EVIDENCE: vitest 14 passed
 
-       ▸ @tester — covering limiter + boundaries (writes 05-tester-report.md)
-       ✓ 14/14 pass — burst edge, window expiry, concurrent refill,
-         src/legacy/** byte-identical (user boundary verified in tests)
+       ▸ @reviewer — STATUS: done · VERDICT: approve (correctness)
+       FINDINGS: no Critical/Major; 1 Minor (log line noise) noted
 
 team   Done.
        rate limiter shipped: rateLimit.ts (new) · app.ts (+3) · 14 tests green
-       review loop: 1 major found → fixed → clean
-       assumption: in-memory only — say the word if you want Redis
-       src/legacy/ untouched
-       task board left in place — TTL sweep will reclaim it
+       review: approve · assumption: in-memory only · src/legacy/ untouched
 ```
 
-The only message the user typed was the first one. The reviewer's finding
-became the implementer's work order without a prompt; every artifact stayed
-out of chat and on the board, read only by the dispatch that needed it.
+The only message the user typed was the task and "approved, go". The
+pipeline was a routing-table lookup, execution waited for plan approval,
+and every handoff traveled as a structured skeleton — no file ceremony.
 
 ### Desktop-specific features
 
@@ -266,60 +266,68 @@ opencode-team-mode/
 
 ---
 
-## 🗂️ Shared Blackboard (with automatic cleanup)
+## 🗂️ Coordination: structured handoffs first, files second (hybrid)
 
-Sub-agents cannot message each other live (platform limitation), so TeamMode coordinates them through a **file blackboard** with strict ownership:
+Sub-agents cannot message each other live (platform limitation), so TeamMode
+coordinates them through a **structured reply skeleton**, with a file
+blackboard reserved for oversized output:
 
-- **Session isolation:** every conversation owns ONE timestamped session
-  folder, and each multi-agent task gets its own directory inside it:
-  `<repo>/.git/opencode-team/<session-key>/<task-slug>/` — inside `.git/`,
-  so your working tree and commits are **never polluted**. (Non-git
-  workspaces fall back to the OS temp dir.) Since boards now linger until
-  the TTL sweep, the session layer keeps a fresh conversation from bumping
-  into — or reading stale artifacts from — a not-yet-swept board (timestamps
-  are second-granular, so overlap needs two conversations starting in the
-  same second).
-- **File ownership:** every artifact is one topic-sized file written by
-  exactly one agent (`01-architect-auth-design.md`, `03-reviewer-auth-r1.md`).
-  ~100 lines max per file — split topics instead of letting files balloon.
-- **Writes are frozen:** a revision is a new round-suffixed file
-  (`…-r2.md`); nothing is ever appended to or later agents reading stale rounds.
-- **The Team Lead is the router:** every dispatch carries a manifest —
-  `Task:` (self-contained brief), `Reads:` (only the files that work package
-  needs), `Write to:` (the one file the agent owns). Specialists read nothing
-  that isn't listed, so long tasks never drown sub-agents in unnecessary context.
-- **`MANIFEST.md` is the lead's state board:** a file index plus a ≤50-line
-  `## Current state` section (phase, decisions still valid, next steps),
-  updated every converged round — the lead's compressed memory across long tasks.
-- The Team Lead also enforces a review/test **feedback loop**: Critical/Major
-  findings and product bugs automatically become tracked fix tasks until the
-  deliverable converges.
+- **Reply skeleton (primary channel):** every specialist's final reply starts
+  with `STATUS: / CHANGES: / FINDINGS: / EVIDENCE: / HANDOFF:` and stays ≤50
+  lines. Deliverables at that size travel inline — zero file I/O, nothing to
+  fall out of sync. The lead relays `HANDOFF` verbatim into the next
+  dispatch and machine-checks the skeleton (missing → one retry with it
+  inline, then downgrade and note the violation).
+- **Board files (exception only):** when a full deliverable exceeds ~50 lines
+  (e.g. a complete architecture doc), the dispatch names ONE file:
+  `<repo>/.git/opencode-team/<session-key>/<task-slug>/NN-<role>-<topic>.md`
+  — inside `.git/`, so your working tree and commits are **never polluted**
+  (non-git workspaces fall back to the OS temp dir). Writes are frozen: a
+  revision is a new round-suffixed file (`…-r2.md`); session folders keep a
+  fresh conversation from touching a not-yet-swept board.
+- **No MANIFEST.md:** the lead's state memory is its todo list.
+- **Feedback loop:** Critical/Major findings and product bugs automatically
+  become tracked fix tasks until the deliverable converges (max 2 loops,
+  then escalate to you).
 
-### Ultra Review, pipeline gates & evidence (v1.4.6)
+### Deterministic routing, approval gate & adaptive review (v1.4.7)
 
-- **Ultra Review:** every non-trivial change is reviewed by three parallel
-  Reviewer dispatches, one dimension each — completeness (requirements
-  coverage), correctness (logic & security), impact (regressions & blast
-  radius) — each told to ignore the other two. The lead merges the three
-  reports into one severity-grouped list before the fix loop starts.
-  Trivial changes may skip review with a one-line reason.
-- **Pipeline gates:** research completes before planning; design before
-  code; code before verify; verify before review; user-visible frontend
-  changes get UI verification before "done"; the final report waits for
-  every agent and a truthful todo board. Skipping a phase on a trivial task
-  costs one line of rationale.
-- **Evidence standard:** "done / fixed / passed" claims need verifiable
-  evidence — command output, logs, diffs, screenshots. Narratives are
-  progress notes, not proof (enforced on specialists and the lead alike).
-- **README-first:** the lead reads the project's README (plus AGENTS.md /
-  CLAUDE.md) before planning, and restates binding conventions in every
-  dispatch; specialists treat listed project conventions as binding.
-- **Verbatim contracts:** parallel implementers that must interoperate get
-  the exact data contract (endpoints, field names, types) pasted verbatim
-  into every affected dispatch — mismatches are the #1 source of
-  integration bugs.
-- **CHANGELOG care:** delivered changes append an entry to the project's
-  CHANGELOG.md (Keep a Changelog style) when one exists.
+- **Routing table:** the lead picks a fixed pipeline row by task shape —
+  question → direct answer; docs-only → implementer; product behavior
+  change → implementer → tester → reviewer; multi-module feature →
+  architect → implementer → tester → reviewer(s); unknown external tech →
+  researcher first. Pipelines have fixed minimums: a product change routed
+  below 3 dispatches is a routing bug, and splitting one request into
+  sub-3-dispatch pieces to dodge the gate is a protocol violation.
+- **Approval gate (count-based):** ≥3 planned dispatches → the lead
+  researches (reading the repo itself; a researcher dispatch only for
+  unknown external tech), presents a ≤30-line plan, and **waits for your
+  approval** before executing anything. 0-2 dispatches run with a 1-2 line
+  notice. A task that grows a third dispatch mid-run pauses for approval.
+  Blocking uncertainties are batched and asked immediately — never guessed,
+  never drip-fed.
+- **Adaptive review:** default is ONE reviewer dispatch (correctness);
+  three parallel dimensions (completeness / correctness / impact) only for
+  high-risk profiles — auth/security surface, cross-module data contracts,
+  public APIs across ≥3 files.
+- **Static verification:** testers verify via build, typecheck, static
+  analysis, and API/unit tests. Improvised browser automation (headless
+  screenshots, DOM stubs) is banned; user-visible frontend changes end with
+  `UI NOT VERIFIED: <what needs manual checking>` unless the project
+  already ships real browser-test tooling.
+- **No-ceremony fast path:** a root cause the lead has already verified
+  (file:line evidence) goes straight to the implementer as a fix spec —
+  investigation dispatches serve unknowns, not ritual.
+- **Brevity discipline:** route selection is a table lookup; user-visible
+  planning text stays ≤5 lines.
+- **Evidence standard (kept):** "done / fixed / passed" claims need
+  verifiable evidence — command output, logs, diffs. Narratives are
+  progress notes, not proof.
+- **Verbatim contracts (kept):** parallel implementers that must
+  interoperate get the exact data contract (endpoints, field names, types)
+  pasted verbatim into every affected dispatch.
+- **CHANGELOG care (kept):** delivered changes append an entry to the
+  project's CHANGELOG.md (Keep a Changelog style) when one exists.
 
 ### Triage — questions don't become code edits
 

@@ -34,19 +34,21 @@ import {
   DEFAULT_TTL_DAYS,
 } from "./blackboard.js"
 
-/** Runtime addendum to the team prompt: concrete board + TTL. */
+/** Runtime addendum to the team prompt: concrete board + TTL (hybrid mode). */
 function blackboardNote(root: string, ttlDays: number): string {
   return [
     "",
     "",
     "## Team Blackboard — resolved for this workspace",
     `Root directory: \`${root}\``,
-    `- Session isolation: on the FIRST board write of this conversation create a session`,
-    `  folder \`<root>/<session-key>/\` where <session-key> is a compact clock timestamp`,
-    `  (PowerShell: \`Get-Date -Format yyyyMMdd-HHmmss\`; POSIX: \`date +%Y%m%d-%H%M%S\`).`,
-    `  Reuse that folder for every later task in the same conversation; never write into`,
-    `  a session folder created by a different conversation.`,
-    `- Create exactly ONE task sub-directory per multi-agent task: \`<root>/<session-key>/<task-slug>/\`.`,
+    `- Hybrid channel: specialist replies (the STATUS/CHANGES/FINDINGS/EVIDENCE/HANDOFF`,
+    `  skeleton) are the PRIMARY transport — normal work needs no files at all.`,
+    `- Board files exist ONLY for oversized deliverables (>~50 lines):`,
+    `  \`<root>/<session-key>/<task-slug>/NN-<role>-<topic>[-rN].md\`.  On the FIRST`,
+    `  board write of this conversation create the session folder with a compact clock`,
+    `  timestamp (PowerShell: \`Get-Date -Format yyyyMMdd-HHmmss\`; POSIX:`,
+    `  \`date +%Y%m%d-%H%M%S\`) and reuse it; never write into another conversation's`,
+    `  session folder.`,
     `- Auto-cleanup: the plugin sweeps task directories idle for more than ${ttlDays} days (at startup and hourly).`,
     `  This is the ONLY cleanup path — never delete task or session directories yourself.`,
   ].join("\n")

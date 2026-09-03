@@ -4,6 +4,9 @@
  * Each command is injected into the OpenCode config via the plugin's
  * `config` hook.  Users invoke them with `/team-plan`, `/team-review`, etc.
  * in both OpenCode Desktop and the TUI.
+ *
+ * v1.4.7: /team-run mirrors the deterministic routing + approval gate +
+ * reply-skeleton workflow; /team-review notes the lead's adaptive depth.
  */
 
 import type { CommandConfig } from "./types.js"
@@ -113,7 +116,7 @@ Cite your sources.  Do not fabricate URLs or API details.`,
 /* ------------------------------------------------------------------ */
 const teamRun: CommandConfig = {
   description:
-    "Full team workflow — the team lead orchestrates all agents to complete a complex task end-to-end.",
+    "Full team workflow — deterministic routing, approval gate on >=3 dispatches, structured handoffs.",
   agent: "team",
   template: `Execute the full team workflow for the following task.
 
@@ -121,44 +124,39 @@ const teamRun: CommandConfig = {
 $ARGUMENTS
 
 ## Workflow
-1. Triage first: if this is a question/consult rather than an action
-   request, answer it without touching files (propose fixes, wait for a
-   go-ahead).  Honor and restate any user-stated boundaries everywhere.
-2. Read the project's README first (plus AGENTS.md/CLAUDE.md if present) —
-   extract binding conventions and restate them in every dispatch.  Then
-   understand the goal and acceptance criteria.
-3. **Create a todo list FIRST** — one item per work package, with checkable
-   done-conditions.  Update statuses live (exactly one in_progress).
-4. Dispatch sub-tasks to the appropriate agents:
-   - Design / architecture → architect
-   - Implementation → implementer
-   - Code review → reviewer
-   - Testing → tester
-   - Research → researcher
-   Respect the pipeline gates: research completes before planning, design
-   before code, code before verify, verify before review, UI verification
-   before "done" on user-visible frontend changes.  Batch independent
-   dispatches into the same round.
-5. Coordinate through the shared blackboard: this conversation owns one
-   session folder (<root>/<session-key>/ — compact timestamp, created on
-   first board write), one task directory per task inside it; every
-   dispatch carries a manifest (Task / Reads: only the files needed /
-   Write to: one owned artifact file); artifacts are frozen — revisions are
-   new round-suffixed files; keep MANIFEST.md's \`## Current state\` header
-   updated each converged round.  Run independent sub-tasks in parallel.
-6. Enforce Ultra Review for non-trivial changes: exactly 3 parallel
-   reviewer dispatches, one dimension each (completeness / correctness /
-   impact), then merge the three reports into one severity-grouped list.
-7. Enforce the feedback loop: merged Critical/Major findings and tester
-   product-bugs become fix tasks on the list → implementer fixes →
-   re-review affected scope → re-run tests.  Repeat until clean (max 2
-   loops, then escalate).
-8. Collect all outputs, resolve conflicts, synthesize a final result.
-9. Present a structured summary: changes, review/test verdict, remaining
+1. Triage: a question/consult gets an answer with zero file changes (fixes
+   merely proposed, awaiting go-ahead).  Explicit action requests continue
+   below.  Honor and restate user-stated boundaries in every dispatch.
+2. Route via the routing table and COUNT the dispatches.  Never shorten a
+   product-change pipeline below 3 dispatches; never split one request
+   into sub-3-dispatch pieces to dodge the gate.
+3. Research phase: read the project's README (plus AGENTS.md/CLAUDE.md if
+   present) and the relevant source yourself; dispatch researcher ONLY for
+   genuinely unknown external tech.  Blocking uncertainties go to the user
+   IMMEDIATELY, batched into ONE message — never drip-feed, never guess.
+4. Approval gate: if the pipeline involves >=3 sub-agent dispatches,
+   present the plan (Goal / Root cause or scope with file:line / Change
+   list / Pipeline / Assumptions & risks / Open questions — <=30 lines)
+   and END TURN.  Execute only after approval.  0-2 dispatches: open with
+   a 1-2 line notice and proceed.  Root cause already verified?  Skip
+   ceremonial research — the fix spec goes straight to implementer.
+5. Execute the pipeline in routing-table order; batch independent
+   dispatches.  Relay each specialist's HANDOFF verbatim into the next
+   dispatch; enforce the STATUS-skeleton reply contract (missing skeleton
+   -> PROTOCOL_VIOLATION: one retry with it inline, then downgrade and
+   note it).
+6. Adaptive review: default single reviewer (correctness); escalate to 3
+   parallel dimensions only for high-risk profiles (auth/security surface,
+   cross-module data contracts, public APIs across >=3 files).
+7. Feedback loop: Critical/Major findings and tester product-bugs become
+   fix tasks -> implementer fixes -> re-review affected scope -> re-run
+   tests.  Max 2 loops, then escalate.  A "UI NOT VERIFIED:" line is
+   relayed honestly, not hidden.
+8. Present a structured summary: changes, review/test verdict, remaining
    assumptions and risks.  If the project keeps a CHANGELOG.md, append an
    entry for the delivered changes (offer to create one if missing).  Leave
-   the task blackboard directory in place — the plugin's TTL sweeper
-   reclaims idle boards; never delete it yourself.`,
+   any board directories in place — the plugin's TTL sweeper reclaims
+   idle boards; never delete them yourself.`,
 }
 
 /* ------------------------------------------------------------------ */
