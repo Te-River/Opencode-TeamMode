@@ -48,16 +48,22 @@ $ARGUMENTS
 /* ------------------------------------------------------------------ */
 const teamReview: CommandConfig = {
   description:
-    "Review code for correctness, security, performance, and maintainability.",
+    "Review code with a single focused dimension — completeness, correctness, or impact (default: correctness).",
   agent: "reviewer",
-  template: `Perform a thorough code review on the following scope.
+  template: `Perform a single-dimension code review on the following scope.
 
 ## Scope
 $ARGUMENTS
 
+## Dimension
+$ARGUMENTS may name one dimension: completeness (requirements coverage),
+correctness (logic & security), or impact (regressions & blast radius).
+If no dimension is named, review correctness.  Ignore the other dimensions
+— parallel reviewers own them.
+
 If no specific scope is given, review all recently modified files in the project.
 
-Use the standard review checklist:
+Use the standard severity scale:
 - 🔴 Critical (must fix)
 - 🟡 Warning (should fix)
 - 🔵 Suggestion (nice to have)
@@ -118,7 +124,9 @@ $ARGUMENTS
 1. Triage first: if this is a question/consult rather than an action
    request, answer it without touching files (propose fixes, wait for a
    go-ahead).  Honor and restate any user-stated boundaries everywhere.
-2. Understand the goal and acceptance criteria.
+2. Read the project's README first (plus AGENTS.md/CLAUDE.md if present) —
+   extract binding conventions and restate them in every dispatch.  Then
+   understand the goal and acceptance criteria.
 3. **Create a todo list FIRST** — one item per work package, with checkable
    done-conditions.  Update statuses live (exactly one in_progress).
 4. Dispatch sub-tasks to the appropriate agents:
@@ -127,6 +135,10 @@ $ARGUMENTS
    - Code review → reviewer
    - Testing → tester
    - Research → researcher
+   Respect the pipeline gates: research completes before planning, design
+   before code, code before verify, verify before review, UI verification
+   before "done" on user-visible frontend changes.  Batch independent
+   dispatches into the same round.
 5. Coordinate through the shared blackboard: this conversation owns one
    session folder (<root>/<session-key>/ — compact timestamp, created on
    first board write), one task directory per task inside it; every
@@ -134,14 +146,19 @@ $ARGUMENTS
    Write to: one owned artifact file); artifacts are frozen — revisions are
    new round-suffixed files; keep MANIFEST.md's \`## Current state\` header
    updated each converged round.  Run independent sub-tasks in parallel.
-6. Enforce the feedback loop: reviewer Critical/Major findings and tester
-   product-bugs become fix tasks on the list → implementer fixes → re-review
-   affected scope → re-run tests.  Repeat until clean (max 2 loops, then
-   escalate).
-7. Collect all outputs, resolve conflicts, synthesize a final result.
-8. Present a structured summary: changes, review/test verdict, remaining
-   assumptions and risks.  Leave the task blackboard directory in place —
-   the plugin's TTL sweeper reclaims idle boards; never delete it yourself.`,
+6. Enforce Ultra Review for non-trivial changes: exactly 3 parallel
+   reviewer dispatches, one dimension each (completeness / correctness /
+   impact), then merge the three reports into one severity-grouped list.
+7. Enforce the feedback loop: merged Critical/Major findings and tester
+   product-bugs become fix tasks on the list → implementer fixes →
+   re-review affected scope → re-run tests.  Repeat until clean (max 2
+   loops, then escalate).
+8. Collect all outputs, resolve conflicts, synthesize a final result.
+9. Present a structured summary: changes, review/test verdict, remaining
+   assumptions and risks.  If the project keeps a CHANGELOG.md, append an
+   entry for the delivered changes (offer to create one if missing).  Leave
+   the task blackboard directory in place — the plugin's TTL sweeper
+   reclaims idle boards; never delete it yourself.`,
 }
 
 /* ------------------------------------------------------------------ */

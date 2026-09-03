@@ -23,8 +23,8 @@ Instead of one agent trying to do everything, you get:
 | 🎯 **Team Lead** | Orchestrator | Complex tasks that need planning + multi-step execution |
 | 🏗️ **Architect** | System designer | Design docs, module structure, API contracts |
 | 💻 **Implementer** | Code writer | Building features, writing production code |
-| 🔍 **Reviewer** | Code auditor | Bug hunting, security review, quality checks |
-| 🧪 **Tester** | Test engineer | Unit tests, integration tests, edge-case coverage |
+| 🔍 **Reviewer** | Dimension-focused auditor | Single-dimension review (completeness / correctness / impact) — the lead runs 3 in parallel |
+| 🧪 **Tester** | Test engineer | Unit tests, integration tests, edge-case coverage, UI verification |
 | 🔎 **Researcher** | Knowledge finder | Library evaluation, API docs, best practices |
 
 ---
@@ -294,6 +294,32 @@ Sub-agents cannot message each other live (platform limitation), so TeamMode coo
 - The Team Lead also enforces a review/test **feedback loop**: Critical/Major
   findings and product bugs automatically become tracked fix tasks until the
   deliverable converges.
+
+### Ultra Review, pipeline gates & evidence (v1.4.6)
+
+- **Ultra Review:** every non-trivial change is reviewed by three parallel
+  Reviewer dispatches, one dimension each — completeness (requirements
+  coverage), correctness (logic & security), impact (regressions & blast
+  radius) — each told to ignore the other two. The lead merges the three
+  reports into one severity-grouped list before the fix loop starts.
+  Trivial changes may skip review with a one-line reason.
+- **Pipeline gates:** research completes before planning; design before
+  code; code before verify; verify before review; user-visible frontend
+  changes get UI verification before "done"; the final report waits for
+  every agent and a truthful todo board. Skipping a phase on a trivial task
+  costs one line of rationale.
+- **Evidence standard:** "done / fixed / passed" claims need verifiable
+  evidence — command output, logs, diffs, screenshots. Narratives are
+  progress notes, not proof (enforced on specialists and the lead alike).
+- **README-first:** the lead reads the project's README (plus AGENTS.md /
+  CLAUDE.md) before planning, and restates binding conventions in every
+  dispatch; specialists treat listed project conventions as binding.
+- **Verbatim contracts:** parallel implementers that must interoperate get
+  the exact data contract (endpoints, field names, types) pasted verbatim
+  into every affected dispatch — mismatches are the #1 source of
+  integration bugs.
+- **CHANGELOG care:** delivered changes append an entry to the project's
+  CHANGELOG.md (Keep a Changelog style) when one exists.
 
 ### Triage — questions don't become code edits
 
