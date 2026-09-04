@@ -298,12 +298,12 @@ blackboard reserved for oversized output:
   architect → implementer → tester → reviewer(s); unknown external tech →
   researcher first. Pipelines have fixed minimums: a product change routed
   below 3 dispatches is a routing bug, and splitting one request into
-  sub-3-dispatch pieces to dodge the gate is a protocol violation.
-- **Approval gate (count-based):** ≥3 planned dispatches → the lead
+  sub-2-dispatch pieces to dodge the gate is a protocol violation.
+- **Approval gate (count-based):** ≥2 planned dispatches → the lead
   researches (reading the repo itself; a researcher dispatch only for
   unknown external tech), presents a ≤30-line plan, and **waits for your
-  approval** before executing anything. 0-2 dispatches run with a 1-2 line
-  notice. A task that grows a third dispatch mid-run pauses for approval.
+  approval** before executing anything. 0-1 dispatches run with a 1-2 line
+  notice. A task that grows a second dispatch mid-run pauses for approval.
   Blocking uncertainties are batched and asked immediately — never guessed,
   never drip-fed.
 - **Adaptive review:** default is ONE reviewer dispatch (correctness);

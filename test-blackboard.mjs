@@ -199,6 +199,7 @@ assert.ok(leadPrompt.includes("Brevity discipline"), "lead: <=5-line planning te
 
 /* v1.4.7: approval gate + uncertainty policy + no-ceremony fast path */
 assert.ok(leadPrompt.includes("## Approval gate"), "lead: approval gate present")
+assert.ok(leadPrompt.includes("≥2 dispatches"), "lead: gate triggers at 2 dispatches")
 assert.ok(leadPrompt.includes("END YOUR TURN"), "lead: waits for user approval")
 assert.ok(leadPrompt.includes("MID-RUN UPGRADE"), "lead: mid-run escalation to the gate")
 assert.ok(leadPrompt.includes("ask early, ask once"), "lead: batched blocking questions")
@@ -252,7 +253,7 @@ assert.ok(cfg2.agent["implementer"].prompt.includes("round-suffixed"), "implemen
 const teamRun = cfg.command["team-run"].template
 assert.ok(teamRun.includes("routing table"), "team-run: deterministic routing")
 assert.ok(teamRun.includes("Approval gate"), "team-run: approval gate step")
-assert.ok(teamRun.includes(">=3 sub-agent dispatches"), "team-run: gate trigger count")
+assert.ok(teamRun.includes(">=2 sub-agent dispatches"), "team-run: gate trigger count")
 assert.ok(teamRun.includes("END TURN"), "team-run: waits for approval")
 assert.ok(teamRun.includes("batched into ONE message"), "team-run: uncertainty batching")
 assert.ok(teamRun.includes("Skip"), "team-run: no-ceremony fast path")

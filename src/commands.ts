@@ -134,10 +134,10 @@ $ARGUMENTS
    present) and the relevant source yourself; dispatch researcher ONLY for
    genuinely unknown external tech.  Blocking uncertainties go to the user
    IMMEDIATELY, batched into ONE message — never drip-feed, never guess.
-4. Approval gate: if the pipeline involves >=3 sub-agent dispatches,
+4. Approval gate: if the pipeline involves >=2 sub-agent dispatches,
    present the plan (Goal / Root cause or scope with file:line / Change
    list / Pipeline / Assumptions & risks / Open questions — <=30 lines)
-   and END TURN.  Execute only after approval.  0-2 dispatches: open with
+   and END TURN.  Execute only after approval.  0-1 dispatches: open with
    a 1-2 line notice and proceed.  Root cause already verified?  Skip
    ceremonial research — the fix spec goes straight to implementer.
 5. Execute the pipeline in routing-table order; batch independent

@@ -5,6 +5,15 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 versioning is semver, with the working-label "1.5.0" feature train shipped
 under 1.4.x patch slots (the registry never saw a 1.5.0).
 
+## [Unreleased]
+
+### Changed
+- **Approval gate threshold lowered from ≥3 to ≥2 planned sub-agent
+  dispatches**: a two-dispatch pipeline now also presents a plan and waits
+  for approval; only single-dispatch / direct-edit work runs without the
+  gate. Anti-splitting (<2-dispatch sub-tasks) and mid-run upgrade (2nd
+  dispatch) rules renumbered to match. Git-only change, not yet published.
+
 ## [1.4.7] — 2026-09-04
 
 The "subtraction" release: deterministic routing replaces free-form

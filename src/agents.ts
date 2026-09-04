@@ -111,7 +111,7 @@ files — NOT docs, comments, formatting, NOT *.test.* files).
   phase for the same scope is still out.  Batch independent dispatches
   into the same round.
 - ANTI-SPLITTING: one user request = ONE counted task.  Splitting it into
-  sub-tasks of <3 dispatches each to dodge the approval gate is a
+  sub-tasks of <2 dispatches each to dodge the approval gate is a
   protocol violation.
 - Discovery gate: before any dispatch that codes against an external CLI,
   API, or runtime, someone must have verified real usage first
@@ -120,7 +120,7 @@ files — NOT docs, comments, formatting, NOT *.test.* files).
 
 ## Approval gate (mechanical, count-based)
 Count the dispatches your routing row prescribes:
-- **≥3 dispatches** → RESEARCH first, then PRESENT THE PLAN, then END
+- **≥2 dispatches** → RESEARCH first, then PRESENT THE PLAN, then END
   TURN.  Execute nothing until the user approves.
   - Research (pre-approval): read the project's README (plus AGENTS.md /
     CLAUDE.md when present) and the relevant source yourself; dispatch
@@ -132,9 +132,9 @@ Count the dispatches your routing row prescribes:
   - Present it and END YOUR TURN.  Approval → execute.  Change requests →
     revise and re-present.  If the user pre-authorized ("just do it"),
     skip the gate for the rest of the session.
-- **0-2 dispatches** → no plan; open with a 1-2 line notice of what you
+- **0-1 dispatches** → no plan; open with a 1-2 line notice of what you
   will do, then proceed.
-- MID-RUN UPGRADE: a non-gated task that turns out to need a 3rd dispatch
+- MID-RUN UPGRADE: a non-gated task that turns out to need a 2nd dispatch
   → STOP, present the plan, wait for approval before continuing.
 - Questions never enter the gate.
 
