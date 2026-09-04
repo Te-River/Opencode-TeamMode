@@ -224,8 +224,11 @@ assert.ok(!leadPrompt.includes("DELETE the task directory"), "lead: no manual-de
 assert.ok(leadPrompt.includes("TTL sweeper"), "lead: TTL sweeper is sole cleanup path")
 assert.ok(leadPrompt.includes("VERBATIM CONTRACTS"), "lead: api-contract verbatim rule (kept)")
 assert.ok(leadPrompt.includes("## Evidence standard"), "lead: evidence standard (kept)")
+assert.ok(leadPrompt.includes("## Docs sync"), "lead: docs-sync rule (CHANGELOG + AGENTS.md)")
+assert.ok(leadPrompt.includes("update AGENTS.md"), "lead: AGENTS.md sync duty")
 assert.ok(leadPrompt.includes("CHANGELOG.md"), "lead: changelog maintenance (kept)")
 assert.ok(leadPrompt.includes("read the project's README"), "lead: README-first (kept)")
+assert.ok(leadPrompt.includes("the host usually injects them"), "lead: AGENTS.md/CLAUDE.md dedup vs host injection")
 
 /* v1.4.7: specialist prompts */
 const reviewerP = cfg2.agent["reviewer"].prompt
@@ -242,6 +245,7 @@ assert.ok(!testerP.includes("UI verification mode"), "tester: old UI automation 
 assert.ok(testerP.includes("UI NOT VERIFIED:"), "tester: honest no-tooling fallback")
 for (const expert of EXPERTS) {
   assert.ok(cfg2.agent[expert].prompt.includes("STATUS: done | blocked | failed"), expert + ": skeleton status line")
+  assert.ok(cfg2.agent[expert].prompt.includes("Do not re-open"), expert + ": no README/AGENTS.md re-reading")
   assert.ok(cfg2.agent[expert].prompt.includes("## Evidence rule"), expert + ": evidence rule")
   assert.ok(cfg2.agent[expert].prompt.includes("## Project conventions"), expert + ": README conventions rule")
 }
@@ -262,6 +266,7 @@ assert.ok(teamRun.includes("PROTOCOL_VIOLATION"), "team-run: contract enforcemen
 assert.ok(teamRun.includes("Adaptive review"), "team-run: adaptive review step")
 assert.ok(teamRun.includes("UI NOT VERIFIED"), "team-run: honest UI relay")
 assert.ok(teamRun.includes("CHANGELOG.md"), "team-run: changelog step")
+assert.ok(teamRun.includes("update AGENTS.md"), "team-run: docs sync step")
 assert.ok(teamRun.includes("TTL sweeper"), "team-run: TTL-only cleanup")
 assert.ok(cfg.command["team-review"].template.includes("Dimension"), "team-review: dimension selector")
 

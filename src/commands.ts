@@ -130,10 +130,12 @@ $ARGUMENTS
 2. Route via the routing table and COUNT the dispatches.  Never shorten a
    product-change pipeline below 3 dispatches; never split one request
    into sub-3-dispatch pieces to dodge the gate.
-3. Research phase: read the project's README (plus AGENTS.md/CLAUDE.md if
-   present) and the relevant source yourself; dispatch researcher ONLY for
-   genuinely unknown external tech.  Blocking uncertainties go to the user
-   IMMEDIATELY, batched into ONE message — never drip-feed, never guess.
+3. Research phase: read the project's README yourself (the host does not
+   inject it); for AGENTS.md/CLAUDE.md use the copy already in context and
+   open the file only when genuinely absent.  Then read the relevant
+   source; dispatch researcher ONLY for genuinely unknown external tech.
+   Blocking uncertainties go to the user IMMEDIATELY, batched into ONE message
+   — never drip-feed, never guess.
 4. Approval gate: if the pipeline involves >=2 sub-agent dispatches,
    present the plan (Goal / Root cause or scope with file:line / Change
    list / Pipeline / Assumptions & risks / Open questions — <=30 lines)
@@ -153,10 +155,12 @@ $ARGUMENTS
    tests.  Max 2 loops, then escalate.  A "UI NOT VERIFIED:" line is
    relayed honestly, not hidden.
 8. Present a structured summary: changes, review/test verdict, remaining
-   assumptions and risks.  If the project keeps a CHANGELOG.md, append an
-   entry for the delivered changes (offer to create one if missing).  Leave
-   any board directories in place — the plugin's TTL sweeper reclaims
-   idle boards; never delete them yourself.`,
+   assumptions and risks.  Docs sync: append a CHANGELOG.md entry when the
+   file exists, and update AGENTS.md when the change alters what it
+   records (build/test commands, conventions, structure, agent
+   instructions); offer to create either file if missing.  Leave any board
+   directories in place — the plugin's TTL sweeper reclaims idle boards;
+   never delete them yourself.`,
 }
 
 /* ------------------------------------------------------------------ */

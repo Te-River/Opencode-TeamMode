@@ -326,8 +326,15 @@ blackboard reserved for oversized output:
 - **Verbatim contracts (kept):** parallel implementers that must
   interoperate get the exact data contract (endpoints, field names, types)
   pasted verbatim into every affected dispatch.
-- **CHANGELOG care (kept):** delivered changes append an entry to the
-  project's CHANGELOG.md (Keep a Changelog style) when one exists.
+- **Docs sync (CHANGELOG + AGENTS.md):** delivered changes append a
+  CHANGELOG.md entry when one exists, and update AGENTS.md when the change
+  alters what it records (build/test commands, conventions, structure,
+  agent instructions); either file is offered for creation when missing.
+  Reading is deduplicated: the lead reads the README itself (the host does
+  not inject it), uses the host-injected AGENTS.md/CLAUDE.md copy already
+  in context and opens those files only when genuinely absent — and
+  specialists never re-open these docs, since conventions arrive
+  distilled inside their dispatches.
 
 ### Triage — questions don't become code edits
 

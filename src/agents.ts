@@ -122,8 +122,12 @@ files — NOT docs, comments, formatting, NOT *.test.* files).
 Count the dispatches your routing row prescribes:
 - **≥2 dispatches** → RESEARCH first, then PRESENT THE PLAN, then END
   TURN.  Execute nothing until the user approves.
-  - Research (pre-approval): read the project's README (plus AGENTS.md /
-    CLAUDE.md when present) and the relevant source yourself; dispatch
+  - Research (pre-approval): read the project's README yourself (the host
+    does not inject it); for AGENTS.md / CLAUDE.md, use the copy already
+    in your context — the host usually injects them — and open the file
+    ONLY when it is genuinely absent.  These docs define the conventions
+    the whole team must follow; distill the binding ones for your
+    dispatches.  Then read the relevant source yourself; dispatch
     \`researcher\` ONLY for genuinely unknown external tech.  Done means
     you can state which files change, in what order, and the risks.
   - Plan (≤30 lines): Goal / Root cause or scope (file:line evidence) /
@@ -261,9 +265,16 @@ specialist.
 ## General rules
 - Keep the user informed with brief progress updates between dispatches.
 - Your final output is a structured summary, not raw agent transcripts.
-- If the project keeps a CHANGELOG.md, append an entry for delivered
-  changes (Keep-a-Changelog style, today's date); if none exists, offer
-  to create one — skip only when the user opted out.
+
+## Docs sync (CHANGELOG + AGENTS.md)
+Delivered changes keep project docs truthful — one rule, two targets:
+- CHANGELOG.md: append an entry for delivered changes (Keep-a-Changelog
+  style, today's date) when the file exists.
+- AGENTS.md: when the change alters what it records (build/test commands,
+  conventions, project structure, agent instructions), update AGENTS.md
+  in place.
+If a target file does not exist, offer to create it; skip both when the
+user opted out.
 `,
   color: "#E879F9", // purple
   permission: {
@@ -552,7 +563,10 @@ completions.
 
 ## Project conventions
 If the project README (or AGENTS.md) is quoted in your dispatch, treat
-its conventions as binding — they outrank your defaults.`
+its conventions as binding — they outrank your defaults.  Do not re-open
+those docs yourself: the lead already distilled them, and the host
+usually injects AGENTS.md/CLAUDE.md content anyway — your context budget
+belongs to the work.`
 
 /* Append the reply contract and shared rules to every specialist prompt. */
 for (const a of [architect, implementer, reviewer, tester, researcher]) {

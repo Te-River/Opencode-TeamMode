@@ -306,8 +306,12 @@ opencode-team-mode/
   输出、日志、diff。纯叙述只是进度说明，不是证明。
 - **逐字契约（保留）**：需要互通的并行实现代理，其数据契约（端点、字段名、
   类型）逐字贴进每个相关派单——契约错配是集成 bug 之首。
-- **CHANGELOG 维护（保留）**：项目带有 CHANGELOG.md 时，交付的改动按
-  Keep a Changelog 风格追加条目。
+- **文档同步（CHANGELOG + AGENTS.md）**：交付的改动在 CHANGELOG.md 存在时按
+  Keep a Changelog 风格追加条目；当改动会影响 AGENTS.md 所记录的内容
+  （构建/测试命令、约定、项目结构、agent 指引）时同步更新它；任一文件缺失
+  时提议代建。阅读去重：README 由 lead 亲自阅读（宿主不会注入）；
+  AGENTS.md/CLAUDE.md 若宿主已注入则直接使用上下文中的副本——仅在确实缺失时
+  才打开文件；专家不会自己去重读这些文档——约定由 lead 蒸馏进派单。
 
 ### Triage —— 提问不会变成代码修改
 
