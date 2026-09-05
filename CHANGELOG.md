@@ -7,6 +7,8 @@ under 1.4.x patch slots (the registry never saw a 1.5.0).
 
 ## [Unreleased]
 
+## [1.4.8] — 2026-09-06
+
 ### Added
 - **Project AGENTS.md**: the repo now ships its own AGENTS.md covering
   structure, commands, code conventions, prompt design principles, and
@@ -17,20 +19,19 @@ under 1.4.x patch slots (the registry never saw a 1.5.0).
   when a change alters what it records (build/test commands, conventions,
   project structure, agent instructions); either file is offered for
   creation when missing, and both are skipped when the user opted out.
-  Git-only change, not yet published.
 
 ### Changed
 - **Approval gate threshold lowered from ≥3 to ≥2 planned sub-agent
   dispatches**: a two-dispatch pipeline now also presents a plan and waits
   for approval; only single-dispatch / direct-edit work runs without the
   gate. Anti-splitting (<2-dispatch sub-tasks) and mid-run upgrade (2nd
-  dispatch) rules renumbered to match. Git-only change, not yet published.
+  dispatch) rules renumbered to match.
 - **README/AGENTS.md reading deduplicated against the host**: opencode
   injects AGENTS.md/CLAUDE.md into context, so the lead reads the README
   itself (the host does not inject it) but uses the already-injected
   AGENTS.md/CLAUDE.md copy, opening the file only when genuinely absent;
   specialists never re-open these docs — conventions arrive distilled in
-  their dispatches. Git-only change, not yet published.
+  their dispatches.
 
 ## [1.4.7] — 2026-09-04
 
