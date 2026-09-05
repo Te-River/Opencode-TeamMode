@@ -114,7 +114,7 @@ npm link
 {
   "$schema": "https://opencode.ai/config.json",
   "plugin": [
-    "@te-river/opencode-team-mode@1.4.9"
+    "@te-river/opencode-team-mode@latest"
   ]
 }
 ```
@@ -137,7 +137,7 @@ npm link
 {
   "$schema": "https://opencode.ai/config.json",
   "plugin": [
-    "@te-river/opencode-team-mode@1.4.9"
+    "@te-river/opencode-team-mode@latest"
   ]
 }
 ```
@@ -269,7 +269,7 @@ opencode-team-mode/
 ### 工作原理
 
 1. OpenCode 桌面版启动，加载 `opencode.json(c)`
-2. 检测到 `plugin` 数组中的 `"@te-river/opencode-team-mode@1.4.9"`，加载 npm 包
+2. 检测到 `plugin` 数组中的 `"@te-river/opencode-team-mode@latest"`，加载 npm 包
 3. 加载器调用插件的 `server(input, options)`，注册 `config` hook；hook 向合并后的配置注入 6 个 Agent 和 6 个命令
 4. 插件的 `id: "team-mode"` 作为插件名显示在桌面版 UI
 5. Agent 和命令立即在桌面版 UI 中可用 —— 无需复制任何文件；同名 Agent 以用户自定义优先（插件绝不覆盖）
@@ -353,7 +353,7 @@ Team Lead 不再删除任务目录 —— 跑完的黑板原地留给你回看�
 {
   "$schema": "https://opencode.ai/config.json",
   "plugin": [
-    ["@te-river/opencode-team-mode@1.4.9", { "ttlDays": 7 }]
+    ["@te-river/opencode-team-mode@latest", { "ttlDays": 7 }]
   ]
 }
 ```
@@ -372,7 +372,7 @@ TeamMode 默认**把 Team 设为你的默认代理**——新会话直接由团�
 ```jsonc
 {
   "plugin": [
-    ["@te-river/opencode-team-mode@1.4.9", { "defaultAgent": false }]
+    ["@te-river/opencode-team-mode@latest", { "defaultAgent": false }]
   ]
 }
 ```
