@@ -20,7 +20,7 @@ $utf8Bom = New-Object System.Text.UTF8Encoding($true)
 # of @latest — users can then see which version they have installed.
 $VERSION = (npm view @te-river/opencode-team-mode version).Trim()
 $PLUGIN_NAME = "@te-river/opencode-team-mode@$VERSION"
-$OPENCODE_CONFIG_DIR = Join-Path $env:USERPROFILE ".config" "opencode"
+$OPENCODE_CONFIG_DIR = Join-Path $env:USERPROFILE ".config\opencode"
 $CONFIG_FILE = Join-Path $OPENCODE_CONFIG_DIR "opencode.jsonc"
 
 function Write-Info  { param($msg) Write-Host "ℹ  " -ForegroundColor Cyan -NoNewline; Write-Host $msg }
