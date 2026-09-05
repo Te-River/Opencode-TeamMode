@@ -59,20 +59,26 @@ Instead of one agent trying to do everything, you get:
 
 macOS / Linux (bash):
 ```bash
-curl -fsSL "https://cdn.jsdelivr.net/gh/Te-River/Opencode-TeamMode@main/scripts/install.sh" | bash
+curl -fsSL "https://gh-proxy.com/https://raw.githubusercontent.com/Te-River/Opencode-TeamMode/main/scripts/install.sh" | bash
 ```
 
 Windows (PowerShell):
 ```powershell
-irm "https://cdn.jsdelivr.net/gh/Te-River/Opencode-TeamMode@main/scripts/install.ps1" | iex
+irm "https://gh-proxy.com/https://raw.githubusercontent.com/Te-River/Opencode-TeamMode/main/scripts/install.ps1" | iex
 ```
 
-If jsdelivr is unavailable, use the GitHub raw URL:
+If gh-proxy is unavailable, try jsdelivr or GitHub raw:
 ```bash
-# macOS / Linux
+# macOS / Linux — jsdelivr
+curl -fsSL "https://cdn.jsdelivr.net/gh/Te-River/Opencode-TeamMode@main/scripts/install.sh" | bash
+
+# Windows — jsdelivr
+irm "https://cdn.jsdelivr.net/gh/Te-River/Opencode-TeamMode@main/scripts/install.ps1" | iex
+
+# macOS / Linux — GitHub raw
 curl -fsSL https://raw.githubusercontent.com/Te-River/Opencode-TeamMode/main/scripts/install.sh | bash
 
-# Windows
+# Windows — GitHub raw
 irm https://raw.githubusercontent.com/Te-River/Opencode-TeamMode/main/scripts/install.ps1 | iex
 ```
 
