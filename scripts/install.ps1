@@ -78,8 +78,27 @@ if (-not (Test-Path $CONFIG_FILE)) {
     if ($content -match [regex]::Escape($PLUGIN_NAME)) {
         Write-Ok "Plugin already registered. Nothing to do."
     } elseif ($content -match '"plugin"\s*:\s*\[') {
-        # String-level insertion right after "plugin": [ — preserves comments & formatting.
-        $newContent = $content -replace '(?s)("plugin"\s*:\s*\[)', "`$1`n    `"$PLUGIN_NAME`","
+        # Remove any older @te-river/opencode-team-mode@x.y.z entries first
+        # (line-oriented removal preserves surrounding formatting and comments).
+        $lines = $content -split "`n"
+        $lines = $lines | Where-Object {
+            $_ -notmatch '"@te-river/opencode-team-mode@\d+\.\d+\.\d+"'
+        }
+        $content = ($lines -join "`n")
+
+        # Insert the new version at the END of the top-level plugin array —
+        # append after the last '"]' or the last plugin entry.  Other plugins
+        # (e.g. opencode-quota) that load first keep their priority position.
+        $lastBracket = $content.LastIndexOf('"]')
+        if ($lastBracket -ge 0) {
+            $before = $content.Substring(0, $lastBracket)
+            $after  = $content.Substring($lastBracket)
+            $comma  = if ($before.TrimEnd()[-1] -ne '[') { "," } else { "" }
+            $newContent = $before + $comma + "`n    `"$PLUGIN_NAME`"" + "`n" + $after
+        } else {
+            # fallback: old regex approach
+            $newContent = $content -replace '(?s)("plugin"\s*:\s*\[)', "`$1`n    `"$PLUGIN_NAME`","
+        }
         [IO.File]::WriteAllText($CONFIG_FILE, $newContent, (Get-ConfigEncoding $CONFIG_FILE))
     } else {
         # No plugin array yet — append one before the final closing brace.

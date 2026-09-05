@@ -71,9 +71,11 @@ const fs   = require('fs');
 const path = '${CONFIG_PATH}';
 const cfg  = JSON.parse(fs.readFileSync(path, 'utf8'));
 if (!Array.isArray(cfg.plugin)) cfg.plugin = [];
-if (!cfg.plugin.includes('${PLUGIN_NAME}')) {
-  cfg.plugin.push('${PLUGIN_NAME}');
-}
+// Remove older @te-river/opencode-team-mode@x.y.z entries before adding the new one.
+cfg.plugin = cfg.plugin.filter(p =>
+  typeof p !== 'string' || !p.match(/^@te-river\/opencode-team-mode@\\d+/)
+);
+cfg.plugin.push('${PLUGIN_NAME}');
 fs.writeFileSync(path, JSON.stringify(cfg, null, 2) + '\n');
 "
 ok "Plugin registered in ${CONFIG_PATH}."
