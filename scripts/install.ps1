@@ -14,7 +14,12 @@
 
 $ErrorActionPreference = "Stop"
 $utf8Bom = New-Object System.Text.UTF8Encoding($true)
-$PLUGIN_NAME = "@te-river/opencode-team-mode@latest"
+
+# Resolve the actual latest version from the npm registry so the plugin
+# entry in opencode.jsonc shows a concrete version (e.g. @1.4.8) instead
+# of @latest — users can then see which version they have installed.
+$VERSION = (npm view @te-river/opencode-team-mode version).Trim()
+$PLUGIN_NAME = "@te-river/opencode-team-mode@$VERSION"
 $OPENCODE_CONFIG_DIR = Join-Path $env:USERPROFILE ".config" "opencode"
 $CONFIG_FILE = Join-Path $OPENCODE_CONFIG_DIR "opencode.jsonc"
 

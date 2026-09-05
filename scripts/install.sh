@@ -14,7 +14,11 @@
 # ─────────────────────────────────────────────────────────────────────────────
 set -euo pipefail
 
-PLUGIN_NAME="@te-river/opencode-team-mode@latest"
+# Resolve the actual latest version from the npm registry so the plugin
+# entry in opencode.json shows a concrete version (e.g. @1.4.8) instead
+# of @latest — users can then see which version they have installed.
+VERSION=$(npm view @te-river/opencode-team-mode version)
+PLUGIN_NAME="@te-river/opencode-team-mode@${VERSION}"
 CONFIG_FILE="opencode.json"
 
 # ── colours ──────────────────────────────────────────────────────────────────
