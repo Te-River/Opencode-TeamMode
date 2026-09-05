@@ -7,6 +7,15 @@ under 1.4.x patch slots (the registry never saw a 1.5.0).
 
 ## [Unreleased]
 
+## [1.4.9] — 2026-09-06
+
+### Fixed
+- **Install scripts pin actual version**: `install.sh` and `install.ps1` now
+  resolve the real latest version from the npm registry (`npm view`) and
+  write `@te-river/opencode-team-mode@1.4.9` into `opencode.json(c)` instead
+  of `@latest` — users can now see their installed version in the OpenCode
+  Desktop plugin page.
+
 ## [1.4.8] — 2026-09-06
 
 ### Added
