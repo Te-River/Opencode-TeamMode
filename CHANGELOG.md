@@ -8,6 +8,10 @@ under 1.4.x patch slots (the registry never saw a 1.5.0).
 ## [Unreleased]
 
 ### Added
+- **Project AGENTS.md**: the repo now ships its own AGENTS.md covering
+  structure, commands, code conventions, prompt design principles, and
+  development rules — so future agent sessions on this project get
+  project-specific guidance out of the box.
 - **Docs sync (CHANGELOG + AGENTS.md)**: delivered changes append a
   CHANGELOG.md entry when the file exists, and update AGENTS.md in place
   when a change alters what it records (build/test commands, conventions,
