@@ -7,6 +7,8 @@ under 1.4.x patch slots (the registry never saw a 1.5.0).
 
 ## [Unreleased]
 
+## [1.5.0]
+
 ## [1.4.9] — 2026-09-06
 
 ### Fixed
