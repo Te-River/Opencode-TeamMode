@@ -59,12 +59,12 @@ TeamMode 将 OpenCode 桌面版从一个单 Agent 编码助手，升级为**一�
 
 macOS / Linux（bash）：
 ```bash
-curl -fsSL https://cdn.jsdelivr.net/gh/Te-River/Opencode-TeamMode@main/scripts/install.sh | bash
+curl -fsSL "https://cdn.jsdelivr.net/gh/Te-River/Opencode-TeamMode@main/scripts/install.sh" | bash
 ```
 
 Windows（PowerShell）：
 ```powershell
-irm https://cdn.jsdelivr.net/gh/Te-River/Opencode-TeamMode@main/scripts/install.ps1 | iex
+irm "https://cdn.jsdelivr.net/gh/Te-River/Opencode-TeamMode@main/scripts/install.ps1" | iex
 ```
 
 如果 jsdelivr 不可用，使用 GitHub 原始地址：

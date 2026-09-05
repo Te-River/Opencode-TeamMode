@@ -59,12 +59,12 @@ Instead of one agent trying to do everything, you get:
 
 macOS / Linux (bash):
 ```bash
-curl -fsSL https://cdn.jsdelivr.net/gh/Te-River/Opencode-TeamMode@main/scripts/install.sh | bash
+curl -fsSL "https://cdn.jsdelivr.net/gh/Te-River/Opencode-TeamMode@main/scripts/install.sh" | bash
 ```
 
 Windows (PowerShell):
 ```powershell
-irm https://cdn.jsdelivr.net/gh/Te-River/Opencode-TeamMode@main/scripts/install.ps1 | iex
+irm "https://cdn.jsdelivr.net/gh/Te-River/Opencode-TeamMode@main/scripts/install.ps1" | iex
 ```
 
 If jsdelivr is unavailable, use the GitHub raw URL:
