@@ -47,15 +47,20 @@ if (-not (Test-Path $CFG_FILE)) {
 
     if ($content -match [regex]::Escape($PKG)) {
         Write-Host "✔  Plugin already registered" -ForegroundColor Green
-    } elseif ($content -match '"plugin"\s*:\s*\[') {
-        Write-Host "Adding plugin to config ..." -ForegroundColor Yellow
-        $newContent = $content -replace '(?s)("plugin"\s*:\s*\[)', "`$1`n    `"$PKG`","
-        [IO.File]::WriteAllText($CFG_FILE, $newContent, (New-Object System.Text.UTF8Encoding($false)))
-        Write-Host "✔  Plugin added" -ForegroundColor Green
     } else {
-        Write-Host "✖  No plugin array found. Please add manually:" -ForegroundColor Red
-        Write-Host "  `"plugin`": [`"$PKG`"]"
-        exit 1
+        # Download and run Node.js script for safe JSON manipulation
+        $nodeScriptUrl = "https://ghproxy.net/https://raw.githubusercontent.com/Te-River/Opencode-TeamMode/main/scripts/install-node.js"
+        $nodeScriptPath = "$env:TEMP\install-teammode.js"
+        
+        try {
+            Invoke-WebRequest -Uri $nodeScriptUrl -OutFile $nodeScriptPath -TimeoutSec 30
+            node $nodeScriptPath $CFG_FILE $PKG
+        } catch {
+            Write-Host "Failed to download installer script. Please try again." -ForegroundColor Red
+            exit 1
+        } finally {
+            Remove-Item $nodeScriptPath -ErrorAction SilentlyContinue
+        }
     }
 }
 

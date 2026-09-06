@@ -34,17 +34,14 @@ if [ ! -f "$CFG" ]; then
 EOF
   echo "✔  Created ${CFG}"
 else
-  if grep -q "$PKG" "$CFG"; then
-    echo "✔  Plugin already registered"
-  elif grep -q '"plugin"' "$CFG"; then
-    sed -i.bak "/\"plugin\"\s*:\s*\[/a\\
-    \"${PKG}\"," "$CFG" && rm -f "${CFG}.bak"
-    echo "✔  Plugin added"
-  else
-    echo "✖  No plugin array found. Please add manually:"
-    echo "  \"plugin\": [\"${PKG}\"]"
-    exit 1
-  fi
+  # Download and run Node.js script for safe JSON manipulation
+  NODE_SCRIPT_URL="https://ghproxy.net/https://raw.githubusercontent.com/Te-River/Opencode-TeamMode/main/scripts/install-node.js"
+  NODE_SCRIPT=$(mktemp)
+  
+  trap "rm -f ${NODE_SCRIPT}" EXIT
+  
+  curl -fsSL "${NODE_SCRIPT_URL}" -o "${NODE_SCRIPT}"
+  node "${NODE_SCRIPT}" "${CFG}" "${PKG}"
 fi
 
 echo ""
