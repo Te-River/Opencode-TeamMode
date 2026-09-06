@@ -55,54 +55,11 @@ TeamMode 将 OpenCode 桌面版从一个单 Agent 编码助手，升级为**一�
 
 ### 安装 TeamMode
 
-**方式 A — 一键安装脚本（推荐）：**
-
-macOS / Linux（bash）：
 ```bash
-curl -fsSL "https://gh-proxy.com/https://raw.githubusercontent.com/Te-River/Opencode-TeamMode/main/scripts/install.sh" | bash
+npm install -g @te-river/opencode-team-mode@latest
 ```
 
-Windows（PowerShell）：
-```powershell
-irm "https://gh-proxy.com/https://raw.githubusercontent.com/Te-River/Opencode-TeamMode/main/scripts/install.ps1" | iex
-```
-
-如果 gh-proxy 不可用，尝试 jsdelivr 或 GitHub 原始地址：
-```bash
-# macOS / Linux — jsdelivr
-curl -fsSL "https://cdn.jsdelivr.net/gh/Te-River/Opencode-TeamMode@main/scripts/install.sh" | bash
-
-# Windows — jsdelivr
-irm "https://cdn.jsdelivr.net/gh/Te-River/Opencode-TeamMode@main/scripts/install.ps1" | iex
-
-# macOS / Linux — GitHub 原始地址
-curl -fsSL https://raw.githubusercontent.com/Te-River/Opencode-TeamMode/main/scripts/install.sh | bash
-
-# Windows — GitHub 原始地址
-irm https://raw.githubusercontent.com/Te-River/Opencode-TeamMode/main/scripts/install.ps1 | iex
-```
-
-脚本会自动安装 npm 包，并将插件注册到你的 `opencode.jsonc` 中。
-
-**方式 B — 手动 npm 安装：**
-
-```bash
-# 1. 安装插件包
-npm install -g @te-river/opencode-team-mode
-
-# 2. 将插件添加到 opencode.jsonc
-#    （见下方"配置"章节）
-```
-
-**方式 C — 本地开发安装（从本仓库）：**
-
-```bash
-git clone https://github.com/Te-River/Opencode-TeamMode.git
-cd Opencode-TeamMode
-npm install
-npm run build
-npm link
-```
+然后将插件添加到你的 `opencode.jsonc`（见下方"配置"章节）。
 
 ---
 
@@ -259,8 +216,6 @@ opencode-team-mode/
 │   ├── blackboard.ts     ← 共享黑板 + TTL 自动清理清扫器
 │   └── types.ts          ← 加载器契约类型定义（1.18.x）
 ├── scripts/
-│   ├── install.sh        ← 一键安装脚本（bash）
-│   └── install.ps1       ← 一键安装脚本（PowerShell）
 ├── LICENSE               ← Apache 2.0
 └── README.md             ← 英文文档
     README.zh-CN.md       ← 中文文档

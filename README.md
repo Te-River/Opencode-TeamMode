@@ -55,54 +55,11 @@ Instead of one agent trying to do everything, you get:
 
 ### Install TeamMode
 
-**Option A — One-line installer (recommended):**
-
-macOS / Linux (bash):
 ```bash
-curl -fsSL "https://gh-proxy.com/https://raw.githubusercontent.com/Te-River/Opencode-TeamMode/main/scripts/install.sh" | bash
+npm install -g @te-river/opencode-team-mode@latest
 ```
 
-Windows (PowerShell):
-```powershell
-irm "https://gh-proxy.com/https://raw.githubusercontent.com/Te-River/Opencode-TeamMode/main/scripts/install.ps1" | iex
-```
-
-If gh-proxy is unavailable, try jsdelivr or GitHub raw:
-```bash
-# macOS / Linux — jsdelivr
-curl -fsSL "https://cdn.jsdelivr.net/gh/Te-River/Opencode-TeamMode@main/scripts/install.sh" | bash
-
-# Windows — jsdelivr
-irm "https://cdn.jsdelivr.net/gh/Te-River/Opencode-TeamMode@main/scripts/install.ps1" | iex
-
-# macOS / Linux — GitHub raw
-curl -fsSL https://raw.githubusercontent.com/Te-River/Opencode-TeamMode/main/scripts/install.sh | bash
-
-# Windows — GitHub raw
-irm https://raw.githubusercontent.com/Te-River/Opencode-TeamMode/main/scripts/install.ps1 | iex
-```
-
-These scripts install the npm package and automatically register the plugin in your `opencode.jsonc`.
-
-**Option B — Manual npm install:**
-
-```bash
-# 1. Install the plugin package
-npm install -g @te-river/opencode-team-mode
-
-# 2. Add the plugin to your opencode.jsonc
-#    (see "Configuration" below)
-```
-
-**Option C — Local dev install (from this repo):**
-
-```bash
-git clone https://github.com/Te-River/Opencode-TeamMode.git
-cd Opencode-TeamMode
-npm install
-npm run build
-npm link
-```
+Then add the plugin to your `opencode.jsonc` (see "Configuration" below).
 
 ---
 
@@ -264,8 +221,6 @@ opencode-team-mode/
 │   ├── blackboard.ts     ← Shared blackboard + TTL auto-cleanup sweeper
 │   └── types.ts          ← Loader-contract type definitions (1.18.x)
 ├── scripts/
-│   ├── install.sh        ← One-click installer (bash)
-│   └── install.ps1       ← One-click installer (PowerShell)
 ├── LICENSE               ← Apache 2.0
 ├── README.md             ← English documentation
 └── README.zh-CN.md       ← Chinese documentation
