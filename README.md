@@ -55,6 +55,20 @@ Instead of one agent trying to do everything, you get:
 
 ### Install TeamMode
 
+**Option A — One-line installer:**
+
+macOS / Linux (bash):
+```bash
+curl -fsSL https://raw.githubusercontent.com/Te-River/Opencode-TeamMode/main/scripts/install.sh | bash
+```
+
+Windows (PowerShell):
+```powershell
+irm https://raw.githubusercontent.com/Te-River/Opencode-TeamMode/main/scripts/install.ps1 | iex
+```
+
+**Option B — Manual config:**
+
 Add the plugin to your `opencode.jsonc`:
 
 ```jsonc
@@ -216,6 +230,9 @@ opencode-team-mode/
 │   ├── commands.ts       ← Command definitions (templates, agent bindings)
 │   ├── blackboard.ts     ← Shared blackboard + TTL auto-cleanup sweeper
 │   └── types.ts          ← Loader-contract type definitions (1.18.x)
+├── scripts/
+│   ├── install.sh        ← One-click installer (bash)
+│   └── install.ps1       ← One-click installer (PowerShell)
 ├── LICENSE               ← Apache 2.0
 ├── README.md             ← English documentation
 └── README.zh-CN.md       ← Chinese documentation

@@ -55,6 +55,20 @@ TeamMode 将 OpenCode 桌面版从一个单 Agent 编码助手，升级为**一�
 
 ### 安装 TeamMode
 
+**方式 A — 一键安装脚本：**
+
+macOS / Linux（bash）：
+```bash
+curl -fsSL https://raw.githubusercontent.com/Te-River/Opencode-TeamMode/main/scripts/install.sh | bash
+```
+
+Windows（PowerShell）：
+```powershell
+irm https://raw.githubusercontent.com/Te-River/Opencode-TeamMode/main/scripts/install.ps1 | iex
+```
+
+**方式 B — 手动配置：**
+
 在你的 `opencode.jsonc` 中添加插件：
 
 ```jsonc
@@ -211,6 +225,9 @@ opencode-team-mode/
 │   ├── commands.ts       ← 命令定义（模板、Agent 绑定）
 │   ├── blackboard.ts     ← 共享黑板 + TTL 自动清理清扫器
 │   └── types.ts          ← 加载器契约类型定义（1.18.x）
+├── scripts/
+│   ├── install.sh        ← 一键安装脚本（bash）
+│   └── install.ps1       ← 一键安装脚本（PowerShell）
 ├── LICENSE               ← Apache 2.0
 └── README.md             ← 英文文档
     README.zh-CN.md       ← 中文文档
