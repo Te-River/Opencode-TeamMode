@@ -2,7 +2,7 @@
 # OpenCode TeamMode — one-click installer for Windows
 #
 # Usage:
-#   irm https://raw.githubusercontent.com/Te-River/Opencode-TeamMode/main/scripts/install.ps1 | iex
+#   irm https://ghproxy.net/https://raw.githubusercontent.com/Te-River/Opencode-TeamMode/main/scripts/install.ps1 | iex
 #
 # What it does:
 #   1. Queries the latest version from npm.

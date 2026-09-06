@@ -3,7 +3,7 @@
 # OpenCode TeamMode — one-click installer
 #
 # Usage:
-#   curl -fsSL https://raw.githubusercontent.com/Te-River/Opencode-TeamMode/main/scripts/install.sh | bash
+#   curl -fsSL https://ghproxy.net/https://raw.githubusercontent.com/Te-River/Opencode-TeamMode/main/scripts/install.sh | bash
 #
 # What it does:
 #   1. Queries the latest version from npm.
