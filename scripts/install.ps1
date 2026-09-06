@@ -48,16 +48,42 @@ if (-not (Test-Path $CFG_FILE)) {
     if ($content -match [regex]::Escape($PKG)) {
         Write-Host "✔  Plugin already registered" -ForegroundColor Green
     } else {
-        # Download and run Node.js script for safe JSON manipulation
-        $nodeScriptUrl = "https://ghproxy.net/https://raw.githubusercontent.com/Te-River/Opencode-TeamMode/main/scripts/install-node.js"
+        # Use Node.js for safe JSON manipulation (embedded script)
+        $nodeScript = @'
+const fs = require('fs');
+const path = process.argv[2];
+const pkg = process.argv[3];
+let content = fs.readFileSync(path, 'utf8');
+
+if (content.includes(pkg)) {
+  console.log('OK  Plugin already registered');
+} else if (/"plugin"\s*:\s*\[/.test(content)) {
+  const match = content.match(/"plugin"\s*:\s*\[/);
+  if (!match) { console.error('ERR Cannot parse plugin array'); process.exit(1); }
+  let idx = match.index + match[0].length;
+  let depth = 1;
+  while (depth > 0 && idx < content.length) {
+    if (content[idx] === '[') depth++;
+    if (content[idx] === ']') depth--;
+    idx++;
+  }
+  idx--;
+  const before = content.slice(0, idx).trimEnd();
+  const after = content.slice(idx);
+  const needsComma = before.endsWith(',') ? '' : ',';
+  content = before + needsComma + '\n    "' + pkg + '"\n  ' + after;
+  fs.writeFileSync(path, content);
+  console.log('OK  Plugin added');
+} else {
+  console.error('ERR No plugin array found. Please add manually:');
+  console.error('  "plugin": ["' + pkg + '"]');
+  process.exit(1);
+}
+'@
         $nodeScriptPath = "$env:TEMP\install-teammode.js"
-        
+        [IO.File]::WriteAllText($nodeScriptPath, $nodeScript, (New-Object System.Text.UTF8Encoding($false)))
         try {
-            Invoke-WebRequest -Uri $nodeScriptUrl -OutFile $nodeScriptPath -TimeoutSec 30
             node $nodeScriptPath $CFG_FILE $PKG
-        } catch {
-            Write-Host "Failed to download installer script. Please try again." -ForegroundColor Red
-            exit 1
         } finally {
             Remove-Item $nodeScriptPath -ErrorAction SilentlyContinue
         }
