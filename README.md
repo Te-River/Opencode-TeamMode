@@ -55,17 +55,7 @@ Instead of one agent trying to do everything, you get:
 
 ### Install TeamMode
 
-```bash
-npm install -g @te-river/opencode-team-mode@latest
-```
-
-Then add the plugin to your `opencode.jsonc` (see "Configuration" below).
-
----
-
-## ⚙️ Configuration
-
-After installing, add the plugin to your `opencode.jsonc`:
+Add the plugin to your `opencode.jsonc`:
 
 ```jsonc
 {
@@ -76,9 +66,15 @@ After installing, add the plugin to your `opencode.jsonc`:
 }
 ```
 
-That's it. The plugin automatically injects all team agents and commands when OpenCode starts. **No need to manually copy agent files or command definitions.**
+OpenCode will automatically install the plugin on startup.
 
-> 💡 **Tip:** After modifying `opencode.json`, **restart OpenCode Desktop** for changes to take effect.
+> **Tip:** After modifying `opencode.json`, **restart OpenCode Desktop** for changes to take effect.
+
+---
+
+## ⚙️ Configuration
+
+The plugin automatically injects all team agents and commands when OpenCode starts. **No need to manually copy agent files or command definitions.**
 
 > ⚠️ **Model choice matters.** Every judgment in the workflow — triage,
 > decomposition, dispatch briefs, synthesis, review-loop verdicts — flows
@@ -220,7 +216,6 @@ opencode-team-mode/
 │   ├── commands.ts       ← Command definitions (templates, agent bindings)
 │   ├── blackboard.ts     ← Shared blackboard + TTL auto-cleanup sweeper
 │   └── types.ts          ← Loader-contract type definitions (1.18.x)
-├── scripts/
 ├── LICENSE               ← Apache 2.0
 ├── README.md             ← English documentation
 └── README.zh-CN.md       ← Chinese documentation

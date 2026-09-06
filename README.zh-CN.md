@@ -55,17 +55,7 @@ TeamMode 将 OpenCode 桌面版从一个单 Agent 编码助手，升级为**一�
 
 ### 安装 TeamMode
 
-```bash
-npm install -g @te-river/opencode-team-mode@latest
-```
-
-然后将插件添加到你的 `opencode.jsonc`（见下方"配置"章节）。
-
----
-
-## ⚙️ 配置
-
-安装后，将插件添加到你的 `opencode.jsonc`：
+在你的 `opencode.jsonc` 中添加插件：
 
 ```jsonc
 {
@@ -76,9 +66,15 @@ npm install -g @te-river/opencode-team-mode@latest
 }
 ```
 
-就这么简单。插件会在 OpenCode 启动时自动注入所有团队 Agent 和命令，**无需手动复制任何 Agent 文件或命令定义**。
+OpenCode 启动时会自动安装插件。
 
-> 💡 **提示：** 修改 `opencode.json` 后，请**重启 OpenCode 桌面版**使更改生效。
+> **提示：** 修改 `opencode.json` 后，**重启 OpenCode Desktop** 使配置生效。
+
+---
+
+## ⚙️ 配置
+
+插件会在 OpenCode 启动时自动注入所有团队 Agent 和命令，**无需手动复制任何 Agent 文件或命令定义**。
 
 > ⚠️ **模型选择很重要。** 工作流里的每一个判断——分诊、拆解、派单、
 > 整合、审查/测试闭环裁决——都经过 **Team Lead**。这个位置上放弱模型，
@@ -215,7 +211,6 @@ opencode-team-mode/
 │   ├── commands.ts       ← 命令定义（模板、Agent 绑定）
 │   ├── blackboard.ts     ← 共享黑板 + TTL 自动清理清扫器
 │   └── types.ts          ← 加载器契约类型定义（1.18.x）
-├── scripts/
 ├── LICENSE               ← Apache 2.0
 └── README.md             ← 英文文档
     README.zh-CN.md       ← 中文文档
