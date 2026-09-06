@@ -67,15 +67,6 @@ Windows（PowerShell）：
 irm https://ghproxy.net/https://raw.githubusercontent.com/Te-River/Opencode-TeamMode/main/scripts/install.ps1 | iex
 ```
 
-如果 ghproxy 不可用，尝试 GitHub 原始地址：
-```bash
-# macOS / Linux
-curl -fsSL https://raw.githubusercontent.com/Te-River/Opencode-TeamMode/main/scripts/install.sh | bash
-
-# Windows
-irm https://raw.githubusercontent.com/Te-River/Opencode-TeamMode/main/scripts/install.ps1 | iex
-```
-
 **方式 B — 手动配置：**
 
 在你的 `opencode.jsonc` 中添加插件：
