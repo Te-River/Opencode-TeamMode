@@ -39,6 +39,7 @@ All test suites must pass before committing.
 - **R6 privacy red line**: the env-protection audit log (`team-mode-env-protect`) records ONLY tool name + pattern category -- never command text, paths, variable names or values; never weaken the interception patterns without an approved spec
 - Commit messages: `feat(scope): ...` / `fix(scope): ...` / `docs(scope): ...`
 - CHANGELOG.md: Keep a Changelog style; git-only changes go under `[Unreleased]`
+- README.md + README.zh-CN.md: keep the bilingual pair in sync when user-facing features, commands, or config change (both ship inside the npm package); if a feature is merged on main but not yet published, mark it as such in the READMEs
 - **AGENTS.md**: keep this file in sync when commands, structure, or conventions change
 - When adding a new prompt rule, add a matching assertion in `test-blackboard.mjs`
 - When changing agent/command injection, update `test-default-agent.mjs`

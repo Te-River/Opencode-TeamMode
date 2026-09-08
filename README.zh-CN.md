@@ -213,6 +213,40 @@ team   完成。
 
 ---
 
+## 🧯 上下文治理（tm_* + R6）—— 已并入 main，随下一版发布
+
+> ⚠️ 以下能力已合入 `main` 分支，**尚未发布到 npm**——registry 的 `@latest` 暂不包含。
+
+**JIT 层 2 工具（`tm_read` / `tm_grep` / `tm_bash` / `tm_fetch`）。**
+大体积工具输出是上下文成本的主要来源：智能体每走一步都要重发整个窗口。
+tm_* 工具先用受治理的管线执行内置能力：超过 `TM_OFFLOAD_THRESHOLD`
+token 的结果**不进窗口**——全量写入本地 run 存储，模型只拿一张句柄
+“提货单”，附内容感知预览（JSON 键结构 / CSV 表头+形状 / 日志
+ERROR×N 统计 / 代码签名清单 / 二进制元信息，硬上限 80 token）。
+确实需要全文时，用 HMAC 签名、限本 run、带有效期的句柄经 `tm_fetch`
+分段取回。`tm_bash` 仅放行只读命令白名单，失败以结构化错误返回。
+
+**R6 环境变量保护。** TeamMode 激活时，模型读取环境变量的行为在工具层
+被拦截：env 导出命令（`printenv`、`Get-ChildItem env:` 等）、
+`$env:` / `$VAR` / `${VAR}` 展开、环境文件（`.env`、shell rc 文件）。
+模型收到结构化拒绝提示，需要变量值时向人类申请；tm_* 包装工具同样
+过这套检查（不给包装层留后门）。审计日志只记工具名+模式类别——
+绝不记录命令文本、路径、变量名或值。
+
+| 环境变量 | 默认 | 作用 |
+|---|---|---|
+| `TM_ENV_PROTECT` | `strict` | R6 模式：`strict` / `standard` / `off` |
+| `TM_ENV_PROTECT_EXTRA_DENY` | — | 追加拦截正则（分号分隔） |
+| `TM_OFFLOAD_THRESHOLD` | `2000` | 卸载阈值（token，chars/4 估算） |
+| `TM_PREVIEW_MAX_TOKENS` | `80` | 预览硬上限 |
+| `TM_FETCH_MAX_LINES` | `2000` | tm_fetch 单段上限 |
+| `TM_BLACKBOARD_DIR` | `.blackboard/` | 卸载载荷存储 |
+| `TM_TRAJECTORY_DIR` | `.trajectory/` | 只追加工具调用账本 |
+| `TM_BLACKBOARD_TTL` | `7` | 存储保留天数 |
+| `TM_BASH_READONLY_ALLOWED` | 内置表 | tm_bash 只读白名单 |
+
+---
+
 ## 🏗️ 架构
 
 ```
@@ -220,14 +254,17 @@ opencode-team-mode/
 ├── package.json          ← npm 包定义
 ├── tsconfig.json         ← TypeScript 配置
 ├── src/
-│   ├── index.ts          ← 插件入口（server() + config hook，id: "team-mode"）
+│   ├── index.ts          ← 插件入口（server()：config + R6 tool.execute.before 钩子 + tool 段）
 │   ├── agents.ts         ← Agent 定义（prompts、模式、颜色）
 │   ├── commands.ts       ← 命令定义（模板、Agent 绑定）
 │   ├── blackboard.ts     ← 共享黑板 + TTL 自动清理清扫器
+│   ├── envprotect.ts     ← R6 环境变量读取保护（模式引擎 + 钩子）
+│   ├── tm/               ← JIT 层 2 工具（tm_read / tm_grep / tm_bash / tm_fetch）
 │   └── types.ts          ← 加载器契约类型定义（1.18.x）
 ├── scripts/
 │   ├── install.sh        ← 一键安装脚本（bash）
 │   └── install.ps1       ← 一键安装脚本（PowerShell）
+├── pt07/                 ← PT-07 基线任务集（种子化 A/B token 测量）
 ├── LICENSE               ← Apache 2.0
 └── README.md             ← 英文文档
     README.zh-CN.md       ← 中文文档
@@ -237,7 +274,7 @@ opencode-team-mode/
 
 1. OpenCode 桌面版启动，加载 `opencode.json(c)`
 2. 检测到 `plugin` 数组中的 `"@te-river/opencode-team-mode@latest"`，加载 npm 包
-3. 加载器调用插件的 `server(input, options)`，注册 `config` hook；hook 向合并后的配置注入 6 个 Agent 和 6 个命令
+3. 加载器调用插件的 `server(input, options)`，注册 `config` hook；hook 向合并后的配置注入 6 个 Agent 和 6 个命令。同一次调用还会安装 R6 的 `tool.execute.before` 防护，并注册受治理的 `tm_*` 工具（见下文“上下文治理”）
 4. 插件的 `id: "team-mode"` 作为插件名显示在桌面版 UI
 5. Agent 和命令立即在桌面版 UI 中可用 —— 无需复制任何文件；同名 Agent 以用户自定义优先（插件绝不覆盖）
 

@@ -218,6 +218,45 @@ In **OpenCode Desktop**, you get additional UX benefits:
 
 ---
 
+## 🧯 Context governance (tm_* + R6) — on `main`, shipping next release
+
+> ⚠️ Implemented and merged on `main`; **not yet published to npm** — the
+> registry's `@latest` does not contain these yet.
+
+**JIT layer-2 tools (`tm_read` / `tm_grep` / `tm_bash` / `tm_fetch`).**
+Large tool outputs are context cost's main driver: every step re-sends the
+whole window. The tm_* tools run the built-in capability under governance
+first: results above `TM_OFFLOAD_THRESHOLD` tokens never enter the window —
+they are written to a local run store and replaced by a handle with a
+content-aware preview (JSON keys / CSV header+shape / log ERROR×N stats /
+code signatures / binary metadata, hard-capped at 80 tokens). When the agent
+actually needs the payload it pages through it with `tm_fetch`, using an
+HMAC-signed, run-scoped, expiring handle. `tm_bash` only allows read-only
+commands (allowlist), and failures come back as structured errors instead of
+raw dumps.
+
+**R6 environment protection.** With TeamMode active, env-var reads by the
+model are blocked at the tool layer: env dump commands (`printenv`,
+`Get-ChildItem env:`, …), `$env:` / `$VAR` / `${VAR}` expansions, and env
+files (`.env`, shell rc files). The model sees a structured refusal and can
+ask the human instead; tm_* wrappers route through the same checks (no
+backdoor via the wrappers). Audit lines record only tool name + pattern
+category — never command text, paths, variable names or values.
+
+| Env var | Default | Purpose |
+|---|---|---|
+| `TM_ENV_PROTECT` | `strict` | R6 mode: `strict` / `standard` / `off` |
+| `TM_ENV_PROTECT_EXTRA_DENY` | — | extra block patterns (regex list) |
+| `TM_OFFLOAD_THRESHOLD` | `2000` | offload threshold (tokens, chars/4 estimate) |
+| `TM_PREVIEW_MAX_TOKENS` | `80` | preview hard cap |
+| `TM_FETCH_MAX_LINES` | `2000` | tm_fetch page cap |
+| `TM_BLACKBOARD_DIR` | `.blackboard/` | offloaded payload store |
+| `TM_TRAJECTORY_DIR` | `.trajectory/` | append-only tool-call ledger |
+| `TM_BLACKBOARD_TTL` | `7` | store retention (days) |
+| `TM_BASH_READONLY_ALLOWED` | built-in table | tm_bash allowlist |
+
+---
+
 ## 🏗️ Architecture
 
 ```
@@ -225,14 +264,17 @@ opencode-team-mode/
 ├── package.json          ← npm package definition
 ├── tsconfig.json         ← TypeScript config
 ├── src/
-│   ├── index.ts          ← Plugin entry (server() + config hook, id: "team-mode")
+│   ├── index.ts          ← Plugin entry (server(): config + R6 tool.execute.before + tool segment)
 │   ├── agents.ts         ← Agent definitions (prompts, modes, colors)
 │   ├── commands.ts       ← Command definitions (templates, agent bindings)
 │   ├── blackboard.ts     ← Shared blackboard + TTL auto-cleanup sweeper
+│   ├── envprotect.ts     ← R6 env-var read protection (pattern engine + hook)
+│   ├── tm/               ← JIT layer-2 tools (tm_read / tm_grep / tm_bash / tm_fetch)
 │   └── types.ts          ← Loader-contract type definitions (1.18.x)
 ├── scripts/
 │   ├── install.sh        ← One-click installer (bash)
 │   └── install.ps1       ← One-click installer (PowerShell)
+├── pt07/                 ← PT-07 baseline suite (seeded A/B token measurement)
 ├── LICENSE               ← Apache 2.0
 ├── README.md             ← English documentation
 └── README.zh-CN.md       ← Chinese documentation
@@ -242,7 +284,7 @@ opencode-team-mode/
 
 1. OpenCode Desktop starts and loads `opencode.json(c)`.
 2. It sees `"@te-river/opencode-team-mode@latest"` in the `plugin` array and loads the npm package.
-3. The loader calls the plugin's `server(input, options)`, which registers a `config` hook; the hook injects 6 agents and 6 commands into the merged config.
+3. The loader calls the plugin's `server(input, options)`, which registers a `config` hook; the hook injects 6 agents and 6 commands into the merged config. The same call installs the R6 `tool.execute.before` guard and registers the governed `tm_*` tools (see [Context governance](#-context-governance-tm--r6--on-main-shipping-next-release) below).
 4. The plugin's `id: "team-mode"` is displayed as the plugin name in the Desktop UI.
 5. Agents and commands are immediately available in the Desktop UI — no file copying needed. User-defined agents with the same name always win (the plugin never clobbers them).
 
