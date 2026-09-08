@@ -6,7 +6,11 @@
  *
  *   export default {
  *     id: "team-mode",                     → Desktop plugin display name
- *     server: async (input, options) => ({ config(cfg) { ...inject... } })
+ *     server: async (input, options) => ({
+ *       config(cfg) { ...inject agents/commands... },
+ *       "tool.execute.before"(...) { ...R6 env protection... },
+ *       tool: { tm_read, tm_grep, tm_bash, tm_fetch },   → JIT layer-2 tools
+ *     })
  *   }
  *
  * `server()` is the ONLY function the loader calls; a `setup` property is
@@ -33,6 +37,12 @@ import {
   resolveTtlMs,
   DEFAULT_TTL_DAYS,
 } from "./blackboard.js"
+import {
+  createEnvProtectHook,
+  parseExtraDeny,
+  resolveEnvProtectMode,
+} from "./envprotect.js"
+import { createTmTools } from "./tm/index.js"
 
 /** Runtime addendum to the team prompt: concrete board + TTL (hybrid mode). */
 function blackboardNote(root: string, ttlDays: number): string {
@@ -68,6 +78,30 @@ const plugin: OpenCodePlugin = {
     const boardRoot = startBlackboardMaintenance(directory, ttlMs)
     const note = blackboardNote(boardRoot, ttlDays)
 
+    // ---------- R6 env protection (code-level interception) ----------
+    // Reading TM_ENV_PROTECT / TM_ENV_PROTECT_EXTRA_DENY here is the PLUGIN
+    // configuring ITSELF at startup — program-level configuration, the same
+    // category as the ttlDays option.  R6 exists to stop the MODEL reading
+    // environment variables through tool calls; these two reads are not
+    // that and are out of scope of the protection.
+    const envProtectMode = resolveEnvProtectMode(process.env.TM_ENV_PROTECT)
+    const envProtectExtra = parseExtraDeny(process.env.TM_ENV_PROTECT_EXTRA_DENY)
+    const envProtectHook = createEnvProtectHook(
+      input?.client,
+      envProtectMode,
+      envProtectExtra,
+    )
+
+    // ---------- JIT layer-2 tools (tm_read / tm_grep / tm_bash / tm_fetch) ----------
+    // T0.4-verified static registration: server() hooks gain a `tool` segment.
+    // The R6 mode/extra resolved above are passed in so the tm_* pipelines
+    // share the SAME interception source as the built-in tools (anti-backdoor:
+    // the global hook ALSO aliases tm_* onto read/grep/bash — see envprotect).
+    const tmRuntime = await createTmTools(input, {
+      mode: envProtectMode,
+      extra: envProtectExtra,
+    })
+
     return {
       // ---------- v1 config hook: inject agents & commands ----------
       config(cfg: OpenCodeConfig) {
@@ -93,6 +127,12 @@ const plugin: OpenCodePlugin = {
           cfg.default_agent = "team"
         }
       },
+
+      // ---------- R6: block the model's env-var read paths in code ----------
+      "tool.execute.before": envProtectHook,
+
+      // ---------- JIT layer-2: tm_read / tm_grep / tm_bash / tm_fetch ----------
+      tool: tmRuntime.tools,
     }
   },
 }

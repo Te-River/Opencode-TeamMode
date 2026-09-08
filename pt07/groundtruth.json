@@ -1,0 +1,39 @@
+{
+  "seed": 20260907,
+  "generatedBy": "pt07/generate.mjs",
+  "todoMarkers": [
+    {
+      "file": "src/inventory.js",
+      "line": 32
+    },
+    {
+      "file": "src/notifications.js",
+      "line": 24
+    },
+    {
+      "file": "src/pricing.js",
+      "line": 36
+    },
+    {
+      "file": "src/pricing.js",
+      "line": 43
+    },
+    {
+      "file": "src/report.js",
+      "line": 26
+    }
+  ],
+  "paymentTimeoutDay01": 17,
+  "peakErrorHourDay02": 14,
+  "peakErrorHourDay02Unique": true,
+  "peakErrorHourDay02Count": 9,
+  "deliveredWestCount": 159,
+  "topDeliveredRegion": "east",
+  "topDeliveredRegionRevenueCents": 7578611,
+  "logTotals": {
+    "app-2026-09-01.log": 2400,
+    "app-2026-09-02.log": 2100,
+    "app-2026-09-03.log": 1800
+  },
+  "csvRowCount": 1500
+}

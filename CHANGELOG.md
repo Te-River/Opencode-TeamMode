@@ -7,6 +7,79 @@ under 1.4.x patch slots (the registry never saw a 1.5.0).
 
 ## [Unreleased]
 
+### Added
+- **JIT layer-2 tools (T1.2 + T1.3 + T1.4)**: the plugin now statically
+  registers four governed tools next to the built-ins (verified loader shape:
+  `server()` hooks gain a `tool` segment; agents whitelist untouched — Phase 2):
+  - `tm_read` / `tm_grep` / `tm_bash` — governed passthroughs of the built-in
+    read / ripgrep-index / bash capabilities with threshold offload: results
+    up to `TM_OFFLOAD_THRESHOLD` tokens (default 2000, chars/4 estimate; the
+    estimate == threshold boundary ALSO offloads) return inline, larger
+    payloads are written to a run store and answered with a handle
+    `{offloaded, ref, access_token, expire_at, tokens, preview}` whose
+    content-aware preview (JSON keys / CSV header+rows / log stats with
+    ERROR×N counts and path:line clues / code signature list / binary
+    not-previewable) is hard-capped at `TM_PREVIEW_MAX_TOKENS` (default 80
+    tokens) and always embeds retrieval clues plus a fetch-first hint;
+  - `tm_fetch` — paged retrieval of offloaded payloads (`ref` +
+    `access_token` + `offset`/`limit` capped at `TM_FETCH_MAX_LINES` (default
+    2000), or `mode:"structure"` for a ~100-token TOC / key-tree /
+    error-line map).  Handles are run-scoped: `access_token` =
+    HMAC-SHA256(process-start random key, run_id), `expire_at` aligned with
+    `TM_BLACKBOARD_TTL` (default 7 days); foreign-run, tampered or expired
+    handles are rejected with "payload cleared or run mismatch — rerun the
+    original tool";
+  - R1 permission pipeline: P2 path scope for reads (project root + run
+    store + trajectory dirs, `..`-escape proof) and a P3 command-level
+    read-only allowlist for `tm_bash` (ls/cat/head/tail/grep/rg/find/awk/
+    sort/uniq/wc/cut/dir/Get-Content/Get-ChildItem/Select-String/
+    Measure-Object, extendable via `TM_BASH_READONLY_ALLOWED`) with
+    write/hang-escape hardening (output redirection, `find -delete/-exec`,
+    `tail -f`, `awk system()`, `rg --pre` all rejected);
+  - **R6 anti-backdoor reuse (HUMAN-approved design)**: tm_read / tm_grep /
+    tm_bash run the SAME envprotect matchers inside their own pipelines
+    (env-file paths, env dumps), and the R6 `tool.execute.before` hook now
+    aliases `tm_*` onto `read`/`grep`/`bash` — two layers, one source; R6
+    mode `off` disables both.  The built-in bash interception is unchanged;
+  - structured errors (`{error: {tool, phase, message, line?}}`) with
+    best-effort line extraction and ANSI/empty-line noise stripping, plus a
+    degradation rule: an offload (store) failure returns truncated content
+    with a warning instead of failing the task;
+  - run store `TM_BLACKBOARD_DIR` (default `.blackboard/`):
+    `runs/{run_id}/steps/{step_id}/{seq:03d}-{tool}.md` + `index.jsonl`
+    appends; trajectory `TM_TRAJECTORY_DIR` (default `.trajectory/`):
+    `runs/{run_id}/steps.jsonl` strictly append-only (`usage.jsonl` path
+    reserved for T2.2); startup-only TTL sweep reclaims run dirs past
+    `TM_BLACKBOARD_TTL`.  Assertions in the new `test-tm-tools.mjs` (now
+    part of `npm test`).
+- **R6 environment-variable read protection (privacy red line)**: Team mode
+  now installs a code-level `tool.execute.before` hook that intercepts the
+  model's env-var read paths regardless of prompt compliance (blocking
+  verified live on opencode 1.18.29):
+  - bash/PowerShell env commands: standalone `env`, `printenv`, bare `set`
+    (sh context only — PowerShell `Set-*` cmdlets never matched),
+    `declare -p`, and `env:` drive access (`Get-ChildItem`/`gci`/`dir`/
+    `Get-Item`/`gi`/`Get-Content`/`gc`/`cat`/`type`);
+  - `$env:` expansion (PowerShell), plus — in strict mode — `${VAR}` and
+    `$ALLCAPS_VAR` expansion;
+  - env-file paths (`.env`, `.env.*`, `*.env`, `.bashrc`, `.bash_profile`,
+    `.profile`, `.zshrc`, `.zprofile`, `.zshenv`) across path-class args of
+    read/grep/glob/list (`filePath`/`path`/`pattern`/`include`), and env
+    file references inside bash commands.
+  Blocked calls fail with a fixed structured message pointing the model at
+  HUMAN, tagged with the pattern category (`bash-env-command`,
+  `bash-env-expansion`, `env-file-path`, `extra-deny`). Every interception
+  is audit-logged via `client.app.log()` (level `warn`, service
+  `team-mode-env-protect`) recording ONLY the tool name and category —
+  never command text, paths, or values, so the audit trail cannot become a
+  secret aggregation point.
+  Configuration: `TM_ENV_PROTECT` = `strict` (default; unknown values fail
+  closed) / `standard` (explicit env commands + env files, no `$VAR`
+  expansion blocking) / `off` (hook installed, everything passes); user
+  extra deny-regexes via `TM_ENV_PROTECT_EXTRA_DENY` (semicolon-separated,
+  effective in every non-off mode). Assertions in the new
+  `test-envprotect.mjs` (now part of `npm test`).
+
 ## [1.5.0]
 
 ## [1.4.9] — 2026-09-06

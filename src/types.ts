@@ -58,8 +58,67 @@ export interface OpenCodeConfig {
 
 // ---------- v1 hooks returned from server() ----------
 
+/** Input to the `tool.execute.before` hook (official 1.x docs shape). */
+export interface ToolExecuteBeforeInput {
+  tool?: string
+  sessionID?: string
+  callID?: string
+  [key: string]: unknown
+}
+
+/** Mutable output of the `tool.execute.before` hook; `args` are the tool args. */
+export interface ToolExecuteBeforeOutput {
+  args?: Record<string, unknown>
+  [key: string]: unknown
+}
+
+/**
+ * Official 1.18.x tool result contract (tool.d.ts:39-46): execute() resolves
+ * to a plain string OR an object whose `output` string is what the model
+ * sees.  Anything else (bare handles, structured error objects) breaks the
+ * host's result pipeline — real-session crash `c.split` on a non-string —
+ * so every return path must ride inside `output`.
+ */
+export interface ToolResultObject {
+  output: string
+  [key: string]: unknown
+}
+
+export type ToolResult = string | ToolResultObject
+
+/**
+ * A single statically-registered plugin tool (T0.4 live-probe shape:
+ * `{ tool: { <name>: { description, args, execute(args, ctx) } } }`).
+ * `args` is a ZodRawShape ({key: validator}) when the host resolves zod —
+ * NOT a z.object(): the host serializes the raw shape into the LLM parameter
+ * spec, and a z.object wrapper produced `{def:{command:...}}` garbage args
+ * in real sessions.  Plain arg descriptors are tolerated when zod is absent;
+ * execute() must be defensive either way.
+ */
+export interface ToolDefinition {
+  description?: string
+  args?: unknown
+  execute?: (args: Record<string, unknown>, ctx?: unknown) => ToolResult | Promise<ToolResult>
+  [key: string]: unknown
+}
+
 export interface Hooks {
   config?: (cfg: OpenCodeConfig) => void | Promise<void>
+  /**
+   * Runs before every tool call; throwing inside it turns the call into a
+   * failed tool result whose error text is returned to the model (verified
+   * live on 1.18.29) — the mechanism behind R6 env protection.
+   */
+  "tool.execute.before"?: (
+    input: ToolExecuteBeforeInput,
+    output: ToolExecuteBeforeOutput,
+  ) => void | Promise<void>
+  /**
+   * Static tool registration segment (T0.4-verified): plugin-owned tools
+   * appear on the tool surface next to the built-ins.  TeamMode registers
+   * tm_read / tm_grep / tm_bash / tm_fetch here.
+   */
+  tool?: Record<string, ToolDefinition>
   [hook: string]: unknown
 }
 

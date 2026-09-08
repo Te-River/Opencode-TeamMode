@@ -1,0 +1,5 @@
+workspace/
+results/
+.oc-config/
+.oc-data/
+.oc-state/
