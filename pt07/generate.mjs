@@ -722,15 +722,24 @@ const srcFiles = Object.keys(files).filter((f) => f.startsWith("src/")).length;
 if (srcFiles < 6) throw new Error(`source files ${srcFiles} < 6`);
 
 const hashOf = (p) => crypto.createHash("sha256").update(fs.readFileSync(p)).digest("hex").slice(0, 16);
+
+// Fixture module semantics: the workspace codebase is CommonJS (module.exports),
+// but the repo root package.json declares "type": "module". Without this file,
+// Node resolves workspace/*.js as ESM and judge.mjs's require()-based behavior
+// checks cannot load them (found live during the first GLM baseline run).
+fs.writeFileSync(
+  path.join(WS, "package.json"),
+  JSON.stringify({ name: "pt07-fixture", private: true, type: "commonjs" }, null, 2) + "\n"
+);
+
 console.log("PT07 workspace generated");
 console.log("  seed:", SEED);
 console.log("  source files:", srcFiles, "+ README.md");
 console.log("  log lines:", totalLogLines, `(d1=${day1.length} d2=${day2.length} d3=${day3.length})`);
 console.log("  csv rows:", orders.length);
 console.log("  todo markers:", groundtruth.todoMarkers.length);
-console.log("  ground truth: paymentTimeoutDay01=17 peakHourD02=", peakHour,
-  " deliveredWest=", deliveredWest,
-  " topRegion=", topRegion, " revenue=", (revenueCents[topRegion] / 100).toFixed(2));
+// NOTE: ground-truth values are deliberately NOT printed here — the executor
+// must derive answers from the fixture, not from generator stdout.
 console.log("  fingerprint (sha256-16):");
 console.log("    groundtruth.json :", hashOf(GT));
 for (const f of ["src/pricing.js", "src/utils/format.js", "logs/app-2026-09-01.log", "data/orders.csv"]) {

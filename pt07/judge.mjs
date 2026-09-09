@@ -265,12 +265,31 @@ function cli() {
     const i = argv.indexOf(flag);
     return i >= 0 && argv[i + 1] !== undefined ? argv[i + 1] : def;
   };
-  if (argv.includes("--help") || argv.length === 0) {
+  if (argv.includes("--help")) {
     console.log("usage: node judge.mjs --results results/baseline.json [--task <id>] [--write]");
-    process.exit(argv.includes("--help") ? 0 : 1);
+    console.log("   or: node judge.mjs --task <id> [--reply-file <path>]   (manual mode, one task)");
+    process.exit(0);
+  }
+  // manual mode: judge ONE task straight from tasks.json + fixture state,
+  // reply text optionally supplied via --reply-file (for runs outside the runner)
+  const only0 = argOf("--task", null);
+  if (only0 && !argv.includes("--results")) {
+    const tasks = JSON.parse(fs.readFileSync(path.join(__dirname, "tasks.json"), "utf8")).tasks;
+    const t = tasks.find((x) => x.id === only0);
+    if (!t) { console.error(`unknown task id: ${only0}`); process.exit(1); }
+    const rf = argOf("--reply-file", null);
+    const replyText = rf ? fs.readFileSync(path.resolve(rf), "utf8") : "";
+    const verdict = judgeTask({ id: t.id, judge: t.judge }, { replyText, events: [] });
+    console.log(`[${t.id}] ${verdict.pass ? "PASS" : "FAIL"}`);
+    for (const e of verdict.evidence) console.log("  - " + e);
+    process.exit(verdict.pass ? 0 : 1);
+  }
+  if (argv.length === 0) {
+    console.log("usage: node judge.mjs --results results/baseline.json [--task <id>] [--write]");
+    process.exit(1);
   }
   const resultsPath = path.resolve(__dirname, argOf("--results", "results/baseline.json"));
-  const only = argOf("--task", null);
+  const only = only0;
   const write = argv.includes("--write");
   const results = JSON.parse(fs.readFileSync(resultsPath, "utf8"));
   let passCount = 0;
