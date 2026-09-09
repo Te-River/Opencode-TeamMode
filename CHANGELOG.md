@@ -2,10 +2,16 @@
 
 All notable changes to `@te-river/opencode-team-mode` are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
-versioning is semver, with the working-label "1.5.0" feature train shipped
-under 1.4.x patch slots (the registry never saw a 1.5.0).
+versioning is semver (the 1.4.x train shipped under working labels; the
+registry saw 1.5.0 as the install-script fix release).
 
 ## [Unreleased]
+
+## [1.5.1] - 2026-09-08
+
+### Changed
+- The npm package now also ships `README.zh-CN.md` (the `files` field had
+  omitted it; the bilingual README pair is repo convention).
 
 ### Added
 - **JIT layer-2 tools (T1.2 + T1.3 + T1.4)**: the plugin now statically

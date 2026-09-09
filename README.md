@@ -218,10 +218,10 @@ In **OpenCode Desktop**, you get additional UX benefits:
 
 ---
 
-## 🧯 Context governance (tm_* + R6) — on `main`, shipping next release
+## 🧯 Context governance (tm_* + R6) — new in v1.5.1
 
-> ⚠️ Implemented and merged on `main`; **not yet published to npm** — the
-> registry's `@latest` does not contain these yet.
+> ⚠️ Requires `@te-river/opencode-team-mode@1.5.1` or later (released
+> 2026-09-08). If your config pins `@latest`, OpenCode upgrades on next start.
 
 **JIT layer-2 tools (`tm_read` / `tm_grep` / `tm_bash` / `tm_fetch`).**
 Large tool outputs are context cost's main driver: every step re-sends the
@@ -284,7 +284,7 @@ opencode-team-mode/
 
 1. OpenCode Desktop starts and loads `opencode.json(c)`.
 2. It sees `"@te-river/opencode-team-mode@latest"` in the `plugin` array and loads the npm package.
-3. The loader calls the plugin's `server(input, options)`, which registers a `config` hook; the hook injects 6 agents and 6 commands into the merged config. The same call installs the R6 `tool.execute.before` guard and registers the governed `tm_*` tools (see [Context governance](#-context-governance-tm--r6--on-main-shipping-next-release) below).
+3. The loader calls the plugin's `server(input, options)`, which registers a `config` hook; the hook injects 6 agents and 6 commands into the merged config. The same call installs the R6 `tool.execute.before` guard and registers the governed `tm_*` tools (see [Context governance](#-context-governance-tm--r6--new-in-v151) below).
 4. The plugin's `id: "team-mode"` is displayed as the plugin name in the Desktop UI.
 5. Agents and commands are immediately available in the Desktop UI — no file copying needed. User-defined agents with the same name always win (the plugin never clobbers them).
 
