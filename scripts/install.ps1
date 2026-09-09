@@ -5,7 +5,8 @@
 #   irm https://ghproxy.net/https://raw.githubusercontent.com/Te-River/Opencode-TeamMode/main/scripts/install.ps1 | iex
 #
 # What it does:
-#   Adds @te-river/opencode-team-mode@latest to ~/.config/opencode/opencode.jsonc.
+#   Adds @te-river/opencode-team-mode@latest to ~/.config/opencode/opencode.jsonc
+#   (falls back to opencode.json when only that one exists).
 #   OpenCode will auto-install the package on next startup (via Bun).
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -23,6 +24,9 @@ Write-Host ""
 # ── patch config ────────────────────────────────────────────────────────────
 $CFG_DIR = Join-Path $env:USERPROFILE ".config\opencode"
 $CFG_FILE = Join-Path $CFG_DIR "opencode.jsonc"
+if ((-not (Test-Path $CFG_FILE)) -and (Test-Path (Join-Path $CFG_DIR "opencode.json"))) {
+    $CFG_FILE = Join-Path $CFG_DIR "opencode.json"
+}
 
 if (-not (Test-Path $CFG_DIR)) {
     New-Item -ItemType Directory -Path $CFG_DIR -Force | Out-Null
@@ -51,34 +55,58 @@ if (-not (Test-Path $CFG_FILE)) {
         # Use Node.js for safe JSON manipulation (embedded script)
         $nodeScript = @'
 const fs = require('fs');
-const path = process.argv[2];
+const file = process.argv[2];
 const pkg = process.argv[3];
-let content = fs.readFileSync(path, 'utf8');
+let content = fs.readFileSync(file, 'utf8');
 
 if (content.includes(pkg)) {
   console.log('OK  Plugin already registered');
-} else if (/"plugin"\s*:\s*\[/.test(content)) {
-  const match = content.match(/"plugin"\s*:\s*\[/);
-  if (!match) { console.error('ERR Cannot parse plugin array'); process.exit(1); }
-  let idx = match.index + match[0].length;
-  let depth = 1;
-  while (depth > 0 && idx < content.length) {
-    if (content[idx] === '[') depth++;
-    if (content[idx] === ']') depth--;
-    idx++;
-  }
-  idx--;
-  const before = content.slice(0, idx).trimEnd();
-  const after = content.slice(idx);
-  const needsComma = before.endsWith(',') ? '' : ',';
-  content = before + needsComma + '\n    "' + pkg + '"\n  ' + after;
-  fs.writeFileSync(path, content);
-  console.log('OK  Plugin added');
-} else {
+  process.exit(0);
+}
+const m = content.match(/"plugin"\s*:\s*\[/);
+if (!m) {
   console.error('ERR No plugin array found. Please add manually:');
   console.error('  "plugin": ["' + pkg + '"]');
   process.exit(1);
 }
+// String- and comment-aware scan: find the array's closing bracket and the
+// end of its last element (handles nested tuples, // and block comments).
+const open = m.index + m[0].length;
+let i = open, depth = 1, lastValEnd = -1;
+let inStr = false, esc = false, lineC = false, blockC = false;
+while (i < content.length) {
+  const c = content[i];
+  if (lineC) { if (c === '\n') lineC = false; }
+  else if (blockC) { if (c === '*' && content[i + 1] === '/') { blockC = false; i++; } }
+  else if (inStr) {
+    if (esc) esc = false;
+    else if (c === '\\') esc = true;
+    else if (c === '"') { inStr = false; if (depth === 1) lastValEnd = i + 1; }
+  }
+  else if (c === '/' && content[i + 1] === '/') lineC = true;
+  else if (c === '/' && content[i + 1] === '*') { blockC = true; i++; }
+  else if (c === '"') inStr = true;
+  else if (c === '[' || c === '{') depth++;
+  else if (c === ']' || c === '}') {
+    depth--;
+    if (depth === 0) break;
+    if (depth === 1) lastValEnd = i + 1;
+  }
+  i++;
+}
+if (depth !== 0) { console.error('ERR Unbalanced plugin array'); process.exit(1); }
+if (lastValEnd >= 0) {
+  let j = lastValEnd;
+  const close = i;
+  while (j < close && /\s/.test(content[j])) j++;
+  const at = (j < close && content[j] === ',') ? j + 1 : lastValEnd;
+  const comma = at === lastValEnd ? ',' : '';
+  content = content.slice(0, at) + comma + '\n    "' + pkg + '"' + content.slice(at);
+} else {
+  content = content.slice(0, open) + '\n    "' + pkg + '"' + content.slice(open);
+}
+fs.writeFileSync(file, content);
+console.log('OK  Plugin added');
 '@
         $nodeScriptPath = "$env:TEMP\install-teammode.js"
         [IO.File]::WriteAllText($nodeScriptPath, $nodeScript, (New-Object System.Text.UTF8Encoding($false)))

@@ -86,7 +86,24 @@ registry saw 1.5.0 as the install-script fix release).
   effective in every non-off mode). Assertions in the new
   `test-envprotect.mjs` (now part of `npm test`).
 
+### Fixed
+- **Installer scripts hardened** (`scripts/install.sh` /
+  `scripts/install.ps1`; shared embedded-Node core is now string- and
+  comment-aware): the old bracket-counting + naive `needsComma` splice could
+  corrupt configs in two reachable cases — an empty plugin array
+  (`"plugin": []` gained a leading comma → invalid JSON) and a trailing
+  `//` comment inside the array (the comma landed after the comment →
+  missing separator). Nested tuple entries, trailing commas and block
+  comments now scan correctly; re-runs are idempotent; a config without a
+  plugin array fails clean (exit 1, file untouched). The scripts also fall
+  back to `opencode.json` when only that file exists (previously they would
+  create a stray `opencode.jsonc` next to it). Verified by a sandbox
+  harness: 8/8 fixture cases, sh/ps cores byte-identical.
+
 ## [1.5.0]
+
+- Install-script fix release: embedded Node.js config patching, plugin
+  appended at array end (no functional plugin changes).
 
 ## [1.4.9] — 2026-09-06
 
