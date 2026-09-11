@@ -127,7 +127,7 @@ export function classifyReadonlyCommand(
   if (/(>>|>|&>|<>)/.test(noQuote)) {
     return allowVerdict(
       "只读模式禁止输出重定向（>/>>）",
-      "去掉重定向只看输出；需要写文件请向 HUMAN 申请使用内置 bash",
+      "去掉重定向只看输出；需要写文件请改用内置 bash（危险操作会弹官方确认框审批），无 bash 权限则向 HUMAN 申请",
     )
   }
 
@@ -141,7 +141,7 @@ export function classifyReadonlyCommand(
   if (/\$\(|`|<\(|>\(/.test(blankSingleQuoted(noDup))) {
     return allowVerdict(
       "只读模式禁止命令替换（$() / 反引号 / <() / >()）",
-      "命令替换会执行任意命令；改用管道组合只读命令，或向 HUMAN 申请",
+      "命令替换会执行任意命令；改用管道组合只读命令，或改用内置 bash 执行（将弹官方确认框审批）",
     )
   }
 
@@ -156,7 +156,7 @@ export function classifyReadonlyCommand(
     if (assignment) {
       return allowVerdict(
         "只读模式禁止环境变量赋值前缀（VAR=value cmd）",
-        "BASH_ENV/LD_PRELOAD/PATH 等赋值前缀可借白名单头执行任意脚本；去掉赋值前缀，或向 HUMAN 申请",
+        "BASH_ENV/LD_PRELOAD/PATH 等赋值前缀可借白名单头执行任意脚本；去掉赋值前缀，或改用内置 bash 执行（将弹官方确认框审批）",
       )
     }
     if (!head) continue
@@ -164,7 +164,7 @@ export function classifyReadonlyCommand(
     if (!allow(base)) {
       return allowVerdict(
         `命令 "${shorten(base, 40)}" 不在 tm_bash 只读白名单内`,
-        "改用白名单只读命令（ls/cat/head/tail/grep/rg/find/awk/sort/uniq/wc/cut/dir/Get-Content/Get-ChildItem/Select-String/Measure-Object），或向 HUMAN 申请批准",
+        "改用白名单只读命令（ls/cat/head/tail/grep/rg/find/awk/sort/uniq/wc/cut/dir/Get-Content/Get-ChildItem/Select-String/Measure-Object）；需要执行删除/网络/安装/进程等危险命令请改用内置 bash（将弹官方确认框审批），无 bash 权限则向 HUMAN 申请批准",
       )
     }
   }

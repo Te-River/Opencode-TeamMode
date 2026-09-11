@@ -19,9 +19,19 @@ import * as os from "node:os"
 import * as path from "node:path"
 
 const plugin = (await import("./dist/index.js")).default
+const ep = await import("./dist/envprotect.js")
 
 const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "da-test-"))
-const input = { directory: workspace, project: workspace }
+/* client with the v1 permission-reply path: the approval gate only arms for
+ * such a client, and only then does the config hook inject the FULL bash ask
+ * object (R6 env face included — the dead-popup guard drops it otherwise),
+ * so §6's deep-equality against bashAskPatterns("strict") pins the capable
+ * host shape */
+const capableClient = () => ({
+  app: { log() {} },
+  postSessionIdPermissionsPermissionId: () => Promise.resolve({ data: true }),
+})
+const input = { directory: workspace, project: workspace, client: capableClient() }
 
 const freshHooks = (options) => plugin.server(input, options)
 
@@ -121,6 +131,115 @@ console.log("1. default_agent promotion matrix: OK (opt-out default; custom/plan
   assert.ok(!resolvedRoot.startsWith(realRepo), "real repo .git/opencode-team must NOT be the active board")
   fs.rmSync(workspace, { recursive: true, force: true })
   console.log("5. isolation: OK (board root = tmpdir fallback; repo board untouched; temp cleaned)")
+}
+
+/* ---------- 6. tool whitelist: six agents carry the T0.4③ probe shape
+   (T2.1, as revised by the T2.1 review: bash back on execution roles) ---------- */
+{
+  const cfg = {}
+  const hooks = await freshHooks(undefined)
+  await hooks.config(cfg)
+
+  // Built-ins never allowed on any agent (G2 方案甲: glob/list excluded,
+  // enumeration goes through tm_bash; P5: webfetch/websearch excluded).
+  // NOTE: bash is NOT in this list — the T2.1 review restored it for the
+  // execution roles (tm_bash is a read-only allowlist: no npm test/tsc).
+  const neverAllowed = [
+    "read", "grep", "glob", "list", "apply_patch",
+    "webfetch", "websearch", "todowrite", "lsp", "skill", "question",
+  ]
+  // Built-ins whose slot varies per agent; ungranted -> denied.
+  const perAgent = ["edit", "write", "task", "bash"]
+  // The four governed tools, named explicitly next to the tm_* wildcard.
+  const tmTools = ["tm_read", "tm_grep", "tm_bash", "tm_fetch"]
+  // Revised T2.1 matrix: bash on execution roles only; architect/researcher
+  // stay bash-free (unchanged from the pre-T2.1 posture).
+  // The unified approval gate escalates the execution roles' bare
+  // `bash: "allow"` into a pattern object so the host confirmation dialog
+  // gates the R6 env face + R2 danger face; default `*` stays allow so the
+  // T2.1 grant itself is unchanged.  Same builder the config hook uses, so
+  // the deep-equality below cannot drift from the runtime shape.
+  const BASH_ASK = ep.bashAskPatterns("strict")
+  const grants = {
+    team: ["task", "edit", "write", "bash"],
+    architect: ["task"],
+    implementer: ["edit", "write", "bash"],
+    reviewer: ["task", "bash"],
+    tester: ["edit", "write", "bash"],
+    researcher: [],
+  }
+
+  for (const [name, granted] of Object.entries(grants)) {
+    const perm = cfg.agent[name].permission
+    assert.ok(perm && typeof perm === "object", name + ": whitelist (permission block) present")
+
+    const expected = {}
+    for (const t of neverAllowed) expected[t] = "deny"
+    for (const t of perAgent) {
+      if (t === "bash") expected[t] = granted.includes(t) ? BASH_ASK : "deny"
+      else expected[t] = granted.includes(t) ? "allow" : "deny"
+    }
+    for (const t of tmTools) expected[t] = "allow"
+    expected["tm_*"] = "allow"
+    const allowCount = granted.length + tmTools.length + 1 // granted + tm tools + wildcard
+    assert.deepStrictEqual(
+      perm, expected,
+      name + ": whitelist content exact (" + allowCount + " allow entries / " +
+        Object.keys(expected).length + " keys)",
+    )
+
+    // dispatch-mandated explicit checks on top of deep-equality
+    for (const t of ["read", "grep", "glob", "list", "webfetch", "websearch"]) {
+      assert.notEqual(perm[t], "allow", name + ": " + t + " must not be whitelisted")
+    }
+    for (const t of tmTools) {
+      assert.equal(perm[t], "allow", name + ": governed tool " + t + " allowed explicitly")
+    }
+    assert.equal(perm["tm_*"], "allow", name + ": governed tm_* tools allowed")
+  }
+
+  // T2.1 review fix (Critical) + unified approval gate: execution roles keep
+  // bash, now as an ask-pattern object (default `*` allow); read-only roles
+  // stay `deny`.  The tester's stack (npm test / tsc) and the lead's probes
+  // are NOT in the ask set, so they never pop; env + dangerous shapes do.
+  for (const name of ["team", "implementer", "reviewer", "tester"]) {
+    const bash = cfg.agent[name].permission.bash
+    assert.equal(typeof bash, "object", name + ": bash is the gated pattern object (execution role)")
+    assert.equal(bash["*"], "allow", name + ": default stays allow (T2.1 grant preserved)")
+    assert.equal(bash["printenv *"], "ask", name + ": R6 env face escalates to ask")
+    assert.equal(bash["rm *"], "ask", name + ": R2 danger face escalates to ask")
+    assert.equal(bash["git push"], "ask", name + ": bare git push in the ask set (M3)")
+    assert.equal(bash["npm publish"], "ask", name + ": bare npm publish in the ask set (M3)")
+  }
+  for (const name of ["architect", "researcher"]) {
+    assert.equal(cfg.agent[name].permission.bash, "deny", name + ": bash denied (read-only role)")
+  }
+
+  // Round-fix (dead-popup guard): a server() WITHOUT a reply-capable client
+  // cannot arm the approval gate, so its config hook drops the R6 env ask
+  // face (an env read would hard-throw behind a dialog that can never be
+  // satisfied) while the R2 danger face — whose dialog is its own gate —
+  // stays present.
+  {
+    const hooksNoGate = await plugin.server({ directory: workspace, project: workspace }, {})
+    const cfgNo = {}
+    await hooksNoGate.config(cfgNo)
+    const bashNo = cfgNo.agent.tester.permission.bash
+    assert.equal(bashNo["printenv *"], undefined, "no-gate host: R6 env face not injected")
+    assert.equal(bashNo["Get-ChildItem env:*"], undefined, "no-gate host: PS drive face off too")
+    assert.equal(bashNo["rm *"], "ask", "no-gate host: R2 face stays")
+    assert.equal(bashNo["*"], "allow", "no-gate host: T2.1 grant intact")
+  }
+
+  // T2.1 review fix (Major): team got edit back so the lead's "<=10-line
+  // direct edit" promise (prompt: When you may edit directly) is executable.
+  assert.equal(cfg.agent.team.permission.edit, "allow", "team: edit allowed (non-product direct edits)")
+
+  // researcher: dangling websearch:allow (T0.3) gone — deny, never allow
+  assert.equal(cfg.agent.researcher.permission.websearch, "deny", "researcher: websearch residue removed")
+  assert.equal(cfg.agent.researcher.permission.webfetch, "deny", "researcher: webfetch denied (P5 network zero)")
+
+  console.log("6. tool whitelist: OK (revised T2.1 matrix: bash on execution roles, team edit restored, tm tools explicit + wildcard)")
 }
 
 console.log("\nALL DEFAULT-AGENT TESTS PASSED ✅")

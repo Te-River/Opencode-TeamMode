@@ -218,7 +218,7 @@ In **OpenCode Desktop**, you get additional UX benefits:
 
 ---
 
-## 🧯 Context governance (tm_* + R6) — new in v1.5.1
+## 🧯 Context governance (tm_* + R6 + R2) — new in v1.5.1
 
 > ⚠️ Requires `@te-river/opencode-team-mode@1.5.1` or later (released
 > 2026-09-08). If your config pins `@latest`, OpenCode upgrades on next start.
@@ -235,18 +235,56 @@ HMAC-signed, run-scoped, expiring handle. `tm_bash` only allows read-only
 commands (allowlist), and failures come back as structured errors instead of
 raw dumps.
 
-**R6 environment protection.** With TeamMode active, env-var reads by the
-model are blocked at the tool layer: env dump commands (`printenv`,
-`Get-ChildItem env:`, …), `$env:` / `$VAR` / `${VAR}` expansions, and env
-files (`.env`, shell rc files). The model sees a structured refusal and can
-ask the human instead; tm_* wrappers route through the same checks (no
-backdoor via the wrappers). Audit lines record only tool name + pattern
-category — never command text, paths, variable names or values.
+**R6 environment protection (now an approval gate).** With TeamMode active,
+the model cannot read environment variables silently. Env-var reads
+(`printenv`, `env`, `Get-ChildItem env:`, …) and env files (`.env`, shell rc
+files) route through OpenCode's **official confirmation dialog**: you get a
+native prompt to approve or deny, and an unanswered prompt is **auto-rejected
+after `TM_ASK_TIMEOUT_MIN` (default 10 min)** — the plugin only ever rejects
+on timeout, never approves on the model's behalf. Env reads that no wildcard
+can express (embedded `$VAR` / `${VAR}` / `$env:` inside another command,
+command substitution, subshell/escaped forms) and the `tm_*` wrapper channel
+stay a **hard block** (no dialog to slip through). tm_* wrappers route through
+the same checks (no backdoor via the wrappers). Audit lines record only tool
+name + pattern category + the verdict (`ask` / `allowed-once` /
+`allowed-always` / `rejected` / `timeout-rejected` / `degraded`) — never
+command text, paths, variable names or values.
+
+**R2 dangerous operations (same dialog).** Delete (`rm`/`del`/`Remove-Item`/
+`rmdir`), git publishing (`git push`/`git commit`), network fetch (`curl`/
+`wget`/`Invoke-WebRequest`/`Invoke-RestMethod`), package installs/publishes
+(`npm install`/`npm publish`/`pip install`/`winget`/`choco`), process/system
+(`taskkill`/`Stop-Process`/`kill`/`shutdown`/`format`) and privilege changes
+(`chmod`/`takeown`/`icacls`) — none are silently allowed. They pop the same
+official dialog and are auto-rejected if you don't answer within the timeout.
+The normal verification stack (`npm test`, `tsc`, `git status`/`diff`) is NOT
+gated, so day-to-day team work runs without interruption.
+
+> ⚠️ **When you approve a dialog, pick "once" — not "always".** Verified on
+> the live host, "always" records a far broader rule than the command you
+> saw: approving `Get-ChildItem env:PATH` with "always" stores `Get-ChildItem
+> *`, so every later `Get-ChildItem` runs with no dialog at all. Only the
+> once-verdict keeps each gated operation individually human-checked.
+
+> Deferral is per-session: env reads only route to the dialog in sessions
+> running TeamMode's injected agents (or after such a session has shown one
+> of these dialogs). In any other session (e.g. a stock `build`/`plan` chat)
+> TeamMode's guard keeps hard-blocking env reads, since no dialog would back
+> them there. Compound commands (`a; b`) are evaluated per segment by the
+> host and approved through one dialog; the guard blocks them outright
+> whenever any segment is an env read.
+
+> The permission protocol was verified against a live `opencode serve` host
+> (1.18.29) via SSE event capture; the Desktop dialog rendering itself is the
+> one leg that still needs eyeballing in a real Desktop session. Headless
+> `opencode run` auto-rejects an unanswered `ask` immediately (there is no
+> human to prompt).
 
 | Env var | Default | Purpose |
 |---|---|---|
-| `TM_ENV_PROTECT` | `strict` | R6 mode: `strict` / `standard` / `off` |
-| `TM_ENV_PROTECT_EXTRA_DENY` | — | extra block patterns (regex list) |
+| `TM_ENV_PROTECT` | `strict` | R6 mode: `strict` / `standard` / `off` (off also disarms the approval timer) |
+| `TM_ASK_TIMEOUT_MIN` | `10` | minutes before an unanswered R6/R2 confirmation dialog is auto-rejected |
+| `TM_ENV_PROTECT_EXTRA_DENY` | — | extra block patterns (regex list; always a hard block, never dialog-governed) |
 | `TM_OFFLOAD_THRESHOLD` | `2000` | offload threshold (tokens, chars/4 estimate) |
 | `TM_PREVIEW_MAX_TOKENS` | `80` | preview hard cap |
 | `TM_FETCH_MAX_LINES` | `2000` | tm_fetch page cap |
@@ -264,11 +302,12 @@ opencode-team-mode/
 ├── package.json          ← npm package definition
 ├── tsconfig.json         ← TypeScript config
 ├── src/
-│   ├── index.ts          ← Plugin entry (server(): config + R6 tool.execute.before + tool segment)
+│   ├── index.ts          ← Plugin entry (server(): config + R6 tool.execute.before + approval-gate event + tool segment)
 │   ├── agents.ts         ← Agent definitions (prompts, modes, colors)
 │   ├── commands.ts       ← Command definitions (templates, agent bindings)
 │   ├── blackboard.ts     ← Shared blackboard + TTL auto-cleanup sweeper
-│   ├── envprotect.ts     ← R6 env-var read protection (pattern engine + hook)
+│   ├── envprotect.ts     ← R6 env-var read protection + R2 ask-pattern sets (dialog vs hard-block)
+│   ├── approval-gate.ts  ← Unified approval gate: host-dialog timeout auto-reject (never self-allows)
 │   ├── tm/               ← JIT layer-2 tools (tm_read / tm_grep / tm_bash / tm_fetch)
 │   └── types.ts          ← Loader-contract type definitions (1.18.x)
 ├── scripts/
@@ -284,7 +323,7 @@ opencode-team-mode/
 
 1. OpenCode Desktop starts and loads `opencode.json(c)`.
 2. It sees `"@te-river/opencode-team-mode@latest"` in the `plugin` array and loads the npm package.
-3. The loader calls the plugin's `server(input, options)`, which registers a `config` hook; the hook injects 6 agents and 6 commands into the merged config. The same call installs the R6 `tool.execute.before` guard and registers the governed `tm_*` tools (see [Context governance](#-context-governance-tm--r6--new-in-v151) below).
+3. The loader calls the plugin's `server(input, options)`, which registers a `config` hook; the hook injects 6 agents and 6 commands into the merged config. The same call installs the R6 `tool.execute.before` guard, arms the unified R6/R2 approval gate (official dialog + `TM_ASK_TIMEOUT_MIN` auto-reject, wired through an `event` hook), and registers the governed `tm_*` tools (see [Context governance](#-context-governance-tm--r6--r2--new-in-v151) below).
 4. The plugin's `id: "team-mode"` is displayed as the plugin name in the Desktop UI.
 5. Agents and commands are immediately available in the Desktop UI — no file copying needed. User-defined agents with the same name always win (the plugin never clobbers them).
 

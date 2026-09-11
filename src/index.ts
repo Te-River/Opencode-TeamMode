@@ -29,7 +29,7 @@
  *                    mutually exclusive by the server's sort).
  */
 
-import type { OpenCodePlugin, OpenCodeConfig } from "./types.js"
+import type { OpenCodePlugin, OpenCodeConfig, PermissionEvent, HostEvent } from "./types.js"
 import { agents } from "./agents.js"
 import { commands } from "./commands.js"
 import {
@@ -41,7 +41,13 @@ import {
   createEnvProtectHook,
   parseExtraDeny,
   resolveEnvProtectMode,
+  bashAskPatterns,
 } from "./envprotect.js"
+import {
+  createApprovalGate,
+  resolveAskTimeoutMs,
+  hasPermissionReplyCapability,
+} from "./approval-gate.js"
 import { createTmTools } from "./tm/index.js"
 
 /** Runtime addendum to the team prompt: concrete board + TTL (hybrid mode). */
@@ -86,10 +92,38 @@ const plugin: OpenCodePlugin = {
     // that and are out of scope of the protection.
     const envProtectMode = resolveEnvProtectMode(process.env.TM_ENV_PROTECT)
     const envProtectExtra = parseExtraDeny(process.env.TM_ENV_PROTECT_EXTRA_DENY)
+
+    // ---------- unified approval gate (R6 env face + R2 danger face) ----------
+    // Layer 2: ONE timer that auto-REJECTS unanswered official-dialog requests
+    // after TM_ASK_TIMEOUT_MIN and (Layer 3) fails closed if the SDK reply is
+    // broken.  Armed ONLY when R6 is not off AND the client exposes a
+    // permission-reply path — otherwise there is no live auto-reject and the
+    // R6 hook must keep hard-throwing every env read (fail-closed).
+    const approvalGate =
+      envProtectMode !== "off" && hasPermissionReplyCapability(input?.client)
+        ? createApprovalGate({
+            client: input?.client,
+            timeoutMs: resolveAskTimeoutMs(process.env),
+          })
+        : null
+    if (approvalGate) approvalGate.start()
+
+    // Sessions are only allowed to DEFER expressible env reads to the dialog
+    // once the gate registered them as carrying our injected bash ask set
+    // (reviewer C1: a global isArmed() deferral let stock build/plan agents
+    // run printenv silently).  The authoritative source of that fact is the
+    // config hook below: it records exactly which agents got the escalated
+    // ask object, and a `message.updated`/`chat.message` user prompt routed
+    // to one of those agents registers its session (live-proven ordering:
+    // the user message event arrives before the session's first
+    // tool.execute.before, while permission.asked arrives AFTER it).
+    const injectedExecAgents = new Set<string>()
+
     const envProtectHook = createEnvProtectHook(
       input?.client,
       envProtectMode,
       envProtectExtra,
+      { deferToApproval: (sessionID?: string) => approvalGate?.canDefer(sessionID) ?? false },
     )
 
     // ---------- JIT layer-2 tools (tm_read / tm_grep / tm_bash / tm_fetch) ----------
@@ -106,13 +140,31 @@ const plugin: OpenCodePlugin = {
       // ---------- v1 config hook: inject agents & commands ----------
       config(cfg: OpenCodeConfig) {
         if (!cfg.agent) cfg.agent = {}
+        // Execution roles carry permission.bash === "allow"; escalate it to a
+        // pattern object so the host opens its official confirmation dialog
+        // for the R6 env face + R2 danger face (default `*` stays allow).  A
+        // shallow copy keeps the module-level `agents` object pristine.  The
+        // R6 env face is only injected while the approval gate can arm: with
+        // no arming client the R6 hook hard-throws env reads BEFORE any
+        // dialog could be satisfied, so those patterns would be dead popups.
+        const bashAsk = bashAskPatterns(envProtectMode, approvalGate !== null)
         for (const [name, def] of Object.entries(agents)) {
           // Respect user-defined overrides: never clobber an existing entry.
           if (cfg.agent[name]) continue
+          const permission = def.permission
+            ? {
+                ...def.permission,
+                ...(def.permission.bash === "allow" ? { bash: bashAsk } : null),
+              }
+            : def.permission
           cfg.agent[name] = {
             ...def,
+            permission,
             prompt: name === "team" ? (def.prompt ?? "") + note : def.prompt,
           }
+          // deferral-registry seed: agents that ACTUALLY carry our escalated
+          // bash ask object (user-overridden agents never get added)
+          if (def.permission && def.permission.bash === "allow") injectedExecAgents.add(name)
         }
 
         if (!cfg.command) cfg.command = {}
@@ -130,6 +182,49 @@ const plugin: OpenCodePlugin = {
 
       // ---------- R6: block the model's env-var read paths in code ----------
       "tool.execute.before": envProtectHook,
+
+      // ---------- unified approval gate: watch the host permission dialog ---
+      event: ({ event }: { event: HostEvent }) => {
+        if (!approvalGate) return
+        // Pre-tool session registration: the live host emits message.updated
+        // with the full UserMessage ({ sessionID, role:"user", agent }) when
+        // a prompt enters a session — BEFORE any tool.execute.before of that
+        // turn, which is exactly when the R6 hook needs to know the session
+        // carries our injected ask set (permission.asked only fires AFTER
+        // the hook, so it can never be the first-command registration).
+        if (event?.type === "message.updated") {
+          const info = event.properties?.info as
+            | { sessionID?: unknown; role?: unknown; agent?: unknown }
+            | undefined
+          if (
+            info &&
+            info.role === "user" &&
+            typeof info.agent === "string" &&
+            typeof info.sessionID === "string" &&
+            injectedExecAgents.has(info.agent)
+          ) {
+            approvalGate.registerExecSession(info.sessionID)
+          }
+          return
+        }
+        approvalGate.handleEvent(event as PermissionEvent)
+      },
+      // secondary registration channel (official 1.18.x contract; the event
+      // route above is the one verified against the live 1.18.29 bus)
+      "chat.message": (input: { sessionID?: string; agent?: string }) => {
+        if (!approvalGate) return
+        if (
+          input &&
+          typeof input.sessionID === "string" &&
+          typeof input.agent === "string" &&
+          injectedExecAgents.has(input.agent)
+        ) {
+          approvalGate.registerExecSession(input.sessionID)
+        }
+      },
+      dispose: () => {
+        approvalGate?.dispose()
+      },
 
       // ---------- JIT layer-2: tm_read / tm_grep / tm_bash / tm_fetch ----------
       tool: tmRuntime.tools,

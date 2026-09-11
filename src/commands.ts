@@ -97,7 +97,7 @@ If no specific scope is given, identify the most recently modified source files 
 /* ------------------------------------------------------------------ */
 const teamResearch: CommandConfig = {
   description:
-    "Research a topic — libraries, APIs, best practices, or documentation.",
+    "Research a topic — grounded in the local repository (code, configs, installed packages, shipped docs).",
   agent: "researcher",
   template: `Research the following topic and provide actionable findings.
 
@@ -108,9 +108,9 @@ $ARGUMENTS
 1. **Summary** — Key findings in 2-3 sentences.
 2. **Details** — Structured findings with sources.
 3. **Recommendation** — What the team should do, with trade-offs.
-4. **Sources** — Links or file paths consulted.
+4. **Sources** — Local file paths consulted (file:line).
 
-Cite your sources.  Do not fabricate URLs or API details.`,
+Cite your sources with file:line paths.  Do not fabricate APIs or citations.`,
 }
 
 /* ------------------------------------------------------------------ */

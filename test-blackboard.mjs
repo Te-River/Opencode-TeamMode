@@ -14,6 +14,7 @@ import * as path from "node:path"
 
 const bb = await import("./dist/blackboard.js")
 const plugin = (await import("./dist/index.js")).default
+const ep = await import("./dist/envprotect.js")
 
 /* ---------- 1. resolveTtlMs ---------- */
 assert.equal(bb.resolveTtlMs(), bb.DEFAULT_TTL_MS, "default = 5d")
@@ -114,7 +115,15 @@ const cfg = { $schema: "https://opencode.ai/config.json", plugin: [] }
 assert.equal(plugin.id, "team-mode", "display id")
 assert.equal(typeof plugin.server, "function", "v1 loader gate: server() present")
 assert.ok(!("setup" in plugin), "no dead setup property (1.18.x loader ignores it)")
-const hooks = await plugin.server({ directory: process.cwd(), project: process.cwd() }, { ttlDays: 9 })
+/* the approval gate only arms for a client with a permission-reply path —
+ * the v1 surface is postSessionIdPermissionsPermissionId (live-probed);
+ * without it the config hook drops the R6 env ask face (dead-popup guard),
+ * so the full ask-object contract below is pinned on a capable client */
+const capableClient = () => ({
+  app: { log() {} },
+  postSessionIdPermissionsPermissionId: () => Promise.resolve({ data: true }),
+})
+const hooks = await plugin.server({ directory: process.cwd(), project: process.cwd(), client: capableClient() }, { ttlDays: 9 })
 assert.equal(typeof hooks.config, "function", "server returns { config } hooks")
 await hooks.config(cfg)
 
@@ -136,6 +145,20 @@ for (const [name, a] of Object.entries(cfg.agent)) {
   assert.ok(a.permission && typeof a.permission === "object", name + ": v1 permission object")
 }
 const EXPERTS = ["architect", "implementer", "reviewer", "tester", "researcher"]
+/* T2.1 whitelist (as revised by the T2.1 review): edit/write granted only
+ * to implementer + tester; bash granted to the execution roles
+ * (implementer / reviewer / tester, plus the team lead) so npm test / tsc /
+ * --help probes actually run; architect + researcher stay bash-free —
+ * intentional trimming, their work is pure reading.  Roles without
+ * edit/write ride the BLACKBOARD WRITE FAILED inline fallback for
+ * oversized board artifacts. */
+const EDIT_GRANTED = ["implementer", "tester"]
+const BASH_GRANTED = ["implementer", "reviewer", "tester"]
+// Execution roles no longer get a bare `bash: "allow"`: the config hook
+// escalates it to a pattern object so the host confirmation dialog gates the
+// R6 env face + R2 danger face (default `*` stays allow — the T2.1 grant is
+// preserved, only dangerous shapes now ask).  Same builder the runtime uses.
+const BASH_ASK = ep.bashAskPatterns("strict")
 for (const expert of EXPERTS) {
   const a = cfg.agent[expert]
   assert.equal(a.mode, "subagent", expert + " is subagent")
@@ -143,10 +166,32 @@ for (const expert of EXPERTS) {
   assert.ok(a.prompt.includes("STATUS:"), expert + " reply skeleton opener")
   assert.ok(a.prompt.includes("HANDOFF:"), expert + " handoff field")
   assert.ok(a.prompt.includes("Never hand the full deliverable back"), expert + " blocks transcribe-escape")
-  assert.equal(a.permission.edit, "allow", expert + " edit allowed (for blackboard)")
+  assert.equal(
+    a.permission.edit,
+    EDIT_GRANTED.includes(expert) ? "allow" : "deny",
+    expert + " edit slot matches whitelist (board writes only where granted)",
+  )
+  assert.deepStrictEqual(
+    a.permission.bash,
+    BASH_GRANTED.includes(expert) ? BASH_ASK : "deny",
+    expert + " bash slot matches execution-role matrix (ask-object on exec roles)",
+  )
+  assert.equal(a.permission["tm_*"], "allow", expert + " governed tm_* tools whitelisted")
   assert.equal(a.temperature, 0.2, expert + " low-temperature format discipline")
 }
 assert.equal(cfg.agent["architect"].permission.bash, "deny", "architect stays bash-denied")
+assert.deepStrictEqual(cfg.agent["team"].permission.bash, BASH_ASK, "lead bash escalated to the ask object (discovery-gate probes stay allow, dangerous shapes ask)")
+/* dead-popup guard (round-fix): with NO reply-capable client the gate cannot
+ * arm, so the config hook drops the R6 env ask face (the R6 hook would
+ * hard-throw every env read before such a dialog could ever be satisfied)
+ * while the R2 danger face stays — its dialog is its own gate */
+const hooksNoGate = await plugin.server({ directory: process.cwd(), project: process.cwd() }, { ttlDays: 9 })
+const cfgNoGate = {}
+await hooksNoGate.config(cfgNoGate)
+assert.equal(cfgNoGate.agent.team.permission.bash["printenv *"], undefined, "no R6 env ask face while the gate cannot arm")
+assert.equal(cfgNoGate.agent.team.permission.bash["rm *"], "ask", "R2 danger face independent of gate arming")
+assert.equal(cfgNoGate.agent.team.permission.bash["*"], "allow", "T2.1 grant intact either way")
+assert.equal(cfg.agent["team"].permission.edit, "allow", "lead edit allowed (<=10-line non-product edits)")
 assert.equal(cfg.agent["team"].permission.task, "allow", "lead task dispatch allowed")
 assert.equal(Object.keys(cfg.agent).length, 6, "exactly 6 agents injected")
 assert.equal(Object.keys(cfg.command).length, 6, "exactly 6 commands injected")
@@ -247,6 +292,8 @@ for (const expert of EXPERTS) {
   assert.ok(cfg2.agent[expert].prompt.includes("STATUS: done | blocked | failed"), expert + ": skeleton status line")
   assert.ok(cfg2.agent[expert].prompt.includes("Do not re-open"), expert + ": no README/AGENTS.md re-reading")
   assert.ok(cfg2.agent[expert].prompt.includes("## Evidence rule"), expert + ": evidence rule")
+  assert.ok(cfg2.agent[expert].prompt.includes("All file reads / searches / enumeration go through tm_read / tm_grep / tm_bash"), expert + ": removed-tools rule routes reads/search/enumeration to tm_*")
+  assert.ok(cfg2.agent[expert].prompt.includes("removed from the tool surface"), expert + ": anti-retry warning for removed built-ins")
   assert.ok(cfg2.agent[expert].prompt.includes("## Project conventions"), expert + ": README conventions rule")
 }
 /* v1.4.6 fix (kept): fix-mode append contradiction stays dead, round files stay */

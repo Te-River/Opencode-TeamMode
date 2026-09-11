@@ -7,6 +7,91 @@ registry saw 1.5.0 as the install-script fix release).
 
 ## [Unreleased]
 
+### Added
+- **Unified approval gate (R6 env face + R2 danger face → the official
+  OpenCode confirmation dialog)**: instead of the model's env-var reads and
+  dangerous operations being silently hard-thrown in isolation, they now
+  route through the host's native permission popup with a hard timeout.
+  Three layers, contract pinned against the REAL host (1.18.29, live E2E via
+  `opencode serve` + SSE event capture):
+  - **Layer 1 (host-native dialog)** — the four execution roles' bash
+    permission is escalated from a bare `allow` to a pattern object whose
+    default stays `allow` (`"*": "allow"`; the T2.1 grant is preserved).
+    The R6 env-command shapes a wildcard can express (`printenv*`, `env*`,
+    `set`, `export -p`/`declare -p`/`typeset -p`, the PowerShell `env:`
+    drive, `$env:`) and the R2 danger shapes (delete / `git push`/`commit` —
+    bare no-arg shapes included / `curl`/`wget`/`Invoke-*Request` /
+    `npm install`/`publish`/`pip install`/`winget`/`choco` /
+    `taskkill`/`Stop-Process`/`kill`/`shutdown`/`format` /
+    `chmod`/`takeown`/`icacls`) are declared `ask`.  The host evaluates
+    compound commands per `;`/`&&`-style segment and approves the whole line
+    through ONE dialog.  Shapes the grammar cannot express (embedded
+    `${VAR}`/`$ALLCAPS`, `$(printenv)`, subshell/escaped/`time` heads,
+    `VAR=… env`, split `declare -xp`, env-file paths, pathed dump heads
+    like `/usr/bin/env`, and `cmd /c …` launcher heads) KEEP the code-level
+    hard throw, as does the whole `tm_*` governed channel.
+  - **Layer 2 (`src/approval-gate.ts`, one shared timer)** — watches the
+    live host's `permission.asked` events (props carry NO `type` field;
+    the tool name rides in `permission`, command segments in `patterns[]`,
+    `metadata.command`, and the host's `always[]` generalization proposal —
+    the legacy `permission.updated` spelling is also accepted); an
+    unanswered governed request is auto-**rejected** via the SDK after
+    `TM_ASK_TIMEOUT_MIN` (default 10).  The plugin NEVER self-allows — it
+    only ever rejects.  `permission.replied` (which some builds deliver with
+    ONLY `{ sessionID }`) cancels the WHOLE pending set of that session —
+    an already-approved command can never get a second reject on a dead id.
+    Not armed when `TM_ENV_PROTECT=off` or when the client has no
+    permission-reply path — and while the gate cannot arm, the config hook
+    omits the R6 env ask face entirely (no dead popups).
+  - **Session-scoped deferral** — env reads are only passed through to the
+    dialog in sessions REGISTERED as carrying the injected ask set: an
+    exec-role user prompt (`message.updated` / `chat.message`) or an
+    R6-env-classified `asked` event registers the session.  Stock
+    build/plan sessions never register and keep the hard throw — closing
+    the global-bypass hole the earlier `isArmed()` deferral had.  The
+    deferral match is BYTE-EXACT against the injected config globs (no
+    case/trim leniency), so a deferred command is guaranteed to pop the
+    dialog under any host grammar at least as greedy as ours.
+  - **Layer 3 (fallback)** — a failed auto-reject marks the gate degraded,
+    so the R6 hook stops deferring and hard-throws env reads again; the
+    event is audited `degraded`.  SDK failure detection covers the v1
+    `throwOnError:false` `{ error }` envelope (a dead-id 4xx now really
+    flips the gate), not just transport rejections.  Probe finding: the v1
+    `input.client` exposes `postSessionIdPermissionsPermissionId` (reply)
+    but has **no `permission.list` and no create-permission endpoint**
+    (those are v2-only), so `tm_bash` rejections stay a hard block +
+    guidance text pointing at the bash dialog rather than being upgraded to
+    a popup.
+  - Config: `TM_ASK_TIMEOUT_MIN` (minutes, default 10).  Audit stays
+    privacy-safe (tool + coarse category + verdict only — never
+    command/path/var text; out-of-vocabulary reply words are audited
+    `degraded`, never silently `rejected`; a reply that carries no verdict
+    cancels without inventing one).  ⚠️ Host caveat: choosing **"always"**
+    in a dialog records a much BROADER generalization than the command
+    (observed: approving `Get-ChildItem env:PATH` with "always" records
+    `Get-ChildItem *` — every later `Get-ChildItem` run passes with no
+    dialog).  Prefer **"once"**.  Tests: `test-envprotect.mjs` §7
+    (real-host event shapes included), `test-default-agent.mjs` §6,
+    `test-blackboard.mjs`.  The permission protocol was verified live on a
+    1.18.29 `opencode serve` host via SSE capture; Desktop dialog rendering
+    remains the one leg to eyeball in a real Desktop session.
+
+### Changed
+- **Agent tool whitelists (Phase 2 / T2.1, G2 ruling "方案甲")**: all six
+  agents now carry an explicit tool whitelist in their permission block,
+  using the T0.4③-verified probe shape (a "deny" permission removes the
+  built-in from the model's tool surface entirely — zero bypass, zero
+  hallucinated calls).  Every whitelist = the four governed `tm_*` tools
+  plus per-agent grants: team `task`+`write`; architect / reviewer `task`;
+  implementer / tester `edit`+`write`; researcher tm_* only (4 tools — an
+  intentional cut below the 5-7 band: pure local research).  glob/list are
+  excluded per G2 (file enumeration goes through `tm_bash`); webfetch /
+  websearch are excluded network-wide (P5), which also removes
+  researcher's dangling `websearch: allow` (T0.3).  The R6 env-protection
+  hook aliases onto `tm_*` unchanged, so the anti-backdoor chain is not
+  weakened.  Assertions in `test-default-agent.mjs` (§6) and
+  `test-blackboard.mjs`.
+
 ## [1.5.1] - 2026-09-08
 
 ### Changed

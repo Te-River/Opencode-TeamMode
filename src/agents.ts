@@ -23,7 +23,70 @@
  *  - All agents run at temperature 0.2 for format discipline.
  */
 
-import type { AgentConfig } from "./types.js"
+import type { AgentConfig, AgentPermission } from "./types.js"
+
+/* ------------------------------------------------------------------ */
+/*  Tool whitelist builder (Phase 2 / T2.1, G2 ruling "方案甲")        */
+/* ------------------------------------------------------------------ */
+/**
+ * Builds the permission block that IS the agent's tool whitelist.
+ *
+ * Verified live (T0.4③): a "deny" permission removes the built-in tool
+ * from the model's tool surface entirely — zero bypass, zero hallucinated
+ * calls.  So a whitelist = deny every excluded built-in + allow the kept
+ * set, exactly the shape the D6 probe validated
+ * (%TEMP%/opencode/tm-probe/workspace/opencode.json).
+ *
+ * G2 rulings baked in:
+ *  - glob/list never enter the whitelist — file enumeration goes through
+ *    tm_bash (ls / dir / Get-ChildItem);
+ *  - webfetch/websearch excluded network-wide (P5 network zero);
+ *  - "tm_*" covers exactly the four governed tools (tm_read / tm_grep /
+ *    tm_bash / tm_fetch); the R6 env-protection hook aliases onto them
+ *    unchanged, so narrowing the surface does not weaken the anti-backdoor
+ *    chain.
+ *
+ * T2.1 review revision (Critical fix): the built-in bash RETURNS for the
+ * execution roles (team / implementer / reviewer / tester).  G2 only ruled
+ * that glob/list enumeration goes through tm_bash — it never ruled away
+ * command execution, and tm_bash is a read-only allowlist that cannot run
+ * npm test / tsc / --help probes.  R6 keeps governing bash's env surface
+ * through the envprotect hook, independently of this matrix.
+ */
+const NEVER_ALLOWED = [
+  "read",
+  "grep",
+  "glob",
+  "list",
+  "apply_patch",
+  "webfetch",
+  "websearch",
+  "todowrite",
+  "lsp",
+  "skill",
+  "question",
+] as const
+
+/** Built-ins granted per agent; every one NOT granted is denied. */
+const PER_AGENT_TOOLS = ["edit", "write", "task", "bash"] as const
+
+/** The governed tools, named explicitly next to the "tm_*" wildcard
+ *  (belt-and-braces: the explicit allows survive even if a host ever
+ *  stops expanding the wildcard). */
+const TM_TOOLS = ["tm_read", "tm_grep", "tm_bash", "tm_fetch"] as const
+
+const whitelist = (
+  ...granted: Array<(typeof PER_AGENT_TOOLS)[number]>
+): AgentPermission => {
+  const permission: AgentPermission = {}
+  for (const tool of NEVER_ALLOWED) permission[tool] = "deny"
+  for (const tool of PER_AGENT_TOOLS) {
+    permission[tool] = granted.includes(tool) ? "allow" : "deny"
+  }
+  for (const tool of TM_TOOLS) permission[tool] = "allow"
+  permission["tm_*"] = "allow"
+  return permission
+}
 
 /* ------------------------------------------------------------------ */
 /*  Reply contract + hybrid blackboard (appended to every specialist)  */
@@ -79,8 +142,9 @@ process management every run.
 ## Triage — classify before acting (Step 0, always)
 - Question ≠ work order.  When the user asks, analyzes, or consults
   ("why does X fail?", "how would we do Y?"), ANSWER it — read code if
-  useful, change nothing.  If answering needs external knowledge, dispatch
-  \`researcher\`; don't grind through it yourself.
+  useful, change nothing.  If answering needs a deeper dig through the
+  codebase than your context affords, dispatch \`researcher\`; don't
+  grind through it yourself.
 - Spotted an obvious defect while answering?  Propose the fix and WAIT for
   the go-ahead — never fix-on-the-sly.
 - Explicit action request ("fix X", "add Y", "refactor Z") → route via the
@@ -101,7 +165,7 @@ files — NOT docs, comments, formatting, NOT *.test.* files).
 | Docs / comments / formatting only | implementer (or direct edit, see below) |
 | Product behavior change (bug fix, small feature) | implementer → tester → reviewer |
 | Multi-module / cross-interface feature | architect → implementer → tester → reviewer(s) |
-| Unknown external tech / dependency in play | researcher first, then the fitting row above |
+| Unfamiliar tech / dependency in play | researcher first (local-repo evidence: call sites, installed/vendored packages, shipped docs), then the fitting row above |
 
 - FIXED MINIMUM PIPELINES: the reviewer may be skipped ONLY for
   non-product artifacts, with a one-line reason.  A product change routed
@@ -128,8 +192,9 @@ Count the dispatches your routing row prescribes:
     ONLY when it is genuinely absent.  These docs define the conventions
     the whole team must follow; distill the binding ones for your
     dispatches.  Then read the relevant source yourself; dispatch
-    \`researcher\` ONLY for genuinely unknown external tech.  Done means
-    you can state which files change, in what order, and the risks.
+    \`researcher\` ONLY for genuinely unfamiliar tech — its findings come
+    from the local repo (code, docs, installed packages), never the web.
+    Done means you can state which files change, in what order, and the risks.
   - Plan (≤30 lines): Goal / Root cause or scope (file:line evidence) /
     Change list (file → what) / Pipeline (routing row + agents) /
     Assumptions & risks / Open questions.
@@ -249,8 +314,8 @@ Findings that drive architecture or API usage must be verified before
 adoption:
 - The researcher tags each finding High / Medium / Low confidence.
 - Low/medium-confidence claims that affect the design get a second check
-  (re-ask the researcher for another source, or sanity-check against the
-  actual codebase).
+  (re-ask the researcher for a second local source, or sanity-check against
+  the actual codebase).
 - Never let an unverified claim silently become an implementation
   decision; list remaining assumptions explicitly in the final report.
 
@@ -277,12 +342,10 @@ If a target file does not exist, offer to create it; skip both when the
 user opted out.
 `,
   color: "#E879F9", // purple
-  permission: {
-    edit: "allow",
-    bash: "allow",
-    webfetch: "allow",
-    task: "allow",
-  },
+  // Whitelist (7 tools): tm_* x4 + task dispatch + edit (<=10-line
+  // non-product edits, see "When you may edit directly") + write (board
+  // files) + bash (discovery-gate probes: --help, installed versions).
+  permission: whitelist("task", "edit", "write", "bash"),
   temperature: 0.2,
 }
 
@@ -327,9 +390,12 @@ When the team lead sends back a design flaw found in review or testing:
   of guessing about the codebase.
 `,
   color: "#38BDF8", // sky blue
-  // Read-only on PROJECT sources; a dispatched board artifact is explicitly
-  // writable (see Blackboard rules).
-  permission: { edit: "allow", bash: "deny", webfetch: "allow" },
+  // Whitelist (5 tools): tm_* x4 + task dispatch.  Fully read-only by
+  // design (T2.1): output lives in the reply; if a board artifact is ever
+  // dispatched, the BLACKBOARD WRITE FAILED fallback hands the content to
+  // the lead inline (see Blackboard rules).  No bash — unchanged from the
+  // pre-T2.1 architect bash:deny posture.
+  permission: whitelist("task"),
   temperature: 0.2,
 }
 
@@ -368,7 +434,9 @@ to you by the team lead.
   check, the previously failing test).
 `,
   color: "#4ADE80", // green
-  permission: { edit: "allow", bash: "allow", webfetch: "allow" },
+  // Whitelist (7 tools): tm_* x4 + edit/write (code implementation) + bash
+  // (narrowest verification for the fix: build / typecheck / failing test).
+  permission: whitelist("edit", "write", "bash"),
   temperature: 0.2,
 }
 
@@ -428,9 +496,12 @@ the previously flagged scope plus regressions introduced by the fixes;
 confirm each prior finding item by item (fixed / not fixed / partial).
 `,
   color: "#FB923C", // orange
-  // May edit ONLY a dispatched board artifact; never the reviewed code
-  // (see Blackboard rules + role rules).
-  permission: { edit: "allow", bash: "allow", webfetch: "allow" },
+  // Whitelist (6 tools): tm_* x4 + task dispatch + bash.  No edit/write
+  // (T2.1): findings travel in the reply skeleton; a dispatched board
+  // artifact rides the BLACKBOARD WRITE FAILED inline fallback (see
+  // Blackboard rules).  bash backs the evidence standard — the reviewer
+  // must be able to run npm test / tsc itself.
+  permission: whitelist("task", "bash"),
   temperature: 0.2,
 }
 
@@ -496,7 +567,9 @@ worse than admitting the gap.
   refactor instead of contorting the test.
 `,
   color: "#F472B6", // pink
-  permission: { edit: "allow", bash: "allow", webfetch: "allow" },
+  // Whitelist (7 tools): tm_* x4 + edit/write (test files) + bash (the
+  // whole verification stack: build / typecheck / lint / test runs).
+  permission: whitelist("edit", "write", "bash"),
   temperature: 0.2,
 }
 
@@ -506,10 +579,11 @@ worse than admitting the gap.
 const researcher: AgentConfig = {
   mode: "subagent",
   description:
-    "Researcher — investigates libraries, APIs, best practices, and " +
-    "documentation; every finding carries a source and confidence tag so " +
-    "the team can decide what needs verification.  Use for information that " +
-    "must inform a technical decision.",
+    "Researcher — investigates the local repository: code, configs, " +
+    "installed/vendored packages, and shipped documentation; every finding " +
+    "carries a source (file:line) and confidence tag so the team can decide " +
+    "what needs verification.  Use for information that must inform a " +
+    "technical decision.  Web research is out of scope (no network tools).",
   prompt: `You are the **Researcher** on a multi-agent coding team.
 
 ## Role
@@ -549,7 +623,13 @@ by the team — flag prominently if that is the case.
   of re-deriving.
 `,
   color: "#A78BFA", // violet
-  permission: { edit: "allow", bash: "allow", webfetch: "allow", websearch: "allow" },
+  // Whitelist (4 tools): tm_* x4 ONLY — intentionally below the 5-7 band
+  // (T2.1): pure local research.  webfetch/websearch are excluded
+  // network-wide (P5), which also removes the dangling websearch:allow
+  // found in T0.3; file enumeration goes through tm_bash (G2 方案甲).
+  // No bash / no execution rights is intentional trimming — local
+  // research reads, it does not run.
+  permission: whitelist(),
   temperature: 0.2,
 }
 
@@ -560,6 +640,14 @@ const SHARED_RULES = `
 Every "done / fixed / passed" claim in your reply must carry its
 evidence: command output, log lines, or a diff.  No narrative-only
 completions.
+
+## Tool surface (do not retry removed tools)
+All file reads / searches / enumeration go through tm_read / tm_grep / tm_bash.
+The built-in read/grep/glob/list tools are removed from the tool surface —
+retrying them only wastes a turn.  Built-in bash exists only where granted
+(team / implementer / reviewer / tester run commands: build / test / git);
+architect and researcher have no bash at all — one-off read-only commands
+go through tm_bash or are reported as a gap.
 
 ## Project conventions
 If the project README (or AGENTS.md) is quoted in your dispatch, treat

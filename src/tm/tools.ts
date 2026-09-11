@@ -448,11 +448,14 @@ function buildPipelines(deps: TmDeps) {
         store.trajectoryRoot,
       ])
       if (!scope.ok) return tmError(tool, "permission", scope.message)
-      const client = deps.client as { file?: { read?: unknown } } | null | undefined
+      const client = deps.client as { file?: { read?: (req: unknown) => unknown } } | null | undefined
       if (!client || typeof client.file?.read !== "function") {
         return tmError(tool, "client", "宿主 client 不可用（client.file.read 缺失）")
       }
-      const res = await (client.file.read as (req: unknown) => unknown)({
+      // METHOD call (property-access site keeps the SDK `this` binding) —
+      // a fetched-and-unbound call dies synchronously on the real host
+      // (same P0 class as the approval-gate reply bug; §7-style mocks pin it)
+      const res = await client.file.read({
         query: { path: scope.abs, directory: ctxDir(ctx) },
       })
       const unwrapped = unwrapClientResult(res)
@@ -490,11 +493,12 @@ function buildPipelines(deps: TmDeps) {
         if (!scope.ok) return tmError(tool, "permission", scope.message)
         scopeDir = scope.abs
       }
-      const client = deps.client as { find?: { text?: unknown } } | null | undefined
+      const client = deps.client as { find?: { text?: (req: unknown) => unknown } } | null | undefined
       if (!client || typeof client.find?.text !== "function") {
         return tmError(tool, "client", "宿主 client 不可用（client.find.text 缺失）")
       }
-      const res = await (client.find.text as (req: unknown) => unknown)({
+      // METHOD call — see the tm_read note above (unbound SDK call = dead)
+      const res = await client.find.text({
         query: { pattern, directory: scopeDir },
       })
       const unwrapped = unwrapClientResult(res)

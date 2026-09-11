@@ -58,7 +58,7 @@ node pt07/judge.mjs --results results/baseline.json [--write]
 ### Isolation model (verified)
 
 - Runner sets `XDG_CONFIG_HOME` / `XDG_DATA_HOME` / `XDG_STATE_HOME` to `pt07/.oc-*` → **global config is not loaded** (no gov-mode/quota tool leakage), **global state is never written**. `auth.json` is copied once from `~/.local/share/opencode/auth.json` into the isolated data dir.
-- Tool-face snapshot per task: sidecar `opencode serve --port 471x` (same isolated env, `OPENCODE_SERVER_PASSWORD` auth) → `GET /experimental/tool/ids?directory=<workspace>` → kill. Recorded in `tasks[].toolFace`. Baseline snapshot: `["invalid","question","bash","read","glob","grep","edit","write","task","webfetch","todowrite","websearch","skill","apply_patch"]` — no `tm_*` tools.
+- Tool-face snapshot per task: sidecar `opencode serve --port 471x` (same isolated env, `OPENCODE_SERVER_PASSWORD` auth) → `GET /experimental/tool/ids?directory=<workspace>` → kill. Recorded in `tasks[].toolFace`. Baseline snapshot: `["invalid","question","bash","read","glob","grep","edit","write","task","webfetch","todowrite","websearch","skill","apply_patch"]` — no `tm_*` tools. (`invalid` is opencode's shim entry for unknown/unregistered tools surfaced by the ids endpoint — harmless, not a real tool.)
 - For the **retest** (tm_* enabled): add the team-mode plugin to the isolated config (`pt07/.oc-config/opencode/plugins/` or workspace `.opencode/`) and re-run with `--out results/retest.json`. Everything else must stay identical (same seed, same model, same flags).
 - R6 env-protection is a team-mode plugin concern; it is *not* active in the baseline's isolated config. If the model probes env vars during any run, that shows up in the tool sequence — the runner records it, it never blocks.
 

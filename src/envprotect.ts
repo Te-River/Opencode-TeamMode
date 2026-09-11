@@ -22,9 +22,13 @@
  *      drive via Get-ChildItem / gci / dir / ls / Get-Item / gi /
  *      Get-Content / gc / cat / type (flags and optional quotes allowed
  *      between cmdlet and drive: `Get-Content 'env:HOME'`).  The same
- *      statement heads are caught behind statement noise: subshells and
- *      groups (`(env)`, `{ env; }`), escaped commands (`\env`), the `time`
- *      keyword prefix, and command substitution (`$(printenv)`, backticks).
+  *      statement heads are caught behind statement noise: subshells and
+  *      groups (`(env)`, `{ env; }`), escaped commands (`\env`), the `time`
+  *      keyword prefix, command substitution (`$(printenv)`, backticks), the
+  *      program-path twins of the dump heads (bare `/usr/bin/env` = full
+  *      dump, `/usr/bin/printenv …`), and the Windows launcher head
+  *      (`cmd /c set` = cmd.exe's own caseless full dump; `/k` and quoted
+  *      inners included).
  *   2. `$env:` / `${env:...}` expansion (PowerShell);
  *   3. strict mode only: `${VAR}` and `$ALLCAPS_VAR` expansion;
  *   4. env-file paths: `.env`, `.env.*`, `*.env`, `.bashrc`,
@@ -75,6 +79,135 @@ export const CATEGORY_BASH_ENV_COMMAND = "bash-env-command"
 export const CATEGORY_BASH_ENV_EXPANSION = "bash-env-expansion"
 export const CATEGORY_ENV_FILE_PATH = "env-file-path"
 export const CATEGORY_EXTRA_DENY = "extra-deny"
+
+/* ------------------------------------------------------------------ */
+/*  Unified approval gate — host-native `ask` pattern sets (Layer 1)   */
+/* ------------------------------------------------------------------ */
+/**
+ * Two faces are routed to the OpenCode official confirmation dialog by
+ * declaring them `ask` in each agent's bash permission object.  The host
+ * pops a dialog for any command matching one of these patterns and SUSPENDS
+ * it: a human reply ("once"/"always") runs the command, a "reject" or NO
+ * REPLY is handled by the approval timer (Layer 2, see approval-gate.ts)
+ * which auto-REJECTS after TM_ASK_TIMEOUT_MIN.  The plugin NEVER self-allows.
+ *
+ * These are the shapes a wildcard CAN express (head-anchored globs, matching
+ * the probe-verified grammar: `printenv*`, `rm *`, `Get-ChildItem env:*`).
+ * Wildcards CANNOT express (embedded `${VAR}` / `$ALLCAPS` / `$env:` inside
+ * another command, command substitution `$(printenv)`, subshell/escaped/
+ * `time`-prefixed heads, `VAR=… env` assignment prefixes, split `declare -xp`,
+ * env-file paths at arbitrary positions) stay the classifier's HARD THROW —
+ * that is the `isAskGatedEnvCommand` boundary, kept in lockstep with the
+ * classifier so a form we stop throwing on is exactly a form the dialog shows.
+ */
+
+/** R6 env face — the wildcard-expressible environment-variable reads. */
+export const R6_ENV_BASH_ASK: Readonly<Record<string, "ask">> = Object.freeze({
+  printenv: "ask",
+  "printenv *": "ask",
+  env: "ask",
+  "env *": "ask",
+  set: "ask",
+  "export -p": "ask",
+  "export -p *": "ask",
+  "declare -p": "ask",
+  "declare -p *": "ask",
+  "typeset -p": "ask",
+  "typeset -p *": "ask",
+  "local -p": "ask",
+  "local -p *": "ask",
+  "$env:*": "ask",
+  "Get-ChildItem env:*": "ask",
+  "gci env:*": "ask",
+  "dir env:*": "ask",
+  "ls env:*": "ask",
+  "Get-Item env:*": "ask",
+  "gi env:*": "ask",
+  "Get-Content env:*": "ask",
+  "gc env:*": "ask",
+  "cat env:*": "ask",
+  "type env:*": "ask",
+})
+
+/** R2 danger face — destructive / publishing / network / install / process /
+ *  privilege commands.  Independent of TM_ENV_PROTECT (R2 is its own red
+ *  line); the built-in bash tool stays `allow` for everything else, so the
+ *  normal verification stack (npm test, tsc, git status/diff) never pops. */
+export const R2_DANGER_BASH_ASK: Readonly<Record<string, "ask">> = Object.freeze({
+  // deletion
+  rm: "ask",
+  "rm *": "ask",
+  rmdir: "ask",
+  "rmdir *": "ask",
+  rd: "ask",
+  "rd *": "ask",
+  del: "ask",
+  "del *": "ask",
+  Erase: "ask",
+  "Erase *": "ask",
+  "Remove-Item *": "ask",
+  "Remove-Item": "ask",
+  // git publish (bare forms too — `git push` / `git commit` WITHOUT args are
+  // the shapes the arg-carrying globs cannot match)
+  "git push *": "ask",
+  "git push": "ask",
+  "git commit *": "ask",
+  "git commit": "ask",
+  // network
+  curl: "ask",
+  "curl *": "ask",
+  "wget *": "ask",
+  "Invoke-WebRequest *": "ask",
+  "Invoke-RestMethod *": "ask",
+  // package management
+  "npm install *": "ask",
+  "npm i *": "ask",
+  "npm publish *": "ask",
+  "npm publish": "ask",
+  "pip install *": "ask",
+  "pip3 install *": "ask",
+  "winget *": "ask",
+  "choco *": "ask",
+  // process / system
+  "taskkill *": "ask",
+  "Stop-Process *": "ask",
+  "kill *": "ask",
+  "shutdown *": "ask",
+  "format *": "ask",
+  // privilege
+  "chmod *": "ask",
+  "takeown *": "ask",
+  "icacls *": "ask",
+})
+
+/** Ordered key lists (frozen) — single source for the matcher + the gate. */
+export const R6_ENV_BASH_ASK_PATTERNS: readonly string[] = Object.freeze(
+  Object.keys(R6_ENV_BASH_ASK),
+)
+export const R2_DANGER_BASH_ASK_PATTERNS: readonly string[] = Object.freeze(
+  Object.keys(R2_DANGER_BASH_ASK),
+)
+
+/**
+ * The bash permission object injected into the four execution-role agents
+ * (team / implementer / reviewer / tester).  Default stays `allow`
+ * (`"*": "allow"`, preserving the T2.1 matrix semantics — bash is granted,
+ * not removed); only the listed shapes escalate to the host dialog.  The R6
+ * env face is dropped when `mode === "off"` (the R6 kill switch) AND when
+ * `envFace` is false — index.ts passes false while the approval gate cannot
+ * arm: the R6 hook then hard-throws every env read BEFORE its dialog could
+ * ever satisfy it, so injecting the env asks would only create dead popups
+ * a human can answer yet never make runnable.  The R2 face is always
+ * present (its dialog is the whole gate — no code-level throw is involved).
+ */
+export function bashAskPatterns(mode: EnvProtectMode, envFace = true): Record<string, string> {
+  const out: Record<string, string> = { "*": "allow" }
+  if (mode !== "off" && envFace) {
+    for (const p of R6_ENV_BASH_ASK_PATTERNS) out[p] = "ask"
+  }
+  for (const p of R2_DANGER_BASH_ASK_PATTERNS) out[p] = "ask"
+  return out
+}
 
 export type EnvProtectMode = "strict" | "standard" | "off"
 
@@ -262,9 +395,13 @@ function envRestIsDump(rest: string): boolean {
  * bare `set` (no arguments) is the sh builtin that prints every variable,
  * while PowerShell `Set-*` cmdlets and `set -euo pipefail` style flags are
  * never variable dumps and must pass.  `env`/`printenv` are matched
- * case-insensitively.  A pathed `/usr/bin/env` is a program launcher, not
- * a dump, and stays allowed.  `env` dumps when no outside command word
- * follows (see envRestIsDump); `env <command>` is a launcher and passes.
+ * case-insensitively AND path-agnostically: the basename decides, so the
+ * formerly double-blind path heads are covered too — a bare `/usr/bin/env`
+ * (or `./env`) is the SAME full dump as bare `env`, and `/usr/bin/printenv`
+ * (with or without vars) the same read as bare `printenv`; `env <command>`
+ * keeps its launcher/dump boundary via envRestIsDump either way
+ * (`/usr/bin/env node app.js` still passes, bare `/usr/bin/env` throws —
+ * the dialog grammar cannot express path heads, so these stay hard).
  * `declare -p` prints variable definitions in reusable form, and so do its
  * synonyms `typeset -p` / `export -p` / `local -p` — with the flag allowed
  * to be split from `-p` by one other option (`declare -x -p FOO`).
@@ -272,15 +409,33 @@ function envRestIsDump(rest: string): boolean {
 function isEnvDumpStatement(token: string, rest: string): boolean {
   if (!token) return false
   const lower = token.toLowerCase()
-  if (lower === "env" && !token.includes("/")) {
-    return envRestIsDump(rest)
-  }
-  if (lower === "printenv") return true
-  if (lower === "declare" || lower === "typeset" || lower === "export" || lower === "local") {
+  // program-path heads resolve by basename (`/usr/bin/env`, `C:\bin\printenv`)
+  const base = lower.split(/[\\/]/).pop() || lower
+  if (base === "env") return envRestIsDump(rest)
+  if (base === "printenv") return true
+  if (base === "declare" || base === "typeset" || base === "export" || base === "local") {
     return /^\s*(?:-[a-z]+\s+)?-[a-z]*p[a-z]*\b/.test(` ${rest}`)
   }
   if (token === "set") return rest === ""
   return false
+}
+
+/**
+ * `cmd /c <inner>` / `cmd.exe /k "<inner>"` (case-insensitive — cmd.exe is
+ * the Windows shell): the inner string runs as its own cmd statement, so a
+ * bare `set` there is the SAME full env dump the sh builtin is — and cmd's
+ * `SET` is caseless (no PowerShell `Set-*`-cmdlet confusion is possible
+ * inside cmd.exe).  Returns the peeled inner command, or null when the
+ * segment head is not a cmd launcher.
+ */
+function cmdShellInner(token: string, rest: string): string | null {
+  if (!/^(?:cmd|cmd\.exe)$/i.test(token)) return null
+  const m = /^\/[ck]\s+(.*)$/i.exec(rest.trim())
+  if (!m) return null
+  let inner = m[1].trim()
+  const q = /^(["'])([\s\S]*)\1$/.exec(inner)
+  if (q) inner = q[2].trim()
+  return inner || null
 }
 
 /** PowerShell `env:` drive access without the `$` prefix.  Optional
@@ -344,6 +499,17 @@ export function classifyBashCommand(
   for (const segment of splitSegments(text)) {
     const { token, rest } = commandToken(segment)
     if (isEnvDumpStatement(token, rest)) return CATEGORY_BASH_ENV_COMMAND
+    // `cmd /c <inner>` runs a statement of its own — classify the inner
+    // command (covers `cmd /c printenv`, `cmd /c "cat .env"`, …) and add the
+    // cmd-case-specific dump heads the sh rules keep case-strict
+    const cmdInner = cmdShellInner(token, rest)
+    if (cmdInner) {
+      const innerCategory = classifyBashCommand(cmdInner, mode, extra)
+      if (innerCategory) return innerCategory
+      if (!cmdInner.includes("=") && /^set(?:\s|$)/i.test(cmdInner)) {
+        return CATEGORY_BASH_ENV_COMMAND // cmd.exe prints env for `set` / `set NAME`
+      }
+    }
   }
 
   // command substitution runs its own command line: classify the inner
@@ -366,6 +532,167 @@ export function classifyBashCommand(
   if (bashEnvFileHit(text)) return CATEGORY_ENV_FILE_PATH
   return null
 }
+
+// ---------- approval-gate deferral predicates ----------
+
+/** Compile `*` into `.*`, escape every other regex metacharacter, anchor. */
+function globToRegex(pattern: string, flags: "" | "i"): RegExp {
+  let out = ""
+  for (const ch of pattern) {
+    if (ch === "*") out += ".*"
+    else if (".+?^${}()|[]\\".includes(ch)) out += "\\" + ch
+    else out += ch
+  }
+  return new RegExp("^" + out + "$", flags)
+}
+
+/**
+ * Two spellings of the same glob grammar:
+ *  - LOOSE (case-insensitive, trimmed) — dialog IDENTIFICATION only
+ *    (categorizePermission): over-matching here can merely arm a timer for a
+ *    dialog the host already opened, never let a command run;
+ *  - EXACT (byte-for-byte, no trim) — the DEFERRAL side: a command is only
+ *    passed through to the dialog when it reproduces the injected config
+ *    pattern head exactly, so ANY host matcher at least as greedy as ours
+ *    must pop the dialog.  Case/trim leniency on this side would defer forms
+ *    like `GET-CONTENT ENV:PATH` that a byte-exact host grammar never pops
+ *    — a SILENT env read with no popup.  If the host turns out to be
+ *    case-insensitive, exact costs nothing but a few extra hard throws
+ *    (fail-closed direction).
+ */
+const GLOB_CACHE = new Map<string, RegExp>()
+function glob(pattern: string, flags: "" | "i"): RegExp {
+  const key = flags + pattern
+  let re = GLOB_CACHE.get(key)
+  if (!re) {
+    re = globToRegex(pattern, flags)
+    GLOB_CACHE.set(key, re)
+  }
+  return re
+}
+
+/** True when `text` matches ANY of the given ask globs (LOOSE, host-style). */
+export function commandMatchesAnyAskPattern(text: unknown, patterns: readonly string[]): boolean {
+  const t = String(text ?? "").trim()
+  if (!t) return false
+  for (const p of patterns) if (glob(p, "i").test(t)) return true
+  return false
+}
+
+/** Byte-exact deferral-side match (see the GLOB_CACHE note above). */
+function commandMatchesAnyAskPatternExact(
+  text: string,
+  patterns: readonly string[],
+): boolean {
+  if (!text) return false
+  for (const p of patterns) if (glob(p, "").test(text)) return true
+  return false
+}
+
+/**
+ * True when a built-in-bash command is an environment read in a form the
+ * host is configured to ASK about (and therefore the dialog governs it).
+ * The hook then lets it proceed WITHOUT throwing, so a human approval is
+ * meaningful.  Kept deliberately narrower than classifyBashCommand: every
+ * form it accepts is a head-anchored single statement that matches one of
+ * R6_ENV_BASH_ASK BYTE-EXACTLY (so the dialog WILL fire under any host
+ * grammar at least as greedy as ours — no case/trim leniency, see
+ * commandMatchesAnyAskPatternExact), and every hazard that breaks that
+ * alignment (compound statements, substitutions, `${…}`, `$ALLCAPS`,
+ * assignment prefixes, `time`/subshell/escaped heads, user extra-deny, path
+ * heads like `/usr/bin/env`, `cmd /c …`, and the PowerShell env-drive forms
+ * with intervening flags or quotes that the globs miss) returns false → the
+ * classifier keeps hard-throwing.  tm_* channels are hard-blocked separately
+ * (the dialog never opens for them).
+ */
+export function isAskGatedEnvCommand(
+  command: string,
+  mode: EnvProtectMode,
+  extra: RegExp[] = [],
+): boolean {
+  const text = String(command ?? "")
+  if (!text.trim()) return false
+  for (const r of extra) if (r.test(text)) return false
+  // command substitution runs its own line — the outer pattern never matches
+  if (/\$\(|`|<\(|>\(/.test(text)) return false
+  // ${VAR} brace expansion is wildcard-inexpressible
+  if (/\$\{[^}]*\}/.test(text)) return false
+  const segs = splitSegments(text).map((s) => s.trim()).filter(Boolean)
+  if (segs.length !== 1) return false
+  const seg = segs[0]
+  // byte-exact head: a VAR=value prefix, stray leading whitespace or any
+  // case deviation from the injected pattern fails here and stays hard
+  if (!commandMatchesAnyAskPatternExact(text, R6_ENV_BASH_ASK_PATTERNS)) return false
+  const { token, rest } = commandToken(seg)
+  // classic dump head: printenv / env / set / declare|typeset|export|local -p
+  if (isEnvDumpStatement(token, rest)) return true
+  // PowerShell env: drive read with no flags between the cmdlet and the
+  // drive, spellings byte-identical to the config globs (see the doc above)
+  if (/^(?:Get-ChildItem|gci|dir|ls|Get-Item|gi|Get-Content|gc|cat|type)\s+env:/.test(seg)) {
+    return true
+  }
+  // leading `$env:` drive form (matches the `$env:*` config glob)
+  if (text.startsWith("$env:")) return true
+  return false
+}
+
+/**
+ * Coarse category for a host permission-event payload, used ONLY to gate the
+ * timer, to register the deferral session, and to tag the audit (never the
+ * pattern text itself).  Returns null for anything that is not one of OUR
+ * injected bash asks, so the gate leaves other tools' dialogs (edit,
+ * webfetch, host-native rules) alone.
+ *
+ * Real 1.18.29 `permission.asked` props carry NO `type` field: the tool name
+ * rides in `permission` and the concrete command segments in `patterns[]`
+ * (plus `metadata.command` with the raw line).  Inference order, defensive
+ * across builds:
+ *   1. explicit tool field (`type` || `permission`) — non-bash is a hard no;
+ *   2. absent tool field → bash evidence = `metadata.command` present, or a
+ *      candidate that is COMMAND-SHAPED (contains whitespace: our command
+ *      globs all need an embedded space except bare keys, and bare-key
+ *      patterns like a file named `set` cannot prove bash without the
+ *      command metadata beside them).
+ * Matching here is the LOOSE glob (case-insensitive): over-matching can only
+ * arm a timer for a dialog the host already opened, never run a command —
+ * the deferral side keeps the byte-exact matcher (isAskGatedEnvCommand).
+ */
+export function categorizePermission(props: {
+  type?: string
+  permission?: string
+  pattern?: string | string[]
+  patterns?: string | string[]
+  title?: string
+  metadata?: Record<string, unknown>
+} | null | undefined): "env" | "danger" | null {
+  if (!props) return null
+  const type = String(props.type ?? props.permission ?? "").trim().toLowerCase()
+  if (type && type !== "bash") return null
+  const raw = props.patterns ?? props.pattern
+  const list = raw == null ? [] : Array.isArray(raw) ? raw.map(String) : [String(raw)]
+  const metaCmd = typeof props.metadata?.command === "string" ? props.metadata.command : ""
+  const title = typeof props.title === "string" ? props.title : ""
+  const candidates = [...list]
+  if (metaCmd) candidates.push(metaCmd)
+  if (title) candidates.push(title)
+  if (!candidates.length) return null
+  if (!type) {
+    // no tool field at all (live 1.18.29 asked): bash evidence = the bash
+    // tool's own metadata.command, or a command-shaped candidate (contains
+    // whitespace — every multi-word ask glob needs one; single bare words
+    // like a path named `set` prove nothing without metadata beside them)
+    if (!metaCmd && !candidates.some((c) => /\s/.test(c))) return null
+  }
+  const hits = (patterns: readonly string[]) =>
+    candidates.some(
+      (p) =>
+        (patterns as readonly string[]).includes(p) || commandMatchesAnyAskPattern(p, patterns),
+    )
+  if (hits(R6_ENV_BASH_ASK_PATTERNS)) return "env"
+  if (hits(R2_DANGER_BASH_ASK_PATTERNS)) return "danger"
+  return null
+}
+
 
 // ---------- file-tool path classification ----------
 
@@ -485,18 +812,43 @@ async function auditInterception(
  * When a block triggers, the audit entry is written first, then the fixed
  * structured error is thrown so opencode surfaces it to the model as the
  * failed tool result.
+ *
+ * `options.deferToApproval` (the unified approval gate) — called with the
+ * tool call's `input.sessionID`; when it reports `true`, a built-in-bash
+ * environment read in an EXACT ask-glob form is passed through WITHOUT
+ * throwing, because the official confirmation dialog is the live gate for
+ * it (approve → runs, reject or timeout → the host blocks it).  The signal
+ * is SESSION-SCOPED on purpose: the gate registers only sessions carrying
+ * our injected bash ask set (exec-role chat.message, or an R6-env-classified
+ * `permission.asked`), so a stock build/plan session — where no dialog would
+ * ever open for `printenv` — keeps the hard throw instead of slipping the
+ * read through a global arm flag.  Reaching the deferral point at all
+ * additionally requires the command to match the config globs byte-exactly,
+ * so the dialog is GUARANTEED to fire wherever deferral happens.  A failed
+ * auto-reject flips the gate back to `false` everywhere, restoring the hard
+ * throw (fail-closed).  tm_* channels are never deferred (no dialog opens
+ * for them).
  */
 export function createEnvProtectHook(
   client: unknown,
   mode: EnvProtectMode,
   extra: RegExp[] = [],
+  options: { deferToApproval?: (sessionID?: string) => boolean } = {},
 ): (input: unknown, output: unknown) => Promise<void> {
   return async (input: unknown, output: unknown): Promise<void> => {
     if (mode === "off") return
     const tool = String((input as { tool?: unknown } | null)?.tool ?? "")
+    const rawSid = (input as { sessionID?: unknown } | null)?.sessionID
+    const sessionID = typeof rawSid === "string" && rawSid.trim() !== "" ? rawSid.trim() : undefined
     const args = (output as { args?: Record<string, unknown> } | null)?.args
     const category = inspectToolCall(tool, args, mode, extra)
     if (!category) return
+    // Defer ONLY the built-in bash tool (never its tm_bash alias), ONLY in a
+    // registered session, for the exact forms the config escalates to `ask`.
+    if (tool.trim().toLowerCase() === "bash" && sessionID && options.deferToApproval?.(sessionID)) {
+      const command = (args as { command?: unknown } | undefined)?.command
+      if (isAskGatedEnvCommand(String(command ?? ""), mode, extra)) return
+    }
     await auditInterception(client, tool, category)
     throw envProtectError(category)
   }
