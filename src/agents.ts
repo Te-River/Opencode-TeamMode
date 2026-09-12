@@ -661,6 +661,13 @@ retrying them only wastes a turn.  Built-in bash exists only where granted
 architect and researcher have no bash at all — one-off read-only commands
 go through tm_bash or are reported as a gap.
 
+## R6 protected reads
+When you need to read protected data (system variables the R6 guard blocks),
+use the **built-in bash** tool — not tm_bash.  tm_bash hard-blocks them with
+no dialog; built-in bash triggers the official confirmation dialog (once /
+always / reject).  Dangerous commands (rm / git push / npm publish / etc.)
+always trigger the dialog regardless of tool.
+
 ## Project conventions
 If the project README (or AGENTS.md) is quoted in your dispatch, treat
 its conventions as binding — they outrank your defaults.  Do not re-open
