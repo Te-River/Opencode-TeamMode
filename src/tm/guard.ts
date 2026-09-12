@@ -25,6 +25,7 @@
 import * as fs from "node:fs"
 import * as path from "node:path"
 import { shorten } from "./config.js"
+import { splitShellSegments } from "../shell-text.js"
 
 export interface AllowVerdict {
   ok: boolean
@@ -32,13 +33,9 @@ export interface AllowVerdict {
   suggestion?: string
 }
 
-/**
- * Split a command into shell segments so compound statements and pipelines
- * are checked at every boundary (mirrors envprotect's segmentation).
- */
-function segments(command: string): string[] {
-  return command.split(/&&|\|\||[;\n|&]/)
-}
+// statement segmentation is the shared implementation in ../shell-text.ts;
+// local name kept for the call sites below.
+const segments = splitShellSegments
 
 /**
  * Quoted-span blanking — ONE shared implementation for every quote-aware
