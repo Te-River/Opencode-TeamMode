@@ -75,6 +75,12 @@ const PER_AGENT_TOOLS = ["edit", "write", "task", "bash"] as const
  *  stops expanding the wildcard). */
 const TM_TOOLS = ["tm_read", "tm_grep", "tm_bash", "tm_fetch"] as const
 
+/** M3: tm_ptc_run — explicit per-agent grant (five specialists = allow,
+ *  team = deny to override the tm_* wildcard).  Design §3: PTC is a
+ *  governed, read-only bridge; the team lead orchestrates, it does not
+ *  run batch programs itself. */
+const PTC_TOOL = "tm_ptc_run" as const
+
 const whitelist = (
   ...granted: Array<(typeof PER_AGENT_TOOLS)[number]>
 ): AgentPermission => {
@@ -86,6 +92,12 @@ const whitelist = (
   for (const tool of TM_TOOLS) permission[tool] = "allow"
   permission["tm_*"] = "allow"
   return permission
+}
+
+/** Apply the M3 tm_ptc_run grant to an agent's permission block.  The five
+ *  specialists get `allow`; the team lead gets `deny` (overrides the wildcard). */
+function applyPtcPermission(permission: AgentPermission, isTeamLead: boolean): void {
+  permission[PTC_TOOL] = isTeamLead ? "deny" : "allow"
 }
 
 /* ------------------------------------------------------------------ */
@@ -659,6 +671,13 @@ belongs to the work.`
 /* Append the reply contract and shared rules to every specialist prompt. */
 for (const a of [architect, implementer, reviewer, tester, researcher]) {
   a.prompt = (a.prompt ?? "") + REPLY_CONTRACT + SHARED_RULES
+}
+
+/* M3: tm_ptc_run permission — five specialists get allow, team gets deny
+ * (overrides the tm_* wildcard).  Applied once at module init. */
+if (teamLead.permission) applyPtcPermission(teamLead.permission, true)
+for (const a of [architect, implementer, reviewer, tester, researcher]) {
+  if (a.permission) applyPtcPermission(a.permission, false)
 }
 
 /* ------------------------------------------------------------------ */

@@ -23,7 +23,8 @@ import {
 import { resolveTmConfig, type TmConfig } from "./config.js"
 import { hmacToken, newRunId } from "./refs.js"
 import { RunStore } from "./store.js"
-import { buildTmTools } from "./tools.js"
+import { buildTmTools, buildPipelines } from "./tools.js"
+import { buildPtcRunTool } from "./ptc.js"
 
 export interface TmRuntime {
   runId: string
@@ -76,6 +77,31 @@ export async function createTmTools(
     mode,
     extra,
   })
+  // M3: build tm_ptc_run using a separate pipeline instance (governance
+  // reused verbatim; step counter is independent — store handles any
+  // step-id overlap via tool-name-prefixed files).
+  const ptcDeps = {
+    client: input?.client,
+    $: input?.$,
+    cfg,
+    store,
+    runId,
+    hmacKey,
+    accessToken,
+    expireAt,
+    mode,
+    extra,
+  }
+  const ptcPipelines = buildPipelines(ptcDeps)
+  const ptcTool = buildPtcRunTool({
+    cfg,
+    store,
+    nextStepId: ptcPipelines.nextStepId,
+    ctx: { directory },
+    accessToken,
+    pipelines: ptcPipelines,
+  })
+  tools.tm_ptc_run = ptcTool
   return { runId, config: cfg, store, tools }
 }
 
@@ -113,5 +139,51 @@ export {
   classifyReadonlyCommand,
   isInsideDir,
 } from "./guard.js"
-export { buildTmTools, HANDLE_INVALID_MESSAGE, tmError } from "./tools.js"
-export type { TmDeps, TmPhase } from "./tools.js"
+export { buildTmTools, buildPipelines, HANDLE_INVALID_MESSAGE, tmError } from "./tools.js"
+export type { TmDeps, TmPhase, TmPipelines } from "./tools.js"
+
+// ---------- tm_ptc_run (M1 contract skeleton) ----------
+// NOTE: `buildPtcRunTool` is exported for tests + future M3 wiring, but index
+// does NOT add tm_ptc_run to the registered `tools` map yet (design §10/M3).
+export {
+  BRIDGE_ALLOW,
+  InlineSequentialEngine,
+  InlineVmEngine,
+  WorkerEngine,
+  PTC_LABEL_MAX,
+  PTC_STATUS_VALUES,
+  RETRYABLE_PHASES,
+  PTC_SUMMARY_HEADER,
+  PTC_OK_SECTION,
+  PTC_OK_HEADER,
+  PTC_ERR_SECTION,
+  PTC_ERR_HEADER,
+  PTC_RETURN_PREFIX,
+  PTC_ERRORFULL_PREFIX,
+  buildPtcRunTool,
+  createGateBridge,
+  parsePtcArgs,
+  pipelineBridge,
+  renderPtcSummary,
+  resolvePtcBudgets,
+  runPtc,
+  selectEngine,
+  staticPscan,
+} from "./ptc.js"
+export type {
+  PtcStatus,
+  PtcEngine,
+  PtcEngineName,
+  PtcBridge,
+  PtcCallResult,
+  PtcErrorBody,
+  PtcRunRequest,
+  PtcRpcRequest,
+  PtcRpcResponse,
+  PtcRpcAbort,
+  PtcEngineMessage,
+  PtcBudgets,
+  PtcStepRecord,
+  PtcRunOutcome,
+  RunPtcOptions,
+} from "./ptc.js"

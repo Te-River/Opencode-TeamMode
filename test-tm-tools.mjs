@@ -33,6 +33,8 @@ const ENV_KEYS = [
   "TM_FETCH_MAX_LINES", "TM_BLACKBOARD_DIR", "TM_TRAJECTORY_DIR",
   "TM_BLACKBOARD_TTL", "TM_BASH_READONLY_ALLOWED",
   "TM_ENV_PROTECT", "TM_ENV_PROTECT_EXTRA_DENY",
+  "TM_PTC_MAX_PROGRAM_CHARS", "TM_PTC_MAX_CALLS", "TM_PTC_MAX_ERRORS",
+  "TM_PTC_TIMEOUT_MS", "TM_PTC_ENGINE",
 ]
 const savedEnv = Object.fromEntries(ENV_KEYS.map((k) => [k, process.env[k]]))
 const clearTmEnv = () => { for (const k of ENV_KEYS) delete process.env[k] }
@@ -840,6 +842,276 @@ try {
     assert.equal(offRead.output, smallPayload, "off mode: tools unaffected (same source)")
   }
   console.log("8. hook alias: OK (tm_* covered by R6 hook, off disables both layers)")
+
+  /* ---------- 9. tm_ptc_run (M1 contract skeleton) ---------- */
+  clearTmEnv()
+  {
+    // 9a. config resolution for the PTC knobs (typed defaults + fail-soft)
+    const cfg = tm.resolveTmConfig({})
+    assert.equal(cfg.ptcMaxProgramChars, 4000, "ptc default program cap")
+    assert.equal(cfg.ptcMaxCalls, 20, "ptc default max calls")
+    assert.equal(cfg.ptcMaxErrors, 3, "ptc default max errors")
+    assert.equal(cfg.ptcTimeoutMs, 60000, "ptc default timeout")
+    assert.equal(cfg.ptcEngine, "auto", "ptc default engine")
+    const ptcEnv = tm.resolveTmConfig({
+      TM_PTC_MAX_CALLS: "50", TM_PTC_MAX_ERRORS: "10", TM_PTC_TIMEOUT_MS: "300000",
+      TM_PTC_ENGINE: "worker", TM_PTC_MAX_PROGRAM_CHARS: "8000",
+    })
+    assert.equal(ptcEnv.ptcMaxCalls, 50, "ptc calls env override")
+    assert.equal(ptcEnv.ptcMaxErrors, 10, "ptc errors env override")
+    assert.equal(ptcEnv.ptcTimeoutMs, 300000, "ptc timeout env override")
+    assert.equal(ptcEnv.ptcEngine, "worker", "ptc engine env override")
+    assert.equal(ptcEnv.ptcMaxProgramChars, 8000, "ptc program cap env override")
+    // out-of-range env values fall back to defaults (envInt guard)
+    assert.equal(tm.resolveTmConfig({ TM_PTC_MAX_CALLS: "9999" }).ptcMaxCalls, 20, "calls over 200 -> default")
+    assert.equal(tm.resolveTmConfig({ TM_PTC_TIMEOUT_MS: "1000" }).ptcTimeoutMs, 60000, "timeout under 5s -> default")
+    assert.equal(tm.resolveTmConfig({ TM_PTC_ENGINE: "garbage" }).ptcEngine, "auto", "bad engine -> auto")
+    console.log("9a. PTC config: OK (typed defaults, env overrides, range guards)")
+
+    // 9b. clamp matrix — callers may only TIGHTEN (ceiling=cfg, floor=hard)
+    assert.deepEqual(tm.resolvePtcBudgets(cfg, {}), { maxCalls: 20, maxErrors: 3, timeoutMs: 60000 }, "omit -> ceilings")
+    assert.deepEqual(
+      tm.resolvePtcBudgets(cfg, { max_calls: 5, max_errors: 1, timeout_ms: 10000 }),
+      { maxCalls: 5, maxErrors: 1, timeoutMs: 10000 }, "tighten honored",
+    )
+    assert.deepEqual(
+      tm.resolvePtcBudgets(cfg, { max_calls: 9999, max_errors: 100, timeout_ms: 99999999 }),
+      { maxCalls: 20, maxErrors: 3, timeoutMs: 60000 }, "cannot loosen past ceiling",
+    )
+    assert.deepEqual(
+      tm.resolvePtcBudgets(cfg, { max_calls: 0, max_errors: -5, timeout_ms: 100 }),
+      { maxCalls: 1, maxErrors: 1, timeoutMs: 5000 }, "cannot go below floor",
+    )
+    assert.equal(tm.resolvePtcBudgets(cfg, { max_calls: "abc" }).maxCalls, 20, "garbage -> ceiling")
+    const cfg50 = { ...cfg, ptcMaxCalls: 50, ptcMaxErrors: 10, ptcTimeoutMs: 120000 }
+    assert.equal(tm.resolvePtcBudgets(cfg50, { max_calls: 40 }).maxCalls, 40, "tighten under custom ceiling")
+    assert.equal(tm.resolvePtcBudgets(cfg50, { max_calls: 100 }).maxCalls, 50, "clamp to custom ceiling")
+    console.log("9b. budget clamp: OK (tighten-only, ceiling/floor, garbage)")
+
+    // 9c. arg validation (program length, empty, label truncate, default label)
+    const overCap = tm.parsePtcArgs({ program: "x".repeat(4001) }, cfg)
+    assert.equal(overCap.ok, false, "program over cap rejected")
+    assert.equal(overCap.error.error.phase, "args", "over-cap is an args error")
+    assert.equal(tm.parsePtcArgs({ program: "   " }, cfg).ok, false, "blank program rejected")
+    const longLabel = tm.parsePtcArgs({ program: "return 1", label: "z".repeat(100) }, cfg)
+    assert.equal(longLabel.args.label.length, 80, "label truncated to 80")
+    const defLabel = tm.parsePtcArgs({ program: "return 1" }, cfg)
+    assert.equal(defLabel.ok, true, "valid program")
+    assert.equal(defLabel.args.label, "ptc-run", "default label")
+    console.log("9c. arg schema: OK (length cap, blank reject, label trunc/default)")
+
+    // static pre-scan (written, NOT enabled in the run path)
+    assert.equal(tm.staticPscan("const x=await tm.read({})").rejected, false, "clean program passes pscan")
+    assert.equal(tm.staticPscan("require('fs')").rejected, true, "require caught by pscan")
+    assert.equal(tm.staticPscan("process.exit(1)").rejected, true, "process caught by pscan")
+    assert.ok(tm.staticPscan("globalThis.x").tokens.includes("globalThis"), "globalThis token reported")
+    console.log("9d. staticPscan: OK (writes + detects banned tokens; run path unaffected in M1)")
+
+    // run helper (mock bridge — never touches a real client)
+    const engine = () => new tm.InlineSequentialEngine()
+    const runWith = (program, bridge, budgets, nowFn) =>
+      tm.runPtc({
+        program, label: "t", budgets, parentStepId: "s0007", cfg,
+        bridge, engine: engine(), ...(nowFn ? { now: nowFn } : {}),
+      })
+    const MAX = { maxCalls: 10, maxErrors: 3, timeoutMs: 60000 }
+
+    // 9e. five statuses, each independently triggered
+    {
+      const ok = await runWith(
+        'const r = await tm.read({ path: "a" }); return { hello: r }',
+        { call: async () => ({ ok: true, data: "inline-text" }) }, MAX,
+      )
+      assert.equal(ok.status, "ok", "status ok on normal return")
+      assert.equal(ok.returned, true, "returned flag")
+      assert.equal(ok.okCount, 1, "one ok step")
+      assert.equal(ok.calls, 1, "one call")
+
+      const callStop = await runWith(
+        'for (let i = 0; i < 5; i++) { await tm.bash({ command: "ls" }) } return 9',
+        { call: async () => ({ ok: true, data: "x" }) }, { ...MAX, maxCalls: 2 },
+      )
+      assert.equal(callStop.status, "stopped-call-budget", "call budget stops the run")
+      assert.equal(callStop.calls, 2, "exactly maxCalls dispatched")
+      assert.equal(callStop.okCount, 2, "produced ok steps are NOT lost on stop")
+
+      const errStop = await runWith(
+        'for (let i = 0; i < 5; i++) { await tm.grep({ pattern: "p" }) } return 8',
+        { call: async () => ({ ok: false, error: { tool: "tm_grep", phase: "args", message: "bad" } }) },
+        { ...MAX, maxErrors: 2 },
+      )
+      assert.equal(errStop.status, "stopped-error-budget", "error budget stops the run")
+      assert.equal(errStop.errCount, 2, "two error steps recorded")
+      assert.equal(errStop.retries, 0, "args phase is NEVER retried")
+      assert.equal(errStop.okCount, 0, "no ok steps in the all-error run")
+
+      // timeout: the injected clock jumps past the deadline after call #2, so
+      // call #3's pre-check trips the time budget — the 2 produced steps stay.
+      {
+        const start = 1000
+        let clock = start
+        let n = 0
+        const bridge = {
+          call: async () => { n++; if (n === 2) clock = start + 10_000_000; return { ok: true, data: "r" } },
+        }
+        const to = await runWith(
+          'await tm.read({ path: "a" }); await tm.read({ path: "b" }); await tm.read({ path: "c" }); return 3',
+          bridge, { maxCalls: 10, maxErrors: 3, timeoutMs: 5000 }, () => clock,
+        )
+        assert.equal(to.status, "timeout", "deadline trip -> timeout status")
+        assert.equal(to.okCount, 2, "produced steps before the timeout are retained")
+      }
+
+      // engine-error: the program throws (not a budget stop, not a sandbox fault)
+      {
+        const ee = await runWith('throw new Error("boom")', { call: async () => ({ ok: true, data: "x" }) }, MAX)
+        assert.equal(ee.status, "engine-error", "program throw -> engine-error")
+        assert.equal(ee.returned, false, "no return value captured")
+        assert.ok(ee.engineError && /boom/.test(ee.engineError.message), "engine error message kept")
+        assert.equal(ee.engineError.phase, "execute", "engine error phase tagged execute")
+      }
+
+      // retry <=1 on an idempotent phase, then success; retries counted, no err row
+      {
+        let n = 0
+        const bridge = {
+          call: async () => {
+            n++
+            return n === 1
+              ? { ok: false, error: { tool: "tm_read", phase: "client", message: "transient" } }
+              : { ok: true, data: "recovered" }
+          },
+        }
+        const rt = await runWith('const r = await tm.read({ path: "a" }); return r', bridge, MAX)
+        assert.equal(rt.status, "ok", "retry then success is still ok")
+        assert.equal(rt.retries, 1, "one retry counted")
+        assert.equal(rt.okCount, 1, "the retried step is an ok row")
+        assert.equal(rt.errCount, 0, "no error row after a successful retry")
+        assert.equal(n, 2, "bridge called exactly twice (once + one retry)")
+      }
+    }
+    console.log("9e. five statuses: OK (ok, stopped-call-budget, stopped-error-budget, timeout, engine-error) + retry-once")
+
+    // 9f. composite step number survives REF_PATTERN + STEP_FILE, handle parses
+    {
+      const root = mktmp("ptc-ref")
+      const store = new tm.RunStore({
+        projectRoot: root, blackboardDir: ".bb/", trajectoryDir: ".tj/",
+        runId: "r-ptc", ttlDays: 7,
+      })
+      const composite = "s0007.k03"
+      const ref = tm.buildRef("r-ptc", composite)
+      assert.deepEqual(tm.parseRef(ref), { runId: "r-ptc", stepId: composite }, "REF_PATTERN accepts dotted step id")
+      const st = store.writeResult(composite, {
+        tool: "tm_bash", content: '{"error":{}}', tokens: 4, contentType: "json", preview: "p", expireAt: Date.now() + 1000,
+      })
+      assert.equal(st.ref, ref, "store builds the composite ref")
+      assert.equal(store.readStepFile(composite).content, '{"error":{}}', "STEP_FILE round-trips under a dotted step dir")
+      assert.ok(fs.existsSync(path.join(root, ".bb", "runs", "r-ptc", "steps", composite, "001-tm_bash.md")), "error file lands at steps/sXXXX.kNN/")
+      console.log("9f. composite step number: OK (parseRef + writeResult + readStepFile under sXXXX.kNN)")
+    }
+
+    // 9g. trajectory event shapes (design §6): parent call + child call/result/
+    //     error (with ptc parent tag) + finish (with counters + status)
+    {
+      const root = mktmp("ptc-tj")
+      const store = new tm.RunStore({
+        projectRoot: root, blackboardDir: ".bb/", trajectoryDir: ".tj/",
+        runId: "r-tj", ttlDays: 7,
+      })
+      const out = await tm.runPtc({
+        program: 'await tm.read({ path: "a" }); await tm.read({ path: "b" }); return 1',
+        label: "L", budgets: { maxCalls: 5, maxErrors: 2, timeoutMs: 60000 },
+        parentStepId: "s0007", cfg, store,
+        engine: engine(),
+        bridge: { call: async () => ({ ok: false, error: { tool: "tm_read", phase: "permission", message: "denied" } }) },
+      })
+      assert.equal(out.status, "stopped-error-budget", "two permission errors trip the budget")
+      const lines = fs.readFileSync(store.trajectoryFile(), "utf8").trim().split("\n").map((l) => JSON.parse(l))
+      const parentCall = lines.find((l) => l.tool === "tm_ptc_run" && l.event === "call")
+      assert.ok(parentCall && parentCall.step_id === "s0007", "parent call event on the PTC step id")
+      assert.equal(parentCall.label, "L", "parent call carries label")
+      assert.ok(/^[0-9a-f]{64}$/.test(parentCall.program_sha256), "parent call carries program sha256")
+      assert.ok(parentCall.budgets && parentCall.budgets.maxCalls === 5, "parent call carries budgets")
+      const childCalls = lines.filter((l) => l.event === "call" && l.tool === "tm_read")
+      assert.equal(childCalls.length, 2, "two child call events")
+      assert.ok(childCalls.every((c) => /^s0007\.k\d\d$/.test(c.step_id)), "child step ids are composite sXXXX.kNN")
+      assert.equal(childCalls[0].ptc, "s0007", "child call carries ptc parent tag")
+      const errEv = lines.find((l) => l.event === "error")
+      assert.equal(errEv.phase, "permission", "error event carries phase")
+      assert.equal(errEv.retry, false, "permission error not retried (retry:false flag present)")
+      assert.ok(/\/steps\/s0007\.k\d\d\/result$/.test(errEv.ref), "error event carries the composite full-text ref")
+      const finish = lines.find((l) => l.tool === "tm_ptc_run" && l.event === "finish")
+      assert.equal(finish.status, "stopped-error-budget", "finish carries the final status")
+      assert.equal(finish.calls, 2, "finish calls count")
+      assert.equal(finish.errors, 2, "finish errors count")
+      assert.ok(fs.existsSync(path.join(root, ".bb", "runs", "r-tj", "steps", "s0007.k01", "001-tm_read.md")), "full error persisted under composite dir")
+      console.log("9g. trajectory shapes: OK (parent call + child call/error + finish, ptc tags, composite refs)")
+    }
+
+    // 9h. summary shape pin (fixed headers verbatim + row formats)
+    {
+      const oc = await runWith(
+        'const r = await tm.read({ path: "a" }); return 1',
+        { call: async () => ({ ok: true, data: "hello" }) }, MAX,
+      )
+      const text = tm.renderPtcSummary(oc)
+      const L = text.split("\n")
+      assert.equal(tm.PTC_SUMMARY_HEADER, "PTC 摘要", "summary header const")
+      assert.equal(L[0], `PTC 摘要 · t · status=ok`, "line0 verbatim label+status")
+      assert.equal(tm.PTC_OK_SECTION, "-- 成功分部（≤8 行，超出整表卸载）", "ok section const verbatim")
+      assert.equal(tm.PTC_OK_HEADER, " #  tool      ms   tokens  落点(inline|ref 短码)", "ok header const verbatim")
+      assert.equal(tm.PTC_ERR_SECTION, "-- 错误分部（全量错误已落 run store）", "err section const verbatim")
+      assert.equal(tm.PTC_ERR_HEADER, " #  tool      phase      line  retry  message(截断)", "err header const verbatim")
+      assert.match(L[1], /^steps=1 ok=1 err=0 retries=0 ms=\d+ {2}engine=inline$/, "metrics line verbatim (two spaces before engine)")
+      assert.equal(L[2], tm.PTC_OK_SECTION, "ok section present at line2")
+      assert.equal(L[3], tm.PTC_OK_HEADER, "ok header at line3")
+      assert.match(L[4], /^ 1 {2}tm_read.*inline$/, "success row: seq + tool + inline dest")
+      assert.ok(text.includes(tm.PTC_ERR_SECTION), "err section present even with no errors")
+      assert.ok(text.includes(tm.PTC_ERR_HEADER), "err header present")
+      assert.ok(text.includes(tm.PTC_RETURN_PREFIX + "1"), "return value line")
+      // an offloaded success row shows the ref short code
+      const oc2 = await runWith(
+        'await tm.bash({ command: "ls" }); return 1',
+        { call: async () => ({ ok: true, data: { offloaded: true, ref: "tm://runs/r/steps/s0007.k01/result", tokens: 9000 } }) }, MAX,
+      )
+      assert.ok(tm.renderPtcSummary(oc2).includes("ref:s0007.k01"), "offloaded row shows ref short code")
+      // engine-error row shows the program tool + message
+      const ee = await runWith('throw new Error("kaboom")', { call: async () => ({ ok: true, data: "x" }) }, MAX)
+      const eeText = tm.renderPtcSummary(ee)
+      assert.ok(/status=engine-error$/.test(eeText.split("\n")[0]), "engine-error status in header")
+      assert.ok(eeText.includes("tm_ptc_run") && eeText.includes("kaboom"), "engine-error row lists program + message")
+      console.log("9h. summary shape pin: OK (verbatim headers, metrics format, inline/ref/err rows, return line)")
+    }
+
+    // 9i. tm_ptc_run tool builds + renders summary + IS registered (M3)
+    {
+      const tool = tm.buildPtcRunTool({
+        cfg, store: new tm.RunStore({ projectRoot: mktmp("ptc-tool"), blackboardDir: ".bb", trajectoryDir: ".tj", runId: "r-t", ttlDays: 7 }),
+        nextStepId: () => "s0001", ctx: { directory: process.cwd() }, accessToken: "a".repeat(64),
+        bridge: { call: async () => ({ ok: true, data: "hi" }) },
+      })
+      assert.equal(typeof tool.execute, "function", "ptc tool execute present")
+      assert.ok(tool.description.includes("tm.read") && tool.description.includes("zero LLM round-trips"), "ptc description documents the program protocol")
+      // ZodRawShape-style args (no z.object wrapper; descriptor fallback path)
+      assert.ok(tool.args.program && typeof tool.args.program === "object", "ptc args.raw shape present")
+      const res = await tool.execute({ program: 'const r = await tm.read({ path: "a" }); return r.ok', budgets: { max_calls: 3 } }, { directory: process.cwd() })
+      assert.equal(typeof res.output, "string", "ToolResult {output:string} contract honored")
+      assert.ok(res.output.includes("PTC 摘要") && res.output.includes("status=ok"), "tool output is the aggregation summary")
+      // M3: tm_ptc_run IS registered in the tool segment (five agents get allow, team gets deny)
+      const hooks = await plugin.server({ directory: mktmp("ptc-reg"), client: fakeClient({}), $: fake$Ok("") }, {})
+      assert.ok("tm_ptc_run" in hooks.tool, "tm_ptc_run registered in the tool segment (M3)")
+      assert.deepEqual(
+        Object.keys(hooks.tool).sort(),
+        ["tm_bash", "tm_fetch", "tm_grep", "tm_ptc_run", "tm_read"],
+        "registered tm_* set includes tm_ptc_run",
+      )
+      // program over the cap is rejected through the tool as an args error
+      const big = await tool.execute({ program: "x".repeat(4001) }, { directory: process.cwd() })
+      assert.ok(big.output.includes("phase=args") && big.output.includes("program 超过长度上限"), "over-cap program -> args error text")
+    }
+    console.log("9i. tm_ptc_run tool: OK (builds + renders summary, honors ToolResult; registered in tool segment, five-tool set)")
+  }
 } finally {
   restoreEnv()
   for (const dir of tmpDirs) fs.rmSync(dir, { recursive: true, force: true })

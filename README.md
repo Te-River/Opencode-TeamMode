@@ -283,7 +283,7 @@ gated, so day-to-day team work runs without interruption.
 | Env var | Default | Purpose |
 |---|---|---|
 | `TM_ENV_PROTECT` | `strict` | R6 mode: `strict` / `standard` / `off` (off also disarms the approval timer) |
-| `TM_ASK_TIMEOUT_MIN` | `10` | minutes before an unanswered R6/R2 confirmation dialog is auto-rejected |
+| `TM_ASK_TIMEOUT_MIN` | `10` | minutes before an unanswered R6/R2 confirmation dialog is auto-rejected; minimum 3 minutes (the host's `permission.replied` reaches the plugin ~120 s late on the event bus — shorter values would auto-reject a just-approved request) |
 | `TM_ENV_PROTECT_EXTRA_DENY` | — | extra block patterns (regex list; always a hard block, never dialog-governed) |
 | `TM_OFFLOAD_THRESHOLD` | `2000` | offload threshold (tokens, chars/4 estimate) |
 | `TM_PREVIEW_MAX_TOKENS` | `80` | preview hard cap |
@@ -292,6 +292,62 @@ gated, so day-to-day team work runs without interruption.
 | `TM_TRAJECTORY_DIR` | `.trajectory/` | append-only tool-call ledger |
 | `TM_BLACKBOARD_TTL` | `7` | store retention (days) |
 | `TM_BASH_READONLY_ALLOWED` | built-in table | tm_bash allowlist |
+| `TM_PTC_MAX_PROGRAM_CHARS` | `4000` | PTC program source length cap (chars) |
+| `TM_PTC_MAX_CALLS` | `20` | PTC per-run bridge-call budget (1–200) |
+| `TM_PTC_MAX_ERRORS` | `3` | PTC per-run error budget (1–50) |
+| `TM_PTC_TIMEOUT_MS` | `60000` | PTC per-run wall-clock timeout (5s–10min) |
+| `TM_PTC_ENGINE` | `auto` | PTC engine: `auto` (worker→inline degrade) / `worker` / `inline` |
+
+---
+
+## ⚡ Batch orchestration (`tm_ptc_run`) — main-only, not yet published
+
+> ⚠️ This feature is merged on `main` but has **not been published** to npm
+> yet.  It will ship in the next release.
+
+`tm_ptc_run` lets a specialist agent write **one async program** that makes N
+governed `tm_*` calls in a single turn — zero LLM round-trips during the run,
+only an aggregation summary returns to context.  It is designed for batch
+read-only tasks: multi-file reconnaissance, bulk grep + read aggregation,
+cross-referencing search results.
+
+### How it works
+
+The agent writes a program body using `tm.read(args)`, `tm.grep(args)`,
+`tm.bash(args)`, `tm.fetch(args)` — same args as the four governed tools.
+Each call returns `{ok:true, data}` (governed: inline text or an offload
+handle) or `{ok:false, error:{tool,phase,line?,message}}`.  The program
+`return`s a value; it is JSON-serialized into the aggregation summary.
+
+Programs containing `require`, `import`, `process`, `globalThis`, `Deno`,
+`Bun`, `fs`, `net`, or `child_process` are rejected before execution (static
+pre-scan, auxiliary guard).
+
+### Budgets (tighten-only)
+
+The caller may tighten `max_calls`, `max_errors`, and `timeout_ms` — values
+above the `TM_PTC_*` ceilings are clamped down; values below the floor are
+clamped up.  Hitting any budget stops the whole run; produced output is NOT
+lost.
+
+### Engine (`TM_PTC_ENGINE`)
+
+| Mode | Behavior |
+|---|---|
+| `auto` (default) | Tries `worker_threads` first; on failure degrades to `node:vm` with a `degraded-engine` mark in the summary |
+| `worker` | Forces the worker engine (engine-error on failure) |
+| `inline` | Forces the `node:vm` engine (30s compile timeout for sync busy-loops; await-gap residual documented) |
+
+The worker engine runs the program in a dedicated thread with `env:{}`
+(process.env emptied), `resourceLimits`, and hard wall-clock `terminate()`.
+All governance (P2 path scope, P3 allowlist, R6, threshold offload, TTL)
+applies to every bridged call — PTC is not a bypass layer.
+
+### Access
+
+Five specialist agents (`implementer`, `tester`, `architect`, `reviewer`,
+`researcher`) have `tm_ptc_run` in their whitelist.  The `team` lead does
+not — it orchestrates, it does not run batch programs itself.
 
 ---
 
@@ -308,7 +364,7 @@ opencode-team-mode/
 │   ├── blackboard.ts     ← Shared blackboard + TTL auto-cleanup sweeper
 │   ├── envprotect.ts     ← R6 env-var read protection + R2 ask-pattern sets (dialog vs hard-block)
 │   ├── approval-gate.ts  ← Unified approval gate: host-dialog timeout auto-reject (never self-allows)
-│   ├── tm/               ← JIT layer-2 tools (tm_read / tm_grep / tm_bash / tm_fetch)
+│   ├── tm/               ← JIT layer-2 tools (tm_read / tm_grep / tm_bash / tm_fetch / tm_ptc_run)
 │   └── types.ts          ← Loader-contract type definitions (1.18.x)
 ├── scripts/
 │   ├── install.sh        ← One-click installer (bash)

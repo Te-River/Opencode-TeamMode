@@ -181,7 +181,9 @@ console.log("1. default_agent promotion matrix: OK (opt-out default; custom/plan
     }
     for (const t of tmTools) expected[t] = "allow"
     expected["tm_*"] = "allow"
-    const allowCount = granted.length + tmTools.length + 1 // granted + tm tools + wildcard
+    // M3: tm_ptc_run — five specialists get allow, team gets deny (overrides wildcard)
+    expected["tm_ptc_run"] = name === "team" ? "deny" : "allow"
+    const allowCount = granted.length + tmTools.length + 1 + (name === "team" ? 0 : 1) // granted + tm tools + wildcard + ptc (except team)
     assert.deepStrictEqual(
       perm, expected,
       name + ": whitelist content exact (" + allowCount + " allow entries / " +
@@ -196,6 +198,12 @@ console.log("1. default_agent promotion matrix: OK (opt-out default; custom/plan
       assert.equal(perm[t], "allow", name + ": governed tool " + t + " allowed explicitly")
     }
     assert.equal(perm["tm_*"], "allow", name + ": governed tm_* tools allowed")
+    // M3: tm_ptc_run explicit grant (five specialists = allow, team = deny)
+    assert.equal(
+      perm["tm_ptc_run"],
+      name === "team" ? "deny" : "allow",
+      name + ": tm_ptc_run " + (name === "team" ? "denied (team lead)" : "allowed (specialist)"),
+    )
   }
 
   // T2.1 review fix (Critical) + unified approval gate: execution roles keep

@@ -266,7 +266,7 @@ ERROR×N 统计 / 代码签名清单 / 二进制元信息，硬上限 80 token�
 | 环境变量 | 默认 | 作用 |
 |---|---|---|
 | `TM_ENV_PROTECT` | `strict` | R6 模式：`strict` / `standard` / `off`（off 同时解除审批计时器） |
-| `TM_ASK_TIMEOUT_MIN` | `10` | R6/R2 确认弹窗无人应答后自动拒绝的分钟数 |
+| `TM_ASK_TIMEOUT_MIN` | `10` | R6/R2 确认弹窗无人应答后自动拒绝的分钟数；最小 3 分钟（宿主的 `permission.replied` 经事件总线到达插件约延迟 ~120 秒——更小的值会把刚获批的请求误拒） |
 | `TM_ENV_PROTECT_EXTRA_DENY` | — | 追加拦截正则（分号分隔；始终硬拦，不走弹窗） |
 | `TM_OFFLOAD_THRESHOLD` | `2000` | 卸载阈值（token，chars/4 估算） |
 | `TM_PREVIEW_MAX_TOKENS` | `80` | 预览硬上限 |
@@ -275,6 +275,54 @@ ERROR×N 统计 / 代码签名清单 / 二进制元信息，硬上限 80 token�
 | `TM_TRAJECTORY_DIR` | `.trajectory/` | 只追加工具调用账本 |
 | `TM_BLACKBOARD_TTL` | `7` | 存储保留天数 |
 | `TM_BASH_READONLY_ALLOWED` | 内置表 | tm_bash 只读白名单 |
+| `TM_PTC_MAX_PROGRAM_CHARS` | `4000` | PTC 程序源码长度上限（字符） |
+| `TM_PTC_MAX_CALLS` | `20` | PTC 单次运行桥接调用数上限（1–200） |
+| `TM_PTC_MAX_ERRORS` | `3` | PTC 单次运行错误数上限（1–50） |
+| `TM_PTC_TIMEOUT_MS` | `60000` | PTC 单次运行墙钟超时（5 秒–10 分钟） |
+| `TM_PTC_ENGINE` | `auto` | PTC 引擎：`auto`（worker→inline 降级）/ `worker` / `inline` |
+
+---
+
+## ⚡ 批量编排（`tm_ptc_run`）—— 仅 main 分支，尚未发布
+
+> ⚠️ 此功能已合入 `main` 但**尚未发布到 npm**。将在下一个版本中发布。
+
+`tm_ptc_run` 让专家代理编写**一个异步程序**，在单次回合中执行 N 次受治理的
+`tm_*` 调用——运行期间零 LLM 往返，仅将聚合摘要返回上下文。设计用于批量
+只读任务：多文件侦察、批量 grep + read 聚合、交叉引用搜索结果。
+
+### 工作原理
+
+代理使用 `tm.read(args)`、`tm.grep(args)`、`tm.bash(args)`、`tm.fetch(args)`
+编写程序体——参数与四个受治理工具相同。每次调用返回 `{ok:true, data}`（已受
+治理：内联文本或卸载句柄）或 `{ok:false, error:{tool,phase,line?,message}}`。
+程序 `return` 一个值；它会被 JSON 序列化进聚合摘要。
+
+包含 `require`、`import`、`process`、`globalThis`、`Deno`、`Bun`、`fs`、`net`
+或 `child_process` 的程序会在执行前被拒绝（静态预扫描，辅助防护）。
+
+### 预算（仅收紧）
+
+调用方可收紧 `max_calls`、`max_errors` 和 `timeout_ms`——超过 `TM_PTC_*` 上限
+的值会被钳制到上限；低于下限的值会被钳制到下限。触达任一预算即整体停止运行；
+已产出的输出不会丢失。
+
+### 引擎（`TM_PTC_ENGINE`）
+
+| 模式 | 行为 |
+|---|---|
+| `auto`（默认） | 优先尝试 `worker_threads`；失败时降级为 `node:vm`，摘要标记 `degraded-engine` |
+| `worker` | 强制使用 worker 引擎（失败时返回 engine-error） |
+| `inline` | 强制使用 `node:vm` 引擎（30 秒编译超时斩杀同步忙等；await 间隙残余已记录） |
+
+worker 引擎在专用线程中运行程序，`env:{}` 清空 process.env、`resourceLimits`
+限量、硬墙钟 `terminate()`。所有治理（P2 路径范围、P3 白名单、R6、阈值卸载、
+TTL）对每次桥接调用生效——PTC 不是绕过层。
+
+### 访问权限
+
+五个专家代理（`implementer`、`tester`、`architect`、`reviewer`、`researcher`）
+的白名单中包含 `tm_ptc_run`。`team` lead 不包含——它负责编排，不运行批量程序。
 
 ---
 
@@ -291,7 +339,7 @@ opencode-team-mode/
 │   ├── blackboard.ts     ← 共享黑板 + TTL 自动清理清扫器
 │   ├── envprotect.ts     ← R6 环境变量读取保护 + R2 确认弹窗模式集（弹窗 vs 硬拦）
 │   ├── approval-gate.ts  ← 统一审批门：官方弹窗超时自动拒绝（绝不自我放行）
-│   ├── tm/               ← JIT 层 2 工具（tm_read / tm_grep / tm_bash / tm_fetch）
+│   ├── tm/               ← JIT 层 2 工具（tm_read / tm_grep / tm_bash / tm_fetch / tm_ptc_run）
 │   └── types.ts          ← 加载器契约类型定义（1.18.x）
 ├── scripts/
 │   ├── install.sh        ← 一键安装脚本（bash）

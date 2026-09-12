@@ -75,6 +75,81 @@ registry saw 1.5.0 as the install-script fix release).
     `test-blackboard.mjs`.  The permission protocol was verified live on a
     1.18.29 `opencode serve` host via SSE capture; Desktop dialog rendering
     remains the one leg to eyeball in a real Desktop session.
+- **`tm_ptc_run` M1 contract + aggregation skeleton (git-only, not yet
+  published; NOT exposed to any agent until the M3 whitelist wiring)**: the
+  foundation for program-mode batch orchestration — a model writes one async
+  program that makes N governed `tm_*` calls in a single turn (no LLM round-
+  trips during the run; only an aggregation summary returns to context).  This
+  milestone lands the frozen contract only:
+  - args schema — `program` (≤ `TM_PTC_MAX_PROGRAM_CHARS`, default 4000),
+    `label` (≤ 80), and tighten-only `budgets` (`max_calls` / `max_errors` /
+    `timeout_ms`) clamped against the `TM_PTC_*` ceilings (`TM_PTC_MAX_CALLS`
+    20·1–200, `TM_PTC_MAX_ERRORS` 3·1–50, `TM_PTC_TIMEOUT_MS` 60000·5s–10min);
+  - the `PtcEngine` seam + RPC message surface frozen for M2's worker engine,
+    with `InlineSequentialEngine` (the direct bridge over the now-exported
+    `buildPipelines`, `ctx` passed through untouched) as M1's only engine;
+  - StepGate failure governance: error / call / time budgets stop the whole run
+    without losing produced output, ≤1 retry on idempotent phases
+    (client/execute/store) only, full error text persisted to composite step
+    dirs `steps/sXXXX.kNN/`, structured `line` passthrough (T1.4 shape);
+  - the five-state status enum (`ok | stopped-error-budget |
+    stopped-call-budget | timeout | engine-error`) and the char-pinned
+    aggregation summary (design §2 headers verbatim);
+  - trajectory shapes (parent `call`/`finish` + child `call`/`result`/`error`
+    with the `ptc` parent tag and composite step ids that pass the existing
+    `REF_PATTERN` / `STEP_FILE`).
+  Governance is reused, never forked: every bridged call runs the full `tm_*`
+  pipeline (P2/P3/R6/threshold-offload/TTL), so PTC is not a bypass layer.  The
+  program-source static pre-scan is written but deliberately NOT enabled (M2's
+  sandbox needs it).  Design:
+  `.git/opencode-team/20260907-192627/ptc-run/02-architect-ptc-run-design.md`.
+  Tests: `test-tm-tools.mjs` §9.  P1 probe (`node:worker_threads` in the host):
+  proven fully-available under Node 24; the live 1.18.x host leg (Bun 1.3.14)
+  could not be measured in an offline sandbox — M2 keeps `TM_PTC_ENGINE=auto`
+  (worker→inline degrade) and must re-probe on a networked / Desktop host.
+- **`tm_ptc_run` M2 engine (git-only, not yet published)**: the sandbox
+  layer that actually runs PTC programs.  Three engines behind the same
+  `PtcEngine` seam (`PtcEngine.run(program, bridge, signal)`):
+  - **WorkerEngine** (primary): runs the program in a dedicated
+    `worker_threads.Worker` with `env:{}` (process.env emptied),
+    `resourceLimits`, and `terminate()` for hard wall-clock timeout kills.
+    Bootstrap source is a build-time string constant (zero runtime file IO,
+    zero new deps, passes tsc).  MessagePort RPC carries the M1-frozen
+    `PtcRpcRequest/Response/Abort` surface; the driver-side StepGate and
+    gate-wrapped bridge are unchanged.  Probe (P1, %TEMP%): ALL-GREEN on
+    Node 24/win32 — eval bootstrap, postMessage bidirectional, terminate
+    (9 ms), resourceLimits, env:{} all verified.
+  - **InlineVmEngine** (fallback): runs the program inside `node:vm` via
+    `vm.compileFunction` with a 30-second compile timeout that kills
+    synchronous busy-loops.  Await-gap residual (design §3) is documented
+    and accepted for the fallback; the primary worker engine does not share
+    this limitation (`worker.terminate()` is wall-clock).
+  - **InlineSequentialEngine** (M1 legacy, test-only): kept for backward
+    compatibility with M1 tests that pass an explicit engine override.
+  - `TM_PTC_ENGINE=auto|worker|inline`: auto tries WorkerEngine first; on
+    any engine-error (construction or runtime) → degrades to InlineVmEngine
+    and marks `degraded-engine` in the summary; `worker` forces the worker
+    (engine-error on failure); `inline` forces the vm engine.
+  - **Static pre-scan** (`staticPscan`) is now wired as the FIRST gate
+    in both `runPtc` and `buildPtcRunTool.execute` — programs containing
+    `require|import|process|globalThis|Deno|Bun|fs|net|child_process` are
+    rejected before any engine runs (status=engine-error, phase=args, no
+    budget burned).  Auxiliary guard, not a security boundary (design §3).
+  - `buildPtcRunTool` now accepts `nextStepId: () => string` (generates a
+    fresh parent step ID per call) instead of the fixed `parentStepId`
+    string — multiple PTC calls no longer collide on the same step dir.
+- **`tm_ptc_run` M3 role access (git-only, not yet published)**: the tool
+  is now registered in the `tool` segment (five-tool set: tm_read, tm_grep,
+  tm_bash, tm_fetch, tm_ptc_run).  Whitelist matrix per design §3/§10:
+  - **implementer / tester / architect / reviewer / researcher**: `allow`
+    (explicit key overrides the `tm_*` wildcard).
+  - **team**: `deny` (the lead orchestrates, it does not run batch programs
+    itself; the explicit `deny` overrides the `tm_*` wildcard).
+  - Tests: `test-default-agent.mjs` §6 (explicit > wildcard priority),
+    `test-tm-tools.mjs` §9i (registered in tool segment, five-tool set).
+  - `createTmTools` builds `tm_ptc_run` alongside the four governed tools
+    using a separate `buildPipelines` instance (governance reused verbatim;
+    store handles any step-id overlap via tool-name-prefixed files).
 
 ### Changed
 - **Agent tool whitelists (Phase 2 / T2.1, G2 ruling "方案甲")**: all six

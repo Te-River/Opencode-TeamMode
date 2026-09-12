@@ -43,6 +43,17 @@ export interface TmConfig {
   blackboardTtlDays: number
   /** P3 read-only command allowlist for tm_bash. */
   bashReadonlyAllowed: string[]
+  // ---- tm_ptc_run (M1 contract) — see design 02-architect-ptc-run-design §2/§4.3 ----
+  /** Hard cap on a PTC program source string length (chars). */
+  ptcMaxProgramChars: number
+  /** Ceiling for per-run bridge-call budget (callers may only tighten). */
+  ptcMaxCalls: number
+  /** Ceiling for per-run error budget (callers may only tighten). */
+  ptcMaxErrors: number
+  /** Ceiling for per-run wall-clock timeout in ms (callers may only tighten). */
+  ptcTimeoutMs: number
+  /** Engine selection: auto (worker→inline fallback) | worker | inline. */
+  ptcEngine: "auto" | "worker" | "inline"
 }
 
 export const TM_CONFIG_DEFAULTS = {
@@ -53,6 +64,19 @@ export const TM_CONFIG_DEFAULTS = {
   blackboardDir: ".blackboard/",
   trajectoryDir: ".trajectory/",
   blackboardTtlDays: 7,
+  ptcMaxProgramChars: 4000,
+  ptcMaxCalls: 20,
+  ptcMaxErrors: 3,
+  ptcTimeoutMs: 60000,
+  ptcEngine: "auto",
+} as const
+
+/** Inclusive ceilings/floors for the PTC budgets (design §4.3). */
+export const PTC_BUDGET_BOUNDS = {
+  maxCalls: { min: 1, max: 200 },
+  maxErrors: { min: 1, max: 50 },
+  timeoutMs: { min: 5000, max: 600000 },
+  programChars: { min: 200, max: 200000 },
 } as const
 
 type EnvLike = Record<string, string | undefined>
@@ -96,9 +120,18 @@ export function resolveTmConfig(env: EnvLike = process.env): TmConfig {
     trajectoryDir: envStr(env, "TM_TRAJECTORY_DIR", TM_CONFIG_DEFAULTS.trajectoryDir),
     blackboardTtlDays: envInt(env, "TM_BLACKBOARD_TTL", TM_CONFIG_DEFAULTS.blackboardTtlDays, 1, 365),
     bashReadonlyAllowed: allowlist ?? [...DEFAULT_BASH_READONLY_ALLOWED],
+    ptcMaxProgramChars: envInt(env, "TM_PTC_MAX_PROGRAM_CHARS", TM_CONFIG_DEFAULTS.ptcMaxProgramChars, PTC_BUDGET_BOUNDS.programChars.min, PTC_BUDGET_BOUNDS.programChars.max),
+    ptcMaxCalls: envInt(env, "TM_PTC_MAX_CALLS", TM_CONFIG_DEFAULTS.ptcMaxCalls, PTC_BUDGET_BOUNDS.maxCalls.min, PTC_BUDGET_BOUNDS.maxCalls.max),
+    ptcMaxErrors: envInt(env, "TM_PTC_MAX_ERRORS", TM_CONFIG_DEFAULTS.ptcMaxErrors, PTC_BUDGET_BOUNDS.maxErrors.min, PTC_BUDGET_BOUNDS.maxErrors.max),
+    ptcTimeoutMs: envInt(env, "TM_PTC_TIMEOUT_MS", TM_CONFIG_DEFAULTS.ptcTimeoutMs, PTC_BUDGET_BOUNDS.timeoutMs.min, PTC_BUDGET_BOUNDS.timeoutMs.max),
+    ptcEngine: resolveEngine(env.TM_PTC_ENGINE),
   }
 }
 
+function resolveEngine(raw: unknown): "auto" | "worker" | "inline" {
+  const v = typeof raw === "string" ? raw.trim().toLowerCase() : ""
+  return v === "worker" || v === "inline" ? v : "auto"
+}
 /**
  * Token estimate — chars/4, ceil (口径 documented above).  Empty input = 0.
  */

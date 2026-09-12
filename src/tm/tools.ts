@@ -363,7 +363,7 @@ interface GovernOptions {
   clue?: string
 }
 
-function buildPipelines(deps: TmDeps) {
+export function buildPipelines(deps: TmDeps) {
   const { cfg, store } = deps
   let stepCounter = 0
   const nextStepId = () => `s${String(++stepCounter).padStart(4, "0")}`
@@ -631,6 +631,9 @@ function buildPipelines(deps: TmDeps) {
 
   return { nextStepId, govern, tmRead, tmGrep, tmBash, tmFetch }
 }
+
+/** The four governed pipelines + shared step-counter/govern (PTC bridge seam). */
+export type TmPipelines = ReturnType<typeof buildPipelines>
 
 // ---------- tool set assembly ----------
 
