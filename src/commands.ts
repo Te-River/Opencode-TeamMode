@@ -116,7 +116,7 @@ Cite your sources with file:line paths.  Do not fabricate APIs or citations.`,
 /* ------------------------------------------------------------------ */
 const teamRun: CommandConfig = {
   description:
-    "Full team workflow — deterministic routing, approval gate on >=3 dispatches, structured handoffs.",
+    "Full team workflow — deterministic routing, approval gate on >=2 dispatches, structured handoffs.",
   agent: "team",
   template: `Execute the full team workflow for the following task.
 

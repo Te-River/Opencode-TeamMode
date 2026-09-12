@@ -165,6 +165,22 @@ export interface ApprovalGate {
    *  { sessionID, role:"user", agent } and fires BEFORE the session's first
    *  tool call, while permission.asked fires AFTER tool.execute.before). */
   registerExecSession(sessionID?: string): void
+  /**
+   * Drop a session's exec-role registration (index.ts calls this when a user
+   * prompt routes to an agent that does NOT carry our injected ask set).
+   * The verified host passes {tool, sessionID, callID} with NO agent to
+   * tool.execute.before (desktop binary: `plugin.trigger("tool.execute.before",
+   * { tool, sessionID, callID }, { args })`), so the per-turn agent signal
+   * can only come from message.updated/chat.message.  Without revocation a
+   * session that once ran a team prompt stayed deferrable forever — even
+   * after the user switched the picker to a stock agent whose dialogs would
+   * never fire, silently passing env reads (canDefer true + no dialog).
+   * A later env-classified permission.asked re-registers on real dialog
+   * evidence, and the next exec-role prompt re-registers again — both paths
+   * re-arm from fresh evidence, so revocation only ever closes a stale
+   * window (fail-closed direction).
+   */
+  revokeExecSession(sessionID?: string): void
   /** True after the user picked "always" on an env-related ask in this session
    *  — subsequent env reads pass silently (the approval event itself is audited). */
   isEnvApproved(sessionID?: string): boolean
@@ -488,7 +504,10 @@ export function createApprovalGate(deps: ApprovalGateDeps): ApprovalGate {
       auditAsk(client, "bash", rec.cat, verdict)
       // "always" on an env-related ask → blanket-approve all env reads for
       // this session (the host's pattern generalization is too broad, so we
-      // interpret "always" as a session-scoped env approval).
+      // interpret "always" as a session-scoped env approval).  The hook
+      // still hard-throws env-FILE reads (CATEGORY_ENV_FILE_PATH) in an
+      // env-approved session: files on disk never open a dialog of their
+      // own, so no "always" verdict can have consented to them.
       if (verdict === "allowed-always" && sid && /^(bash-)?env/.test(rec.cat)) {
         envApprovedSessions.add(sid)
       }
@@ -535,6 +554,9 @@ export function createApprovalGate(deps: ApprovalGateDeps): ApprovalGate {
     },
     registerExecSession(sessionID?: string): void {
       if (sessionID) liveAsk.add(sessionID)
+    },
+    revokeExecSession(sessionID?: string): void {
+      if (sessionID) liveAsk.delete(sessionID)
     },
     isEnvApproved(sessionID?: string): boolean {
       return !!sessionID && envApprovedSessions.has(sessionID)

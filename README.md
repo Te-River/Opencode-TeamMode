@@ -23,9 +23,9 @@ Instead of one agent trying to do everything, you get:
 | 🎯 **Team Lead** | Orchestrator | Complex tasks that need planning + multi-step execution |
 | 🏗️ **Architect** | System designer | Design docs, module structure, API contracts |
 | 💻 **Implementer** | Code writer | Building features, writing production code |
-| 🔍 **Reviewer** | Dimension-focused auditor | Single-dimension review (completeness / correctness / impact) — the lead runs 3 in parallel |
+| 🔍 **Reviewer** | Dimension-focused auditor | Single-dimension review (completeness / correctness / impact) — ONE reviewer by default; 3 in parallel only for high-risk changes |
 | 🧪 **Tester** | Test engineer | Unit tests, integration tests, edge-case coverage, static verification (build / typecheck / lint / API tests) |
-| 🔎 **Researcher** | Knowledge finder | Library evaluation, API docs, best practices |
+| 🔎 **Researcher** | Knowledge finder | Local-repo investigation first (code, configs, installed packages, shipped docs); web lookups via user MCP tools or the governed `tm_webfetch` — one of the two network roles (with the Team Lead) |
 
 ---
 
@@ -125,7 +125,7 @@ TeamMode adds six slash commands to OpenCode. Type them in the chat input:
 | `/team-implement <task>` | Implementer | Write production code for a feature or task |
 | `/team-review [scope]` | Reviewer | Audit code for bugs, security issues, and quality problems |
 | `/team-test [scope]` | Tester | Generate comprehensive tests with edge-case coverage |
-| `/team-research <topic>` | Researcher | Investigate libraries, APIs, or best practices |
+| `/team-research <topic>` | Researcher | Investigate the local repository first; web lookups via user MCP tools or the governed `tm_webfetch` |
 | `/team-run <task>` | Team Lead | **Full workflow** — orchestrates all agents end-to-end |
 
 #### Example workflow
@@ -233,7 +233,10 @@ code signatures / binary metadata, hard-capped at 80 tokens). When the agent
 actually needs the payload it pages through it with `tm_fetch`, using an
 HMAC-signed, run-scoped, expiring handle. `tm_bash` only allows read-only
 commands (allowlist), and failures come back as structured errors instead of
-raw dumps.
+raw dumps. Agents are prompted to route every lookup through these tools —
+scan the tool surface, plan the concrete call, expand colloquial or
+abbreviated terms to canonical forms and search both spellings — instead of
+answering from memory or simulating removed tools.
 
 **R6 environment protection (now an approval gate).** With TeamMode active,
 the model cannot read environment variables silently. Env-var reads
@@ -260,17 +263,40 @@ official dialog and are auto-rejected if you don't answer within the timeout.
 The normal verification stack (`npm test`, `tsc`, `git status`/`diff`) is NOT
 gated, so day-to-day team work runs without interruption.
 
+**Web lookups (two channels) — network roles: Team Lead + Researcher only.**
+1. **High priority — your own MCP/plugin tools.** Browser automation, search
+   or fetch tools from user-configured MCP servers pass through the
+   whitelist untouched; agents are prompted to scan their tool surface and
+   prefer them.
+2. **Fallback — `tm_webfetch` (governed).** A domain-allowlisted fetch whose
+   output rides the same governance as the other tm_* tools (threshold
+   offload, content-aware preview, `tm_fetch` handle) so a web page can
+   never flood the context.  Seeded hosts: `mobile.moegirl.org.cn` (wiki
+   term), `search.bilibili.com`, `cn.bing.com`, `www.baidu.com` (search
+   URL templates); extend via `TM_WEBFETCH_ALLOWED_DOMAINS` (`"*"` opens
+   every host).  Only http(s); redirects are re-checked per hop; remote
+   `.env`-style URLs are refused (R6 red line); the built-in
+   webfetch/websearch tools stay removed.  The other four agents
+   (architect / implementer / reviewer / tester) have NO network grant —
+   web questions are reported as a gap, never simulated.
+
 > ⚠️ **When you approve a dialog, pick "once" — not "always".** Verified on
 > the live host, "always" records a far broader rule than the command you
 > saw: approving `Get-ChildItem env:PATH` with "always" stores `Get-ChildItem
 > *`, so every later `Get-ChildItem` runs with no dialog at all. Only the
 > once-verdict keeps each gated operation individually human-checked.
+> (If you do pick "always" on an env dialog, TeamMode scopes it to the
+> current session — and env-FILE reads such as `cat .env` stay hard-blocked
+> regardless: no dialog ever backs them, so no "always" can consent to them.)
 
 > Deferral is per-session: env reads only route to the dialog in sessions
 > running TeamMode's injected agents (or after such a session has shown one
 > of these dialogs). In any other session (e.g. a stock `build`/`plan` chat)
 > TeamMode's guard keeps hard-blocking env reads, since no dialog would back
-> them there. Compound commands (`a; b`) are evaluated per segment by the
+> them there. Within one session, a user prompt routed to a non-injected
+> agent REVOKES that eligibility (the per-turn agent signal rides
+> `message.updated`; the verified host passes NO agent to
+> `tool.execute.before`). Compound commands (`a; b`) are evaluated per segment by the
 > host and approved through one dialog; the guard blocks them outright
 > whenever any segment is an env read.
 
@@ -280,6 +306,14 @@ gated, so day-to-day team work runs without interruption.
 > `opencode run` auto-rejects an unanswered `ask` immediately (there is no
 > human to prompt).
 
+> **Repo hygiene.** The offload/trajectory stores live under
+> `<repo>/.git/opencode-team/` (or the OS temp dir outside a git repo) —
+> never your working tree. Every agent is instructed to delete scratch /
+> temporary files it created before reporting done, and to keep throwaway
+> work in the OS temp dir so nothing lands in the repo at all. `tm_read` /
+> `tm_grep` paths are relative to the **project root** (not the agent's
+> working directory).
+
 | Env var | Default | Purpose |
 |---|---|---|
 | `TM_ENV_PROTECT` | `strict` | R6 mode: `strict` / `standard` / `off` (off also disarms the approval timer) |
@@ -288,10 +322,11 @@ gated, so day-to-day team work runs without interruption.
 | `TM_OFFLOAD_THRESHOLD` | `2000` | offload threshold (tokens, chars/4 estimate) |
 | `TM_PREVIEW_MAX_TOKENS` | `80` | preview hard cap |
 | `TM_FETCH_MAX_LINES` | `2000` | tm_fetch page cap |
-| `TM_BLACKBOARD_DIR` | `.blackboard/` | offloaded payload store |
-| `TM_TRAJECTORY_DIR` | `.trajectory/` | append-only tool-call ledger |
+| `TM_BLACKBOARD_DIR` | `<repo>/.git/opencode-team/blackboard/` | offloaded payload store (tmpdir fallback outside a git repo; explicit value = absolute or project-relative) |
+| `TM_TRAJECTORY_DIR` | `<repo>/.git/opencode-team/trajectory/` | append-only tool-call ledger (tmpdir fallback outside a git repo) |
 | `TM_BLACKBOARD_TTL` | `7` | store retention (days) |
 | `TM_BASH_READONLY_ALLOWED` | built-in table | tm_bash allowlist |
+| `TM_WEBFETCH_ALLOWED_DOMAINS` | `mobile.moegirl.org.cn, search.bilibili.com, cn.bing.com, www.baidu.com` | tm_webfetch allowlist (`"*"` opens every host; explicit empty = deny all) |
 | `TM_PTC_MAX_PROGRAM_CHARS` | `4000` | PTC program source length cap (chars) |
 | `TM_PTC_MAX_CALLS` | `20` | PTC per-run bridge-call budget (1–200) |
 | `TM_PTC_MAX_ERRORS` | `3` | PTC per-run error budget (1–50) |
@@ -334,9 +369,9 @@ lost.
 
 | Mode | Behavior |
 |---|---|
-| `auto` (default) | Tries `worker_threads` first; on failure degrades to `node:vm` with a `degraded-engine` mark in the summary |
+| `auto` (default) | Tries `worker_threads` first; on engine failure it re-runs the WHOLE program on `node:vm` with a `degraded-engine` mark in the summary (bridged calls are read-only, so a re-run is safe; the fallback starts with fresh budgets under the same wall-clock deadline) |
 | `worker` | Forces the worker engine (engine-error on failure) |
-| `inline` | Forces the `node:vm` engine (30s compile timeout for sync busy-loops; await-gap residual documented) |
+| `inline` | Forces the `node:vm` engine (script timeout kills pre-await synchronous busy-loops; a busy loop after the first `await` blocks the host event loop irrecoverably — prefer worker/auto) |
 
 The worker engine runs the program in a dedicated thread with `env:{}`
 (process.env emptied), `resourceLimits`, and hard wall-clock `terminate()`.
@@ -345,9 +380,11 @@ applies to every bridged call — PTC is not a bypass layer.
 
 ### Access
 
-Five specialist agents (`implementer`, `tester`, `architect`, `reviewer`,
-`researcher`) have `tm_ptc_run` in their whitelist.  The `team` lead does
-not — it orchestrates, it does not run batch programs itself.
+`tm_ptc_run` is in the whitelist of **all six** agents (the `team` lead
+included — v1.5.4 revised the original deny ruling).  Every bridged call
+still runs the full governed tm_* pipeline (P2 path scope, P3 allowlist, R6,
+threshold offload + handles, TTL), so batch orchestration is a convenience
+gain, not a governance gap.
 
 ---
 

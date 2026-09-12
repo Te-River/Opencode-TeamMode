@@ -34,7 +34,7 @@ const ENV_KEYS = [
   "TM_BLACKBOARD_TTL", "TM_BASH_READONLY_ALLOWED",
   "TM_ENV_PROTECT", "TM_ENV_PROTECT_EXTRA_DENY",
   "TM_PTC_MAX_PROGRAM_CHARS", "TM_PTC_MAX_CALLS", "TM_PTC_MAX_ERRORS",
-  "TM_PTC_TIMEOUT_MS", "TM_PTC_ENGINE",
+  "TM_PTC_TIMEOUT_MS", "TM_PTC_ENGINE", "TM_WEBFETCH_ALLOWED_DOMAINS",
 ]
 const savedEnv = Object.fromEntries(ENV_KEYS.map((k) => [k, process.env[k]]))
 const clearTmEnv = () => { for (const k of ENV_KEYS) delete process.env[k] }
@@ -61,8 +61,8 @@ try {
     assert.equal(cfg.previewLines, 20, "default preview lines")
     assert.equal(cfg.previewMaxTokens, 80, "default preview max tokens")
     assert.equal(cfg.fetchMaxLines, 2000, "default fetch max lines")
-    assert.equal(cfg.blackboardDir, ".blackboard/", "default blackboard dir")
-    assert.equal(cfg.trajectoryDir, ".trajectory/", "default trajectory dir")
+    assert.equal(cfg.blackboardDir, "", "default blackboard dir = AUTO (git-aware, resolved in createTmTools)")
+    assert.equal(cfg.trajectoryDir, "", "default trajectory dir = AUTO (git-aware, resolved in createTmTools)")
     assert.equal(cfg.blackboardTtlDays, 7, "default blackboard ttl days")
     assert.ok(cfg.bashReadonlyAllowed.includes("Get-Content"), "default allowlist ships PS cmdlets")
     // invalid values fail soft to defaults (typed defaults, type guard)
@@ -84,12 +84,30 @@ try {
     assert.equal(custom.offloadThreshold, 500, "threshold override")
     assert.equal(custom.blackboardDir, "D:/data/.bb", "absolute blackboard dir override")
     assert.deepEqual(custom.bashReadonlyAllowed, ["ls", "python", "rg"], "allowlist override")
+    // webfetch allowlist: seeded four hosts, env override, explicit empty
+    assert.deepEqual(
+      cfg.webfetchAllowedDomains,
+      ["mobile.moegirl.org.cn", "search.bilibili.com", "cn.bing.com", "www.baidu.com"],
+      "default webfetch allowlist = the four lookup hosts",
+    )
+    assert.deepEqual(
+      tm.resolveTmConfig({ TM_WEBFETCH_ALLOWED_DOMAINS: "docs.example.com, *" }).webfetchAllowedDomains,
+      ["docs.example.com", "*"],
+      "webfetch allowlist env override ('*' opens all)",
+    )
+    assert.deepEqual(
+      tm.resolveTmConfig({ TM_WEBFETCH_ALLOWED_DOMAINS: "" }).webfetchAllowedDomains,
+      [], "explicit empty webfetch allowlist = deny-all",
+    )
     // explicit empty allowlist = deny-all (explicit user choice)
     assert.deepEqual(tm.resolveTmConfig({ TM_BASH_READONLY_ALLOWED: "," }).bashReadonlyAllowed, [], "empty allowlist honored")
-    // token口径: chars/4 ceil; equal-threshold offloads (conservative boundary)
+    // token口径: CJK ≈ 1 token each (≥U+2E80), other chars/4 ceil;
+    // equal-threshold offloads (conservative boundary)
     assert.equal(tm.estimateTokens(""), 0, "empty = 0 tokens")
     assert.equal(tm.estimateTokens("abcd"), 1, "4 chars = 1 token")
     assert.equal(tm.estimateTokens("abc"), 1, "3 chars ceil = 1 token")
+    assert.equal(tm.estimateTokens("四个汉字"), 4, "CJK chars = 1 token each (was chars/4 = 1)")
+    assert.equal(tm.estimateTokens("ab汉"), 2, "mixed: ceil(2 ascii/4 + 1 CJK) = ceil(1.5) = 2")
     assert.equal(tm.shouldOffload(2000, 2000), true, "boundary: == threshold offloads")
     assert.equal(tm.shouldOffload(1999, 2000), false, "below threshold stays inline")
   }
@@ -683,6 +701,120 @@ try {
   }
   console.log("6g. tm_bash execution: OK (offload round-trip, clue, structured shell error + line)")
 
+  // 6k. P0 regression: the shell-bridge fallback must reach the PTC pipeline
+  // too.  v1.5.4 resolved the Bun-global $ fallback for the MAIN tm_bash
+  // path only — PTC's pipeline instance got input.$ raw, so on desktops
+  // where the loader does not pass $ through, every PTC tm.bash bridged
+  // call died with "宿主 shell 桥（$）不可用".
+  {
+    const prev$ = globalThis.$
+    const prevBun$ = globalThis.Bun ? globalThis.Bun.$ : undefined
+    const hadBun = Boolean(globalThis.Bun)
+    globalThis.$ = fake$Ok("bridge-ok")
+    try {
+      const rt = await tm.createTmTools({ directory: root6, client: fakeClient({}) }) // NO input.$
+      const mainOut = (await rt.tools.tm_bash.execute({ command: "ls" }, ctx)).output
+      assert.ok(mainOut.includes("bridge-ok"), "main tm_bash uses the Bun-global $ fallback")
+      const ptc = await rt.tools.tm_ptc_run.execute(
+        { program: 'const r = await tm.bash({ command: "ls" }); return r.ok ? r.data : r.error.message' },
+        ctx,
+      )
+      assert.ok(ptc.output.includes("bridge-ok"), "PTC tm.bash bridging uses the SAME $ fallback")
+      assert.ok(!ptc.output.includes("不可用"), "no missing-shell-bridge error anywhere in the PTC run")
+    } finally {
+      if (prev$ === undefined) delete globalThis.$
+      else globalThis.$ = prev$
+      if (!hadBun) { /* no Bun global to restore */ }
+      else if (prevBun$ === undefined) delete globalThis.Bun.$
+      else globalThis.Bun.$ = prevBun$
+    }
+  }
+  console.log("6k. shell-bridge fallback shared by main + PTC pipelines: OK (P0)")
+
+  // 6m. tm_webfetch — governed web fallback channel (granted ONLY to team +
+  // researcher; see the whitelist matrix in test-default-agent §6).  Pure
+  // red lines: http(s)-only, host allowlist (subdomains included), remote
+  // env-file spellings refused, HTML stripped; the fetch itself is stubbed.
+  {
+    const A = tm.DEFAULT_WEBFETCH_DOMAINS
+    assert.deepEqual(
+      A, ["mobile.moegirl.org.cn", "search.bilibili.com", "cn.bing.com", "www.baidu.com"],
+      "seeded allowlist = the four lookup hosts",
+    )
+    assert.equal(tm.hostAllowed("cn.bing.com", A), true, "exact host allowed")
+    assert.equal(tm.hostAllowed("a.mobile.moegirl.org.cn", A), true, "subdomain of a listed host allowed")
+    assert.equal(tm.hostAllowed("evil.example.com", A), false, "foreign host rejected")
+    assert.equal(tm.checkWebUrl("https://cn.bing.com/search?q=x", A).ok, true, "bing search url allowed")
+    for (const bad of ["ftp://cn.bing.com/x", "file:///etc/passwd", "https://evil.example.com/x"]) {
+      assert.equal(tm.checkWebUrl(bad, A).ok, false, "blocked: " + bad)
+    }
+    assert.equal(
+      tm.checkWebUrl("https://mobile.moegirl.org.cn/.env", A).ok, false,
+      "remote .env spelling refused (R6 red line applies to URLs)",
+    )
+    assert.equal(tm.checkWebUrl("https://any.example.com/x", ["*"]).ok, true, '"*" opens every host')
+    // HTML → text
+    const stripped = tm.htmlToText(
+      "<html><script>evil()</script><style>x{}</style><body><h1>Title</h1><p>Hello <b>world</b></p><!-- c --></body></html>",
+    )
+    assert.ok(!stripped.includes("evil()") && !stripped.includes("<"), "script/style/tags stripped")
+    assert.ok(stripped.includes("Title") && stripped.includes("Hello world"), "text preserved")
+
+    // end-to-end through the registered tool (globalThis.fetch stubbed)
+    const realFetch = globalThis.fetch
+    const htmlRes = (body, ctype = "text/html; charset=utf-8") => {
+      const enc = new TextEncoder().encode(body)
+      return {
+        status: 200,
+        headers: { get: (n) => (String(n).toLowerCase() === "content-type" ? ctype : null) },
+        body: {
+          getReader: () => {
+            let done = false
+            return {
+              read: async () => (done ? { done: true, value: undefined } : ((done = true), { done: false, value: enc })),
+              cancel: async () => {},
+            }
+          },
+        },
+      }
+    }
+    globalThis.fetch = async (input) => {
+      const url = String(input)
+      if (url.includes("bing.com/short")) {
+        return {
+          status: 302,
+          headers: { get: (n) => (String(n).toLowerCase() === "location" ? "https://evil.example.com/next" : null) },
+          body: null,
+        }
+      }
+      if (url.includes("bing.com/big")) return htmlRes("w".repeat(200000))
+      return htmlRes("<h1>Page</h1>content-here")
+    }
+    try {
+      const wf = runtime.tools.tm_webfetch
+      assert.ok(wf && typeof wf.execute === "function", "tm_webfetch registered on the runtime tool surface")
+      const small = await wf.execute({ url: "https://mobile.moegirl.org.cn/term" }, ctx)
+      assert.ok(
+        typeof small.output === "string" && small.output.includes("Page") && small.output.includes("content-here"),
+        "small page inlines as stripped text",
+      )
+      const bounced = await wf.execute({ url: "https://cn.bing.com/short" }, ctx)
+      assert.ok(
+        bounced.output.includes("不在") && bounced.output.includes("白名单"),
+        "redirect hop re-checked against the allowlist (allowlisted page cannot bounce off-site)",
+      )
+      const foreign = await wf.execute({ url: "https://evil.example.com/x" }, ctx)
+      assert.ok(foreign.output.includes("phase=permission"), "foreign host → structured permission error")
+      const big = await wf.execute({ url: "https://cn.bing.com/big" }, ctx)
+      assert.ok(big.output.includes("已卸载") && big.output.includes("ref: tm://runs/"), "oversized page offloads to a handle")
+      const stepId = /steps\/([^/]+)\/result/.exec(big.output)[1]
+      assert.ok(runtime.store.readStepFile(stepId) !== null, "offloaded page retrievable from the shared run store")
+    } finally {
+      globalThis.fetch = realFetch
+    }
+  }
+  console.log("6m. tm_webfetch: OK (allowlist matrix, scheme/env-file red lines, HTML strip, redirect re-check, threshold offload, structured errors)")
+
   // 6h. degraded path: store failure -> truncated + warning, task NOT failed
   {
     const blocker = path.join(mktmp("degraded"), "blocker.txt")
@@ -900,7 +1032,7 @@ try {
     assert.equal(defLabel.args.label, "ptc-run", "default label")
     console.log("9c. arg schema: OK (length cap, blank reject, label trunc/default)")
 
-    // static pre-scan (written, NOT enabled in the run path)
+    // static pre-scan (the FIRST gate — wired into runPtc + the tool since M2)
     assert.equal(tm.staticPscan("const x=await tm.read({})").rejected, false, "clean program passes pscan")
     assert.equal(tm.staticPscan("require('fs')").rejected, true, "require caught by pscan")
     assert.equal(tm.staticPscan("process.exit(1)").rejected, true, "process caught by pscan")
@@ -1098,19 +1230,92 @@ try {
       const res = await tool.execute({ program: 'const r = await tm.read({ path: "a" }); return r.ok', budgets: { max_calls: 3 } }, { directory: process.cwd() })
       assert.equal(typeof res.output, "string", "ToolResult {output:string} contract honored")
       assert.ok(res.output.includes("PTC 摘要") && res.output.includes("status=ok"), "tool output is the aggregation summary")
-      // M3: tm_ptc_run IS registered in the tool segment (five agents get allow, team gets deny)
+      // M3 (v1.5.4 revised): tm_ptc_run IS registered in the tool segment and
+      // ALL SIX agents carry the allow (team included — overrides the tm_*
+      // wildcard; see CHANGELOG 1.5.4)
       const hooks = await plugin.server({ directory: mktmp("ptc-reg"), client: fakeClient({}), $: fake$Ok("") }, { envProtect: true })
       assert.ok("tm_ptc_run" in hooks.tool, "tm_ptc_run registered in the tool segment (M3)")
       assert.deepEqual(
         Object.keys(hooks.tool).sort(),
-        ["tm_bash", "tm_fetch", "tm_grep", "tm_ptc_run", "tm_read"],
-        "registered tm_* set includes tm_ptc_run",
+        ["tm_bash", "tm_fetch", "tm_grep", "tm_ptc_run", "tm_read", "tm_webfetch"],
+        "registered tm_* set includes tm_ptc_run + tm_webfetch",
       )
       // program over the cap is rejected through the tool as an args error
       const big = await tool.execute({ program: "x".repeat(4001) }, { directory: process.cwd() })
       assert.ok(big.output.includes("phase=args") && big.output.includes("program 超过长度上限"), "over-cap program -> args error text")
     }
     console.log("9i. tm_ptc_run tool: OK (builds + renders summary, honors ToolResult; registered in tool segment, five-tool set)")
+
+    // 9j. REAL engines — previously ZERO coverage (9e-9i all ran
+    // InlineSequentialEngine with a mock bridge, while auto mode tries
+    // WorkerEngine FIRST on a real host).
+    {
+      const fakeBridge = { call: async (tool) => ({ ok: true, data: `ran:${tool}` }) }
+      const runOpts = (program, engine, budgets) => ({
+        program, label: "eng", budgets, parentStepId: "s0901", cfg, bridge: fakeBridge,
+        ...(engine ? { engine } : {}),
+      })
+
+      // WorkerEngine happy path: program runs in a real thread, bridged
+      // calls round-trip over MessagePort RPC, the result crosses back.
+      const okRun = await tm.runPtc(runOpts(
+        'const a = await tm.read({}); const b = await tm.grep({}); return [a.data, b.data].join("+")',
+        new tm.WorkerEngine(),
+        { maxCalls: 5, maxErrors: 2, timeoutMs: 30000 },
+      ))
+      assert.equal(okRun.status, "ok", "worker: happy path ok")
+      assert.equal(okRun.engine, "worker", "worker: engine recorded")
+      assert.equal(okRun.returnValue, "ran:tm_read+ran:tm_grep", "worker: bridged calls round-trip over RPC")
+      assert.equal(okRun.okCount, 2, "worker: both bridged calls in the summary")
+
+      // WorkerEngine: program throw -> engine-error carrying the message
+      const throwRun = await tm.runPtc(runOpts(
+        'throw new Error("worker-boom")',
+        new tm.WorkerEngine(),
+        { maxCalls: 5, maxErrors: 2, timeoutMs: 30000 },
+      ))
+      assert.equal(throwRun.status, "engine-error", "worker: program throw -> engine-error")
+      assert.ok(throwRun.engineError && throwRun.engineError.message.includes("worker-boom"), "worker: error message crosses the worker boundary")
+
+      // WorkerEngine: hard wall-clock timeout -> terminate() -> status timeout
+      const t0 = Date.now()
+      const timeoutRun = await tm.runPtc(runOpts(
+        "await new Promise(() => {})", // never resolves
+        new tm.WorkerEngine(),
+        { maxCalls: 5, maxErrors: 2, timeoutMs: 800 },
+      ))
+      assert.equal(timeoutRun.status, "timeout", "worker: wall-clock timeout")
+      assert.ok(Date.now() - t0 < 10000, "worker: terminate is prompt")
+      assert.equal(timeoutRun.okCount, 0, "worker: timeout run has no ok steps")
+
+      // WorkerEngine env:{} isolation: the parent's env is invisible to the
+      // program (direct engine.run — pscan would ban `process` in runPtc).
+      const envKeys = await new tm.WorkerEngine().run(
+        "return Object.keys(process.env).length",
+        fakeBridge,
+        new AbortController().signal,
+      )
+      assert.equal(envKeys, 0, "worker env:{} — parent environment not inherited")
+
+      // WorkerEngine body runs in strict mode (parity with the inline
+      // engines): an undeclared assignment must throw inside the worker.
+      const strictRun = await tm.runPtc(runOpts(
+        'undeclaredGlobal = 1; return "sloppy-ok"',
+        new tm.WorkerEngine(),
+        { maxCalls: 5, maxErrors: 2, timeoutMs: 30000 },
+      ))
+      assert.equal(strictRun.status, "engine-error", "worker: program body is strict-mode")
+
+      // InlineVmEngine: synchronous busy-loop killed by the (injectable)
+      // compile timeout — the fallback's documented kill path.
+      const vmRun = await tm.runPtc(runOpts(
+        "while (true) {}",
+        new tm.InlineVmEngine(200),
+        { maxCalls: 5, maxErrors: 2, timeoutMs: 30000 },
+      ))
+      assert.equal(vmRun.status, "engine-error", "inline-vm: sync busy-loop killed by compile timeout")
+    }
+    console.log("9j. real engines: OK (WorkerEngine RPC/throw/terminate/env-isolation/strict, InlineVmEngine compile-timeout kill)")
   }
 } finally {
   restoreEnv()

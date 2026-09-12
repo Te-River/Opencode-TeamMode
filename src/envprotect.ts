@@ -51,6 +51,9 @@
  * configuration of the tool itself, the same category as the ttlDays
  * option below; it is NOT what R6 defends against, which is the MODEL
  * reading environment variables through tool calls at runtime):
+ *   - plugin option `envProtect` (v1.5.4, default FALSE) gates the whole
+ *     feature: without opting in, nothing intercepts, no gate arms, no
+ *     audit lines are written.  When opted in:
  *   - `TM_ENV_PROTECT`       = "strict" (default) | "standard" | "off";
  *     unknown values fail closed into strict.
  *   - `TM_ENV_PROTECT_EXTRA_DENY` = semicolon-separated user regexes,
@@ -845,7 +848,18 @@ export function createEnvProtectHook(
     if (!category) return
     // Session-wide env approval ("always" on first env ask) — pass silently;
     // the "always" event itself was already audited by the approval gate.
-    if (sessionID && options.envApproved?.(sessionID)) return
+    // The blanket NEVER covers env-FILE reads (CATEGORY_ENV_FILE_PATH):
+    // files on disk (.env, shell rc family) never open a dialog of their
+    // own (they are not in the ask-pattern set), so no "always" verdict can
+    // have consented to them — they keep hard-throwing even in an
+    // env-approved session.
+    if (
+      sessionID &&
+      options.envApproved?.(sessionID) &&
+      category !== CATEGORY_ENV_FILE_PATH
+    ) {
+      return
+    }
     // Defer ONLY the built-in bash tool (never its tm_bash alias), ONLY in a
     // registered session, for the exact forms the config escalates to `ask`.
     if (tool.trim().toLowerCase() === "bash" && sessionID && options.deferToApproval?.(sessionID)) {

@@ -202,10 +202,19 @@ const plugin: OpenCodePlugin = {
             info &&
             info.role === "user" &&
             typeof info.agent === "string" &&
-            typeof info.sessionID === "string" &&
-            injectedExecAgents.has(info.agent)
+            typeof info.sessionID === "string"
           ) {
-            approvalGate.registerExecSession(info.sessionID)
+            // UserMessage.agent is a REQUIRED string in the host schema
+            // (verified in the desktop binary), so a user prompt always names
+            // its agent.  Deferral stays live only while the CURRENT prompt
+            // runs an exec-role agent: a prompt routed to any other agent
+            // revokes the registration (stock agents' sessions would never
+            // open our dialogs, so a stale registration = silent env reads).
+            if (injectedExecAgents.has(info.agent)) {
+              approvalGate.registerExecSession(info.sessionID)
+            } else {
+              approvalGate.revokeExecSession(info.sessionID)
+            }
           }
           return
         }
@@ -218,10 +227,13 @@ const plugin: OpenCodePlugin = {
         if (
           input &&
           typeof input.sessionID === "string" &&
-          typeof input.agent === "string" &&
-          injectedExecAgents.has(input.agent)
+          typeof input.agent === "string"
         ) {
-          approvalGate.registerExecSession(input.sessionID)
+          if (injectedExecAgents.has(input.agent)) {
+            approvalGate.registerExecSession(input.sessionID)
+          } else {
+            approvalGate.revokeExecSession(input.sessionID)
+          }
         }
       },
       dispose: () => {

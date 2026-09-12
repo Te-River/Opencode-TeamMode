@@ -7,6 +7,112 @@ registry saw 1.5.0 as the install-script fix release).
 
 ## [Unreleased]
 
+### Added
+- **Two-channel web access (network roles: Team Lead + Researcher ONLY)**:
+  - **High priority — user MCP/plugin tools**: browser automation, search
+    and fetch tools from user-configured MCP servers pass through the
+    whitelist untouched; the agents' prompts now instruct them to scan
+    their tool surface and PREFER those tools for web lookups.
+  - **Fallback — new `tm_webfetch` tool** (governed): domain-allowlisted
+    fetch seeded with `mobile.moegirl.org.cn` / `search.bilibili.com` /
+    `cn.bing.com` / `www.baidu.com`; `TM_WEBFETCH_ALLOWED_DOMAINS` extends
+    the list (`"*"` opens every host).  Red lines: http(s)-only, redirects
+    followed MANUALLY and re-checked against the allowlist per hop, remote
+    env-file URLs refused (R6 red line), 2 MB body cap, 20 s timeout, HTML
+    stripped to text.  Output rides the SAME governance as the other tm_*
+    tools (threshold offload + content-aware preview + tm_fetch handle) —
+    a web page can never flood the context.  Permission map: explicit
+    `allow` for team + researcher only; architect / implementer / reviewer /
+    tester carry an explicit `deny` (overrides the `tm_*` wildcard) — web
+    questions are reported as gaps, never simulated.  Built-in
+    webfetch/websearch stay removed (asserted in test-tm-tools §6m,
+    test-default-agent §6, test-blackboard)
+
+### Fixed
+- **PTC step-id namespace collision**: the PTC pipeline instance's step
+  counter started at s0001 again — offloaded PTC bridge payloads could
+  collide with same-numbered main-pipeline steps inside the shared run
+  store (refs ignore seq, so tm_fetch's last-append-wins could return the
+  WRONG payload).  PTC now runs under a `ptc-` stepPrefix
+  (`ptc-s0001.k01`), giving it a private step-id namespace
+- **PTC shell bridge (P0)**: the v1.5.4 Bun-global `$` fallback now reaches the
+  PTC pipeline instance too — previously only the main tm_bash path resolved
+  `globalThis.$`/`Bun.$`, so on desktops where the loader does not pass `input.$`
+  through, every `tm_ptc_run` program using `tm.bash()` died with
+  "宿主 shell 桥（$）不可用" (regression-pinned in test-tm-tools §6k)
+- **Env "always" blanket excludes env-FILE reads**: a session-wide env approval
+  (picking "always" on an env dialog) never covers `CATEGORY_ENV_FILE_PATH` —
+  `.env` / shell-rc reads keep hard-throwing even in an env-approved session,
+  because env files never open a dialog of their own and no "always" verdict
+  can have consented to them (asserted in test-envprotect §7h-2)
+- **Mixed-agent stale deferral window closed**: the approval gate gains
+  `revokeExecSession(sessionID)`; index.ts now REVOKES a session's exec
+  registration whenever a user prompt routes to a non-injected agent
+  (message.updated / chat.message).  Verified against the desktop binary: the
+  host passes `{tool, sessionID, callID}` with NO agent to
+  `tool.execute.before`, so the per-turn agent signal can only ride
+  message.updated (UserMessage.agent is a required string).  A later
+  exec-role prompt or a real env-classified dialog re-registers (asserted in
+  test-envprotect §7f/§7i)
+
+### Changed
+- **Tool-first prompt rule**: every agent (lead + all five specialists) is
+  instructed to actively scan its tool surface and route lookups through
+  the governed tools with a planned concrete call BEFORE answering from
+  memory — files/docs via tm_read, code search via tm_grep, enumeration /
+  quick probes via tm_bash, multi-file batch recon via tm_ptc_run, command
+  behavior via built-in bash where granted.  Colloquial / abbreviated /
+  aliased terms are expanded to canonical forms and searched in both
+  spellings before concluding "not found"; capabilities that are not on
+  the tool surface are reported as gaps, never simulated.  Pinned in
+  test-blackboard.mjs
+- **Repo hygiene prompt rule**: every agent (lead + all five specialists) is
+  now instructed to DELETE scratch/temporary files it created before
+  reporting done, and to keep throwaway work in the OS temp dir so nothing
+  lands in the user's repo (deliverables — code/tests/docs — are not temp
+  files).  Pinned in test-blackboard.mjs
+- **Store dirs leave the working tree (P2)**: the tm payload/trajectory stores
+  default to `<repo>/.git/opencode-team/blackboard|trajectory` (tmpdir
+  fallback outside a git repo; worktree `.git`-file handled) instead of
+  `.blackboard/` / `.trajectory/` in the project root — user projects never
+  had those gitignore entries.  Explicit `TM_BLACKBOARD_DIR` /
+  `TM_TRAJECTORY_DIR` keeps the old absolute/project-relative semantics
+- **CJK-aware token口径 (P2)**: `estimateTokens` counts CJK-range code points
+  (≥U+2E80) as ≈1 token each, everything else chars/4 — the pure chars/4
+  basis under-counted CJK up to 4× and let CJK-heavy payloads ride inline
+  past the threshold.  `capTokens` truncates by the same per-char cost basis
+  (shared `tokenCostOf`), so the 80-token preview cap stays honest for CJK
+- **tm_ptc_run args** use the same ZodRawShape treatment as the four tools
+  when the host ships zod (descriptor fallback unchanged); `program` /
+  `label` / `budgets` now reach the LLM parameter spec properly
+- **PTC engine hygiene**: `selectEngine`'s auto branch no longer pretends
+  construction can fail (the real worker→inline degrade re-runs the whole
+  program in `runPtc` — documented in the tool description and READMEs);
+  the worker program body now compiles in strict mode (parity with the
+  inline engines)
+- **InlineVmEngine actually kills busy loops now**: measured on Node
+  24/win32, `vm.compileFunction`'s `timeout` does NOT interrupt a busy loop
+  when the compiled function is invoked — the old engine could freeze the
+  host's main thread forever on a `while(true){}` program.  The engine now
+  wraps the program in an async IIFE under `vm.runInNewContext` with a
+  script timeout, which verifiably kills pre-await synchronous busy-loops
+  ("Script execution timed out"); the post-await residual (blocks the host
+  event loop, nothing can reclaim the main thread) is now documented
+  precisely — prefer worker/auto (asserted in test-tm-tools §9j)
+
+### Tests
+- §9j: REAL engine coverage — WorkerEngine RPC round-trip, program-throw
+  propagation, wall-clock terminate, `env:{}` isolation, strict-body pin;
+  InlineVmEngine compile-timeout busy-loop kill (injectable
+  `compileTimeoutMs`, default unchanged 30 s)
+- `npm test` now includes test-default-agent.mjs (was "Test (full)" only)
+- Docs synced with the v1.5.4 all-six-agent `tm_ptc_run` grant (README ×2,
+  AGENTS.md, stale M1-era source comments in ptc.ts / tm/index.ts /
+  agents.ts / test-tm-tools.mjs); README agent table fixed to match actual
+  behavior (Reviewer: ONE reviewer default, 3 parallel only high-risk;
+  Researcher: local-repo only, no web tools); AGENTS.md gained a Design
+  goals (business context) section
+
 ## [1.5.5] - 2026-09-12
 
 ### Changed

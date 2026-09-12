@@ -626,6 +626,17 @@ console.log("6. loader integration: OK (hook installed, env wiring, off passthro
     // message.updated / chat.message
     gate.registerExecSession("ses_team")
     assert.equal(gate.canDefer("ses_team"), true, "exec-role session registration enables deferral")
+    // revokeExecSession: index.ts feeds this when a user prompt routes to an
+    // agent that does NOT carry our injected ask set (the verified host passes
+    // {tool, sessionID, callID} with NO agent to tool.execute.before, so the
+    // per-turn agent signal can only ride message.updated/chat.message).
+    // Without revocation a session that once ran a team prompt stayed
+    // deferrable forever — a stale window for silent env reads.
+    gate.revokeExecSession("ses_team")
+    assert.equal(gate.canDefer("ses_team"), false, "revoke drops the exec registration (mixed-agent window closed)")
+    assert.equal(gate.hasLiveAsk("ses_team"), false, "revoke clears the live-ask set")
+    gate.registerExecSession("ses_team")
+    assert.equal(gate.canDefer("ses_team"), true, "a later exec-role prompt re-registers from fresh evidence")
     gate.dispose()
     assert.equal(gate.isArmed(), false, "disarmed after dispose")
     assert.equal(gate.canDefer("ses_team"), false, "disposed gate defers nothing")
@@ -751,8 +762,12 @@ console.log("6. loader integration: OK (hook installed, env wiring, off passthro
     await hook2({ tool: "bash", sessionID: "ses-approved" }, { args: { command: "Get-ChildItem env:PATH" } })
     // approved session: ALLCAPS expansion also passes (covers strict mode)
     await hook2({ tool: "bash", sessionID: "ses-approved" }, { args: { command: "echo $HOME" } })
-    // approved session: env-file read passes
-    await hook2({ tool: "read", sessionID: "ses-approved" }, { args: { filePath: "src/.env" } })
+    // P1 fix: the env blanket NEVER covers env-FILE reads — files on disk
+    // never open a dialog of their own, so no "always" verdict can have
+    // consented to them.  They hard-throw even in an env-approved session.
+    await assert.rejects(hook2({ tool: "read", sessionID: "ses-approved" }, { args: { filePath: "src/.env" } }), /env-file-path/, "approved session .env read: STILL blocked (blanket excludes env files)")
+    await assert.rejects(hook2({ tool: "bash", sessionID: "ses-approved" }, { args: { command: "cat .env.local" } }), /env-file-path/, "approved session bash cat .env: STILL blocked")
+    await assert.rejects(hook2({ tool: "grep", sessionID: "ses-approved" }, { args: { pattern: "x", include: "*.env" } }), /env-file-path/, "approved session grep include *.env: STILL blocked")
     // non-approved session: still hard throws
     await assert.rejects(hook2({ tool: "bash", sessionID: "ses-other" }, { args: { command: "printenv PATH" } }), /bash-env-command/, "non-approved session: still blocked")
     await assert.rejects(hook2({ tool: "read", sessionID: "ses-other" }, { args: { filePath: ".env" } }), /env-file-path/, "non-approved session .env: still blocked")
@@ -825,6 +840,22 @@ console.log("6. loader integration: OK (hook installed, env wiring, off passthro
         /category=bash-env-command/,
         "stock build session: expressible env read still hard-throws (no dialog behind it)",
       )
+      // (d2) MIXED-agent session: an exec prompt registers, a LATER stock
+      // prompt in the SAME session revokes.  The verified host passes
+      // {tool, sessionID, callID} with NO agent to tool.execute.before
+      // (desktop binary), so the per-turn agent signal can only ride
+      // message.updated — without revocation the once-registered session
+      // stayed deferrable forever (stale window = silent env reads).
+      await hooks.event({ event: { type: "message.updated", properties: { info: { id: "m3", sessionID: "ses-mixed", role: "user", agent: "implementer", time: { created: 1 } } } } })
+      await hooks["tool.execute.before"]({ tool: "bash", sessionID: "ses-mixed" }, { args: { command: "printenv PATH" } }) // deferred while exec
+      await hooks.event({ event: { type: "message.updated", properties: { info: { id: "m4", sessionID: "ses-mixed", role: "user", agent: "build", time: { created: 2 } } } } })
+      await assert.rejects(
+        hooks["tool.execute.before"]({ tool: "bash", sessionID: "ses-mixed" }, { args: { command: "printenv PATH" } }),
+        /category=bash-env-command/,
+        "stock prompt in the same session revokes the stale deferral window",
+      )
+      await hooks.event({ event: { type: "message.updated", properties: { info: { id: "m5", sessionID: "ses-mixed", role: "user", agent: "reviewer", time: { created: 3 } } } } })
+      await hooks["tool.execute.before"]({ tool: "bash", sessionID: "ses-mixed" }, { args: { command: "printenv PATH" } }) // exec prompt re-registers
       // (e) danger-only asked does NOT register env deferral
       await hooks.event({ event: { type: "permission.asked", properties: { id: "per-d", sessionID: "ses-danger", permission: "bash", patterns: ["rm gone.txt"], metadata: { command: "rm gone.txt" } } } })
       await assert.rejects(
@@ -835,6 +866,14 @@ console.log("6. loader integration: OK (hook installed, env wiring, off passthro
       // inexpressible + tm_bash unaffected by any registration
       await assert.rejects(hooks["tool.execute.before"]({ tool: "bash", sessionID: "ses-msg" }, { args: { command: "cat .env" } }), /env-file-path/, "capable client still hard-blocks inexpressible env reads")
       await assert.rejects(hooks["tool.execute.before"]({ tool: "tm_bash", sessionID: "ses-msg" }, { args: { command: "printenv" } }), /bash-env-command/, "tm_bash stays hard with a capable client")
+      // chat.message route revokes symmetrically: a stock agent prompt in the
+      // same session drops the earlier tester registration
+      await hooks["chat.message"]({ sessionID: "ses-chat", agent: "build" }, { message: {}, parts: [] })
+      await assert.rejects(
+        hooks["tool.execute.before"]({ tool: "bash", sessionID: "ses-chat" }, { args: { command: "set" } }),
+        /category=bash-env-command/,
+        "stock agent via chat.message revokes the earlier tester registration",
+      )
       // (f) an UNREGISTERED ask type (message.part.updated) must not throw
       await hooks.event({ event: { type: "message.part.updated", properties: { part: { id: "pp" } } } })
       hooks.dispose()

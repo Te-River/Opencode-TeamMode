@@ -183,7 +183,11 @@ console.log("1. default_agent promotion matrix: OK (opt-out default; custom/plan
     expected["tm_*"] = "allow"
     // M3: tm_ptc_run — all six agents get allow (overrides wildcard)
     expected["tm_ptc_run"] = "allow"
-    const allowCount = granted.length + tmTools.length + 2 // granted + tm tools + wildcard + ptc
+    // tm_webfetch — governed web fallback: ONLY team + researcher are
+    // network roles (explicit key overrides the tm_* wildcard)
+    const isWebRole = name === "team" || name === "researcher"
+    expected["tm_webfetch"] = isWebRole ? "allow" : "deny"
+    const allowCount = granted.length + tmTools.length + 2 + (isWebRole ? 1 : 0) // + wildcard + ptc + webfetch?
     assert.deepStrictEqual(
       perm, expected,
       name + ": whitelist content exact (" + allowCount + " allow entries / " +
@@ -242,6 +246,14 @@ console.log("1. default_agent promotion matrix: OK (opt-out default; custom/plan
   // T2.1 review fix (Major): team got edit back so the lead's "<=10-line
   // direct edit" promise (prompt: When you may edit directly) is executable.
   assert.equal(cfg.agent.team.permission.edit, "allow", "team: edit allowed (non-product direct edits)")
+
+  // tm_webfetch network-role split: the two-channel web policy grants the
+  // governed fallback to the lead + researcher ONLY.
+  assert.equal(cfg.agent.team.permission.tm_webfetch, "allow", "team: network role (governed tm_webfetch)")
+  assert.equal(cfg.agent.researcher.permission.tm_webfetch, "allow", "researcher: network role (governed tm_webfetch)")
+  for (const name of ["architect", "implementer", "reviewer", "tester"]) {
+    assert.equal(cfg.agent[name].permission.tm_webfetch, "deny", name + ": NOT a network role (tm_webfetch denied)")
+  }
 
   // researcher: dangling websearch:allow (T0.3) gone — deny, never allow
   assert.equal(cfg.agent.researcher.permission.websearch, "deny", "researcher: websearch residue removed")

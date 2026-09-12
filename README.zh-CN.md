@@ -23,9 +23,9 @@ TeamMode 将 OpenCode 桌面版从一个单 Agent 编码助手，升级为**一�
 | 🎯 **Team Lead** | 调度者 | 需要规划 + 多步执行的复杂任务 |
 | 🏗️ **Architect** | 系统设计师 | 设计文档、模块结构、API 契约 |
 | 💻 **Implementer** | 代码实现者 | 编写生产代码、实现功能 |
-| 🔍 **Reviewer** | 单维审查员 | 单维度审查（完整性 / 正确性 / 影响面）——lead 三路并行后合并 |
+| 🔍 **Reviewer** | 单维审查员 | 单维度审查（完整性 / 正确性 / 影响面）——默认 1 路；仅高风险变更升级为 3 路并行 |
 | 🧪 **Tester** | 测试工程师 | 单元测试、集成测试、边界覆盖、静态验证（构建 / 类型检查 / lint / API 测试） |
-| 🔎 **Researcher** | 知识调研员 | 库评估、API 文档、最佳实践调研 |
+| 🔎 **Researcher** | 知识调研员 | 本地仓库调研优先（代码、配置、已安装依赖、随包文档）；联网经用户 MCP 工具或受治理的 `tm_webfetch`——与 Team Lead 并列的两个网络角色之一 |
 
 ---
 
@@ -123,7 +123,7 @@ TeamMode 为 OpenCode 添加了六个斜杠命令，在聊天输入框中输入�
 | `/team-implement <任务>` | Implementer | 为功能或任务编写生产代码 |
 | `/team-review [范围]` | Reviewer | 审查代码的 Bug、安全问题和质量问题 |
 | `/team-test [范围]` | Tester | 生成全面的测试，覆盖边界场景 |
-| `/team-research <主题>` | Researcher | 调研库、API 或最佳实践 |
+| `/team-research <主题>` | Researcher | 本地仓库调研优先；联网走用户 MCP 工具或受治理的 `tm_webfetch` |
 | `/team-run <任务>` | Team Lead | **完整工作流** — 端到端调度所有 Agent |
 
 #### 示例工作流
@@ -226,6 +226,9 @@ token 的结果**不进窗口**——全量写入本地 run 存储，模型只�
 ERROR×N 统计 / 代码签名清单 / 二进制元信息，硬上限 80 token）。
 确实需要全文时，用 HMAC 签名、限本 run、带有效期的句柄经 `tm_fetch`
 分段取回。`tm_bash` 仅放行只读命令白名单，失败以结构化错误返回。
+所有 Agent 都被要求把每次查询优先路由到这些工具——先扫描自己的工具面、
+规划具体调用，再把口语化/缩写/别名称呼展开为规范名、两种写法都查——
+而不是凭记忆作答或伪装被移除工具的输出。
 
 **R6 环境变量保护（现已升级为审批门控）。** TeamMode 激活时，模型无法
 静默读取环境变量。env 导出命令（`printenv`、`env`、`Get-ChildItem env:`
@@ -248,38 +251,63 @@ ERROR×N 统计 / 代码签名清单 / 二进制元信息，硬上限 80 token�
 拒绝。日常验证栈（`npm test`、`tsc`、`git status`/`diff`）**不在**门控
 之列，团队协作照常无打扰运行。
 
+**联网查询（两通道）——网络角色仅限 Team Lead 与 Researcher。**
+1. **高优先级——用户自有的 MCP/插件工具。** 用户配置的 MCP 服务器提供的
+   浏览器自动化、搜索、抓取类工具原样通过白名单，不会被拦截；所有 Agent
+   都被要求先扫描自己的工具面、优先使用它们。
+2. **兜底——`tm_webfetch`（受治理）。** 域名白名单内的受治理抓取，输出与
+   其他 tm_* 工具走同一套治理（阈值卸载、内容感知预览、`tm_fetch` 句柄），
+   网页永远冲不爆上下文。预置主机：`mobile.moegirl.org.cn`（词条）、
+   `search.bilibili.com`、`cn.bing.com`、`www.baidu.com`（搜索 URL 模板）；
+   通过 `TM_WEBFETCH_ALLOWED_DOMAINS` 扩展（`"*"` 放开全部主机）。仅允许
+   http(s)；重定向逐跳复检；远程 `.env` 类 URL 拒绝（R6 红线）；内置
+   webfetch/websearch 工具保持移除。其余四个角色（architect / implementer /
+   reviewer / tester）**没有**网络授权——联网问题按缺口上报，绝不伪装结果。
+
 > ⚠️ **批准弹窗时请选 once（仅此一次），不要选 always。** 真实宿主实测：
 > always 记录的泛化规则远比当次命令宽——对 `Get-ChildItem env:PATH` 选
 > always 会记下 `Get-ChildItem *`，此后所有 `Get-ChildItem` 都不再弹窗。
 > 只有 once 能让每次危险操作继续单独过人手。
+> （如果确实对 env 弹窗选了 always，TeamMode 会把它收敛为**当前会话**级；
+> 且 env 文件读取（如 `cat .env`）无论如何保持硬拦——它们从无弹窗兜底，
+> 任何 always 都不曾为其授权。）
 
 > 延后是**按会话**生效的：只有运行 TeamMode 注入角色的会话（或已弹过这类
 > 确认框的会话）里的 env 读取才会被放行给弹窗；其他会话（如原生
-> `build`/`plan`）里守护仍然直接硬拦——那里根本没有弹窗兜底。宿主对复合
-> 命令（`a; b`）按段评估、单次弹窗批准整条；任一子段是 env 读取时守护整条
-> 拦截。
+> `build`/`plan`）里守护仍然直接硬拦——那里根本没有弹窗兜底。同一会话中，
+> 一条路由到非注入角色的用户消息会**撤销**该会话的放行资格（按回合的
+> agent 信号来自 message.updated；宿主传给 tool.execute.before 的入参经实测
+> 不含 agent 字段）。宿主对复合命令（`a; b`）按段评估、单次弹窗批准整条；
+> 任一子段是 env 读取时守护整条拦截。
 
 > 权限协议已在真实 `opencode serve` 宿主（1.18.29）上经 SSE 事件捕获实测
 > 核验；桌面弹窗的渲染本身仍需在真实 Desktop 会话里目视确认一次。非交互
 > `opencode run` 下，无人应答的 `ask` 会被立即自动拒绝（没有人类可弹）。
+
+> **仓库卫生。** 卸载载荷与轨迹账本存储在 `<repo>/.git/opencode-team/` 下
+> （非 git 仓库回退系统临时目录）——绝不污染你的工作树。所有 Agent 都被
+> 要求在汇报完成前**删除自己创建的临时/草稿文件**，一次性工作直接放到系统
+> 临时目录，从源头避免落进仓库。`tm_read` / `tm_grep` 的路径相对**项目根目录**
+> （而非 Agent 的工作目录）。
 
 | 环境变量 | 默认 | 作用 |
 |---|---|---|
 | `TM_ENV_PROTECT` | `strict` | R6 模式：`strict` / `standard` / `off`（off 同时解除审批计时器） |
 | `TM_ASK_TIMEOUT_MIN` | `10` | R6/R2 确认弹窗无人应答后自动拒绝的分钟数；最小 3 分钟（宿主的 `permission.replied` 经事件总线到达插件约延迟 ~120 秒——更小的值会把刚获批的请求误拒） |
 | `TM_ENV_PROTECT_EXTRA_DENY` | — | 追加拦截正则（分号分隔；始终硬拦，不走弹窗） |
-| `TM_OFFLOAD_THRESHOLD` | `2000` | 卸载阈值（token，chars/4 估算） |
+| `TM_OFFLOAD_THRESHOLD` | `2000` | 卸载阈值（token，CJK≈1 token/字、其余 chars/4 估算） |
 | `TM_PREVIEW_MAX_TOKENS` | `80` | 预览硬上限 |
 | `TM_FETCH_MAX_LINES` | `2000` | tm_fetch 单段上限 |
-| `TM_BLACKBOARD_DIR` | `.blackboard/` | 卸载载荷存储 |
-| `TM_TRAJECTORY_DIR` | `.trajectory/` | 只追加工具调用账本 |
+| `TM_BLACKBOARD_DIR` | `<repo>/.git/opencode-team/blackboard/` | 卸载载荷存储（非 git 仓库回退 tmpdir；显式值支持绝对或项目相对路径） |
+| `TM_TRAJECTORY_DIR` | `<repo>/.git/opencode-team/trajectory/` | 只追加工具调用账本（非 git 仓库回退 tmpdir） |
 | `TM_BLACKBOARD_TTL` | `7` | 存储保留天数 |
 | `TM_BASH_READONLY_ALLOWED` | 内置表 | tm_bash 只读白名单 |
+| `TM_WEBFETCH_ALLOWED_DOMAINS` | `mobile.moegirl.org.cn, search.bilibili.com, cn.bing.com, www.baidu.com` | tm_webfetch 白名单（`"*"` 放开全部主机；显式留空 = 全拒绝） |
 | `TM_PTC_MAX_PROGRAM_CHARS` | `4000` | PTC 程序源码长度上限（字符） |
 | `TM_PTC_MAX_CALLS` | `20` | PTC 单次运行桥接调用数上限（1–200） |
 | `TM_PTC_MAX_ERRORS` | `3` | PTC 单次运行错误数上限（1–50） |
 | `TM_PTC_TIMEOUT_MS` | `60000` | PTC 单次运行墙钟超时（5 秒–10 分钟） |
-| `TM_PTC_ENGINE` | `auto` | PTC 引擎：`auto`（worker→inline 降级）/ `worker` / `inline` |
+| `TM_PTC_ENGINE` | `auto` | PTC 引擎：`auto`（worker→inline 整体重跑降级）/ `worker` / `inline` |
 
 ---
 
@@ -311,9 +339,9 @@ ERROR×N 统计 / 代码签名清单 / 二进制元信息，硬上限 80 token�
 
 | 模式 | 行为 |
 |---|---|
-| `auto`（默认） | 优先尝试 `worker_threads`；失败时降级为 `node:vm`，摘要标记 `degraded-engine` |
+| `auto`（默认） | 优先尝试 `worker_threads`；引擎失败时**整体重跑**程序到 `node:vm`，摘要标记 `degraded-engine`（桥接调用均为只读，重跑安全；回退运行在相同墙钟期限内使用全新预算） |
 | `worker` | 强制使用 worker 引擎（失败时返回 engine-error） |
-| `inline` | 强制使用 `node:vm` 引擎（30 秒编译超时斩杀同步忙等；await 间隙残余已记录） |
+| `inline` | 强制使用 `node:vm` 引擎（脚本超时可斩杀**首个 await 之前**的同步忙等；await 之后的忙等会不可恢复地阻塞宿主事件循环——生产环境请用 worker/auto） |
 
 worker 引擎在专用线程中运行程序，`env:{}` 清空 process.env、`resourceLimits`
 限量、硬墙钟 `terminate()`。所有治理（P2 路径范围、P3 白名单、R6、阈值卸载、
@@ -321,8 +349,9 @@ TTL）对每次桥接调用生效——PTC 不是绕过层。
 
 ### 访问权限
 
-五个专家代理（`implementer`、`tester`、`architect`、`reviewer`、`researcher`）
-的白名单中包含 `tm_ptc_run`。`team` lead 不包含——它负责编排，不运行批量程序。
+**全部六个**代理的白名单中都包含 `tm_ptc_run`（`team` lead 也包含——v1.5.4
+修订了最初的拒绝裁定）。每次桥接调用仍然运行完整的 tm_* 治理管线（P2 路径
+域、P3 白名单、R6、阈值卸载 + 句柄、TTL），批量编排只是效率增益，不是治理缺口。
 
 ---
 

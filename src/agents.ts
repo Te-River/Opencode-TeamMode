@@ -12,7 +12,7 @@
  *  - Structured reply skeleton (STATUS/CHANGES/FINDINGS/EVIDENCE/HANDOFF)
  *    is the primary inter-agent channel; the file blackboard is demoted to
  *    an oversized-deliverable exception (>~50 lines). MANIFEST.md is gone.
- *  - Approval gate is a mechanical dispatch count (>=3 -> plan + wait);
+ *  - Approval gate is a mechanical dispatch count (>=2 -> plan + wait);
  *    blocking uncertainties are batched and asked immediately.
  *  - Verified root causes go straight to the implementer — no ceremonial
  *    research dispatches.
@@ -40,11 +40,16 @@ import type { AgentConfig, AgentPermission } from "./types.js"
  * G2 rulings baked in:
  *  - glob/list never enter the whitelist — file enumeration goes through
  *    tm_bash (ls / dir / Get-ChildItem);
- *  - webfetch/websearch excluded network-wide (P5 network zero);
- *  - "tm_*" covers exactly the four governed tools (tm_read / tm_grep /
- *    tm_bash / tm_fetch); the R6 env-protection hook aliases onto them
- *    unchanged, so narrowing the surface does not weaken the anti-backdoor
- *    chain.
+ *  - the built-in webfetch/websearch tools stay removed — the governed
+ *    tm_webfetch (domain-allowlisted, threshold-offloaded) is the sanctioned
+ *    web FALLBACK channel, granted ONLY to team + researcher; user-
+ *    configured MCP/plugin tools (browser automation, search, fetchers)
+ *    pass through the whitelist untouched and are the HIGH-priority channel;
+ *  - "tm_*" covers the four governed read/search/exec tools (tm_read /
+ *    tm_grep / tm_bash / tm_fetch); tm_webfetch and tm_ptc_run are explicit
+ *    keys that override the wildcard per agent; the R6 env-protection hook
+ *    aliases onto read/grep/bash unchanged, so narrowing the surface does
+ *    not weaken the anti-backdoor chain.
  *
  * T2.1 review revision (Critical fix): the built-in bash RETURNS for the
  * execution roles (team / implementer / reviewer / tester).  G2 only ruled
@@ -75,10 +80,13 @@ const PER_AGENT_TOOLS = ["edit", "write", "task", "bash"] as const
  *  stops expanding the wildcard). */
 const TM_TOOLS = ["tm_read", "tm_grep", "tm_bash", "tm_fetch"] as const
 
-/** M3: tm_ptc_run — explicit per-agent grant (five specialists = allow,
- *  team = deny to override the tm_* wildcard).  Design §3: PTC is a
- *  governed, read-only bridge; the team lead orchestrates, it does not
- *  run batch programs itself. */
+/** tm_ptc_run — explicit per-agent grant.  v1.5.4 revised the original M3
+ *  ruling (five specialists = allow, team = deny): ALL SIX agents now get
+ *  `allow` (per user request, CHANGELOG 1.5.4), overriding the tm_*
+ *  wildcard by explicit-key priority.  PTC remains a governed, read-only
+ *  bridge — the full tm_* pipeline (P2/P3/R6/offload) runs on every
+ *  bridged call, so the lead running batch programs is a convenience
+ *  change, not a governance change. */
 const PTC_TOOL = "tm_ptc_run" as const
 
 const whitelist = (
@@ -91,10 +99,21 @@ const whitelist = (
   }
   for (const tool of TM_TOOLS) permission[tool] = "allow"
   permission["tm_*"] = "allow"
+  // Governed web fallback — default DENY for every agent; the explicit key
+  // overrides the tm_* wildcard.  applyWebfetchPermission grants it back to
+  // the lead + researcher only (network capability is a two-role grant).
+  permission["tm_webfetch"] = "deny"
   return permission
 }
 
-/** Apply the M3 tm_ptc_run grant to an agent's permission block.  All six
+/** Apply the tm_webfetch grant: ONLY the team lead and the researcher carry
+ *  the governed web channel (explicit allow overrides the tm_* wildcard);
+ *  architect / implementer / reviewer / tester keep the whitelist deny. */
+function applyWebfetchPermission(permission: AgentPermission, isWebRole: boolean): void {
+  permission["tm_webfetch"] = isWebRole ? "allow" : "deny"
+}
+
+/** Apply the tm_ptc_run grant to an agent's permission block.  All six
  *  agents get `allow` (overrides the tm_* wildcard for explicit key priority). */
 function applyPtcPermission(permission: AgentPermission, _isTeamLead: boolean): void {
   permission[PTC_TOOL] = "allow"
@@ -191,8 +210,9 @@ files — NOT docs, comments, formatting, NOT *.test.* files).
   protocol violation.
 - Discovery gate: before any dispatch that codes against an external CLI,
   API, or runtime, someone must have verified real usage first
-  (\`--help\`, actual docs, installed versions).  No coding from memory
-  of an interface.
+  (\`--help\`, actual docs, installed versions — external docs/usage pages
+  via user MCP tools first, then your governed tm_webfetch).  No coding
+  from memory of an interface.
 
 ## Approval gate (mechanical, count-based)
 Count the dispatches your routing row prescribes:
@@ -342,6 +362,16 @@ specialist.
 ## General rules
 - Keep the user informed with brief progress updates between dispatches.
 - Your final output is a structured summary, not raw agent transcripts.
+- Repo hygiene applies to you too: scratch/temp files you create (probe
+  dumps, one-off captures) are deleted before your final report — or
+  never land in the repo (throwaway work goes to the OS temp dir).
+- Tool-first, memory-second: for any lookup, scan your tool surface and
+  run the concrete call (tm_* reads/greps, batch recon via tm_ptc_run,
+  probes via bash where granted) BEFORE answering from memory.  Web
+  lookups: user MCP tools first, then your governed tm_webfetch.  Expand
+  colloquial/abbreviated/aliased terms to canonical forms and search
+  both spellings.  A capability not on your surface is reported as a
+  gap — never simulated.
 
 ## Docs sync (CHANGELOG + AGENTS.md)
 Delivered changes keep project docs truthful — one rule, two targets:
@@ -354,9 +384,10 @@ If a target file does not exist, offer to create it; skip both when the
 user opted out.
 `,
   color: "#E879F9", // purple
-  // Whitelist (7 tools): tm_* x4 + task dispatch + edit (<=10-line
-  // non-product edits, see "When you may edit directly") + write (board
-  // files) + bash (discovery-gate probes: --help, installed versions).
+  // Whitelist: tm_* x4 + tm_ptc_run + tm_webfetch (the lead is a network
+  // role) + task dispatch + edit (<=10-line non-product edits, see "When
+  // you may edit directly") + write (board files) + bash (discovery-gate
+  // probes: --help, installed versions).
   permission: whitelist("task", "edit", "write", "bash"),
   temperature: 0.2,
 }
@@ -402,11 +433,11 @@ When the team lead sends back a design flaw found in review or testing:
   of guessing about the codebase.
 `,
   color: "#38BDF8", // sky blue
-  // Whitelist (5 tools): tm_* x4 + task dispatch.  Fully read-only by
-  // design (T2.1): output lives in the reply; if a board artifact is ever
-  // dispatched, the BLACKBOARD WRITE FAILED fallback hands the content to
-  // the lead inline (see Blackboard rules).  No bash — unchanged from the
-  // pre-T2.1 architect bash:deny posture.
+  // Whitelist: tm_* x4 + task dispatch; tm_webfetch DENIED (not a network
+  // role).  Fully read-only by design (T2.1): output lives in the reply; if
+  // a board artifact is ever dispatched, the BLACKBOARD WRITE FAILED
+  // fallback hands the content to the lead inline (see Blackboard rules).
+  // No bash — unchanged from the pre-T2.1 architect bash:deny posture.
   permission: whitelist("task"),
   temperature: 0.2,
 }
@@ -446,8 +477,9 @@ to you by the team lead.
   check, the previously failing test).
 `,
   color: "#4ADE80", // green
-  // Whitelist (7 tools): tm_* x4 + edit/write (code implementation) + bash
-  // (narrowest verification for the fix: build / typecheck / failing test).
+  // Whitelist: tm_* x4 + edit/write (code implementation) + bash (narrowest
+  // verification for the fix: build / typecheck / failing test);
+  // tm_webfetch DENIED (not a network role).
   permission: whitelist("edit", "write", "bash"),
   temperature: 0.2,
 }
@@ -508,11 +540,11 @@ the previously flagged scope plus regressions introduced by the fixes;
 confirm each prior finding item by item (fixed / not fixed / partial).
 `,
   color: "#FB923C", // orange
-  // Whitelist (6 tools): tm_* x4 + task dispatch + bash.  No edit/write
-  // (T2.1): findings travel in the reply skeleton; a dispatched board
-  // artifact rides the BLACKBOARD WRITE FAILED inline fallback (see
-  // Blackboard rules).  bash backs the evidence standard — the reviewer
-  // must be able to run npm test / tsc itself.
+  // Whitelist: tm_* x4 + task dispatch + bash; tm_webfetch DENIED (not a
+  // network role).  No edit/write (T2.1): findings travel in the reply
+  // skeleton; a dispatched board artifact rides the BLACKBOARD WRITE FAILED
+  // inline fallback (see Blackboard rules).  bash backs the evidence
+  // standard — the reviewer must be able to run npm test / tsc itself.
   permission: whitelist("task", "bash"),
   temperature: 0.2,
 }
@@ -579,8 +611,9 @@ worse than admitting the gap.
   refactor instead of contorting the test.
 `,
   color: "#F472B6", // pink
-  // Whitelist (7 tools): tm_* x4 + edit/write (test files) + bash (the
-  // whole verification stack: build / typecheck / lint / test runs).
+  // Whitelist: tm_* x4 + edit/write (test files) + bash (the whole
+  // verification stack: build / typecheck / lint / test runs);
+  // tm_webfetch DENIED (not a network role).
   permission: whitelist("edit", "write", "bash"),
   temperature: 0.2,
 }
@@ -591,11 +624,14 @@ worse than admitting the gap.
 const researcher: AgentConfig = {
   mode: "subagent",
   description:
-    "Researcher — investigates the local repository: code, configs, " +
-    "installed/vendored packages, and shipped documentation; every finding " +
-    "carries a source (file:line) and confidence tag so the team can decide " +
-    "what needs verification.  Use for information that must inform a " +
-    "technical decision.  Web research is out of scope (no network tools).",
+    "Researcher — investigates the local repository (code, configs, " +
+    "installed/vendored packages, shipped documentation) and, when local " +
+    "sources are insufficient, the web via the two-channel policy: " +
+    "user-configured MCP tools first, then the governed tm_webfetch " +
+    "(domain-allowlisted).  Every finding carries a source (file:line or " +
+    "URL) and a confidence tag so the team can decide what needs " +
+    "verification.  Use for information that must inform a technical " +
+    "decision.",
   prompt: `You are the **Researcher** on a multi-agent coding team.
 
 ## Role
@@ -624,6 +660,26 @@ by the team — flag prominently if that is the case.
 - Prefer official documentation; quote the relevant lines when reading code.
 - State which product/version each finding applies to.
 
+## Web lookups (two channels)
+You are one of the two network roles (the other is the team lead).
+1. HIGH priority — user-configured MCP/plugin tools on your surface
+   (browser automation, web search, page fetchers).  Scan your tool list
+   and prefer them whenever present.
+2. Fallback — tm_webfetch (governed, domain-allowlisted).  Seeded hosts
+   and shapes:
+   - wiki term:  https://mobile.moegirl.org.cn/TERM
+   - bilibili:   https://search.bilibili.com/all?keyword=QUERY
+   - bing:       https://cn.bing.com/search?q=QUERY
+   - baidu:      https://www.baidu.com/s?wd=QUERY
+   URL-encode the query (CJK terms too).  Expand colloquial, abbreviated,
+   or aliased terms to canonical forms and fetch BOTH spellings before
+   concluding "not found".
+Oversized pages come back as a handle — page with tm_fetch (try
+mode:"structure" first).  Out-of-allowlist hosts are rejected; extend the
+allowlist by asking the user to set TM_WEBFETCH_ALLOWED_DOMAINS.  Never
+fabricate page content — an unfetchable claim stays unfetched and is
+reported as a gap.
+
 ## Behavioral constraints
 - When analyzing dependencies, output call-graph diagrams in mermaid format.
 - When the code under study involves authentication/authorization, tag each
@@ -635,12 +691,11 @@ by the team — flag prominently if that is the case.
   of re-deriving.
 `,
   color: "#A78BFA", // violet
-  // Whitelist (4 tools): tm_* x4 ONLY — intentionally below the 5-7 band
-  // (T2.1): pure local research.  webfetch/websearch are excluded
-  // network-wide (P5), which also removes the dangling websearch:allow
-  // found in T0.3; file enumeration goes through tm_bash (G2 方案甲).
-  // No bash / no execution rights is intentional trimming — local
-  // research reads, it does not run.
+  // Whitelist: tm_* x4 + tm_webfetch (the researcher is a network role).
+  // The built-in webfetch/websearch tools stay removed — web lookups ride
+  // user-configured MCP tools (preferred) or the governed tm_webfetch
+  // (domain-allowlisted, threshold-offloaded).  No bash / no execution
+  // rights is intentional trimming — local research reads, it does not run.
   permission: whitelist(),
   temperature: 0.2,
 }
@@ -660,6 +715,27 @@ retrying them only wastes a turn.  Built-in bash exists only where granted
 (team / implementer / reviewer / tester run commands: build / test / git);
 architect and researcher have no bash at all — one-off read-only commands
 go through tm_bash or are reported as a gap.
+Web lookups are NOT yours unless tm_webfetch is on your surface (only the
+team lead and the researcher carry the network grant): report web questions
+as a gap — never simulate web results, never retry the removed
+webfetch/websearch built-ins.
+
+## Use your tools first — never answer unverified from memory
+For any "what / where / how / which" question, your tool list is the
+FIRST move, not a fallback: scan the tools you actually have and plan
+the concrete call BEFORE answering.
+- Files/docs → tm_read · code search → tm_grep · enumeration and quick
+  probes → tm_bash · multi-file batch recon → tm_ptc_run (one program,
+  many governed calls, zero round-trips) · command behavior (versions,
+  --help) → built-in bash where granted.
+- State the plan explicitly — WHAT you need, WHICH tool answers it, and
+  the actual call (path / pattern / command) — then run it.
+- Expand colloquial, abbreviated, or aliased terms to their canonical
+  forms and search BOTH spellings (short name + full name) before
+  concluding "not found".
+- A capability that is NOT on your tool surface does not exist: never
+  retry removed tools, never simulate their output — report the gap
+  instead (the lead relays it to the user).
 
 ## R6 protected reads
 When you need to read protected data (system variables the R6 guard blocks),
@@ -682,18 +758,33 @@ If the project README (or AGENTS.md) is quoted in your dispatch, treat
 its conventions as binding — they outrank your defaults.  Do not re-open
 those docs yourself: the lead already distilled them, and the host
 usually injects AGENTS.md/CLAUDE.md content anyway — your context budget
-belongs to the work.`
+belongs to the work.
+
+## Repo hygiene (temp files)
+Scratch/temporary files created while working (probe scripts, dump
+files, one-off output captures) are DELETED before you report done —
+the user's repo is never left polluted.  Prefer the OS temp dir for
+throwaway work so nothing lands in the repo at all.  Deliverables
+(code, tests, docs) are not temp files — they stay.`
 
 /* Append the reply contract and shared rules to every specialist prompt. */
 for (const a of [architect, implementer, reviewer, tester, researcher]) {
   a.prompt = (a.prompt ?? "") + REPLY_CONTRACT + SHARED_RULES
 }
 
-/* M3: tm_ptc_run permission — five specialists get allow, team gets deny
- * (overrides the tm_* wildcard).  Applied once at module init. */
-if (teamLead.permission) applyPtcPermission(teamLead.permission, true)
+/* tm_ptc_run permission — all six agents get allow (overrides the tm_*
+ * wildcard; v1.5.4 revised the original team=deny ruling).  tm_webfetch —
+ * ONLY team + researcher get allow (the two network roles).  Applied once
+ * at module init. */
+if (teamLead.permission) {
+  applyPtcPermission(teamLead.permission, true)
+  applyWebfetchPermission(teamLead.permission, true)
+}
 for (const a of [architect, implementer, reviewer, tester, researcher]) {
-  if (a.permission) applyPtcPermission(a.permission, false)
+  if (a.permission) {
+    applyPtcPermission(a.permission, false)
+    applyWebfetchPermission(a.permission, a === researcher)
+  }
 }
 
 /* ------------------------------------------------------------------ */

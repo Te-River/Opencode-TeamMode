@@ -193,6 +193,9 @@ assert.equal(cfgNoGate.agent.team.permission.bash["rm *"], "ask", "R2 danger fac
 assert.equal(cfgNoGate.agent.team.permission.bash["*"], "allow", "T2.1 grant intact either way")
 assert.equal(cfg.agent["team"].permission.edit, "allow", "lead edit allowed (<=10-line non-product edits)")
 assert.equal(cfg.agent["team"].permission.task, "allow", "lead task dispatch allowed")
+assert.equal(cfg.agent["team"].permission.tm_webfetch, "allow", "lead is a network role (governed tm_webfetch)")
+assert.equal(cfg.agent["implementer"].permission.tm_webfetch, "deny", "implementer is NOT a network role")
+assert.equal(cfg.agent["researcher"].permission.tm_webfetch, "allow", "researcher is a network role")
 assert.equal(Object.keys(cfg.agent).length, 6, "exactly 6 agents injected")
 assert.equal(Object.keys(cfg.command).length, 6, "exactly 6 commands injected")
 
@@ -271,6 +274,9 @@ assert.ok(leadPrompt.includes("VERBATIM CONTRACTS"), "lead: api-contract verbati
 assert.ok(leadPrompt.includes("## Evidence standard"), "lead: evidence standard (kept)")
 assert.ok(leadPrompt.includes("## Docs sync"), "lead: docs-sync rule (CHANGELOG + AGENTS.md)")
 assert.ok(leadPrompt.includes("update AGENTS.md"), "lead: AGENTS.md sync duty")
+assert.ok(leadPrompt.includes("Repo hygiene applies to you too"), "lead: repo hygiene rule (temp files deleted / OS temp dir)")
+assert.ok(leadPrompt.includes("Tool-first, memory-second"), "lead: tool-first lookup rule (scan tool surface, concrete call, no simulation)")
+assert.ok(leadPrompt.includes("colloquial/abbreviated/aliased terms"), "lead: term-expansion rule (generic, no baked-in examples)")
 assert.ok(leadPrompt.includes("CHANGELOG.md"), "lead: changelog maintenance (kept)")
 assert.ok(leadPrompt.includes("read the project's README"), "lead: README-first (kept)")
 assert.ok(leadPrompt.includes("the host usually injects them"), "lead: AGENTS.md/CLAUDE.md dedup vs host injection")
@@ -295,6 +301,20 @@ for (const expert of EXPERTS) {
   assert.ok(cfg2.agent[expert].prompt.includes("All file reads / searches / enumeration go through tm_read / tm_grep / tm_bash"), expert + ": removed-tools rule routes reads/search/enumeration to tm_*")
   assert.ok(cfg2.agent[expert].prompt.includes("removed from the tool surface"), expert + ": anti-retry warning for removed built-ins")
   assert.ok(cfg2.agent[expert].prompt.includes("## Project conventions"), expert + ": README conventions rule")
+  assert.ok(cfg2.agent[expert].prompt.includes("## Repo hygiene (temp files)"), expert + ": repo hygiene rule present")
+  assert.ok(cfg2.agent[expert].prompt.includes("DELETED before you report done"), expert + ": scratch/temp files deleted before done (repo never polluted)")
+  assert.ok(cfg2.agent[expert].prompt.includes("Prefer the OS temp dir"), expert + ": throwaway work goes to the OS temp dir")
+  assert.ok(cfg2.agent[expert].prompt.includes("## Use your tools first"), expert + ": tool-first lookup rule present")
+  assert.ok(cfg2.agent[expert].prompt.includes("never answer unverified from memory"), expert + ": memory-second rule explicit")
+  assert.ok(cfg2.agent[expert].prompt.includes("Expand colloquial, abbreviated, or aliased terms"), expert + ": term-expansion rule (generic, no baked-in examples)")
+  assert.ok(cfg2.agent[expert].prompt.includes("never simulate"), expert + ": removed-tool capability reported as a gap, never simulated")
+  assert.ok(
+    cfg2.agent[expert].prompt.includes("Web lookups are NOT yours unless tm_webfetch is on your surface"),
+    expert + ": web boundary rule (network roles are lead + researcher only)",
+  )
+assert.ok(cfg2.agent["researcher"].prompt.includes("## Web lookups (two channels)"), "researcher: two-channel web policy (MCP first, tm_webfetch fallback)")
+assert.ok(cfg2.agent["researcher"].prompt.includes("mobile.moegirl.org.cn"), "researcher: seeded web hosts documented")
+assert.ok(cfg2.agent["team"].prompt.includes("tm_webfetch"), "lead: governed web fallback referenced")
 }
 /* v1.4.6 fix (kept): fix-mode append contradiction stays dead, round files stay */
 assert.ok(!cfg2.agent["implementer"].prompt.includes("append to the same file"), "implementer: fix-mode append contradiction removed")
