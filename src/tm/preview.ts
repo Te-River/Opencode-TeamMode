@@ -16,7 +16,7 @@
  */
 
 import * as path from "node:path"
-import { estimateTokens, shorten } from "./config.js"
+import { estimateTokens, shorten, tokenCostOf } from "./config.js"
 
 export type ContentType = "json" | "csv" | "log" | "text" | "code" | "binary"
 
@@ -97,15 +97,36 @@ export function detectContentType(content: string, hint?: ContentType): ContentT
   return sniffContentType(content)
 }
 
-/** Hard cap by estimated tokens (chars/4): never exceed maxTokens. */
+/**
+ * Hard cap by estimated tokens (CJK-aware, see config.tokenCostOf): never
+ * exceed maxTokens.  Truncation walks the ACTUAL per-char token cost (a
+ * chars/4 char-count cut would under-count CJK bodies up to 4×), and the
+ * marker's own cost is reserved up front so it always survives the cut.
+ */
 export function capTokens(text: string, maxTokens: number): string {
   const marker = " …(截断)"
-  const maxChars = Math.max(8, maxTokens * 4)
-  if (text.length <= maxChars) return text
-  const usable = maxChars - marker.length // marker lives INSIDE the budget
-  const cut = text.slice(0, usable)
-  const trimmed = cut.replace(/\s+\S*$/, "") // back off to the last word boundary
-  const body = trimmed.length >= usable * 0.6 ? trimmed : cut
+  let total = 0
+  for (const ch of text) total += tokenCostOf(ch.codePointAt(0) ?? 0)
+  if (total <= maxTokens) return text
+  const maxChars = Math.max(8, maxTokens * 4) // legacy guard for pathological budgets
+  let markerCost = 0
+  for (const ch of marker) markerCost += tokenCostOf(ch.codePointAt(0) ?? 0)
+  const budget = Math.max(1, maxTokens - markerCost)
+  let cost = 0
+  let cut = text.length
+  let i = 0
+  while (i < text.length) {
+    const cp = text.codePointAt(i) ?? 0
+    cost += tokenCostOf(cp)
+    if (cost > budget) {
+      cut = i
+      break
+    }
+    i += cp >= 0x10000 ? 2 : 1
+  }
+  const raw = text.slice(0, Math.min(cut, maxChars))
+  const trimmed = raw.replace(/\s+\S*$/, "") // back off to the last word boundary
+  const body = trimmed.length >= raw.length * 0.6 ? trimmed : raw
   return body + marker
 }
 

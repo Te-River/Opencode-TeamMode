@@ -6,17 +6,19 @@
  * (same fail-soft philosophy as blackboard.resolveTtlMs and
  * envprotect.resolveEnvProtectMode).
  *
- * Token 口径 (estimate basis): tokens ≈ chars/4, ceil.  This is a rough
- * ASCII/code calibration; CJK text is under-counted by it (one CJK char is
- * closer to a full token than to 0.25).  Two design choices keep that honest:
- * the conservative boundary (estimate == threshold still offloads) and the
- * hard preview cap — a mis-estimate can only make governance MORE aggressive,
- * never less.  This口径 is pinned by test-tm-tools.mjs.
+ * Token 口径 (estimate basis): CJK-range code points ≈ one token each,
+ * everything else tokens ≈ chars/4, ceil.  Pure chars/4 under-counted CJK
+ * up to 4× — the LESS-governed direction for CJK-heavy payloads — so CJK
+ * now counts as a full token (offload earlier, the safe direction).  Two
+ * design choices keep the estimate honest: the conservative boundary
+ * (estimate == threshold still offloads) and the hard preview cap.  This
+ * 口径 is pinned by test-tm-tools.mjs.
  *
- * Naming note: TM_BLACKBOARD_DIR (this module, run-payload store under the
- * project root, default `.blackboard/`) is a DIFFERENT artifact from the
- * team blackboard in blackboard.ts (`.git/opencode-team/`, plugin options).
- * They share a philosophy (TTL sweeper is the sole cleanup path), not code.
+ * Naming note: TM_BLACKBOARD_DIR (this module, run-payload store, default
+ * AUTO = `<repo>/.git/opencode-team/blackboard`) is a DIFFERENT artifact
+ * from the team blackboard in blackboard.ts (`.git/opencode-team/`,
+ * plugin options).  They share a root philosophy (TTL sweeper is the sole
+ * cleanup path), not code.
  */
 
 /** Default tm_bash read-only allowlist (P3, command-level). */
@@ -24,6 +26,19 @@ export const DEFAULT_BASH_READONLY_ALLOWED: readonly string[] = [
   "ls", "cat", "head", "tail", "grep", "rg", "find", "awk", "sort", "uniq",
   "wc", "cut", "dir", "Get-Content", "Get-ChildItem", "Select-String",
   "Measure-Object",
+]
+
+/**
+ * Seeded tm_webfetch domain allowlist — the four lookup hosts the design
+ * names (wiki term / bilibili search / bing / baidu).  Subdomains of an
+ * entry are included; TM_WEBFETCH_ALLOWED_DOMAINS overrides the list
+ * (comma/semicolon separated; a lone "*" opens every host).
+ */
+export const DEFAULT_WEBFETCH_DOMAINS: readonly string[] = [
+  "mobile.moegirl.org.cn",
+  "search.bilibili.com",
+  "cn.bing.com",
+  "www.baidu.com",
 ]
 
 export interface TmConfig {
@@ -35,14 +50,18 @@ export interface TmConfig {
   previewMaxTokens: number
   /** Single tm_fetch segment cap in lines. */
   fetchMaxLines: number
-  /** Run-payload store dir (relative to project root, or absolute). */
+  /** Run-payload store dir.  Empty = AUTO (<repo>/.git/opencode-team/blackboard,
+   *  tmpdir fallback); explicit value = absolute, or relative to project root. */
   blackboardDir: string
-  /** Trajectory store dir (relative to project root, or absolute). */
+  /** Trajectory store dir.  Empty = AUTO (<repo>/.git/opencode-team/trajectory,
+   *  tmpdir fallback); explicit value = absolute, or relative to project root. */
   trajectoryDir: string
   /** Handle TTL in days (expire_at + physical sweep of expired run dirs). */
   blackboardTtlDays: number
   /** P3 read-only command allowlist for tm_bash. */
   bashReadonlyAllowed: string[]
+  /** tm_webfetch domain allowlist (subdomains included; "*" = any host). */
+  webfetchAllowedDomains: string[]
   // ---- tm_ptc_run (M1 contract) — see design 02-architect-ptc-run-design §2/§4.3 ----
   /** Hard cap on a PTC program source string length (chars). */
   ptcMaxProgramChars: number
@@ -61,8 +80,14 @@ export const TM_CONFIG_DEFAULTS = {
   previewLines: 20,
   previewMaxTokens: 80,
   fetchMaxLines: 2000,
-  blackboardDir: ".blackboard/",
-  trajectoryDir: ".trajectory/",
+  // Empty string = AUTO: resolve git-aware at runtime —
+  // <repo>/.git/opencode-team/{blackboard,trajectory} (tmpdir fallback for
+  // non-git workspaces).  Keeps the payload/trajectory stores out of the
+  // user's working tree (user projects never had .blackboard/.trajectory
+  // gitignore entries).  An explicit TM_BLACKBOARD_DIR / TM_TRAJECTORY_DIR
+  // keeps the old semantics: absolute, or relative to the project root.
+  blackboardDir: "",
+  trajectoryDir: "",
   blackboardTtlDays: 7,
   ptcMaxProgramChars: 4000,
   ptcMaxCalls: 20,
@@ -108,6 +133,17 @@ export function parseAllowlistEnv(raw: unknown): string[] | null {
   return raw.split(/[,;]/).map((s) => s.trim()).filter(Boolean)
 }
 
+/**
+ * Parse `TM_WEBFETCH_ALLOWED_DOMAINS`.  Unset/absent -> null (caller applies
+ * DEFAULT_WEBFETCH_DOMAINS).  An explicitly EMPTY string parses to [] (deny
+ * all webfetch); a lone "*" opens every host.  Separator is comma or
+ * semicolon.
+ */
+export function parseWebfetchAllowlistEnv(raw: unknown): string[] | null {
+  if (typeof raw !== "string") return null
+  return raw.split(/[,;]/).map((s) => s.trim()).filter(Boolean)
+}
+
 /** Resolve the full tm-tools config from an env-like record (default: process.env). */
 export function resolveTmConfig(env: EnvLike = process.env): TmConfig {
   const allowlist = parseAllowlistEnv(env.TM_BASH_READONLY_ALLOWED)
@@ -120,6 +156,8 @@ export function resolveTmConfig(env: EnvLike = process.env): TmConfig {
     trajectoryDir: envStr(env, "TM_TRAJECTORY_DIR", TM_CONFIG_DEFAULTS.trajectoryDir),
     blackboardTtlDays: envInt(env, "TM_BLACKBOARD_TTL", TM_CONFIG_DEFAULTS.blackboardTtlDays, 1, 365),
     bashReadonlyAllowed: allowlist ?? [...DEFAULT_BASH_READONLY_ALLOWED],
+    webfetchAllowedDomains:
+      parseWebfetchAllowlistEnv(env.TM_WEBFETCH_ALLOWED_DOMAINS) ?? [...DEFAULT_WEBFETCH_DOMAINS],
     ptcMaxProgramChars: envInt(env, "TM_PTC_MAX_PROGRAM_CHARS", TM_CONFIG_DEFAULTS.ptcMaxProgramChars, PTC_BUDGET_BOUNDS.programChars.min, PTC_BUDGET_BOUNDS.programChars.max),
     ptcMaxCalls: envInt(env, "TM_PTC_MAX_CALLS", TM_CONFIG_DEFAULTS.ptcMaxCalls, PTC_BUDGET_BOUNDS.maxCalls.min, PTC_BUDGET_BOUNDS.maxCalls.max),
     ptcMaxErrors: envInt(env, "TM_PTC_MAX_ERRORS", TM_CONFIG_DEFAULTS.ptcMaxErrors, PTC_BUDGET_BOUNDS.maxErrors.min, PTC_BUDGET_BOUNDS.maxErrors.max),
@@ -132,11 +170,29 @@ function resolveEngine(raw: unknown): "auto" | "worker" | "inline" {
   const v = typeof raw === "string" ? raw.trim().toLowerCase() : ""
   return v === "worker" || v === "inline" ? v : "auto"
 }
+/** Token cost of ONE code point — CJK-range ≈ 1 token (kana / Hangul /
+ *  fullwidth / CJK punctuation all sit above U+2E80), everything else ≈ 0.25
+ *  (chars/4).  Shared by estimateTokens and preview.capTokens so the two
+ *  can never drift apart (a chars/4 cap would under-count CJK bodies 4×). */
+export function tokenCostOf(cp: number): number {
+  return cp >= 0x2e80 ? 1 : 0.25
+}
+
 /**
- * Token estimate — chars/4, ceil (口径 documented above).  Empty input = 0.
+ * Token estimate — CJK-aware: CJK-range code points count ≈ one token each,
+ * everything else chars/4, ceil.  The pure chars/4 basis under-counted CJK
+ * up to 4× (one CJK char ≈ one token), which let CJK-heavy payloads ride
+ * inline PAST the threshold — a mis-estimate in the LESS-governed
+ * direction.  Counting CJK as a full token errs the other way (offload
+ * earlier), the safe direction for context size.  The conservative
+ * boundary (estimate == threshold still offloads) is unchanged.  Empty
+ * input = 0.
  */
 export function estimateTokens(text: string): number {
-  return Math.ceil((text?.length ?? 0) / 4)
+  if (!text) return 0
+  let cost = 0
+  for (const ch of text) cost += tokenCostOf(ch.codePointAt(0) ?? 0)
+  return Math.ceil(cost)
 }
 
 /**

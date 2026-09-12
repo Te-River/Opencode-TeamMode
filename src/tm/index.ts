@@ -14,7 +14,11 @@
  */
 
 import * as crypto from "node:crypto"
+import * as fs from "node:fs"
+import * as os from "node:os"
+import * as path from "node:path"
 import type { PluginInput, ToolDefinition } from "../types.js"
+import { findRepoRoot } from "../blackboard.js"
 import {
   parseExtraDeny,
   resolveEnvProtectMode,
@@ -23,8 +27,9 @@ import {
 import { resolveTmConfig, type TmConfig } from "./config.js"
 import { hmacToken, newRunId } from "./refs.js"
 import { RunStore } from "./store.js"
-import { buildTmTools, buildPipelines } from "./tools.js"
-import { buildPtcRunTool } from "./ptc.js"
+import { buildPtcArgsSchema, buildPipelines, buildTmTools, buildWebfetchArgsSchema } from "./tools.js"
+import { buildPtcRunTool } from "./ptc/index.js"
+import { buildTmWebfetchTool } from "./webfetch.js"
 
 export interface TmRuntime {
   runId: string
@@ -52,10 +57,31 @@ export async function createTmTools(
   const runId = newRunId()
   const hmacKey = crypto.randomBytes(32)
   const accessToken = hmacToken(hmacKey, runId)
+  // Store roots — AUTO default resolves git-aware: under <repo>/.git, so
+  // the payload/trajectory stores never pollute the user's working tree
+  // (user projects never had .blackboard/.trajectory gitignore entries).
+  // The .git-is-a-directory check covers worktrees where .git is a FILE
+  // pointing elsewhere.  Explicit TM_BLACKBOARD_DIR / TM_TRAJECTORY_DIR
+  // overrides keep the old semantics (absolute, or relative to project
+  // root — RunStore handles both).
+  const repo = findRepoRoot(directory)
+  const gitDir = repo ? path.join(repo, ".git") : null
+  const gitUsable =
+    gitDir !== null &&
+    (() => {
+      try {
+        return fs.statSync(gitDir).isDirectory()
+      } catch {
+        return false
+      }
+    })()
+  const storeBase = gitUsable
+    ? path.join(gitDir as string, "opencode-team")
+    : path.join(os.tmpdir(), "opencode-team")
   const store = new RunStore({
     projectRoot: directory,
-    blackboardDir: cfg.blackboardDir,
-    trajectoryDir: cfg.trajectoryDir,
+    blackboardDir: cfg.blackboardDir || path.join(storeBase, "blackboard"),
+    trajectoryDir: cfg.trajectoryDir || path.join(storeBase, "trajectory"),
     runId,
     ttlDays: cfg.blackboardTtlDays,
   })
@@ -65,27 +91,17 @@ export async function createTmTools(
   const mode = opts.mode ?? resolveEnvProtectMode(process.env.TM_ENV_PROTECT)
   const extra = opts.extra ?? parseExtraDeny(process.env.TM_ENV_PROTECT_EXTRA_DENY)
   const expireAt = Date.now() + cfg.blackboardTtlDays * 24 * 60 * 60 * 1000
-  const tools = await buildTmTools({
+  // Bun shell ($): try input.$ first (T0.4② verified), then Bun globals
+  // (desktop loader may not pass $ through; Bun exposes it globally).
+  // Resolved ONCE and shared by the main pipelines AND the PTC pipeline
+  // instance below — v1.5.4 added the fallback to the main path only, so
+  // PTC's tm.bash bridging died with "宿主 shell 桥（$）不可用" on desktops
+  // where input.$ is absent.
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const shellBridge: unknown = input?.$ ?? (globalThis as any).$ ?? (globalThis as any).Bun?.$
+  const deps = {
     client: input?.client,
-    // Bun shell ($): try input.$ first (T0.4② verified), then Bun globals
-    // (desktop loader may not pass $ through; Bun exposes it globally).
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    $: input?.$ ?? (globalThis as any).$ ?? (globalThis as any).Bun?.$,
-    cfg,
-    store,
-    runId,
-    hmacKey,
-    accessToken,
-    expireAt,
-    mode,
-    extra,
-  })
-  // M3: build tm_ptc_run using a separate pipeline instance (governance
-  // reused verbatim; step counter is independent — store handles any
-  // step-id overlap via tool-name-prefixed files).
-  const ptcDeps = {
-    client: input?.client,
-    $: input?.$,
+    $: shellBridge,
     cfg,
     store,
     runId,
@@ -95,6 +111,35 @@ export async function createTmTools(
     mode,
     extra,
   }
+  // ONE main pipeline instance shared by the four tools AND tm_webfetch —
+  // a shared step counter keeps their refs unambiguous (a second instance
+  // would re-emit s0001 and cross-contaminate offloaded payloads).
+  const pipelines = buildPipelines(deps)
+  const tools = await buildTmTools(deps, pipelines)
+  // tm_webfetch — the governed web FALLBACK channel.  Registered on the
+  // host tool surface for everyone, but the AGENT PERMISSION map gates who
+  // sees it: explicit allow for team + researcher only (agents.ts), explicit
+  // deny for the other four (overrides the tm_* wildcard).
+  const webfetchArgs = await buildWebfetchArgsSchema()
+  tools.tm_webfetch = buildTmWebfetchTool({ pipelines, cfg, args: webfetchArgs })
+  // M3: build tm_ptc_run using a separate pipeline instance (governance
+  // reused verbatim).  Its step counter starts at s0001 again — the
+  // "ptc-" stepPrefix namespaces its step ids so offloaded payloads can
+  // never collide with same-numbered main-pipeline steps in the shared
+  // run store (refs ignore seq, so a collision would corrupt tm_fetch).
+  const ptcDeps = {
+    client: input?.client,
+    $: shellBridge,
+    cfg,
+    store,
+    runId,
+    hmacKey,
+    accessToken,
+    expireAt,
+    mode,
+    extra,
+    stepPrefix: "ptc-",
+  }
   const ptcPipelines = buildPipelines(ptcDeps)
   const ptcTool = buildPtcRunTool({
     cfg,
@@ -102,6 +147,7 @@ export async function createTmTools(
     nextStepId: ptcPipelines.nextStepId,
     ctx: { directory },
     accessToken,
+    args: await buildPtcArgsSchema(),
     pipelines: ptcPipelines,
   })
   tools.tm_ptc_run = ptcTool
@@ -112,8 +158,10 @@ export async function createTmTools(
 
 export {
   DEFAULT_BASH_READONLY_ALLOWED,
+  DEFAULT_WEBFETCH_DOMAINS,
   estimateTokens,
   parseAllowlistEnv,
+  parseWebfetchAllowlistEnv,
   resolveTmConfig,
   shouldOffload,
   shorten,
@@ -142,12 +190,30 @@ export {
   classifyReadonlyCommand,
   isInsideDir,
 } from "./guard.js"
-export { buildTmTools, buildPipelines, HANDLE_INVALID_MESSAGE, tmError } from "./tools.js"
+export {
+  buildTmTools,
+  buildPipelines,
+  buildPtcArgsSchema,
+  buildWebfetchArgsSchema,
+  toToolResult,
+  HANDLE_INVALID_MESSAGE,
+  tmError,
+} from "./tools.js"
+export {
+  buildTmWebfetchTool,
+  checkWebUrl,
+  extractWebResponse,
+  fetchWebText,
+  hostAllowed,
+  htmlToText,
+} from "./webfetch.js"
 export type { TmDeps, TmPhase, TmPipelines } from "./tools.js"
 
-// ---------- tm_ptc_run (M1 contract skeleton) ----------
-// NOTE: `buildPtcRunTool` is exported for tests + future M3 wiring, but index
-// does NOT add tm_ptc_run to the registered `tools` map yet (design §10/M3).
+// ---------- tm_ptc_run ----------
+// Built here with its own pipeline instance (governance reused verbatim;
+// step counter is independent — store handles any step-id overlap via
+// tool-name-prefixed files) and MERGED into the registered `tools` map
+// below, so all five tools ship in the `tool` segment.
 export {
   BRIDGE_ALLOW,
   InlineSequentialEngine,
@@ -172,7 +238,7 @@ export {
   runPtc,
   selectEngine,
   staticPscan,
-} from "./ptc.js"
+} from "./ptc/index.js"
 export type {
   PtcStatus,
   PtcEngine,
@@ -189,4 +255,4 @@ export type {
   PtcStepRecord,
   PtcRunOutcome,
   RunPtcOptions,
-} from "./ptc.js"
+} from "./ptc/index.js"

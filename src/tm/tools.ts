@@ -70,8 +70,9 @@ function isTmErrorBody(res: unknown): res is TmErrorBody {
  * The model can ONLY see this text — so the handle fields it needs to drive
  * tm_fetch (ref/access_token/expire_at), the preview, paging hints, error
  * phase/message and degraded warnings are all formatted INTO the output.
+ * Exported for the tm_webfetch tool (built outside this module).
  */
-function toToolResult(res: unknown): ToolResult {
+export function toToolResult(res: unknown): ToolResult {
   if (typeof res === "string") return { output: res }
   if (!res || typeof res !== "object") return { output: String(res ?? "") }
   if (isTmErrorBody(res)) {
@@ -325,6 +326,15 @@ export interface TmDeps {
   expireAt: number
   mode: EnvProtectMode
   extra: RegExp[]
+  /**
+   * Step-id namespace prefix for SECONDARY pipeline instances.  A second
+   * buildPipelines instance (PTC's) starts its counter at s0001 again —
+   * without a distinct prefix its offloaded payloads would collide with
+   * the main pipeline's same-numbered steps inside the shared run store
+   * (refs ignore seq, so tm_fetch's last-append-wins would return the
+   * WRONG payload).  PTC passes "ptc-"; the main instance stays "".
+   */
+  stepPrefix?: string
 }
 
 // ---------- descriptions ----------
@@ -367,7 +377,7 @@ interface GovernOptions {
 export function buildPipelines(deps: TmDeps) {
   const { cfg, store } = deps
   let stepCounter = 0
-  const nextStepId = () => `s${String(++stepCounter).padStart(4, "0")}`
+  const nextStepId = () => `${deps.stepPrefix ?? ""}s${String(++stepCounter).padStart(4, "0")}`
 
   function ctxDir(ctx: unknown): string {
     const d = (ctx as { directory?: unknown } | null | undefined)?.directory
@@ -630,7 +640,7 @@ export function buildPipelines(deps: TmDeps) {
     }
   }
 
-  return { nextStepId, govern, tmRead, tmGrep, tmBash, tmFetch }
+  return { nextStepId, govern, tmRead, tmGrep, tmBash, tmFetch, store }
 }
 
 /** The four governed pipelines + shared step-counter/govern (PTC bridge seam). */
@@ -755,35 +765,104 @@ async function buildArgsSchemas(): Promise<Record<string, Record<string, unknown
 }
 
 /**
+ * tm_ptc_run args — same ZodRawShape treatment as the four tools (BUG#3
+ * class: a z.object wrapper produced garbage args in real sessions).  Kept
+ * separate from buildArgsSchemas because buildPtcRunTool is sync; tm/index
+ * awaits this once and passes the result in as `deps.args`.
+ */
+export async function buildPtcArgsSchema(): Promise<Record<string, unknown>> {
+  const z = await loadZod()
+  if (!z) {
+    return {
+      program: { descriptor: "program: string (required, async fn body, ≤TM_PTC_MAX_PROGRAM_CHARS)" },
+      label: { descriptor: "label: string (optional, ≤80 chars)" },
+      budgets: { descriptor: "budgets: { max_calls?, max_errors?, timeout_ms? } (optional, tighten-only)" },
+    }
+  }
+  const zz = z as unknown as {
+    string: () => {
+      describe: (d: string) => { optional: () => unknown }
+    }
+    any: () => {
+      describe: (d: string) => { optional: () => unknown }
+    }
+  }
+  return {
+    program: zz
+      .string()
+      .describe(
+        "Async function body. Available: tm.read(args), tm.grep(args), tm.bash(args), tm.fetch(args) — each returns {ok:true, data} or {ok:false, error:{tool,phase,line?,message}}. `return` a value for the aggregation summary.",
+      ),
+    label: zz.string().describe("Optional run label (≤80 chars).").optional(),
+    budgets: zz
+      .any()
+      .describe(
+        "Optional budgets object { max_calls?, max_errors?, timeout_ms? } — tighten-only, clamped to the TM_PTC_* ceilings.",
+      )
+      .optional(),
+  }
+}
+
+/**
+ * tm_webfetch args — same ZodRawShape treatment (BUG#3 class); descriptor
+ * fallback when zod is absent.  tm/index awaits this and passes the result
+ * into buildTmWebfetchTool as `deps.args`.
+ */
+export async function buildWebfetchArgsSchema(): Promise<Record<string, unknown>> {
+  const z = await loadZod()
+  if (!z) {
+    return {
+      url: { descriptor: "url: string (required, absolute https URL on an allowlisted host, query URL-encoded)" },
+    }
+  }
+  const zz = z as unknown as {
+    string: () => { describe: (d: string) => unknown }
+  }
+  return {
+    url: zz
+      .string()
+      .describe(
+        "Absolute https URL on an allowlisted host (seeded: mobile.moegirl.org.cn, search.bilibili.com, cn.bing.com, www.baidu.com). URL-encode the query (CJK terms too).",
+      ),
+  }
+}
+
+/**
  * Build the four tool definitions.  Async only because of the optional zod
  * load; every pipeline itself is runtime-defensive against raw args.  Every
  * execute() funnels through toToolResult so the return value ALWAYS satisfies
  * the host ToolResult contract ({output: string}) — handles, structured
  * errors, pages and degraded warnings included.
+ * `pipelines` lets the caller inject a SHARED pipeline instance (tm/index
+ * reuses one instance for the main tools AND tm_webfetch so their step ids
+ * never collide); when omitted, a fresh instance is built from deps.
  */
-export async function buildTmTools(deps: TmDeps): Promise<Record<string, ToolDefinition>> {
-  const pipelines = buildPipelines(deps)
+export async function buildTmTools(
+  deps: TmDeps,
+  pipelines?: TmPipelines,
+): Promise<Record<string, ToolDefinition>> {
+  const pl = pipelines ?? buildPipelines(deps)
   const argsSchemas = await buildArgsSchemas()
   return {
     tm_read: {
       description: TM_READ_DESCRIPTION,
       args: argsSchemas.tm_read,
-      execute: async (args, ctx) => toToolResult(await pipelines.tmRead(args ?? {}, ctx)),
+      execute: async (args, ctx) => toToolResult(await pl.tmRead(args ?? {}, ctx)),
     },
     tm_grep: {
       description: TM_GREP_DESCRIPTION,
       args: argsSchemas.tm_grep,
-      execute: async (args, ctx) => toToolResult(await pipelines.tmGrep(args ?? {}, ctx)),
+      execute: async (args, ctx) => toToolResult(await pl.tmGrep(args ?? {}, ctx)),
     },
     tm_bash: {
       description: TM_BASH_DESCRIPTION,
       args: argsSchemas.tm_bash,
-      execute: async (args, ctx) => toToolResult(await pipelines.tmBash(args ?? {}, ctx)),
+      execute: async (args, ctx) => toToolResult(await pl.tmBash(args ?? {}, ctx)),
     },
     tm_fetch: {
       description: TM_FETCH_DESCRIPTION,
       args: argsSchemas.tm_fetch,
-      execute: async (args, ctx) => toToolResult(await pipelines.tmFetch(args ?? {}, ctx)),
+      execute: async (args, ctx) => toToolResult(await pl.tmFetch(args ?? {}, ctx)),
     },
   }
 }
