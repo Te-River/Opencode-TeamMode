@@ -67,7 +67,10 @@ export async function createTmTools(
   const expireAt = Date.now() + cfg.blackboardTtlDays * 24 * 60 * 60 * 1000
   const tools = await buildTmTools({
     client: input?.client,
-    $: input?.$,
+    // Bun shell ($): try input.$ first (T0.4② verified), then Bun globals
+    // (desktop loader may not pass $ through; Bun exposes it globally).
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    $: input?.$ ?? (globalThis as any).$ ?? (globalThis as any).Bun?.$,
     cfg,
     store,
     runId,
