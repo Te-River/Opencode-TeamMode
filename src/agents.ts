@@ -668,6 +668,15 @@ no dialog; built-in bash triggers the official confirmation dialog (once /
 always / reject).  Dangerous commands (rm / git push / npm publish / etc.)
 always trigger the dialog regardless of tool.
 
+## PTC batch orchestration
+When a task requires multiple file reads, searches, or shell commands in
+sequence, prefer tm_ptc_run over calling them one-by-one.  tm_ptc_run
+executes N governed calls in a single turn with zero LLM round-trips and
+returns a structured summary — faster, cheaper, and the intermediate results
+stay offloaded (never enter the context window).  Write a short async program
+passing the calls to tm.read / tm.grep / tm.bash / tm.fetch; the tool
+description explains the program syntax.
+
 ## Project conventions
 If the project README (or AGENTS.md) is quoted in your dispatch, treat
 its conventions as binding — they outrank your defaults.  Do not re-open
