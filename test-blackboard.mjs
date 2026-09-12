@@ -123,7 +123,7 @@ const capableClient = () => ({
   app: { log() {} },
   postSessionIdPermissionsPermissionId: () => Promise.resolve({ data: true }),
 })
-const hooks = await plugin.server({ directory: process.cwd(), project: process.cwd(), client: capableClient() }, { ttlDays: 9 })
+const hooks = await plugin.server({ directory: process.cwd(), project: process.cwd(), client: capableClient() }, { ttlDays: 9, envProtect: true })
 assert.equal(typeof hooks.config, "function", "server returns { config } hooks")
 await hooks.config(cfg)
 
@@ -185,7 +185,7 @@ assert.deepStrictEqual(cfg.agent["team"].permission.bash, BASH_ASK, "lead bash e
  * arm, so the config hook drops the R6 env ask face (the R6 hook would
  * hard-throw every env read before such a dialog could ever be satisfied)
  * while the R2 danger face stays — its dialog is its own gate */
-const hooksNoGate = await plugin.server({ directory: process.cwd(), project: process.cwd() }, { ttlDays: 9 })
+const hooksNoGate = await plugin.server({ directory: process.cwd(), project: process.cwd() }, { ttlDays: 9, envProtect: true })
 const cfgNoGate = {}
 await hooksNoGate.config(cfgNoGate)
 assert.equal(cfgNoGate.agent.team.permission.bash["printenv *"], undefined, "no R6 env ask face while the gate cannot arm")

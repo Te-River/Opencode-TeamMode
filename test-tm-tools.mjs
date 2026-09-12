@@ -760,7 +760,7 @@ try {
   /* ---------- 7. loader integration: tool segment next to config + R6 hook ---------- */
   {
     clearTmEnv()
-    const hooks = await plugin.server({ directory: root6, client: fakeClient({}), $: fake$Ok("") }, {})
+    const hooks = await plugin.server({ directory: root6, client: fakeClient({}), $: fake$Ok("") }, { envProtect: true })
     assert.equal(typeof hooks.config, "function", "config hook still present")
     assert.equal(typeof hooks["tool.execute.before"], "function", "R6 hook still present")
     assert.ok(hooks.tool, "tool segment present")
@@ -813,7 +813,7 @@ try {
   /* ---------- 8. hook-level alias: tm_* pass through R6's own interception ---------- */
   {
     clearTmEnv()
-    const hooks = await plugin.server({ directory: root6 }, {})
+    const hooks = await plugin.server({ directory: root6 }, { envProtect: true })
     await assert.rejects(
       hooks["tool.execute.before"]({ tool: "tm_read" }, { args: { path: ".env" } }),
       (err) => err.message.startsWith(ep.ENV_PROTECT_MESSAGE) && err.message.includes("[category=env-file-path]"),
@@ -833,7 +833,7 @@ try {
     await hooks["tool.execute.before"]({ tool: "tm_bash" }, { args: { command: "ls -la" } }) // passes
     // single source: R6 off disables BOTH layers (hook + in-tool)
     process.env.TM_ENV_PROTECT = "off"
-    const hooksOff = await plugin.server({ directory: root6 }, {})
+    const hooksOff = await plugin.server({ directory: root6 }, { envProtect: true })
     await hooksOff["tool.execute.before"]({ tool: "tm_read" }, { args: { path: ".env" } })
     const runtimeOff = await tm.createTmTools({
       directory: root6, client: fakeClient({ "small.txt": smallPayload }), $: fake$Ok(""),
@@ -1099,7 +1099,7 @@ try {
       assert.equal(typeof res.output, "string", "ToolResult {output:string} contract honored")
       assert.ok(res.output.includes("PTC 摘要") && res.output.includes("status=ok"), "tool output is the aggregation summary")
       // M3: tm_ptc_run IS registered in the tool segment (five agents get allow, team gets deny)
-      const hooks = await plugin.server({ directory: mktmp("ptc-reg"), client: fakeClient({}), $: fake$Ok("") }, {})
+      const hooks = await plugin.server({ directory: mktmp("ptc-reg"), client: fakeClient({}), $: fake$Ok("") }, { envProtect: true })
       assert.ok("tm_ptc_run" in hooks.tool, "tm_ptc_run registered in the tool segment (M3)")
       assert.deepEqual(
         Object.keys(hooks.tool).sort(),

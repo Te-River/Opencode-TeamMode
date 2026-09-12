@@ -85,12 +85,13 @@ const plugin: OpenCodePlugin = {
     const note = blackboardNote(boardRoot, ttlDays)
 
     // ---------- R6 env protection (code-level interception) ----------
-    // Reading TM_ENV_PROTECT / TM_ENV_PROTECT_EXTRA_DENY here is the PLUGIN
-    // configuring ITSELF at startup — program-level configuration, the same
-    // category as the ttlDays option.  R6 exists to stop the MODEL reading
-    // environment variables through tool calls; these two reads are not
-    // that and are out of scope of the protection.
-    const envProtectMode = resolveEnvProtectMode(process.env.TM_ENV_PROTECT)
+    // Plugin option envProtect (default false): opt-in env protection.
+    // When disabled, R6 hook is not installed at all — no interception,
+    // no approval gate, no audit logging for env reads.
+    // When enabled, TM_ENV_PROTECT / TM_ENV_PROTECT_EXTRA_DENY still apply.
+    const envProtectMode = options?.envProtect
+      ? resolveEnvProtectMode(process.env.TM_ENV_PROTECT)
+      : "off"
     const envProtectExtra = parseExtraDeny(process.env.TM_ENV_PROTECT_EXTRA_DENY)
 
     // ---------- unified approval gate (R6 env face + R2 danger face) ----------

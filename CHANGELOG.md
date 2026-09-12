@@ -7,6 +7,16 @@ registry saw 1.5.0 as the install-script fix release).
 
 ## [Unreleased]
 
+### Changed
+- tm_ptc_run granted to all six agents (team included): M3 design originally denied it to the lead; changed to allow per user request
+- R6 env protection defaults to OFF via new `envProtect` plugin option (boolean, default false) — opt in: `["@te-river/opencode-team-mode@latest", {"envProtect": true}]`
+- tm_bash shell bridge resolves `$` from Bun globals (`globalThis.$`, `globalThis.Bun.$`) when `input.$` is not passed by the desktop loader (Windows desktop fix)
+
+## [1.5.3] - 2026-09-10
+
+### Fixed
+- SHARED_RULES: agents now use built-in bash for R6 protected reads (approval dialog triggers)
+
 ## [1.5.2] - 2026-09-10
 
 ### Added

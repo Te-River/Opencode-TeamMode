@@ -94,10 +94,10 @@ const whitelist = (
   return permission
 }
 
-/** Apply the M3 tm_ptc_run grant to an agent's permission block.  The five
- *  specialists get `allow`; the team lead gets `deny` (overrides the wildcard). */
-function applyPtcPermission(permission: AgentPermission, isTeamLead: boolean): void {
-  permission[PTC_TOOL] = isTeamLead ? "deny" : "allow"
+/** Apply the M3 tm_ptc_run grant to an agent's permission block.  All six
+ *  agents get `allow` (overrides the tm_* wildcard for explicit key priority). */
+function applyPtcPermission(permission: AgentPermission, _isTeamLead: boolean): void {
+  permission[PTC_TOOL] = "allow"
 }
 
 /* ------------------------------------------------------------------ */

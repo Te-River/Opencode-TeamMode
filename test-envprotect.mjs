@@ -258,7 +258,7 @@ try {
   delete process.env.TM_ENV_PROTECT_EXTRA_DENY
   {
     const a = auditClient()
-    const hooks = await plugin.server({ directory: tmpRoot, client: a.client }, {})
+    const hooks = await plugin.server({ directory: tmpRoot, client: a.client }, { envProtect: true })
     assert.equal(typeof hooks.config, "function", "config hook still present")
     assert.equal(typeof hooks["tool.execute.before"], "function", "R6 hook installed")
     await callHook(hooks, "bash", { command: "echo hello" })
@@ -275,7 +275,7 @@ try {
   // 6b. audit shape + privacy red line: tool name + category ONLY
   {
     const a = auditClient()
-    const hooks = await plugin.server({ directory: tmpRoot, client: a.client }, {})
+    const hooks = await plugin.server({ directory: tmpRoot, client: a.client }, { envProtect: true })
     await assert.rejects(callHook(hooks, "bash", { command: "cat .env && more" }))
     assert.equal(a.calls.length, 1, "one audit entry")
     const entry = a.calls[0]
@@ -293,7 +293,7 @@ try {
   // $VAR expansion allowed
   process.env.TM_ENV_PROTECT = "standard"
   {
-    const hooks = await plugin.server({ directory: tmpRoot }, {})
+    const hooks = await plugin.server({ directory: tmpRoot }, { envProtect: true })
     await assert.rejects(callHook(hooks, "bash", { command: "printenv" }), undefined, "standard blocks printenv")
     await assert.rejects(callHook(hooks, "read", { filePath: ".env" }), undefined, "standard blocks .env read")
     await callHook(hooks, "bash", { command: "echo $HOME" })
@@ -304,7 +304,7 @@ try {
   process.env.TM_ENV_PROTECT = "off"
   {
     const a = auditClient()
-    const hooks = await plugin.server({ directory: tmpRoot, client: a.client }, {})
+    const hooks = await plugin.server({ directory: tmpRoot, client: a.client }, { envProtect: true })
     assert.equal(typeof hooks["tool.execute.before"], "function", "off: hook still installed")
     await callHook(hooks, "bash", { command: "env" })
     await callHook(hooks, "read", { filePath: ".env" })
@@ -314,7 +314,7 @@ try {
   // 6e. invalid mode value fails closed into strict
   process.env.TM_ENV_PROTECT = "loose"
   {
-    const hooks = await plugin.server({ directory: tmpRoot }, {})
+    const hooks = await plugin.server({ directory: tmpRoot }, { envProtect: true })
     await assert.rejects(callHook(hooks, "bash", { command: "echo $HOME" }), undefined, "typo mode -> strict expansion block")
   }
 
@@ -322,7 +322,7 @@ try {
   process.env.TM_ENV_PROTECT = "standard"
   process.env.TM_ENV_PROTECT_EXTRA_DENY = "TOPSECRET\\w*"
   {
-    const hooks = await plugin.server({ directory: tmpRoot }, {})
+    const hooks = await plugin.server({ directory: tmpRoot }, { envProtect: true })
     await assert.rejects(
       callHook(hooks, "bash", { command: "echo TOPSECRET_value" }),
       (err) => err.message.includes("[category=extra-deny]"),
@@ -334,7 +334,7 @@ try {
   // 6g. audit endpoint failure must never turn a block into a pass-through
   {
     const failing = { app: { log() { return Promise.reject(new Error("log endpoint down")) } } }
-    const hooks = await plugin.server({ directory: tmpRoot, client: failing }, {})
+    const hooks = await plugin.server({ directory: tmpRoot, client: failing }, { envProtect: true })
     await assert.rejects(
       callHook(hooks, "bash", { command: "printenv" }),
       (err) => err.message.startsWith(ep.ENV_PROTECT_MESSAGE),
@@ -800,7 +800,7 @@ console.log("6. loader integration: OK (hook installed, env wiring, off passthro
           return Promise.resolve({ data: true })
         },
       }
-      const hooks = await plugin.server({ directory: root7, client: capable }, {})
+      const hooks = await plugin.server({ directory: root7, client: capable }, { envProtect: true })
       assert.equal(typeof hooks.event, "function", "event hook wired when the gate is armed")
       assert.equal(typeof hooks["chat.message"], "function", "chat.message registration hook wired")
       assert.equal(typeof hooks.dispose, "function", "dispose hook wired")
@@ -850,7 +850,7 @@ console.log("6. loader integration: OK (hook installed, env wiring, off passthro
           return Promise.resolve({ data: true })
         },
       }
-      const hooksOff = await plugin.server({ directory: root7, client: capableOff }, {})
+      const hooksOff = await plugin.server({ directory: root7, client: capableOff }, { envProtect: true })
       await hooksOff.event({ event: { type: "permission.asked", properties: { id: "z", sessionID: "s", permission: "bash", patterns: ["printenv PATH"], metadata: { command: "printenv PATH" } } } })
       await hooksOff["tool.execute.before"]({ tool: "bash", sessionID: "s" }, { args: { command: "printenv" } }) // off -> passes, un-timed
       assert.equal(offReplies, 0, "off mode arms no timer (no auto-reject fires)")
@@ -868,7 +868,7 @@ console.log("6. loader integration: OK (hook installed, env wiring, off passthro
     const root7b = fs.mkdtempSync(path.join(os.tmpdir(), "envp-nogate-"))
     try {
       delete process.env.TM_ENV_PROTECT
-      const hooksNo = await plugin.server({ directory: root7b, client: { app: { log() {} } } }, {})
+      const hooksNo = await plugin.server({ directory: root7b, client: { app: { log() {} } } }, { envProtect: true })
       const cfgNo = {}
       await hooksNo.config(cfgNo)
       const bashNo = cfgNo.agent.team.permission.bash

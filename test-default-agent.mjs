@@ -137,7 +137,7 @@ console.log("1. default_agent promotion matrix: OK (opt-out default; custom/plan
    (T2.1, as revised by the T2.1 review: bash back on execution roles) ---------- */
 {
   const cfg = {}
-  const hooks = await freshHooks(undefined)
+  const hooks = await freshHooks({ envProtect: true })
   await hooks.config(cfg)
 
   // Built-ins never allowed on any agent (G2 方案甲: glob/list excluded,
@@ -181,9 +181,9 @@ console.log("1. default_agent promotion matrix: OK (opt-out default; custom/plan
     }
     for (const t of tmTools) expected[t] = "allow"
     expected["tm_*"] = "allow"
-    // M3: tm_ptc_run — five specialists get allow, team gets deny (overrides wildcard)
-    expected["tm_ptc_run"] = name === "team" ? "deny" : "allow"
-    const allowCount = granted.length + tmTools.length + 1 + (name === "team" ? 0 : 1) // granted + tm tools + wildcard + ptc (except team)
+    // M3: tm_ptc_run — all six agents get allow (overrides wildcard)
+    expected["tm_ptc_run"] = "allow"
+    const allowCount = granted.length + tmTools.length + 2 // granted + tm tools + wildcard + ptc
     assert.deepStrictEqual(
       perm, expected,
       name + ": whitelist content exact (" + allowCount + " allow entries / " +
@@ -198,11 +198,11 @@ console.log("1. default_agent promotion matrix: OK (opt-out default; custom/plan
       assert.equal(perm[t], "allow", name + ": governed tool " + t + " allowed explicitly")
     }
     assert.equal(perm["tm_*"], "allow", name + ": governed tm_* tools allowed")
-    // M3: tm_ptc_run explicit grant (five specialists = allow, team = deny)
+    // M3: tm_ptc_run explicit grant (all six agents = allow)
     assert.equal(
       perm["tm_ptc_run"],
-      name === "team" ? "deny" : "allow",
-      name + ": tm_ptc_run " + (name === "team" ? "denied (team lead)" : "allowed (specialist)"),
+      "allow",
+      name + ": tm_ptc_run allowed",
     )
   }
 
