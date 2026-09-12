@@ -7,6 +7,12 @@ registry saw 1.5.0 as the install-script fix release).
 
 ## [Unreleased]
 
+## [1.5.5] - 2026-09-12
+
+### Changed
+- SHARED_RULES: added "PTC batch orchestration" guideline — agents now prefer tm_ptc_run for multi-step read/search/command sequences
+- tm_read / tm_grep descriptions: explicitly state paths are relative to project root (not agent working directory)
+
 ## [1.5.4] - 2026-09-12
 
 ### Changed
