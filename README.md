@@ -396,12 +396,13 @@ opencode-team-mode/
 ├── tsconfig.json         ← TypeScript config
 ├── src/
 │   ├── index.ts          ← Plugin entry (server(): config + R6 tool.execute.before + approval-gate event + tool segment)
-│   ├── agents.ts         ← Agent definitions (prompts, modes, colors)
+│   ├── agents.ts         ← Agent structure (modes, colors, temperatures, whitelist matrix)
+│   ├── prompts/          ← The agent prompt strings (lead / specialists / shared) — pinned by tests
 │   ├── commands.ts       ← Command definitions (templates, agent bindings)
 │   ├── blackboard.ts     ← Shared blackboard + TTL auto-cleanup sweeper
-│   ├── envprotect.ts     ← R6 env-var read protection + R2 ask-pattern sets (dialog vs hard-block)
+│   ├── envprotect.ts     ← R6 facade → envprotect/ (patterns / bash-classify / path-classify / gate-predicates / hook)
 │   ├── approval-gate.ts  ← Unified approval gate: host-dialog timeout auto-reject (never self-allows)
-│   ├── tm/               ← JIT layer-2 tools (tm_read / tm_grep / tm_bash / tm_fetch / tm_ptc_run)
+│   ├── tm/               ← JIT layer-2 tools: pipelines / result / client-unwrap / shell-bridge / args-schema / tools / guard / preview / store / refs / config / webfetch / ptc/ (9 modules)
 │   └── types.ts          ← Loader-contract type definitions (1.18.x)
 ├── scripts/
 │   ├── install.sh        ← One-click installer (bash)

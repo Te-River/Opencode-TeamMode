@@ -124,25 +124,18 @@ function envStr(env: EnvLike, key: string, def: string): string {
 }
 
 /**
- * Parse `TM_BASH_READONLY_ALLOWED`.  Unset/absent -> null (caller applies the
- * default list).  An explicitly EMPTY string parses to [] (deny-all bash) —
- * an explicit user choice is respected; separator is comma or semicolon.
+ * Parse a comma/semicolon-separated allowlist env var.  Unset/absent -> null
+ * (caller applies the default).  An explicitly EMPTY string parses to []
+ * (deny-all) — an explicit user choice is respected.  Shared by
+ * TM_BASH_READONLY_ALLOWED and TM_WEBFETCH_ALLOWED_DOMAINS.
  */
 export function parseAllowlistEnv(raw: unknown): string[] | null {
   if (typeof raw !== "string") return null
   return raw.split(/[,;]/).map((s) => s.trim()).filter(Boolean)
 }
 
-/**
- * Parse `TM_WEBFETCH_ALLOWED_DOMAINS`.  Unset/absent -> null (caller applies
- * DEFAULT_WEBFETCH_DOMAINS).  An explicitly EMPTY string parses to [] (deny
- * all webfetch); a lone "*" opens every host.  Separator is comma or
- * semicolon.
- */
-export function parseWebfetchAllowlistEnv(raw: unknown): string[] | null {
-  if (typeof raw !== "string") return null
-  return raw.split(/[,;]/).map((s) => s.trim()).filter(Boolean)
-}
+/** Historical alias — identical grammar to parseAllowlistEnv. */
+export const parseWebfetchAllowlistEnv = parseAllowlistEnv
 
 /** Resolve the full tm-tools config from an env-like record (default: process.env). */
 export function resolveTmConfig(env: EnvLike = process.env): TmConfig {
@@ -157,7 +150,7 @@ export function resolveTmConfig(env: EnvLike = process.env): TmConfig {
     blackboardTtlDays: envInt(env, "TM_BLACKBOARD_TTL", TM_CONFIG_DEFAULTS.blackboardTtlDays, 1, 365),
     bashReadonlyAllowed: allowlist ?? [...DEFAULT_BASH_READONLY_ALLOWED],
     webfetchAllowedDomains:
-      parseWebfetchAllowlistEnv(env.TM_WEBFETCH_ALLOWED_DOMAINS) ?? [...DEFAULT_WEBFETCH_DOMAINS],
+      parseAllowlistEnv(env.TM_WEBFETCH_ALLOWED_DOMAINS) ?? [...DEFAULT_WEBFETCH_DOMAINS],
     ptcMaxProgramChars: envInt(env, "TM_PTC_MAX_PROGRAM_CHARS", TM_CONFIG_DEFAULTS.ptcMaxProgramChars, PTC_BUDGET_BOUNDS.programChars.min, PTC_BUDGET_BOUNDS.programChars.max),
     ptcMaxCalls: envInt(env, "TM_PTC_MAX_CALLS", TM_CONFIG_DEFAULTS.ptcMaxCalls, PTC_BUDGET_BOUNDS.maxCalls.min, PTC_BUDGET_BOUNDS.maxCalls.max),
     ptcMaxErrors: envInt(env, "TM_PTC_MAX_ERRORS", TM_CONFIG_DEFAULTS.ptcMaxErrors, PTC_BUDGET_BOUNDS.maxErrors.min, PTC_BUDGET_BOUNDS.maxErrors.max),

@@ -363,12 +363,13 @@ opencode-team-mode/
 ├── tsconfig.json         ← TypeScript 配置
 ├── src/
 │   ├── index.ts          ← 插件入口（server()：config + R6 tool.execute.before + 审批门 event 钩子 + tool 段）
-│   ├── agents.ts         ← Agent 定义（prompts、模式、颜色）
+│   ├── agents.ts         ← Agent 结构（模式、颜色、温度、白名单矩阵）
+│   ├── prompts/          ← Agent 提示词原文（lead / specialists / shared）——由测试钉死
 │   ├── commands.ts       ← 命令定义（模板、Agent 绑定）
 │   ├── blackboard.ts     ← 共享黑板 + TTL 自动清理清扫器
-│   ├── envprotect.ts     ← R6 环境变量读取保护 + R2 确认弹窗模式集（弹窗 vs 硬拦）
+│   ├── envprotect.ts     ← R6 门面 → envprotect/（patterns / bash-classify / path-classify / gate-predicates / hook）
 │   ├── approval-gate.ts  ← 统一审批门：官方弹窗超时自动拒绝（绝不自我放行）
-│   ├── tm/               ← JIT 层 2 工具（tm_read / tm_grep / tm_bash / tm_fetch / tm_ptc_run）
+│   ├── tm/               ← JIT 层 2 工具：pipelines / result / client-unwrap / shell-bridge / args-schema / tools / guard / preview / store / refs / config / webfetch / ptc/（9 模块）
 │   └── types.ts          ← 加载器契约类型定义（1.18.x）
 ├── scripts/
 │   ├── install.sh        ← 一键安装脚本（bash）

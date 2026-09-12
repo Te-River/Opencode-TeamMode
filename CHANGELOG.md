@@ -113,6 +113,24 @@ registry saw 1.5.0 as the install-script fix release).
   Researcher: local-repo only, no web tools); AGENTS.md gained a Design
   goals (business context) section
 
+### Refactor (no behavior change)
+- **PTC subsystem split**: the 1092-line `tm/ptc.ts` became 9 single-
+  responsibility modules under `tm/ptc/` (contract = the frozen `PtcEngine`
+  seam + RPC surface, budgets, pscan, engines, gate, driver, summary,
+  tool, index facade).  All historical export names preserved
+- **tools.ts hub dissolved**: 868 lines → thin assembly + `pipelines.ts` /
+  `result.ts` / `client-unwrap.ts` / `shell-bridge.ts` / `args-schema.ts`
+  (the PTC arg schema moved out of tools.ts where it did not belong)
+- **envprotect.ts split**: 872 lines → facade + `envprotect/` (patterns,
+  bash-classify, path-classify, gate-predicates, hook)
+- **agents.ts split**: 801 lines → structure-only module + `prompts/`
+  (lead / specialists / shared) — prompt strings moved verbatim, pinned by
+  test-blackboard.mjs
+- **Duplication removed**: one shared statement segmenter (`shell-text.ts`)
+  instead of two drifted copies; one shared allowlist env parser
+- All four test suites green after every step; no API, permission, env
+  knob, or default changed
+
 ## [1.5.5] - 2026-09-12
 
 ### Changed
