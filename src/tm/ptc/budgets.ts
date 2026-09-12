@@ -5,7 +5,7 @@
  */
 
 import type { TmConfig } from "../config.js"
-import { tmError } from "../tools.js"
+import { tmError } from "../result.js"
 
 // ---------- budgets + clamping ----------------------------------------------
 

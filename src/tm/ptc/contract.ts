@@ -11,7 +11,7 @@
  * semantics apply to every bridged call verbatim.  PTC is NOT a bypass layer.
  */
 
-import type { TmPhase } from "../tools.js"
+import type { TmPhase } from "../result.js"
 import { shorten } from "../config.js"
 
 // ---------- statuses + bridge surface (design §2) ---------------------------

@@ -27,7 +27,9 @@ import {
 import { resolveTmConfig, type TmConfig } from "./config.js"
 import { hmacToken, newRunId } from "./refs.js"
 import { RunStore } from "./store.js"
-import { buildPtcArgsSchema, buildPipelines, buildTmTools, buildWebfetchArgsSchema } from "./tools.js"
+import { buildTmTools } from "./tools.js"
+import { buildPipelines } from "./pipelines.js"
+import { buildPtcArgsSchema, buildWebfetchArgsSchema } from "./args-schema.js"
 import { buildPtcRunTool } from "./ptc/index.js"
 import { buildTmWebfetchTool } from "./webfetch.js"
 
@@ -190,15 +192,12 @@ export {
   classifyReadonlyCommand,
   isInsideDir,
 } from "./guard.js"
-export {
-  buildTmTools,
-  buildPipelines,
-  buildPtcArgsSchema,
-  buildWebfetchArgsSchema,
-  toToolResult,
-  HANDLE_INVALID_MESSAGE,
-  tmError,
-} from "./tools.js"
+export { buildTmTools } from "./tools.js"
+export { buildPipelines } from "./pipelines.js"
+export type { TmDeps, TmPipelines } from "./pipelines.js"
+export { buildPtcArgsSchema, buildWebfetchArgsSchema } from "./args-schema.js"
+export { toToolResult, HANDLE_INVALID_MESSAGE, tmError } from "./result.js"
+export type { TmPhase } from "./result.js"
 export {
   buildTmWebfetchTool,
   checkWebUrl,
@@ -207,7 +206,6 @@ export {
   hostAllowed,
   htmlToText,
 } from "./webfetch.js"
-export type { TmDeps, TmPhase, TmPipelines } from "./tools.js"
 
 // ---------- tm_ptc_run ----------
 // Built here with its own pipeline instance (governance reused verbatim;

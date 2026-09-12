@@ -26,7 +26,8 @@ import { isEnvFilePath } from "../envprotect.js"
 import type { ToolResult } from "../types.js"
 import { shorten, type TmConfig } from "./config.js"
 import { detectContentType } from "./preview.js"
-import { tmError, toToolResult, type TmPipelines } from "./tools.js"
+import { tmError, toToolResult } from "./result.js"
+import type { TmPipelines } from "./pipelines.js"
 
 /** Seeded allowlist — the four lookup hosts the design names. */
 export const DEFAULT_WEBFETCH_DOMAINS: readonly string[] = [
