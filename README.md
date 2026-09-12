@@ -300,10 +300,10 @@ gated, so day-to-day team work runs without interruption.
 
 ---
 
-## ⚡ Batch orchestration (`tm_ptc_run`) — main-only, not yet published
+## ⚡ Batch orchestration (`tm_ptc_run`) — new in v1.5.2
 
-> ⚠️ This feature is merged on `main` but has **not been published** to npm
-> yet.  It will ship in the next release.
+> Shipped in **v1.5.2** (2026-09-10).  Requires `@te-river/opencode-team-mode@1.5.2`
+> or later.
 
 `tm_ptc_run` lets a specialist agent write **one async program** that makes N
 governed `tm_*` calls in a single turn — zero LLM round-trips during the run,

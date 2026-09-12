@@ -165,6 +165,9 @@ export interface ApprovalGate {
    *  { sessionID, role:"user", agent } and fires BEFORE the session's first
    *  tool call, while permission.asked fires AFTER tool.execute.before). */
   registerExecSession(sessionID?: string): void
+  /** True after the user picked "always" on an env-related ask in this session
+   *  — subsequent env reads pass silently (the approval event itself is audited). */
+  isEnvApproved(sessionID?: string): boolean
   /** Number of pending requests currently being timed (tests / introspection). */
   pendingSize(): number
 }
@@ -327,6 +330,8 @@ export function createApprovalGate(deps: ApprovalGateDeps): ApprovalGate {
   /** Sessions whose reply carried NO permission id → suppress fresh asks of
    *  that session briefly (map sid → expiry ms). */
   const repliedNoId = new Map<string, number>()
+  /** Sessions blanket-approved for env reads ("always" on an env ask). */
+  const envApprovedSessions = new Set<string>()
   let armed = true
   let degraded = false
   let pollHandle: TimerHandle = null
@@ -481,6 +486,12 @@ export function createApprovalGate(deps: ApprovalGateDeps): ApprovalGate {
         : lower === "once" ? "allowed-once"
         : "degraded" // out-of-vocabulary word: record it honestly, not as "rejected"
       auditAsk(client, "bash", rec.cat, verdict)
+      // "always" on an env-related ask → blanket-approve all env reads for
+      // this session (the host's pattern generalization is too broad, so we
+      // interpret "always" as a session-scoped env approval).
+      if (verdict === "allowed-always" && sid && /^(bash-)?env/.test(rec.cat)) {
+        envApprovedSessions.add(sid)
+      }
     }
   }
 
@@ -524,6 +535,9 @@ export function createApprovalGate(deps: ApprovalGateDeps): ApprovalGate {
     },
     registerExecSession(sessionID?: string): void {
       if (sessionID) liveAsk.add(sessionID)
+    },
+    isEnvApproved(sessionID?: string): boolean {
+      return !!sessionID && envApprovedSessions.has(sessionID)
     },
     pendingSize(): number {
       return pending.size

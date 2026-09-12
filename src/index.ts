@@ -123,7 +123,8 @@ const plugin: OpenCodePlugin = {
       input?.client,
       envProtectMode,
       envProtectExtra,
-      { deferToApproval: (sessionID?: string) => approvalGate?.canDefer(sessionID) ?? false },
+      { deferToApproval: (sessionID?: string) => approvalGate?.canDefer(sessionID) ?? false,
+        envApproved: (sessionID?: string) => approvalGate?.isEnvApproved(sessionID) ?? false },
     )
 
     // ---------- JIT layer-2 tools (tm_read / tm_grep / tm_bash / tm_fetch) ----------

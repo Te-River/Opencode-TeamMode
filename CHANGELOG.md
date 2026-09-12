@@ -7,7 +7,17 @@ registry saw 1.5.0 as the install-script fix release).
 
 ## [Unreleased]
 
+## [1.5.2] - 2026-09-10
+
 ### Added
+- **Session-wide env approval ("always" on env ask)**: when the user picks
+  "always" on an env-related permission dialog, the plugin now records that
+  session as "env-approved" — all subsequent env reads in that session pass
+  silently (no dialog, no throw).  R2 danger commands are NOT affected
+  (they still require per-call approval).  The host's own "always"
+  generalizes too broadly (e.g. `Get-ChildItem env:PATH` → `Get-ChildItem
+  *`), so the plugin interprets "always" on env asks as a precise
+  session-scoped blanket instead of relying on the host's pattern.
 - **Unified approval gate (R6 env face + R2 danger face → the official
   OpenCode confirmation dialog)**: instead of the model's env-var reads and
   dangerous operations being silently hard-thrown in isolation, they now

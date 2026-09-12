@@ -833,7 +833,7 @@ export function createEnvProtectHook(
   client: unknown,
   mode: EnvProtectMode,
   extra: RegExp[] = [],
-  options: { deferToApproval?: (sessionID?: string) => boolean } = {},
+  options: { deferToApproval?: (sessionID?: string) => boolean; envApproved?: (sessionID?: string) => boolean } = {},
 ): (input: unknown, output: unknown) => Promise<void> {
   return async (input: unknown, output: unknown): Promise<void> => {
     if (mode === "off") return
@@ -843,6 +843,9 @@ export function createEnvProtectHook(
     const args = (output as { args?: Record<string, unknown> } | null)?.args
     const category = inspectToolCall(tool, args, mode, extra)
     if (!category) return
+    // Session-wide env approval ("always" on first env ask) — pass silently;
+    // the "always" event itself was already audited by the approval gate.
+    if (sessionID && options.envApproved?.(sessionID)) return
     // Defer ONLY the built-in bash tool (never its tm_bash alias), ONLY in a
     // registered session, for the exact forms the config escalates to `ask`.
     if (tool.trim().toLowerCase() === "bash" && sessionID && options.deferToApproval?.(sessionID)) {

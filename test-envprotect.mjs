@@ -572,6 +572,35 @@ console.log("6. loader integration: OK (hook installed, env wiring, off passthro
     assert.ok(logs.some((l) => l.endsWith(":: bash :: env :: timeout-rejected")), "timeout audited")
     // privacy red line on the GATE audit too: category+verdict only
     assert.ok(logs.every((l) => !/printenv|Get-ChildItem|g3-target|rm /i.test(l)), "gate audit never carries command/pattern text")
+    // envApproved: "always" on env ask → session blanket-approved
+    // Reset for a clean gate to test the always→envApproved path
+    const gate2 = createApprovalGate({ client, timeoutMs: 600000, timers: fake, now: () => clock })
+    assert.equal(gate2.isEnvApproved("ses_always"), false, "not approved initially")
+    gate2.handleEvent({ type: "permission.asked", properties: {
+      id: "per_env1", sessionID: "ses_always", permission: "bash",
+      patterns: ["printenv PATH"], metadata: { command: "printenv PATH" }, always: ["printenv *"],
+    } })
+    assert.equal(gate2.isEnvApproved("ses_always"), false, "not approved until replied")
+    gate2.handleEvent({ type: "permission.replied", properties: { sessionID: "ses_always", requestID: "per_env1", reply: "always" } })
+    assert.equal(gate2.isEnvApproved("ses_always"), true, "always on env ask → env approved")
+    assert.equal(gate2.isEnvApproved("ses_other"), false, "other session not approved")
+    assert.equal(gate2.isEnvApproved(undefined), false, "undefined session not approved")
+    // "once" on env ask → NOT approved
+    const gate3 = createApprovalGate({ client, timeoutMs: 600000, timers: fake, now: () => clock })
+    gate3.handleEvent({ type: "permission.asked", properties: {
+      id: "per_env2", sessionID: "ses_once", permission: "bash",
+      patterns: ["printenv PATH"], metadata: { command: "printenv PATH" }, always: ["printenv *"],
+    } })
+    gate3.handleEvent({ type: "permission.replied", properties: { sessionID: "ses_once", requestID: "per_env2", reply: "once" } })
+    assert.equal(gate3.isEnvApproved("ses_once"), false, "once on env ask → NOT approved")
+    // "always" on danger ask → NOT env approved
+    const gate4 = createApprovalGate({ client, timeoutMs: 600000, timers: fake, now: () => clock })
+    gate4.handleEvent({ type: "permission.asked", properties: {
+      id: "per_d1", sessionID: "ses_danger", permission: "bash",
+      patterns: ["rm x"], metadata: { command: "rm x" },
+    } })
+    gate4.handleEvent({ type: "permission.replied", properties: { sessionID: "ses_danger", requestID: "per_d1", reply: "always" } })
+    assert.equal(gate4.isEnvApproved("ses_danger"), false, "always on danger ask → NOT env approved (env-only scope)")
     // replied carrying ONLY { sessionID } (observer-attested degraded shape):
     // cancel-all + short ghost window; other sessions unaffected
     gate.handleEvent({ type: "permission.asked", properties: { id: "per_p5", sessionID: "ses_2", permission: "bash", patterns: ["npm publish"], metadata: { command: "npm publish" } } })
@@ -694,6 +723,58 @@ console.log("6. loader integration: OK (hook installed, env wiring, off passthro
     // degraded gate: registered session defers nothing
     gate.dispose()
     await assert.rejects(hook({ tool: "bash", sessionID: "s-team" }, { args: { command: "printenv PATH" } }), /category=bash-env-command/, "disposed gate: back to hard throw")
+  }
+
+  // 7h-2. envApproved bypass — "always" on env ask → session-wide env pass
+  {
+    const hookApp2 = { log() { if (this !== hookApp2) throw new TypeError("unbound") } }
+    const hookClient2 = {
+      app: hookApp2,
+      postSessionIdPermissionsPermissionId() { return Promise.resolve({ data: true }) },
+    }
+    const fakeTimers2 = { setTimeoutFn: () => ({}), clearTimeoutFn: () => {} }
+    const gate2 = createApprovalGate({ client: hookClient2, timeoutMs: 600000, timers: fakeTimers2 })
+    // user picks "always" on env ask → session becomes env-approved
+    gate2.handleEvent({ type: "permission.asked", properties: {
+      id: "ea1", sessionID: "ses-approved", permission: "bash",
+      patterns: ["printenv PATH"], metadata: { command: "printenv PATH" }, always: ["printenv *"],
+    } })
+    gate2.handleEvent({ type: "permission.replied", properties: { sessionID: "ses-approved", requestID: "ea1", reply: "always" } })
+    assert.equal(gate2.isEnvApproved("ses-approved"), true, "precondition: session is env-approved")
+    const hookAuditApp2 = { log() {} }
+    const hook2 = ep.createEnvProtectHook({ app: hookAuditApp2 }, "strict", [], {
+      deferToApproval: (sid) => gate2.canDefer(sid),
+      envApproved: (sid) => gate2.isEnvApproved(sid),
+    })
+    // approved session: bash env commands pass silently (no throw)
+    await hook2({ tool: "bash", sessionID: "ses-approved" }, { args: { command: "printenv PATH" } })
+    await hook2({ tool: "bash", sessionID: "ses-approved" }, { args: { command: "Get-ChildItem env:PATH" } })
+    // approved session: ALLCAPS expansion also passes (covers strict mode)
+    await hook2({ tool: "bash", sessionID: "ses-approved" }, { args: { command: "echo $HOME" } })
+    // approved session: env-file read passes
+    await hook2({ tool: "read", sessionID: "ses-approved" }, { args: { filePath: "src/.env" } })
+    // non-approved session: still hard throws
+    await assert.rejects(hook2({ tool: "bash", sessionID: "ses-other" }, { args: { command: "printenv PATH" } }), /bash-env-command/, "non-approved session: still blocked")
+    await assert.rejects(hook2({ tool: "read", sessionID: "ses-other" }, { args: { filePath: ".env" } }), /env-file-path/, "non-approved session .env: still blocked")
+    // no sessionID: still hard throws
+    await assert.rejects(hook2({ tool: "bash" }, { args: { command: "printenv PATH" } }), /bash-env-command/, "no sessionID: still blocked")
+    // "once" does NOT approve (setup via gate3)
+    const gate3 = createApprovalGate({ client: hookClient2, timeoutMs: 600000, timers: fakeTimers2 })
+    gate3.handleEvent({ type: "permission.asked", properties: {
+      id: "ea2", sessionID: "ses-once", permission: "bash",
+      patterns: ["printenv PATH"], metadata: { command: "printenv PATH" }, always: ["printenv *"],
+    } })
+    gate3.handleEvent({ type: "permission.replied", properties: { sessionID: "ses-once", requestID: "ea2", reply: "once" } })
+    assert.equal(gate3.isEnvApproved("ses-once"), false, "once does not approve")
+    const hook3 = ep.createEnvProtectHook({ app: hookAuditApp2 }, "strict", [], {
+      deferToApproval: (sid) => gate3.canDefer(sid),
+      envApproved: (sid) => gate3.isEnvApproved(sid),
+    })
+    // "once" on env ask → session still registered → hook defers (host dialog
+    // handles each subsequent call individually, NOT blanket-approved)
+    await hook3({ tool: "bash", sessionID: "ses-once" }, { args: { command: "printenv PATH" } })
+    // but inexpressible forms still hard-block (deferral only for ask-gated shapes)
+    await assert.rejects(hook3({ tool: "bash", sessionID: "ses-once" }, { args: { command: "echo $HOME" } }), /bash-env-expansion/, "once session: inexpressible form still hard-blocks")
   }
 
   // 7i. end-to-end through server(): gate + real-host event routing +
