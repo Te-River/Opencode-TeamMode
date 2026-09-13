@@ -8,6 +8,9 @@ registry saw 1.5.0 as the install-script fix release).
 ## [Unreleased]
 
 ### Fixed
+- **README: plugin updates are manual** — documented the true semantics
+  (OpenCode caches plugins by spec string and never re-resolves @latest;
+  upstream issues #25293 / #10546 / #21609) and the update recipe
 - **Global memories now actually global**: the tm_memory `global` scope
   wrote into the CURRENT repo's .git store — per-project despite the
   label.  Global memories now live at `~/.opencode-team/memories/global`
