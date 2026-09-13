@@ -9,10 +9,10 @@ registry saw 1.5.0 as the install-script fix release).
 
 ### Added
 - **tm_search — governed multi-engine web search (new tool)**: one call,
-  one query, clean results.  8 engines, all reachable from mainland China
+  one query, clean results.  9 engines, all reachable from mainland China
   without API keys: bing (cn.bing.com, default), bing-int (international
   results via ensearch=1), sogou, so (360), baidu (flakiest — failures name
-  alternatives), bilibili, plus structured JSON from the npm registry search
+  alternatives), bilibili, moegirl (MediaWiki search API, structured), plus structured JSON from the npm registry search
   (name@version + description) and the GitHub repo search API (stars +
   description).  HTML SERPs are collapsed into numbered title+URL hit lists
   (click-tracker and engine-chrome anchors excluded, entity decoding,
@@ -33,6 +33,17 @@ registry saw 1.5.0 as the install-script fix release).
   (bilingual); the READMEs' "let your agent install it" path points here
 
 ### Changed
+- **tm_browser granted to the tester (browser-only)**: the tester verifies
+  user-visible frontend changes through the governed tm_browser (local dev
+  servers / preview routes) instead of ending with `UI NOT VERIFIED` when a
+  browser exists; open web fetching (tm_webfetch / tm_search) stays with
+  the lead + researcher.  The tester prompt gains a dedicated "UI
+  verification (tm_browser)" section; the honest-gap fallback remains
+- **Installers are idempotent — re-running them IS the update**:
+  scripts/install.sh + install.ps1 now purge the stale plugin cache and
+  re-resolve npm-installed copies in the config dir after patching the
+  config, so "install" and "update" are the same one-liner (docs/
+  installation.md documents three update paths incl. an agent prompt)
 - **Search seed allowlist grows to nine CN-reachable hosts**:
   + `www.bing.com` (international), `www.sogou.com`, `www.so.com`,
   `api.github.com` (alongside the existing moegirl / bilibili / cn.bing /
@@ -709,6 +720,24 @@ keep the lead coordinating instead of drifting into hand execution.
   Chinese README, scoped package rename.
 
 ### Fixed
+- **Preview could HANG on huge single-line payloads (O(n²) regex)**: the
+  path:line ref collector ran a global regex whose `(?:X+[\/])*` group
+  backtracks char-by-char at every scan position — measured 100K chars ≈
+  23 s, 200K ≈ 127 s, a 2.5 MB minified-JS/JSON page = effectively forever
+  (caught by the new tm_webfetch no-body regression test).  collectPathLineRefs
+  is now a bounded LINEAR scan (colon-anchored indexOf + local validation,
+  240-char path window, 5000-colon probe budget) — 2.5 MB preview now takes
+  ~11 ms
+- **PTC: no retry past the deadline** — a retryable-phase failure arriving
+  at the wall-clock boundary no longer buys extra time (pinned in test-tm-tools §9e); the retry still rides the same call-budget unit
+- **tm_memory forget: slug-collision guard** — deletion now validates the
+  file's frontmatter title before removing it, so two different titles that
+  slug-identically ("API Rate Limits" / "API rate-limits") can no longer
+  delete each other (pinned in test-tm-tools §6n)
+- **tm_webfetch: the text()-only fallback response path now honors the 2 MB
+  cap** (post-read truncation when the host response has no streaming body)
+- **tm_search arg errors use phase=args** (missing query / unknown engine
+  were mis-filed as permission)
 - **tm_bash works on the Desktop sidecar (P0)**: the shell bridge assumed
   the host $ (Bun shell) — but the 1.18.30 desktop runs the plugin in a
   worker on Electron's Node where neither input.$ nor Bun globals exist,

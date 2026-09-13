@@ -10,6 +10,8 @@
 >
 > 六个专职 agent——主脑（Lead）、架构师、实现者、评审、测试、研究员——配上受治理的工具、结构化交接和"先出计划等你批准"的门禁。一个插件，零配置文件要拷。
 
+> 💡 **建议在中或大型项目下使用该模式。** 治理层（审批门禁、上下文卸载、工具白名单）在代码库有真实体量时是资产，在小脚本和一次性问答上则主要是开销。把团队用在配得上它的地方。
+
 ---
 
 ## 太长不看
@@ -50,6 +52,9 @@ TeamMode 对每一个的回应：
 之间用 `STATUS/CHANGES/FINDINGS/EVIDENCE/HANDOFF` 结构化交接、以及静态
 验证（构建 / 类型检查 / 测试）说了算，不靠感觉。
 
+这套纪律也正是"**建议中大型项目使用**"的原因：两三个文件的小脚本，团队
+本来就没多少可治理的东西。
+
 ---
 
 ## 👥 团队阵容
@@ -60,7 +65,7 @@ TeamMode 对每一个的回应：
 | 🏗️ **Architect** | 系统设计 | 设计文档、模块结构、API 契约 |
 | 💻 **Implementer** | 写代码 | 做功能、写生产代码 |
 | 🔍 **Reviewer** | 维度审计 | 默认单维度评审；高风险变更才三维度并行 |
-| 🧪 **Tester** | 测试工程师 | 带真边界条件的测试；静态验证（构建 / 类型检查 / lint） |
+| 🧪 **Tester** | 测试工程师 | 带真边界条件的测试；静态验证（构建 / 类型检查 / lint）；经 `tm_browser` 的治理化 UI 验证 |
 | 🔎 **Researcher** | 找资料 | 本地仓库优先，然后才是网络——两个联网角色之一（另一个是 Lead） |
 
 开箱即用时 **Team 就是你的默认 agent**——新会话直接进编排者（可在
@@ -115,14 +120,14 @@ OpenCode 下次启动时装好。
 ### ⚠️ 现在读一遍，以后省一小时
 
 - **改完配置要重启。** 碰了 `opencode.json` 之后，完全退出再启动 OpenCode（桌面版从托盘退出，不是只关窗口）。
-- **插件更新是手动的。** OpenCode 按 spec 字符串缓存插件，新版本发布后不会重新解析 `@latest`（上游已知问题）。更新方法：删缓存目录再重启——
+- **插件更新：重跑安装脚本即可。** 安装器是幂等的——重跑会补齐配置（已存在则跳过）、清掉过期插件缓存、并重解析 npm 安装的副本。之所以需要这一步：OpenCode 按 spec 字符串缓存插件，新版本发布后不会重新解析 `@latest`（上游已知问题）。想手动操作的话：
 
   | 系统 | 缓存位置 |
   |---|---|
   | macOS / Linux | `rm -rf ~/.cache/opencode/packages/@te_river+opencode-team-mode@latest` |
   | Windows | `Remove-Item -Recurse -Force "$env:LOCALAPPDATA\opencode\cache\packages\@te_river+opencode-team-mode@latest"` |
 
-  如果插件还被 npm 装进了 `~/.config/opencode`，package-lock 会钉住版本——在那里再跑一次 `npm install @te-river/opencode-team-mode@latest`。完整配方见[安装指南·更新](./docs/installation.md)。
+  如果插件还被 npm 装进了 `~/.config/opencode`，package-lock 会钉住版本——在那里再跑一次 `npm install @te-river/opencode-team-mode@latest`。完整配方（含 agent 更新提示词）见[安装指南·更新](./docs/installation.md)。
 - **前置条件：** [OpenCode](https://opencode.ai)（桌面版或 CLI）+ Node ≥ 18。
 
 ### 验证
@@ -200,7 +205,7 @@ HMAC 句柄，agent 真需要 payload 时用 `tm_fetch` 分页取。
 | `tm_ptc_run` | 批量编排：一个程序、N 次受治理调用、零 LLM 回合 | 全部六个 agent |
 | `tm_search` | 多引擎网络搜索，返回提取去重后的命中列表 | Lead + Researcher |
 | `tm_webfetch` | 白名单页面的单次受治理 GET（搜索页自动提取） | Lead + Researcher |
-| `tm_browser` | 交互式浏览器会话（headful CDP）：open / navigate / read / screenshot / close | Lead + Researcher |
+| `tm_browser` | 交互式浏览器会话（headful CDP）：open / navigate / read / screenshot / close | Lead + Researcher + Tester（仅 UI 验证） |
 
 > **固定工具优先级阶梯（每个任务都适用）：① TeamMode 受治理工具（`tm_*`）
 > → ② 用户 MCP/插件工具 → ③ 模型自己的推理。** 它同时是回退链：某个受治理
@@ -244,10 +249,11 @@ agent 永远看不到原始搜索页的噪音。
 | `sogou` / `so`（360） | 国产引擎，CJK 内容友好 |
 | `baidu` | 反爬最凶，但有时是唯一的中文特化索引；失败时会点名替代引擎 |
 | `bilibili` | 视频搜索 |
+| `moegirl` | MediaWiki 搜索 API——词条标题 + 摘要，结构化 |
 | `npm` | registry 搜索 → name@version + 描述，结构化 |
 | `github` | 仓库搜索 API → star 数 + 描述，结构化 |
 
-八个引擎在中国大陆**全部免 Key 可达**，且全部在种子域名白名单内。空结果
+九个引擎在中国大陆**全部免 Key 可达**，且全部在种子域名白名单内。空结果
 （反爬拦截页）时错误信息会点名替代引擎，不让 agent 卡死。另两条通道补全
 能力面：
 
@@ -261,9 +267,10 @@ agent 永远看不到原始搜索页的噪音。
 种子白名单（两个工具共用）：`mobile.moegirl.org.cn`、`search.bilibili.com`、
 `cn.bing.com`、`www.bing.com`、`www.baidu.com`、`www.sogou.com`、
 `www.so.com`、`registry.npmjs.org`、`api.github.com`——用
-`TM_WEBFETCH_ALLOWED_DOMAINS` 扩展（`"*"` 放开全部主机）。其余四个 agent
-（architect / implementer / reviewer / tester）**没有**联网授权——网络问题
-会报告为缺口，绝不编造。
+`TM_WEBFETCH_ALLOWED_DOMAINS` 扩展（`"*"` 放开全部主机）。architect /
+implementer / reviewer **没有**联网授权——网络问题会报告为缺口，绝不编造。
+tester 仅持有 `tm_browser`，用于本项目的治理化 UI 验证（本地开发服务器、
+预览路由）；开放网络抓取仍归两个联网角色。
 
 ### 安全：R6 + R2 审批门禁
 
@@ -418,13 +425,15 @@ Team Lead 自己从不删黑板，你可以随时审计任何一次运行。
 就是省 token 的机制。
 
 **联网安全吗？**
-这是全插件防守最严的面：仅两个角色、域名白名单、重定向逐跳复检、浏览器
+这是全插件防守最严的面：两个完整联网角色 + 仅浏览器的 tester 授权、域名
+白名单、重定向逐跳复检、浏览器
 网络层强制、env 文件 URL 拒绝，且每个 payload 都走同一套卸载治理。白名单
 页面不可能把抓取弹到站外。
 
 **插件为什么不自动更新？**
 OpenCode 按 spec 字符串缓存插件，从不重新解析 `@latest`（上游问题，不是
-我们的）。删缓存目录重启即可——配方在上面和[安装指南](./docs/installation.md)里。
+我们的）。**重跑安装脚本就是更新**（它会清缓存、重解析 npm 副本）；或者
+手动删缓存目录。配方在上面和[安装指南](./docs/installation.md)里。
 
 **agent 能并行调工具吗？**
 能——而且是为并行**专门设计**的：并行的 `tm_search` / `tm_webfetch` /

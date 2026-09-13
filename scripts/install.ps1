@@ -1,13 +1,17 @@
 # ─────────────────────────────────────────────────────────────────────────────
-# OpenCode TeamMode — one-click installer for Windows
+# OpenCode TeamMode — one-click installer for Windows (idempotent: re-run to UPDATE)
 #
 # Usage:
 #   irm https://ghproxy.net/https://raw.githubusercontent.com/Te-River/Opencode-TeamMode/main/scripts/install.ps1 | iex
 #
 # What it does:
-#   Adds @te-river/opencode-team-mode@latest to ~/.config/opencode/opencode.jsonc
-#   (falls back to opencode.json when only that one exists).
-#   OpenCode will auto-install the package on next startup (via Bun).
+#   1. Adds @te-river/opencode-team-mode@latest to ~/.config/opencode/opencode.jsonc
+#      (falls back to opencode.json when only that one exists).
+#   2. Purges the stale plugin cache — OpenCode caches plugins by spec string
+#      and NEVER re-resolves @latest on its own, so a re-run is the update.
+#   3. Re-resolves an npm-installed copy inside the config dir (package-lock
+#      pins would otherwise keep the old version).
+#   Restart OpenCode afterwards.
 # ─────────────────────────────────────────────────────────────────────────────
 
 #Requires -Version 5.1
@@ -115,6 +119,35 @@ console.log('OK  Plugin added');
         } finally {
             Remove-Item $nodeScriptPath -ErrorAction SilentlyContinue
         }
+    }
+}
+
+# ── update: purge the stale plugin cache (OpenCode never re-resolves @latest) ──
+$cacheRoots = @(
+    (Join-Path $env:USERPROFILE ".cache\opencode\packages"),
+    (Join-Path $env:LOCALAPPDATA "opencode\cache\packages")
+)
+foreach ($root in $cacheRoots) {
+    if (Test-Path $root) {
+        $stale = Get-ChildItem -Path $root -Directory -Filter "*opencode-team-mode*" -ErrorAction SilentlyContinue
+        foreach ($d in $stale) {
+            Remove-Item -Recurse -Force $d.FullName -ErrorAction SilentlyContinue
+            Write-Host "✔  Purged stale plugin cache: $($d.Name)" -ForegroundColor Green
+        }
+    }
+}
+
+# ── update: npm-installed copy in the config dir? re-resolve its pinned lock ──
+$nmCopy = Join-Path $CFG_DIR "node_modules\@te-river\opencode-team-mode"
+if (Test-Path $nmCopy) {
+    Write-Host "↻  Re-resolving npm-installed plugin in $CFG_DIR ..." -ForegroundColor Yellow
+    Push-Location $CFG_DIR
+    try {
+        npm install "@te-river/opencode-team-mode@latest" --no-fund --no-audit
+        if ($LASTEXITCODE -eq 0) { Write-Host "✔  npm copy updated" -ForegroundColor Green }
+        else { Write-Host "!  npm re-resolve failed (non-fatal — cache purge + restart is usually enough)" -ForegroundColor Yellow }
+    } finally {
+        Pop-Location
     }
 }
 

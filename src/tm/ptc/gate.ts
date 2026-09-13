@@ -57,7 +57,10 @@ export function createGateBridge(
       const t0 = now()
       let res = await raw.call(tool, args)
       let retried = false
-      if (!res.ok && RETRYABLE_PHASES.includes(res.error.phase)) {
+      // ≤1 retry on idempotent phases — but never PAST the deadline: a
+      // retryable failure at the wire must not buy extra wall-clock time.
+      // The retry still rides the same budget unit (one call = one unit).
+      if (!res.ok && RETRYABLE_PHASES.includes(res.error.phase) && now() < deadlineAt) {
         retried = true
         state.retries++
         res = await raw.call(tool, args)

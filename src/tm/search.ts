@@ -29,7 +29,7 @@ export interface SearchEngine {
   name: string
   /** html engines are extracted via extractSearchHits; json engines have
    *  a dedicated renderer below. */
-  kind: "html" | "npm-json" | "github-json"
+  kind: "html" | "npm-json" | "github-json" | "wiki-json"
   buildUrl: (encodedQuery: string) => string
   /** Hint appended when the engine returns nothing usable. */
   alt: string
@@ -72,6 +72,12 @@ export const SEARCH_ENGINES: Record<string, SearchEngine> = {
     kind: "html",
     buildUrl: (q) => `https://search.bilibili.com/all?keyword=${q}`,
     alt: "直接 tm_browser 打开视频页，或换 bing",
+  },
+  moegirl: {
+    name: "moegirl",
+    kind: "wiki-json",
+    buildUrl: (q) => `https://mobile.moegirl.org.cn/api.php?action=query&list=search&srsearch=${q}&format=json&srlimit=10`,
+    alt: "已知词条直接 tm_webfetch https://mobile.moegirl.org.cn/<词条>",
   },
   npm: {
     name: "npm",
@@ -138,6 +144,37 @@ export function renderGithubResults(query: string, body: string): string | null 
   return lines.join("\n")
 }
 
+/** MediaWiki search API JSON (moegirl) → numbered entry list with
+ *  tag-stripped snippets and direct article URLs. */
+export function renderWikiResults(query: string, body: string): string | null {
+  let data: {
+    query?: {
+      search?: Array<{ title?: unknown; snippet?: unknown }>
+      searchinfo?: { totalhits?: unknown }
+    }
+  }
+  try {
+    data = JSON.parse(body)
+  } catch {
+    return null
+  }
+  const items = Array.isArray(data?.query?.search) ? data.query.search : []
+  if (items.length === 0) return null
+  const lines = [
+    `[search] moegirl × "${query}" → ${String(data?.query?.searchinfo?.totalhits ?? items.length)} 条词条:`,
+  ]
+  for (const [i, r] of items.slice(0, SEARCH_MAX_HITS).entries()) {
+    const title = String(r?.title ?? "?")
+    const snippet = String(r?.snippet ?? "")
+      .replace(/<[^>]+>/g, "")
+      .slice(0, 120)
+    lines.push(`${i + 1}. ${title}${snippet ? ` — ${snippet}` : ""}`)
+    lines.push(`   https://mobile.moegirl.org.cn/${encodeURIComponent(title)}`)
+  }
+  lines.push("(词条正文: tm_webfetch 抓上面的 URL。)")
+  return lines.join("\n")
+}
+
 /** Collapse an HTML SERP into the compact hit list; null when the engine
  *  gave nothing extractable (anti-bot shell / markup change). */
 export function extractHtmlResults(html: string): SearchHit[] {
@@ -146,7 +183,7 @@ export function extractHtmlResults(html: string): SearchHit[] {
 
 const SEARCH_DESCRIPTION = `Search the web through a governed multi-engine pipeline — the FIRST choice for open-ended web lookups; tm_webfetch is for a KNOWN URL, tm_browser for JS-rendered pages.
 
-- engines: bing (cn.bing.com, default) · bing-int (international results, ensearch=1) · sogou · so (360) · baidu · bilibili · npm (registry search: name@version + description, structured) · github (repo search API: stars + description, structured)
+- engines: bing (cn.bing.com, default) · bing-int (international results, ensearch=1) · sogou · so (360) · baidu · bilibili · moegirl (MediaWiki API: entry titles + snippets, structured) · npm (registry search: name@version + description, structured) · github (repo search API: stars + description, structured)
 - Returns an extracted title+URL hit list (max 10), NOT the raw page — output rides the same governance as the other tm_* tools.
 - Baidu/sogou sometimes serve anti-bot shells; an empty result names the alternative engines — switch, don't retry the same one.
 - Same red lines as tm_webfetch: allowlisted hosts only (the engine hosts are seeded; a custom TM_WEBFETCH_ALLOWED_DOMAINS must keep them), redirects re-checked per hop.
@@ -180,13 +217,13 @@ export function buildTmSearchTool(deps: {
         const args = rawArgs ?? {}
         const query = typeof args.query === "string" ? args.query.trim() : ""
         if (!query) {
-          return toToolResult(tmError(tool, "permission", "缺少 query 参数"))
+          return toToolResult(tmError(tool, "args", "缺少 query 参数"))
         }
         const engineKey = String(args.engine ?? "bing").trim().toLowerCase() || "bing"
         const engine = SEARCH_ENGINES[engineKey]
         if (!engine) {
           return toToolResult(
-            tmError(tool, "permission", `未知引擎 "${shorten(engineKey, 40)}" —— 可用: ${SEARCH_ENGINE_NAMES.join(", ")}`),
+            tmError(tool, "args", `未知引擎 "${shorten(engineKey, 40)}" —— 可用: ${SEARCH_ENGINE_NAMES.join(", ")}`),
           )
         }
         const stepId = pipelines.nextStepId()
@@ -198,6 +235,8 @@ export function buildTmSearchTool(deps: {
           rendered = renderNpmResults(query, res.text)
         } else if (engine.kind === "github-json") {
           rendered = renderGithubResults(query, res.text)
+        } else if (engine.kind === "wiki-json") {
+          rendered = renderWikiResults(query, res.text)
         } else {
           const hits = extractHtmlResults(res.text)
           rendered = hits.length > 0 ? renderSearchHits(query, engine.name, hits) : null

@@ -121,8 +121,8 @@ const whitelist = (
   permission["tm_*"] = "allow"
   // Governed web channels (tm_webfetch / tm_search / tm_browser) — default
   // DENY for every agent; the explicit keys override the tm_* wildcard.
-  // applyNetworkPermission grants them back to the lead + researcher only
-  // (network capability is a two-role grant).
+  // applyNetworkPermission grants the FULL set to the lead + researcher
+  // and tm_browser alone to the tester (UI verification).
   permission["tm_webfetch"] = "deny"
   permission["tm_search"] = "deny"
   permission["tm_browser"] = "deny"
@@ -135,14 +135,15 @@ function applyPtcPermission(permission: AgentPermission, _isTeamLead: boolean): 
   permission[PTC_TOOL] = "allow"
 }
 
-/** Apply the network grant: ONLY the team lead and the researcher carry
- *  the governed web channels (tm_webfetch / tm_search / tm_browser —
- *  explicit allow overrides the tm_* wildcard); architect / implementer /
- *  reviewer / tester keep the whitelist deny. */
-function applyNetworkPermission(permission: AgentPermission, isWebRole: boolean): void {
+/** Apply the network grant: the team lead and the researcher carry the
+ *  FULL governed web channels (tm_webfetch / tm_search / tm_browser —
+ *  explicit allow overrides the tm_* wildcard); the TESTER carries
+ *  tm_browser ONLY (governed UI verification — no open web fetching);
+ *  architect / implementer / reviewer keep the whitelist deny. */
+function applyNetworkPermission(permission: AgentPermission, isWebRole: boolean, isTester = false): void {
   permission["tm_webfetch"] = isWebRole ? "allow" : "deny"
   permission["tm_search"] = isWebRole ? "allow" : "deny"
-  permission["tm_browser"] = isWebRole ? "allow" : "deny"
+  permission["tm_browser"] = isWebRole || isTester ? "allow" : "deny"
 }
 
 /* ------------------------------------------------------------------ */
@@ -226,13 +227,16 @@ const tester: AgentConfig = {
   description:
     "Test engineer — writes and runs unit/integration tests, classifies " +
     "failures (product bug vs bad test vs environment), verifies via build, " +
-    "typecheck, static analysis and API-level tests, and reports a clear " +
-    "verdict.  Use to validate correctness or raise coverage.",
+    "typecheck, static analysis and API-level tests, verifies user-visible " +
+    "frontend changes through the governed tm_browser (UI verification of " +
+    "this project only), and reports a clear verdict.  Use to validate " +
+    "correctness or raise coverage.",
   prompt: TESTER_PROMPT,
   color: "#F472B6", // pink
   // Whitelist: tm_* x4 + edit/write (test files) + bash (the whole
-  // verification stack: build / typecheck / lint / test runs);
-  // tm_webfetch DENIED (not a network role).
+  // verification stack: build / typecheck / lint / test runs).
+  // tm_browser granted for governed UI verification; tm_webfetch / tm_search
+  // DENIED (open web lookups stay with the lead + researcher).
   permission: whitelist("edit", "write", "bash"),
   temperature: 0.2,
 }
@@ -275,7 +279,8 @@ if (teamLead.permission) {
 for (const a of [architect, implementer, reviewer, tester, researcher]) {
   if (a.permission) {
     applyPtcPermission(a.permission, false)
-    applyNetworkPermission(a.permission, a === researcher)
+    // tester: tm_browser only (UI verification); researcher: full web grant
+    applyNetworkPermission(a.permission, a === researcher, a === tester)
   }
 }
 

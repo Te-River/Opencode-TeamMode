@@ -185,14 +185,15 @@ console.log("1. default_agent promotion matrix: OK (opt-out default; custom/plan
     expected["tm_*"] = "allow"
     // M3: tm_ptc_run — all six agents get allow (overrides wildcard)
     expected["tm_ptc_run"] = "allow"
-    // tm_webfetch / tm_search / tm_browser — governed web channels: ONLY
-    // team + researcher are network roles (explicit keys override the tm_*
-    // wildcard)
+    // tm_webfetch / tm_search / tm_browser — governed web channels: team +
+    // researcher carry the FULL set; the tester carries tm_browser ONLY
+    // (governed UI verification); explicit keys override the tm_* wildcard
     const isWebRole = name === "team" || name === "researcher"
+    const isTester = name === "tester"
     expected["tm_webfetch"] = isWebRole ? "allow" : "deny"
     expected["tm_search"] = isWebRole ? "allow" : "deny"
-    expected["tm_browser"] = isWebRole ? "allow" : "deny"
-    const allowCount = granted.length + tmTools.length + 2 + (isWebRole ? 3 : 0) // + wildcard + ptc + webfetch/search/browser
+    expected["tm_browser"] = isWebRole || isTester ? "allow" : "deny"
+    const allowCount = granted.length + tmTools.length + 2 + (isWebRole ? 3 : 0) + (isTester ? 1 : 0) // + wildcard + ptc + webfetch/search/browser (+ tester browser)
     assert.deepStrictEqual(
       perm, expected,
       name + ": whitelist content exact (" + allowCount + " allow entries / " +
@@ -265,14 +266,19 @@ console.log("1. default_agent promotion matrix: OK (opt-out default; custom/plan
     assert.equal(cfg.agent[name].permission.question, "deny", name + ": question denied (specialists answer through the lead)")
   }
 
-  // tm_webfetch / tm_browser network-role split: the two-channel web policy
-  // grants the governed channels to the lead + researcher ONLY.
+  // tm_webfetch / tm_search / tm_browser network-role split: team +
+  // researcher carry the FULL governed web set; the tester carries
+  // tm_browser only (governed UI verification of the project).
   assert.equal(cfg.agent.team.permission.tm_webfetch, "allow", "team: network role (governed tm_webfetch)")
   assert.equal(cfg.agent.researcher.permission.tm_webfetch, "allow", "researcher: network role (governed tm_webfetch)")
   assert.equal(cfg.agent.team.permission.tm_browser, "allow", "team: network role (governed tm_browser)")
   assert.equal(cfg.agent.researcher.permission.tm_browser, "allow", "researcher: network role (governed tm_browser)")
-  for (const name of ["architect", "implementer", "reviewer", "tester"]) {
+  assert.equal(cfg.agent.tester.permission.tm_browser, "allow", "tester: browser-only grant (governed UI verification)")
+  assert.equal(cfg.agent.tester.permission.tm_webfetch, "deny", "tester: open web fetching stays denied")
+  assert.equal(cfg.agent.tester.permission.tm_search, "deny", "tester: open web search stays denied")
+  for (const name of ["architect", "implementer", "reviewer"]) {
     assert.equal(cfg.agent[name].permission.tm_webfetch, "deny", name + ": NOT a network role (tm_webfetch denied)")
+    assert.equal(cfg.agent[name].permission.tm_search, "deny", name + ": NOT a network role (tm_search denied)")
     assert.equal(cfg.agent[name].permission.tm_browser, "deny", name + ": NOT a network role (tm_browser denied)")
   }
 

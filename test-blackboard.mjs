@@ -320,6 +320,10 @@ for (const expert of EXPERTS) {
     cfg2.agent[expert].prompt.includes("Web lookups are NOT yours unless tm_search / tm_webfetch / tm_browser"),
     expert + ": web boundary rule (network roles are lead + researcher only)",
   )
+  assert.ok(
+    cfg2.agent[expert].prompt.includes("the tester carries tm_browser for UI verification"),
+    expert + ": web boundary rule names the tester's browser-only exception",
+  )
   assert.ok(cfg2.agent[expert].prompt.includes("1. TeamMode governed tools (tm_*)"), expert + ": priority ladder rung 1 (tm_* first)")
   assert.ok(cfg2.agent[expert].prompt.includes("2. User MCP/plugin tools"), expert + ": priority ladder rung 2 (MCP second)")
   assert.ok(cfg2.agent[expert].prompt.includes("3. Your own reasoning"), expert + ": priority ladder rung 3 (reasoning, never fabricate)")
@@ -332,6 +336,8 @@ assert.ok(cfg2.agent["researcher"].prompt.includes("registry.npmjs.org/-/v1/sear
 assert.ok(cfg2.agent["researcher"].prompt.includes("mobile.moegirl.org.cn"), "researcher: seeded web hosts documented")
 assert.ok(cfg2.agent["team"].prompt.includes("tm_search"), "lead: governed search front referenced")
 assert.ok(cfg2.agent["team"].prompt.includes("tm_webfetch"), "lead: governed web fallback referenced")
+assert.ok(cfg2.agent["tester"].prompt.includes("## UI verification (tm_browser"), "tester: governed UI verification section present")
+assert.ok(cfg2.agent["tester"].prompt.includes("UI NOT VERIFIED"), "tester: honest-gap fallback kept alongside the browser grant")
 assert.ok(cfg2.agent["team"].prompt.includes("tm_memory search"), "lead: memory consulted during research phase")
 assert.ok(cfg2.agent["team"].prompt.includes("Batch the recon in one tm_ptc_run program"), "lead: research-phase recon batched via PTC")
 }

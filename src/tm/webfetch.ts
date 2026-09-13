@@ -201,7 +201,12 @@ async function readBodyCapped(res: {
   text?: () => Promise<string>
 }, maxBytes: number): Promise<string> {
   const reader = res.body?.getReader?.()
-  if (!reader) return String(await res.text?.() ?? "")
+  if (!reader) {
+    // some hosts expose only text() (no streaming body) — the cap still
+    // applies, as a post-read string truncation
+    const t = String(await res.text?.() ?? "")
+    return t.length > maxBytes ? t.slice(0, maxBytes) + "\n…(响应体超出字节上限，已截断)" : t
+  }
   const decoder = new TextDecoder("utf-8")
   let out = ""
   let bytes = 0

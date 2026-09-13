@@ -10,6 +10,8 @@
 >
 > Six specialized agents — a Lead, an Architect, an Implementer, a Reviewer, a Tester and a Researcher — with governed tools, structured handoffs, and a plan-first approval gate. One plugin, zero config files to copy.
 
+> 💡 **Best for medium-to-large projects.** The governance layer (approval gate, context offload, tool allowlists) is an asset once a codebase has real surface area — and mostly overhead on tiny scripts and one-off questions. Use it where the work is.
+
 ---
 
 ## TL;DR — skip the docs
@@ -52,6 +54,9 @@ you approve before ≥2 dispatches execute, structured `STATUS/CHANGES/FINDINGS/
 EVIDENCE/HANDOFF` replies between agents, and static verification (build /
 typecheck / tests) instead of vibes.
 
+That discipline is also why the recommendation is **medium-to-large
+projects**: on a two-file script the team simply has less to govern.
+
 ---
 
 ## 👥 The team
@@ -62,7 +67,7 @@ typecheck / tests) instead of vibes.
 | 🏗️ **Architect** | System designer | Design docs, module structure, API contracts |
 | 💻 **Implementer** | Code writer | Building features, writing production code |
 | 🔍 **Reviewer** | Dimension-focused auditor | Single-dimension review by default; 3 in parallel only for high-risk changes |
-| 🧪 **Tester** | Test engineer | Tests with real edge cases; static verification (build / typecheck / lint) |
+| 🧪 **Tester** | Test engineer | Tests with real edge cases; static verification (build / typecheck / lint); governed UI verification via `tm_browser` |
 | 🔎 **Researcher** | Knowledge finder | Local repo first, then the web — one of the two network roles (with the Lead) |
 
 Out of the box, **Team is your default agent** — new chats open straight into the
@@ -118,14 +123,14 @@ OpenCode installs the plugin on next startup.
 ### ⚠️ Read this once, save yourself an hour later
 
 - **Restart to activate.** After touching `opencode.json`, fully quit and restart OpenCode (Desktop: quit from tray, not just the window).
-- **Plugin updates are manual.** OpenCode caches plugins by spec string and does NOT re-resolve `@latest` when a new version publishes (upstream limitation). To update: delete the cache dir and restart —
+- **Plugin updates: re-run the installer.** It is idempotent — a re-run re-patches the config (no-op when present), purges the stale plugin cache, and re-resolves any npm-installed copy. This exists because OpenCode caches plugins by spec string and does NOT re-resolve `@latest` when a new version publishes (upstream limitation). Manual recipe, if you prefer:
 
   | OS | Cache location |
   |---|---|
   | macOS / Linux | `rm -rf ~/.cache/opencode/packages/@te_river+opencode-team-mode@latest` |
   | Windows | `Remove-Item -Recurse -Force "$env:LOCALAPPDATA\opencode\cache\packages\@te_river+opencode-team-mode@latest"` |
 
-  If you also npm-installed the plugin into `~/.config/opencode`, its package-lock pins the version — run `npm install @te-river/opencode-team-mode@latest` there too. Full recipe: [installation guide, Updating](./docs/installation.md).
+  If you also npm-installed the plugin into `~/.config/opencode`, its package-lock pins the version — run `npm install @te-river/opencode-team-mode@latest` there too. Full recipe (including an agent-driven update prompt): [installation guide, Updating](./docs/installation.md).
 - **Prerequisites:** [OpenCode](https://opencode.ai) (Desktop or CLI) and Node ≥ 18.
 
 ### Verify
@@ -206,7 +211,7 @@ genuinely needs the payload.
 | `tm_ptc_run` | Batch orchestration: one program, N governed calls, zero LLM round-trips | all six agents |
 | `tm_search` | Multi-engine web search with extracted, deduplicated hit lists | Lead + Researcher |
 | `tm_webfetch` | Single governed GET of an allowlisted page (search pages auto-extracted) | Lead + Researcher |
-| `tm_browser` | Interactive browser session (headful CDP): open / navigate / read / screenshot / close | Lead + Researcher |
+| `tm_browser` | Interactive browser session (headful CDP): open / navigate / read / screenshot / close | Lead + Researcher + Tester (UI verification) |
 
 > **Fixed tool priority ladder (every task): ① TeamMode governed tools
 > (`tm_*`) → ② user MCP/plugin tools → ③ the model's own reasoning.**
@@ -255,10 +260,11 @@ sees raw SERP chrome.
 | `sogou` / `so` (360) | CN-native engines, good for CJK content |
 | `baidu` | flakiest (anti-bot) but sometimes the only CN-specific index; failures name alternatives |
 | `bilibili` | video search |
+| `moegirl` | MediaWiki search API — entry titles + snippets, structured |
 | `npm` | registry search → name@version + description, structured |
 | `github` | repo search API → stars + description, structured |
 
-All eight engines are reachable from mainland China **without API keys**, and
+All nine engines are reachable from mainland China **without API keys**, and
 every one of them sits on the seeded domain allowlist. On an empty result
 (an anti-bot shell), the error names the alternative engines instead of
 leaving the agent stuck. Two more channels complete the surface:
@@ -274,9 +280,11 @@ leaving the agent stuck. Two more channels complete the surface:
 Seeded allowlist (both tools): `mobile.moegirl.org.cn`, `search.bilibili.com`,
 `cn.bing.com`, `www.bing.com`, `www.baidu.com`, `www.sogou.com`, `www.so.com`,
 `registry.npmjs.org`, `api.github.com` — extend via
-`TM_WEBFETCH_ALLOWED_DOMAINS` (`"*"` opens every host). The other four agents
-(architect / implementer / reviewer / tester) have NO network grant — web
-questions come back as a reported gap, never simulated.
+`TM_WEBFETCH_ALLOWED_DOMAINS` (`"*"` opens every host). Architect /
+implementer / reviewer have NO network grant — web questions come back as a
+reported gap, never simulated. The tester carries `tm_browser` ONLY, for
+governed UI verification of the project (local dev servers, preview routes);
+open web fetching stays with the two network roles.
 
 ### Security: the R6 + R2 approval gate
 
@@ -444,15 +452,18 @@ exist because a five-agent pipeline naively bolted onto one context window
 *would* eat your tokens. The governance is the token-saver.
 
 **Is the web access safe?**
-It's the most guarded surface in the plugin: two roles only, domain
+It's the most guarded surface in the plugin: two full web roles plus a
+browser-only tester grant, domain
 allowlist, redirects re-checked per hop, network-layer enforcement in the
 browser, env-file URL refusal, and every payload rides the same offload
 governance. No allowlisted page can bounce the fetch off-site.
 
 **Why doesn't the plugin auto-update?**
 OpenCode caches plugins by spec string and never re-resolves `@latest`
-(upstream limitation, not ours). Delete the cache dir and restart — recipe
-above and in the [installation guide](./docs/installation.md).
+(upstream limitation, not ours). **Re-run the installer — that IS the
+update** (it purges the cache and re-resolves npm copies); or delete the
+cache dir by hand. Recipe above and in the
+[installation guide](./docs/installation.md).
 
 **Can agents run tools in parallel?**
 Yes — and they're *engineered* for it: parallel `tm_search` / `tm_webfetch` /

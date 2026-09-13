@@ -1,14 +1,18 @@
 #!/usr/bin/env bash
 # ─────────────────────────────────────────────────────────────────────────────
-# OpenCode TeamMode — one-click installer
+# OpenCode TeamMode — one-click installer (idempotent: re-run to UPDATE)
 #
 # Usage:
 #   curl -fsSL https://ghproxy.net/https://raw.githubusercontent.com/Te-River/Opencode-TeamMode/main/scripts/install.sh | bash
 #
 # What it does:
-#   Adds @te-river/opencode-team-mode@latest to ~/.config/opencode/opencode.jsonc
-#   (falls back to opencode.json when only that one exists).
-#   OpenCode will auto-install the package on next startup (via Bun).
+#   1. Adds @te-river/opencode-team-mode@latest to ~/.config/opencode/opencode.jsonc
+#      (falls back to opencode.json when only that one exists).
+#   2. Purges the stale plugin cache — OpenCode caches plugins by spec string
+#      and NEVER re-resolves @latest on its own, so a re-run is the update.
+#   3. Re-resolves an npm-installed copy inside the config dir (package-lock
+#      pins would otherwise keep the old version).
+#   Restart OpenCode afterwards.
 # ─────────────────────────────────────────────────────────────────────────────
 set -euo pipefail
 
@@ -94,6 +98,27 @@ console.log('OK  Plugin added');
 NODEJS
   trap "rm -f ${NODE_SCRIPT}" EXIT
   node "${NODE_SCRIPT}" "${CFG}" "${PKG}"
+fi
+
+# ── update: purge the stale plugin cache (OpenCode never re-resolves @latest) ──
+CACHE_ROOT="${HOME}/.cache/opencode/packages"
+if [ -d "$CACHE_ROOT" ]; then
+  STALE=$(ls -d "${CACHE_ROOT}"/*opencode-team-mode* 2>/dev/null || true)
+  if [ -n "$STALE" ]; then
+    # shellcheck disable=SC2086
+    rm -rf $STALE
+    echo "✔  Purged stale plugin cache (re-resolves @latest on restart)"
+  fi
+fi
+
+# ── update: npm-installed copy in the config dir? re-resolve its pinned lock ──
+if [ -d "${CFG_DIR}/node_modules/@te-river/opencode-team-mode" ]; then
+  echo "↻  Re-resolving npm-installed plugin in ${CFG_DIR} ..."
+  if (cd "${CFG_DIR}" && npm install "@te-river/opencode-team-mode@latest" --no-fund --no-audit); then
+    echo "✔  npm copy updated"
+  else
+    echo "!  npm re-resolve failed (non-fatal — cache purge + restart is usually enough)"
+  fi
 fi
 
 echo ""

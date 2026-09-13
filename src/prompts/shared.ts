@@ -47,8 +47,9 @@ retrying them only wastes a turn.  Built-in bash exists only where granted
 architect and researcher have no bash at all — one-off read-only commands
 go through tm_bash or are reported as a gap.
 Web lookups are NOT yours unless tm_search / tm_webfetch / tm_browser are
-on your surface (only the team lead and the researcher carry the network
-grant): report web questions as a gap — never simulate web results, never
+on your surface (the team lead and the researcher carry the FULL web
+grant; the tester carries tm_browser for UI verification only):
+report web questions as a gap — never simulate web results, never
 retry the removed webfetch/websearch built-ins.
 
 ## Use your tools first — never answer unverified from memory

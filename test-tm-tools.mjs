@@ -817,6 +817,13 @@ try {
       }
       if (url.includes("bing.com/big")) return htmlRes("w".repeat(200000))
       if (url.includes("baidu.com")) return htmlRes("<html><head></head><body></body></html>")
+      if (url.includes("moegirl.org.cn/nobody")) {
+        return {
+          status: 200,
+          headers: { get: (n) => (String(n).toLowerCase() === "content-type" ? "text/plain" : null) },
+          text: async () => "x".repeat(2_500_000) + "TAIL-MARKER",
+        }
+      }
       return htmlRes("<h1>Page</h1>content-here")
     }
     try {
@@ -842,6 +849,13 @@ try {
       assert.ok(big.output.includes("已卸载") && big.output.includes("ref: tm://runs/"), "oversized page offloads to a handle")
       const stepId = /steps\/([^/]+)\/result/.exec(big.output)[1]
       assert.ok(runtime.store.readStepFile(stepId) !== null, "offloaded page retrievable from the shared run store")
+      // text()-only fallback response (no body reader) still honors the cap
+      const nobody = await wf.execute({ url: "https://mobile.moegirl.org.cn/nobody" }, ctx)
+      assert.ok(nobody.output.includes("已卸载"), "no-body response still governed")
+      const nbStep = /steps\/([^/]+)\/result/.exec(refOf(nobody.output))[1]
+      const nbFile = runtime.store.readStepFile(nbStep)
+      assert.ok(nbFile !== null && nbFile.content.includes("已截断"), "text()-only response truncated at the byte cap")
+      assert.ok(!nbFile.content.includes("TAIL-MARKER"), "truncation actually dropped the over-cap tail")
     } finally {
       globalThis.fetch = realFetch
     }
@@ -867,8 +881,8 @@ try {
     }
     assert.deepEqual(
       tm.SEARCH_ENGINE_NAMES.sort(),
-      ["baidu", "bilibili", "bing", "bing-int", "github", "npm", "so", "sogou"],
-      "engine roster = 8 CN-reachable sources",
+      ["baidu", "bilibili", "bing", "bing-int", "github", "moegirl", "npm", "so", "sogou"],
+      "engine roster = 9 CN-reachable sources",
     )
 
     // HTML SERP extraction through the registered tool (bing b_algo shape)
@@ -907,11 +921,21 @@ try {
       total_count: 1,
       items: [{ full_name: "owner/repo", stargazers_count: 4321, description: "A repo", html_url: "https://github.com/owner/repo" }],
     })
+    const mwJson = JSON.stringify({
+      query: {
+        searchinfo: { totalhits: 42 },
+        search: [
+          { title: "初音未来", snippet: '虚拟歌手 <span class="searchmatch">Hatsune</span> Miku' },
+          { title: "VOCALOID", snippet: "语音合成引擎" },
+        ],
+      },
+    })
     globalThis.fetch = async (input) => {
       const url = String(input)
       if (url.includes("bing.com/search")) return res200(bingSerp)
       if (url.includes("registry.npmjs.org/-/v1/search")) return res200(npmJson, "application/json")
       if (url.includes("api.github.com/search")) return res200(ghJson, "application/json")
+      if (url.includes("mobile.moegirl.org.cn/api.php")) return res200(mwJson, "application/json")
       if (url.includes("sogou.com")) return res200("<html><body></body></html>")
       return res200("<html></html>")
     }
@@ -932,10 +956,15 @@ try {
       assert.ok(gh.output.includes("owner/repo ★4321 — A repo"), "github JSON → owner/repo ★stars — desc")
       assert.ok(gh.output.includes("https://github.com/owner/repo"), "github hit links to the repo page")
 
+      const mw = await reg.execute({ query: "初音", engine: "moegirl" }, ctx)
+      assert.ok(mw.output.includes('[search] moegirl × "初音" → 42 条词条'), "moegirl MediaWiki API → header with totalhits")
+      assert.ok(mw.output.includes("1. 初音未来 — 虚拟歌手 Hatsune Miku"), "moegirl hit: title + tag-stripped snippet")
+      assert.ok(mw.output.includes(`https://mobile.moegirl.org.cn/${encodeURIComponent("初音未来")}`), "moegirl hit links to the article URL")
+
       const unknown = await reg.execute({ query: "x", engine: "yahoo" }, ctx)
-      assert.ok(unknown.output.includes("未知引擎") && unknown.output.includes("bing"), "unknown engine → roster error")
+      assert.ok(unknown.output.includes("phase=args") && unknown.output.includes("未知引擎") && unknown.output.includes("bing"), "unknown engine → args error with roster")
       const noq = await reg.execute({}, ctx)
-      assert.ok(noq.output.includes("缺少 query"), "missing query → permission error")
+      assert.ok(noq.output.includes("phase=args") && noq.output.includes("缺少 query"), "missing query → args error")
       const empty = await reg.execute({ query: "whatever", engine: "sogou" }, ctx)
       assert.ok(
         empty.output.includes("没有返回可提取的结果") && empty.output.includes("bing / so / baidu"),
@@ -949,7 +978,7 @@ try {
     const unit = tm.extractSearchHits(`<a href='https://example.com/a&amp;b'>A &amp; B research</a>`)
     assert.ok(unit.length === 1 && unit[0].url === "https://example.com/a&b" && unit[0].title === "A & B research", "extractor: single-quote href + entity decode")
   }
-  console.log("6m-s. tm_search: OK (8-engine table allowlisted, SERP → hit list, trackers/chrome excluded, npm/github structured, switch-engine hint)")
+  console.log("6m-s. tm_search: OK (9-engine table allowlisted, SERP → hit list, trackers/chrome excluded, npm/github/moegirl structured, switch-engine hint, args-phase validation)")
 
   // 6p. PARALLEL SAFETY — the host may Promise.all a batch of tool calls;
   // tm_search / tm_webfetch / tm_fetch executes must never cross-
@@ -1099,6 +1128,14 @@ try {
       assert.ok(forget.output.includes("已删除 2"), "forget deletes all title matches (build-config + notes slots)")
       const after = await mem.execute({ action: "search", query: "go test" }, ctx)
       assert.ok(after.output.includes("无匹配"), "forgotten memory is gone")
+      // slug-collision guard: two DIFFERENT titles sharing one slug — forget
+      // must delete only the one whose frontmatter title actually matches
+      await mem.execute({ action: "add", title: "API Rate Limits", content: "a fact", category: "project_build_configuration" }, ctx)
+      await mem.execute({ action: "add", title: "API rate-limits", content: "another fact", category: "project_notes" }, ctx)
+      const collide = await mem.execute({ action: "forget", title: "API Rate Limits" }, ctx)
+      assert.ok(collide.output.includes("已删除 1"), "slug collision: only the exact frontmatter-title file is deleted")
+      const collideSearch = await mem.execute({ action: "search", query: "another fact" }, ctx)
+      assert.ok(collideSearch.output.includes("API rate-limits"), "the same-slug sibling SURVIVES the forget")
       // foreign md files are ignored by parse (project dir untouched otherwise)
       assert.equal(fs.readdirSync(projectDir).length, 0, "project memory dir empty after forget")
       // fs-safe regression: fs.rmSync silently no-ops on non-ASCII paths on
@@ -1112,7 +1149,7 @@ try {
       fs.rmSync(path.join(os.tmpdir(), "opencode-team", "memories", "global"), { recursive: true, force: true })
     }
   }
-  console.log("6n. tm_memory: OK (add/update/search scoring/list/forget, scope filter, content cap, frontmatter round-trip)")
+  console.log("6n. tm_memory: OK (add/update/search scoring/list/forget, slug-collision guard, scope filter, content cap, frontmatter round-trip)")
 
   // 6o. tm_browser — governed interactive browser (Plan C: headful CDP pipe).
   {
@@ -1458,6 +1495,29 @@ try {
         assert.equal(rt.okCount, 1, "the retried step is an ok row")
         assert.equal(rt.errCount, 0, "no error row after a successful retry")
         assert.equal(n, 2, "bridge called exactly twice (once + one retry)")
+      }
+
+      // a retryable failure AT the deadline must not buy extra wall-clock
+      // time: no retry, the error row is recorded with the run still alive
+      {
+        let n = 0
+        const start = 1000
+        let clock = start
+        const bridge = {
+          call: async () => {
+            n++
+            clock = start + 10_000_000 // deadline blows past DURING the call
+            return { ok: false, error: { tool: "tm_read", phase: "client", message: "transient at the wire" } }
+          },
+        }
+        const dr = await runWith(
+          'const r = await tm.read({ path: "a" }); return r',
+          bridge, { maxCalls: 10, maxErrors: 3, timeoutMs: 5000 }, () => clock,
+        )
+        assert.equal(dr.status, "ok", "a lone error under the budget does not stop the run")
+        assert.equal(dr.retries, 0, "NO retry once past the deadline")
+        assert.equal(n, 1, "bridge called exactly once (retry suppressed)")
+        assert.equal(dr.errCount, 1, "the error step is recorded")
       }
     }
     console.log("9e. five statuses: OK (ok, stopped-call-budget, stopped-error-budget, timeout, engine-error) + retry-once")

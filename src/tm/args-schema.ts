@@ -204,7 +204,7 @@ export async function buildSearchArgsSchema(): Promise<Record<string, unknown>> 
     engine: zz
       .string()
       .describe(
-        "bing (default) | bing-int (international results) | sogou | so (360) | baidu | bilibili | npm (registry search, structured) | github (repo search API, structured).",
+        "bing (default) | bing-int (international results) | sogou | so (360) | baidu | bilibili | moegirl (wiki search API, structured) | npm (registry search, structured) | github (repo search API, structured).",
       )
       .optional(),
   }

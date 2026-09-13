@@ -347,9 +347,15 @@ export function buildTmMemoryTool(deps: {
         if (!title) return tmError(tool, "args", "缺少 title 参数")
         const stem = titleSlug(title)
         const scope = args.scope ? normalizeScope(args.scope) : undefined
-        const files = listMemoryFiles(globalRoot, storeBase, directory, scope).filter((f) =>
-          path.basename(f, ".md") === stem,
-        )
+        const files = listMemoryFiles(globalRoot, storeBase, directory, scope).filter((f) => {
+          if (path.basename(f, ".md") !== stem) return false
+          // slugs collide ("API Rate Limits" / "API rate-limits") — when the
+          // file carries a parsable frontmatter title, it must match the
+          // request before deletion; unparsable (hand-edited) files fall
+          // back to slug-only matching
+          const m = parseMemoryMarkdown(fs.readFileSync(f, "utf8"), f)
+          return m === null || m.title.trim().toLowerCase() === title.toLowerCase()
+        })
         if (!files.length) return tmError(tool, "args", `没有找到标题为 "${shorten(title, 80)}" 的记忆（可用 tm_memory list 确认）`)
         for (const f of files) rmForceSafe(f)
         traj({ step_id: "memory", event: "forget", count: files.length, title: shorten(title, 80) })

@@ -182,14 +182,40 @@ function csvPreview(content: string): string | null {
   return shown.join("\n")
 }
 
-const PATH_LINE_REF =
-  /(?:[A-Za-z0-9_.\-]+[\\/])*[A-Za-z0-9_.\-]+\.[A-Za-z0-9]{1,8}:\d{1,6}/g
+/** Boundaries for the ref scan below — every knob exists to keep the scan
+ *  LINEAR.  The naive `content.matchAll(PATH_LINE_REF global)` is O(n²) on
+ *  long word-character runs (minified JS / huge single-line pages): the
+ *  engine retries the `(?:X+[\\/])*` group at every position and backtracks
+ *  it char-by-char.  Measured: 100K chars ≈ 23 s, 200K ≈ 127 s, 2.5 MB =
+ *  effectively a hang (caught by the §6m no-body regression test). */
+const REF_SCAN_MAX_CHARS = 4_000_000 // never scan more than ~4M chars
+const REF_MAX_PATH_CHARS = 240 // longest path prefix worth reporting
+const REF_MAX_COLON_PROBES = 5000 // colons examined before giving up
 
 function collectPathLineRefs(content: string, max: number): string[] {
   const seen = new Set<string>()
-  for (const m of content.matchAll(PATH_LINE_REF)) {
-    seen.add(m[0])
-    if (seen.size >= max) break
+  const text = content.length > REF_SCAN_MAX_CHARS ? content.slice(0, REF_SCAN_MAX_CHARS) : content
+  // anchor on ':' (native indexOf = linear), then validate the
+  // `<path>.<ext>:<digits>` shape locally around each colon
+  const runShape = /^(?:[A-Za-z0-9_.\-]+[\\/])*[A-Za-z0-9_.\-]+\.[A-Za-z0-9]{1,8}$/
+  let probes = 0
+  let idx = text.indexOf(":")
+  while (idx !== -1 && seen.size < max && probes < REF_MAX_COLON_PROBES) {
+    probes++
+    // right of the colon: 1-6 digits (not followed by another digit)
+    const right = /^\d{1,6}(?!\d)/.exec(text.slice(idx + 1, idx + 8))
+    if (right) {
+      // left of the colon: run of path chars, must END as `<name>.<ext>`
+      let left = idx
+      const floor = Math.max(0, idx - REF_MAX_PATH_CHARS)
+      while (left > floor && /[A-Za-z0-9_.\-/\\]/.test(text[left - 1])) left--
+      const run = text.slice(left, idx)
+      const m = runShape.exec(run)
+      if (m) {
+        seen.add(`${run}:${right[0]}`)
+      }
+    }
+    idx = text.indexOf(":", idx + 1)
   }
   return [...seen]
 }

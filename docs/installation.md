@@ -52,9 +52,38 @@ Report which checks passed. If verification fails, see Troubleshooting.
 
 ### Updating
 
-OpenCode **caches plugins by spec string** (`~/.cache/opencode/packages/<name>@latest`) and does not re-resolve `@latest` when a new version publishes (upstream limitation). To update:
+> The installer is idempotent: **re-running it IS the update.** It re-patches
+> the config (no-op when present), purges the stale plugin cache, and
+> re-resolves any npm-installed copy. This exists because OpenCode caches
+> plugins by spec string (`~/.cache/opencode/packages/<name>@latest`) and
+> does not re-resolve `@latest` when a new version publishes (upstream
+> limitation).
 
-1. Delete the cached package directory: `rm -rf ~/.cache/opencode/packages/@te_river+opencode-team-mode@latest` (Windows PowerShell: `Remove-Item -Recurse -Force "$env:LOCALAPPDATA\opencode\cache\packages\@te_river+opencode-team-mode@latest"` — also check `~/.cache/opencode/packages/` under the user profile).
+**Path 1 — re-run the one-line installer:**
+
+macOS / Linux (bash):
+
+```bash
+curl -fsSL https://ghproxy.net/https://raw.githubusercontent.com/Te-River/Opencode-TeamMode/main/scripts/install.sh | bash
+```
+
+Windows (PowerShell):
+
+```powershell
+irm https://ghproxy.net/https://raw.githubusercontent.com/Te-River/Opencode-TeamMode/main/scripts/install.ps1 | iex
+```
+
+**Path 2 — let an agent do it.** Paste this to any coding agent:
+
+```text
+Update the OpenCode plugin @te-river/opencode-team-mode following
+https://raw.githubusercontent.com/Te-River/Opencode-TeamMode/main/docs/installation.md
+(the "Updating" section), then verify the install using the checks in that guide.
+```
+
+**Path 3 — manual** (what the scripts automate):
+
+1. Delete the cached package directory: `rm -rf ~/.cache/opencode/packages/@te_river+opencode-team-mode@latest` (Windows PowerShell: `Remove-Item -Recurse -Force "$env:LOCALAPPDATA\opencode\cache\packages\@te_river+opencode-team-mode@latest"` — also check `~/.cache/opencode/packages/` under the user profile; remove any directory matching `*opencode-team-mode*`).
 2. If the plugin was also npm-installed into `~/.config/opencode` (check its `package.json` / `package-lock.json`), run `npm install @te-river/opencode-team-mode@latest` there.
 3. Restart OpenCode and re-verify.
 
@@ -122,9 +151,36 @@ OpenCode **caches plugins by spec string** (`~/.cache/opencode/packages/<name>@l
 
 ### 更新
 
-OpenCode **按 spec 字符串缓存插件**（`~/.cache/opencode/packages/<name>@latest`），新版本发布后不会重新解析 `@latest`（上游已知问题）。更新方法：
+> 安装器是幂等的：**重跑安装器就是更新。** 它会补齐配置（已存在则跳过）、
+> 清掉过期插件缓存、并重解析 npm 安装的副本。之所以需要这一步：OpenCode
+> 按 spec 字符串缓存插件（`~/.cache/opencode/packages/<name>@latest`），
+> 新版本发布后不会重新解析 `@latest`（上游已知问题）。
 
-1. 删除缓存的包目录：`rm -rf ~/.cache/opencode/packages/@te_river+opencode-team-mode@latest`（Windows PowerShell：`Remove-Item -Recurse -Force "$env:LOCALAPPDATA\opencode\cache\packages\@te_river+opencode-team-mode@latest"`——用户目录下的 `~/.cache/opencode/packages/` 也要检查）。
+**路径一 —— 重跑一行安装器：**
+
+macOS / Linux（bash）：
+
+```bash
+curl -fsSL https://ghproxy.net/https://raw.githubusercontent.com/Te-River/Opencode-TeamMode/main/scripts/install.sh | bash
+```
+
+Windows（PowerShell）：
+
+```powershell
+irm https://ghproxy.net/https://raw.githubusercontent.com/Te-River/Opencode-TeamMode/main/scripts/install.ps1 | iex
+```
+
+**路径二 —— 让 agent 更新。** 把这段话粘给任意编码 agent：
+
+```text
+更新 OpenCode 插件 @te-river/opencode-team-mode：按照
+https://raw.githubusercontent.com/Te-River/Opencode-TeamMode/main/docs/installation.md
+的"更新"章节执行，并按该指南里的检查项验证。
+```
+
+**路径三 —— 手动**（脚本自动化的内容）：
+
+1. 删除缓存的包目录：`rm -rf ~/.cache/opencode/packages/@te_river+opencode-team-mode@latest`（Windows PowerShell：`Remove-Item -Recurse -Force "$env:LOCALAPPDATA\opencode\cache\packages\@te_river+opencode-team-mode@latest"`——用户目录下的 `~/.cache/opencode/packages/` 也要检查；删除所有匹配 `*opencode-team-mode*` 的目录）。
 2. 如果插件还被 npm 装进了 `~/.config/opencode`（检查它的 `package.json` / `package-lock.json`），在那里执行 `npm install @te-river/opencode-team-mode@latest`。
 3. 重启 OpenCode 并重新验证。
 

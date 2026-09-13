@@ -9,8 +9,10 @@
  *
  * It generates the run identity (run id + process-random HMAC key), resolves
  * the env config, sweeps expired run payloads (startup-only TTL reclamation)
- * and assembles the four statically-registered tools (T0.4-verified shape:
- * `{ tool: { tm_read: { description, args, execute(args, ctx) } } }`).
+ * and assembles the governed tool surface (tm_read / tm_grep / tm_bash /
+ * tm_fetch + tm_memory / tm_search / tm_webfetch / tm_browser / tm_ptc_run;
+ * T0.4-verified shape: `{ tool: { tm_read: { description, args,
+ * execute(args, ctx) } } }`).
  */
 
 import * as crypto from "node:crypto"
@@ -261,6 +263,7 @@ export {
   SEARCH_ENGINE_NAMES,
   renderNpmResults,
   renderGithubResults,
+  renderWikiResults,
 } from "./search.js"
 
 // ---------- tm_ptc_run ----------
