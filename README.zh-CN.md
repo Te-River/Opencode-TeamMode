@@ -82,6 +82,12 @@ irm https://ghproxy.net/https://raw.githubusercontent.com/Te-River/Opencode-Team
 
 OpenCode 启动时会自动安装插件。
 
+> ⚠️ **插件更新是手动的。** OpenCode 按 spec 字符串缓存插件
+> （`~/.cache/opencode/packages/<name>@latest`），发布新版本后**不会**自动
+> 重新解析 `@latest`（上游已知限制）。更新方法：删除对应缓存目录后重启，
+> 或在配置中钉一个明确版本。如果你还把插件 npm 安装进了
+> `~/.config/opencode`，注意那里的 package-lock 也会钉住旧版。
+
 > **提示：** 修改 `opencode.json` 后，**重启 OpenCode Desktop** 使配置生效。
 
 ---

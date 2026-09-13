@@ -82,6 +82,13 @@ Add the plugin to your `opencode.jsonc`:
 
 OpenCode will automatically install the plugin on startup.
 
+> ⚠️ **Plugin updates are manual.** OpenCode caches plugins by spec string
+> (`~/.cache/opencode/packages/<name>@latest`) and does NOT re-resolve
+> `@latest` when a new version publishes (known upstream limitation).
+> To update: delete the cached package dir and restart, or pin an
+> explicit version in your config. If you also npm-installed the plugin
+> into `~/.config/opencode`, remember its package-lock pins too.
+
 > **Tip:** After modifying `opencode.json`, **restart OpenCode Desktop** for changes to take effect.
 
 ---
