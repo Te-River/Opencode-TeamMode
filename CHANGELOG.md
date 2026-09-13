@@ -7,28 +7,45 @@ registry saw 1.5.0 as the install-script fix release).
 
 ## [Unreleased]
 
-### Fixed
-- **tm_bash works on the Desktop sidecar (P0)**: the shell bridge assumed
-  the host $ (Bun shell) — but the 1.18.30 desktop runs the plugin in a
-  worker on Electron's Node where neither input.$ nor Bun globals exist,
-  so every tm_bash / PTC tm.bash call died with 「宿主 shell 桥（$）不可用」
-  (caught in a real session transcript).  runShellCommand now falls back
-  to spawning the platform shell directly (PowerShell on win32 / bash
-  elsewhere) AFTER the $ shapes fail — P3/R6 governance still classifies
-  the command first, and a thrown shell error still rethrows (preserving
-  line extraction)
-- **README: plugin updates are manual**
-- **README: plugin updates are manual** — documented the true semantics
-  (OpenCode caches plugins by spec string and never re-resolves @latest;
-  upstream issues #25293 / #10546 / #21609) and the update recipe
-- **Global memories now actually global**: the tm_memory `global` scope
-  wrote into the CURRENT repo's .git store — per-project despite the
-  label.  Global memories now live at `~/.opencode-team/memories/global`
-  (TM_MEMORY_GLOBAL_DIR override, isolated from any repo) and follow the
-  user across projects; the `project` scope is unchanged (asserted in
-  test-tm-tools §6n)
+### Added
+- **tm_search — governed multi-engine web search (new tool)**: one call,
+  one query, clean results.  8 engines, all reachable from mainland China
+  without API keys: bing (cn.bing.com, default), bing-int (international
+  results via ensearch=1), sogou, so (360), baidu (flakiest — failures name
+  alternatives), bilibili, plus structured JSON from the npm registry search
+  (name@version + description) and the GitHub repo search API (stars +
+  description).  HTML SERPs are collapsed into numbered title+URL hit lists
+  (click-tracker and engine-chrome anchors excluded, entity decoding,
+  per-URL dedupe) — the agent never sees raw SERP noise.  Same governance
+  as tm_webfetch (allowlist, per-hop redirect re-check, threshold offload)
+  over the shared pipelines instance.  Granted to the two network roles
+  (lead + researcher) like the other web channels
+- **Search-result extraction in tm_webfetch too**: fetching a search-engine
+  result page auto-extracts the hit list instead of dumping stripped page
+  chrome (`extractSearchHits` / `renderSearchHits`, exported for reuse)
+- **Parallel-safety guarantee (pinned by tests)**: the step counter advances
+  in one synchronous expression on the single-threaded event loop, so the
+  host may Promise.all batches of tm_search / tm_webfetch / tm_fetch calls —
+  distinct step ids, per-step payload files, zero cross-contamination
+  (test-tm-tools §6p: 4 concurrent searches + 2 concurrent offloads + 6
+  concurrent fetch page-ins)
+- **docs/installation.md** — agent-consumable install/update/uninstall guide
+  (bilingual); the READMEs' "let your agent install it" path points here
 
 ### Changed
+- **Search seed allowlist grows to nine CN-reachable hosts**:
+  + `www.bing.com` (international), `www.sogou.com`, `www.so.com`,
+  `api.github.com` (alongside the existing moegirl / bilibili / cn.bing /
+  baidu / npm registry); tm_webfetch + tm_search + tm_browser share it
+- README.md + README.zh-CN.md rewritten for humans: TL;DR lazy path, the
+  six-agent roster up top, three-track install (let-your-agent / one-line
+  script / manual), a search chapter, FAQ, uninstall, and a punchier tone
+  throughout — technical chapters preserved (bilingual parity kept)
+- Researcher/lead prompts: tm_search is the open-ended-lookup front, the
+  seed list documents all nine hosts + the npm/github search endpoints;
+  shared web-boundary rule and tool ladder mention tm_search
+- tm_bash readonly allowlist gains the PowerShell pipeline formatters
+  (Select-Object / Where-Object / Sort-Object / Group-Object)
 - **tm_ptc_run adoption**: the tool description now leads with the trigger
   (use INSTEAD of chaining ≥3 tm_read/tm_grep/tm_bash calls) and ships a
   one-line example program; the aggregation summary carries an educator
@@ -690,3 +707,23 @@ keep the lead coordinating instead of drifting into hand execution.
 - Initial plugin: 6 agents (team / architect / implementer / reviewer /
   tester / researcher) + 6 slash commands, v2 plugin API migration,
   Chinese README, scoped package rename.
+
+### Fixed
+- **tm_bash works on the Desktop sidecar (P0)**: the shell bridge assumed
+  the host $ (Bun shell) — but the 1.18.30 desktop runs the plugin in a
+  worker on Electron's Node where neither input.$ nor Bun globals exist,
+  so every tm_bash / PTC tm.bash call died with 「宿主 shell 桥（$）不可用」
+  (caught in a real session transcript).  runShellCommand now falls back
+  to spawning the platform shell directly (PowerShell on win32 / bash
+  elsewhere) AFTER the $ shapes fail — P3/R6 governance still classifies
+  the command first, and a thrown shell error still rethrows (preserving
+  line extraction)
+- **README: plugin updates are manual** — documented the true semantics
+  (OpenCode caches plugins by spec string and never re-resolves @latest;
+  upstream issues #25293 / #10546 / #21609) and the update recipe
+- **Global memories now actually global**: the tm_memory `global` scope
+  wrote into the CURRENT repo's .git store — per-project despite the
+  label.  Global memories now live at `~/.opencode-team/memories/global`
+  (TM_MEMORY_GLOBAL_DIR override, isolated from any repo) and follow the
+  user across projects; the `project` scope is unchanged (asserted in
+  test-tm-tools §6n)

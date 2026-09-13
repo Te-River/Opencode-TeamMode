@@ -178,8 +178,35 @@ export async function buildWebfetchArgsSchema(): Promise<Record<string, unknown>
     url: zz
       .string()
       .describe(
-        "Absolute https URL on an allowlisted host (seeded: mobile.moegirl.org.cn, search.bilibili.com, cn.bing.com, www.baidu.com). URL-encode the query (CJK terms too).",
+        "Absolute https URL on an allowlisted host (seeded: mobile.moegirl.org.cn, search.bilibili.com, cn.bing.com, www.baidu.com, www.sogou.com, www.so.com, registry.npmjs.org, api.github.com). URL-encode the query (CJK terms too).",
       ),
+  }
+}
+
+/**
+ * tm_search args — same ZodRawShape treatment (BUG#3 class); descriptor
+ * fallback when zod is absent.  tm/index awaits this and passes the result
+ * into buildTmSearchTool as `deps.args`.
+ */
+export async function buildSearchArgsSchema(): Promise<Record<string, unknown>> {
+  const z = await loadZod()
+  if (!z) {
+    return {
+      query: { descriptor: "query: string (required, raw text — CJK fine, encoded here)" },
+      engine: { descriptor: "engine: bing|bing-int|sogou|so|baidu|bilibili|npm|github (optional, default bing)" },
+    }
+  }
+  const zz = z as unknown as {
+    string: () => { describe: (d: string) => { optional: () => unknown } }
+  }
+  return {
+    query: zz.string().describe("Raw search query — pass text as-is; the tool URL-encodes it (CJK included)."),
+    engine: zz
+      .string()
+      .describe(
+        "bing (default) | bing-int (international results) | sogou | so (360) | baidu | bilibili | npm (registry search, structured) | github (repo search API, structured).",
+      )
+      .optional(),
   }
 }
 

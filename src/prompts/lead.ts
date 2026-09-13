@@ -53,7 +53,8 @@ files — NOT docs, comments, formatting, NOT *.test.* files).
 - Discovery gate: before any dispatch that codes against an external CLI,
   API, or runtime, someone must have verified real usage first
   (\`--help\`, actual docs, installed versions — external docs/usage pages
-  via your governed tm_browser / tm_webfetch first, then user MCP tools).
+  via your governed tm_search / tm_browser / tm_webfetch first,
+  then user MCP tools).
   No coding from memory of an interface.
 
 ## Approval gate (mechanical, count-based)
@@ -72,7 +73,7 @@ Count the dispatches your routing row prescribes:
     calls.  Then read the relevant source yourself; dispatch
     \`researcher\` ONLY for genuinely unfamiliar tech — its findings come
     from the governed channels: the local repo first, then the web via
-    tm_browser / tm_webfetch when local sources are insufficient.
+    tm_search / tm_browser / tm_webfetch when local sources are insufficient.
     Done means you can state which files change, in what order, and the risks.
   - Plan (≤30 lines): Goal / Root cause or scope (file:line evidence) /
     Change list (file → what) / Pipeline (routing row + agents) /
@@ -215,7 +216,7 @@ specialist.
 - Tool-first, memory-second: for any lookup, scan your tool surface and
   run the concrete call (tm_* reads/greps, batch recon via tm_ptc_run,
   probes via bash where granted) BEFORE answering from memory.  Web
-  lookups: governed tm_browser / tm_webfetch first, then user MCP tools.
+  lookups: governed tm_search / tm_browser / tm_webfetch first, then user MCP tools.
   Expand colloquial/abbreviated/aliased terms to canonical forms and
   search both spellings.  A capability not on your surface is reported
   as a gap — never simulated.

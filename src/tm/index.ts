@@ -29,9 +29,10 @@ import { hmacToken, newRunId } from "./refs.js"
 import { RunStore } from "./store.js"
 import { buildTmTools } from "./tools.js"
 import { buildPipelines } from "./pipelines.js"
-import { buildPtcArgsSchema, buildWebfetchArgsSchema, buildMemoryArgsSchema, buildBrowserArgsSchema } from "./args-schema.js"
+import { buildPtcArgsSchema, buildWebfetchArgsSchema, buildMemoryArgsSchema, buildBrowserArgsSchema, buildSearchArgsSchema } from "./args-schema.js"
 import { buildPtcRunTool } from "./ptc/index.js"
 import { buildTmWebfetchTool } from "./webfetch.js"
+import { buildTmSearchTool, SEARCH_ENGINES, SEARCH_ENGINE_NAMES } from "./search.js"
 export { rmForceSafe } from "../fs-safe.js"
 export {
   buildTmMemoryTool,
@@ -145,6 +146,11 @@ export async function createTmTools(
   // deny for the other four (overrides the tm_* wildcard).
   const webfetchArgs = await buildWebfetchArgsSchema()
   tools.tm_webfetch = buildTmWebfetchTool({ pipelines, cfg, args: webfetchArgs })
+  // tm_search — the governed search FRONT: multi-engine (bing/bing-int/
+  // sogou/so/baidu/bilibili + npm/github JSON), extracted title+URL hit
+  // lists, same pipeline + allowlist as tm_webfetch.  Network-role tool
+  // like the other two web channels (agents.ts gates who sees it).
+  tools.tm_search = buildTmSearchTool({ pipelines, cfg, args: await buildSearchArgsSchema() })
   // tm_memory — project/global memory mirror (Markdown + frontmatter under
   // the same git-aware store base).  Available to ALL agents: memory is not
   // a network channel, it is shared project knowledge.
@@ -234,7 +240,7 @@ export {
 export { buildTmTools } from "./tools.js"
 export { buildPipelines } from "./pipelines.js"
 export type { TmDeps, TmPipelines } from "./pipelines.js"
-export { buildPtcArgsSchema, buildWebfetchArgsSchema } from "./args-schema.js"
+export { buildPtcArgsSchema, buildWebfetchArgsSchema, buildSearchArgsSchema } from "./args-schema.js"
 export { toToolResult, HANDLE_INVALID_MESSAGE, tmError } from "./result.js"
 export type { TmPhase } from "./result.js"
 export { runShellCommand, cleanShellError } from "./shell-bridge.js"
@@ -242,10 +248,20 @@ export {
   buildTmWebfetchTool,
   checkWebUrl,
   extractWebResponse,
+  extractSearchHits,
+  renderSearchHits,
   fetchWebText,
   hostAllowed,
   htmlToText,
 } from "./webfetch.js"
+export type { SearchHit } from "./webfetch.js"
+export {
+  buildTmSearchTool,
+  SEARCH_ENGINES,
+  SEARCH_ENGINE_NAMES,
+  renderNpmResults,
+  renderGithubResults,
+} from "./search.js"
 
 // ---------- tm_ptc_run ----------
 // Built here with its own pipeline instance (governance reused verbatim;

@@ -190,19 +190,33 @@ by the team — flag prominently if that is the case.
 ## Web lookups (two channels)
 You are one of the two network roles (the other is the team lead).
 1. HIGH priority — TeamMode governed tools:
+   - tm_search (open-ended lookups): ONE call — pass the raw query, pick an
+     engine, get an extracted title+URL hit list (not the raw page).
+     Engines: bing (default) · bing-int (international results) · sogou ·
+     so (360) · baidu · bilibili · npm (packages, structured) · github
+     (repos, structured).  On an empty result switch engines — the error
+     names the alternatives.
+   - tm_webfetch (known URL): one governed GET of an allowlisted page;
+     search-engine result pages it fetches are auto-extracted to hit lists.
    - tm_browser (interactive): open → navigate → read (page text) →
      screenshot → close.  A visible browser window opens on desktops;
      display-less hosts run headless automatically.  Isolated temp
      profile; per-request domain allowlist enforced at the network layer.
-   - tm_webfetch (single fetch): one governed GET of an allowlisted page.
 2. FALLBACK — user-configured MCP/plugin tools (browser automation, web
-   search, page fetchers) for what tm_browser / tm_webfetch cannot do.
+   search, page fetchers) for what tm_search / tm_browser / tm_webfetch
+   cannot do.
    Seeded allowlist hosts and shapes (extend via
    TM_WEBFETCH_ALLOWED_DOMAINS):
    - wiki term:  https://mobile.moegirl.org.cn/TERM
    - bilibili:   https://search.bilibili.com/all?keyword=QUERY
-   - bing:       https://cn.bing.com/search?q=QUERY
+   - bing:       https://cn.bing.com/search?q=QUERY (append &ensearch=1
+                 for international results)
    - baidu:      https://www.baidu.com/s?wd=QUERY
+   - sogou:      https://www.sogou.com/web?query=QUERY
+   - 360:        https://www.so.com/s?q=QUERY
+   - npm pkg:    https://registry.npmjs.org/<pkg>/latest
+   - npm search: https://registry.npmjs.org/-/v1/search?text=QUERY
+   - gh repos:   https://api.github.com/search/repositories?q=QUERY
    URL-encode the query (CJK terms too).  Expand colloquial, abbreviated,
    or aliased terms to canonical forms and fetch BOTH spellings before
    concluding "not found".

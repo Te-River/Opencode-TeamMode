@@ -74,6 +74,13 @@ interface GovernOptions {
 
 export function buildPipelines(deps: TmDeps) {
   const { cfg, store } = deps
+  // CONCURRENCY INVARIANT: the step counter advances in a single
+  // synchronous expression on the single-threaded event loop, so parallel
+  // tool calls (the host may Promise.all a batch of tm_search / tm_webfetch
+  // / tm_fetch executes) always receive DISTINCT step ids — and since every
+  // store write is keyed by step id (per-step payload files, append-only
+  // trajectory), parallel batches can never cross-contaminate.  Never make
+  // this async or defer the increment behind an await.
   let stepCounter = 0
   const nextStepId = () => `${deps.stepPrefix ?? ""}s${String(++stepCounter).padStart(4, "0")}`
 

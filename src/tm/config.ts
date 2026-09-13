@@ -31,18 +31,25 @@ export const DEFAULT_BASH_READONLY_ALLOWED: readonly string[] = [
 ]
 
 /**
- * Seeded tm_webfetch domain allowlist — the lookup hosts the design names
- * (wiki term / bilibili search / bing / baidu) plus the npm registry (JSON
- * package-metadata queries).  Subdomains of an entry are included;
+ * Seeded tm_webfetch / tm_search domain allowlist — every host the search
+ * engines and data sources ride (all reachable from mainland China without
+ * API keys): wiki term / bilibili search / bing CN + international / baidu /
+ * sogou / 360, the npm registry (JSON search + package metadata) and the
+ * GitHub search API (JSON).  Subdomains of an entry are included;
  * TM_WEBFETCH_ALLOWED_DOMAINS overrides the list (comma/semicolon
- * separated; a lone "*" opens every host).
+ * separated; a lone "*" opens every host — keep the engine hosts or
+ * tm_search's engines lose their targets).
  */
 export const DEFAULT_WEBFETCH_DOMAINS: readonly string[] = [
   "mobile.moegirl.org.cn",
   "search.bilibili.com",
   "cn.bing.com",
+  "www.bing.com",
   "www.baidu.com",
+  "www.sogou.com",
+  "www.so.com",
   "registry.npmjs.org",
+  "api.github.com",
 ]
 
 export interface TmConfig {

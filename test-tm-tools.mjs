@@ -84,11 +84,22 @@ try {
     assert.equal(custom.offloadThreshold, 500, "threshold override")
     assert.equal(custom.blackboardDir, "D:/data/.bb", "absolute blackboard dir override")
     assert.deepEqual(custom.bashReadonlyAllowed, ["ls", "python", "rg"], "allowlist override")
-    // webfetch allowlist: seeded four hosts, env override, explicit empty
+    // webfetch allowlist: seeded hosts (engines + data sources), env
+    // override, explicit empty
     assert.deepEqual(
       cfg.webfetchAllowedDomains,
-      ["mobile.moegirl.org.cn", "search.bilibili.com", "cn.bing.com", "www.baidu.com", "registry.npmjs.org"],
-      "default webfetch allowlist = the four lookup hosts",
+      [
+        "mobile.moegirl.org.cn",
+        "search.bilibili.com",
+        "cn.bing.com",
+        "www.bing.com",
+        "www.baidu.com",
+        "www.sogou.com",
+        "www.so.com",
+        "registry.npmjs.org",
+        "api.github.com",
+      ],
+      "default webfetch allowlist = the CN-reachable lookup hosts",
     )
     assert.deepEqual(
       tm.resolveTmConfig({ TM_WEBFETCH_ALLOWED_DOMAINS: "docs.example.com, *" }).webfetchAllowedDomains,
@@ -744,8 +755,19 @@ try {
   {
     const A = tm.DEFAULT_WEBFETCH_DOMAINS
     assert.deepEqual(
-      A, ["mobile.moegirl.org.cn", "search.bilibili.com", "cn.bing.com", "www.baidu.com", "registry.npmjs.org"],
-      "seeded allowlist = the four lookup hosts",
+      A,
+      [
+        "mobile.moegirl.org.cn",
+        "search.bilibili.com",
+        "cn.bing.com",
+        "www.bing.com",
+        "www.baidu.com",
+        "www.sogou.com",
+        "www.so.com",
+        "registry.npmjs.org",
+        "api.github.com",
+      ],
+      "seeded allowlist = the CN-reachable lookup hosts (engines + npm + github api)",
     )
     assert.equal(tm.hostAllowed("cn.bing.com", A), true, "exact host allowed")
     assert.equal(tm.hostAllowed("a.mobile.moegirl.org.cn", A), true, "subdomain of a listed host allowed")
@@ -824,7 +846,192 @@ try {
       globalThis.fetch = realFetch
     }
   }
-  console.log("6m. tm_webfetch: OK (allowlist matrix, scheme/env-file red lines, HTML strip, redirect re-check, threshold offload, structured errors)")
+  console.log("6m. tm_webfetch: OK (allowlist matrix, scheme/env-file red lines, HTML strip, redirect re-check, threshold offload, structured errors, SERP auto-extraction)")
+
+  // 6m-s. tm_search — the governed search FRONT: engine table (all hosts on
+  // the seed allowlist, CN-reachable, no API keys), HTML SERP → extracted
+  // title+URL hit list, npm/github JSON → structured render, engine arg
+  // validation, empty-result → alternative engines, registration.
+  {
+    const reg = runtime.tools.tm_search
+    assert.ok(reg && typeof reg.execute === "function", "tm_search registered on the runtime tool surface")
+
+    // engine table sanity: every buildUrl host is allowlisted by the seeds
+    const seeds = tm.DEFAULT_WEBFETCH_DOMAINS
+    for (const key of tm.SEARCH_ENGINE_NAMES) {
+      const eng = tm.SEARCH_ENGINES[key]
+      assert.ok(eng && typeof eng.buildUrl === "function", `engine ${key} defined`)
+      const u = new URL(eng.buildUrl(encodeURIComponent("测试 q")))
+      assert.equal(tm.hostAllowed(u.hostname, seeds), true, `engine ${key} host ${u.hostname} allowlisted`)
+      assert.ok(tm.checkWebUrl(u.toString(), seeds).ok, `engine ${key} url passes checkWebUrl`)
+    }
+    assert.deepEqual(
+      tm.SEARCH_ENGINE_NAMES.sort(),
+      ["baidu", "bilibili", "bing", "bing-int", "github", "npm", "so", "sogou"],
+      "engine roster = 8 CN-reachable sources",
+    )
+
+    // HTML SERP extraction through the registered tool (bing b_algo shape)
+    const realFetch = globalThis.fetch
+    const res200 = (body, ctype = "text/html; charset=utf-8") => {
+      const enc = new TextEncoder().encode(body)
+      return {
+        status: 200,
+        headers: { get: (n) => (String(n).toLowerCase() === "content-type" ? ctype : null) },
+        body: {
+          getReader: () => {
+            let done = false
+            return {
+              read: async () => (done ? { done: true, value: undefined } : ((done = true), { done: false, value: enc })),
+              cancel: async () => {},
+            }
+          },
+        },
+      }
+    }
+    const bingSerp = `<html><body>
+      <li class="b_algo"><h2><a href="https://example.org/great-result">Great result about 测试</a></h2><p>snippet one</p></li>
+      <li class="b_algo"><h2><a href="https://cn.bing.com/ck/a?u=aHR0">tracked ad</a></h2><p>ad</p></li>
+      <li class="b_algo"><h2><a href="https://example.net/second">Second hit</a></h2><p>snippet two</p></li>
+      <a href="https://cn.bing.com/search?q=x&amp;first=2">下一页</a>
+      <a href="/images">Images</a>
+    </body></html>`
+    const npmJson = JSON.stringify({
+      total: 2,
+      objects: [
+        { package: { name: "left-pad", version: "1.3.0", description: "String left pad" } },
+        { package: { name: "right-pad", version: "2.1.0", description: "String right pad" } },
+      ],
+    })
+    const ghJson = JSON.stringify({
+      total_count: 1,
+      items: [{ full_name: "owner/repo", stargazers_count: 4321, description: "A repo", html_url: "https://github.com/owner/repo" }],
+    })
+    globalThis.fetch = async (input) => {
+      const url = String(input)
+      if (url.includes("bing.com/search")) return res200(bingSerp)
+      if (url.includes("registry.npmjs.org/-/v1/search")) return res200(npmJson, "application/json")
+      if (url.includes("api.github.com/search")) return res200(ghJson, "application/json")
+      if (url.includes("sogou.com")) return res200("<html><body></body></html>")
+      return res200("<html></html>")
+    }
+    try {
+      const bing = await reg.execute({ query: "测试 q" }, ctx)
+      assert.ok(bing.output.includes("[search] bing × \"测试 q\""), "search header carries engine + raw query")
+      assert.ok(bing.output.includes("Great result about 测试") && bing.output.includes("https://example.org/great-result"), "hit title+url extracted")
+      assert.ok(!bing.output.includes("cn.bing.com/ck"), "click-tracker anchor excluded")
+      assert.ok(!bing.output.includes("下一页") && !bing.output.includes("/images"), "engine chrome anchors excluded")
+      assert.ok(bing.output.includes("2. Second hit"), "hits are numbered")
+      assert.ok(!bing.output.includes("snippet one"), "raw SERP snippets NOT inlined (hit list, not page dump)")
+
+      const npm = await reg.execute({ query: "left pad", engine: "npm" }, ctx)
+      assert.ok(npm.output.includes("left-pad@1.3.0 — String left pad"), "npm JSON → name@version + description")
+      assert.ok(npm.output.includes("https://registry.npmjs.org/left-pad/latest"), "npm hit links to the registry metadata URL")
+
+      const gh = await reg.execute({ query: "repo", engine: "github" }, ctx)
+      assert.ok(gh.output.includes("owner/repo ★4321 — A repo"), "github JSON → owner/repo ★stars — desc")
+      assert.ok(gh.output.includes("https://github.com/owner/repo"), "github hit links to the repo page")
+
+      const unknown = await reg.execute({ query: "x", engine: "yahoo" }, ctx)
+      assert.ok(unknown.output.includes("未知引擎") && unknown.output.includes("bing"), "unknown engine → roster error")
+      const noq = await reg.execute({}, ctx)
+      assert.ok(noq.output.includes("缺少 query"), "missing query → permission error")
+      const empty = await reg.execute({ query: "whatever", engine: "sogou" }, ctx)
+      assert.ok(
+        empty.output.includes("没有返回可提取的结果") && empty.output.includes("bing / so / baidu"),
+        "thin SERP → switch-engine hint with alternatives",
+      )
+    } finally {
+      globalThis.fetch = realFetch
+    }
+
+    // unit-level: extractor handles single-quoted hrefs + entity titles
+    const unit = tm.extractSearchHits(`<a href='https://example.com/a&amp;b'>A &amp; B research</a>`)
+    assert.ok(unit.length === 1 && unit[0].url === "https://example.com/a&b" && unit[0].title === "A & B research", "extractor: single-quote href + entity decode")
+  }
+  console.log("6m-s. tm_search: OK (8-engine table allowlisted, SERP → hit list, trackers/chrome excluded, npm/github structured, switch-engine hint)")
+
+  // 6p. PARALLEL SAFETY — the host may Promise.all a batch of tool calls;
+  // tm_search / tm_webfetch / tm_fetch executes must never cross-
+  // contaminate.  Mechanism: the step counter advances synchronously
+  // (unique step ids even when executes interleave at await points) and
+  // every store write is keyed by step id.  Proven with 4 concurrent
+  // searches (each SERP tagged per engine → isolated hit lists) + 2
+  // concurrent offloading webfetches (distinct handles, isolated payloads)
+  // + concurrent tm_fetch page-ins of those handles.
+  {
+    const realFetch = globalThis.fetch
+    const bigTag = (tag) => `payload-${tag} ` + "x".repeat(12000) + ` end-${tag}`
+    const encRes = (body, ctype = "text/html; charset=utf-8") => {
+      const enc = new TextEncoder().encode(body)
+      return {
+        status: 200,
+        headers: { get: (n) => (String(n).toLowerCase() === "content-type" ? ctype : null) },
+        body: {
+          getReader: () => {
+            let done = false
+            return {
+              read: async () => (done ? { done: true, value: undefined } : ((done = true), { done: false, value: enc })),
+              cancel: async () => {},
+            }
+          },
+        },
+      }
+    }
+    globalThis.fetch = async (input) => {
+      const url = String(input)
+      const m = /tag-([a-z0-9-]+)/.exec(url)
+      const tag = m ? m[1] : "untagged"
+      if (url.includes("moegirl.org.cn")) return encRes(`<html><body>${bigTag(tag)}</body></html>`)
+      return encRes(
+        `<html><body><li><h2><a href="https://example.org/${tag}-r1">First hit for ${tag}</a></h2></li>` +
+          `<li><h2><a href="https://example.net/${tag}-r2">Second hit for ${tag}</a></h2></li></body></html>`,
+      )
+    }
+    try {
+      const engines = ["bing", "bing-int", "sogou", "so"]
+      const calls = [
+        ...engines.map((e) => runtime.tools.tm_search.execute({ query: `probe tag-${e}`, engine: e }, ctx)),
+        runtime.tools.tm_webfetch.execute({ url: "https://mobile.moegirl.org.cn/tag-wf-a?tag=wf-a" }, ctx),
+        runtime.tools.tm_webfetch.execute({ url: "https://mobile.moegirl.org.cn/tag-wf-b?tag=wf-b" }, ctx),
+      ]
+      const outs = (await Promise.all(calls)).map((r) => r.output)
+      // searches: each hit list is its own — no engine sees another's hits
+      for (const [i, engine] of engines.entries()) {
+        const o = outs[i]
+        assert.ok(!o.includes("phase="), `parallel search ${engine} succeeded`)
+        assert.ok(o.includes(`https://example.org/${engine}-r1`), `search ${engine} carries its own hits`)
+        assert.ok(
+          !engines.some((other) => other !== engine && o.includes(`example.org/${other}-r1`)),
+          `search ${engine} carries NO other engine's hits`,
+        )
+      }
+      // webfetches: both offloaded, DISTINCT step ids, isolated payloads
+      const wfOuts = outs.slice(4)
+      for (const o of wfOuts) {
+        assert.ok(o.includes("已卸载") && o.includes("ref: tm://runs/"), "parallel webfetch offloaded to its own handle")
+      }
+      const refs = wfOuts.map(refOf)
+      assert.equal(new Set(refs).size, refs.length, "parallel offloads got DISTINCT step ids (no counter race)")
+      for (const [i, ref] of refs.entries()) {
+        const stepId = /steps\/([^/]+)\/result/.exec(ref)[1]
+        const file = runtime.store.readStepFile(stepId)
+        const want = `payload-wf-${i === 0 ? "a" : "b"}`
+        assert.ok(file !== null && file.content.includes(want), `payload ${stepId} holds its own tag (${want})`)
+      }
+      // both handles page back CONCURRENTLY through tm_fetch, each intact
+      const toks = wfOuts.map(tokOf)
+      const pages = (await Promise.all(refs.map((ref, i) => runtime.tools.tm_fetch.execute({ ref, access_token: toks[i] }, ctx)))).map((r) => r.output)
+      for (const [i, p] of pages.entries()) {
+        const want = `payload-wf-${i === 0 ? "a" : "b"}`
+        assert.ok(p.includes(want), "concurrent tm_fetch returns its own payload start marker")
+        assert.ok(p.includes(`end-wf-${i === 0 ? "a" : "b"}`), "payload intact end-to-end (no clobbering)")
+      }
+    } finally {
+      globalThis.fetch = realFetch
+    }
+  }
+  console.log("6p. parallel safety: OK (4 concurrent searches → isolated hit lists; 2 concurrent offloads → distinct step ids + isolated payloads; concurrent tm_fetch page-ins)")
 
   // 6n. tm_memory — project (repo .git) + GLOBAL (user profile) memory
   // mirror (Markdown + frontmatter, Qoder-style: write side = files,
@@ -1378,8 +1585,8 @@ try {
       assert.ok("tm_ptc_run" in hooks.tool, "tm_ptc_run registered in the tool segment (M3)")
       assert.deepEqual(
         Object.keys(hooks.tool).sort(),
-        ["tm_bash", "tm_browser", "tm_fetch", "tm_grep", "tm_memory", "tm_ptc_run", "tm_read", "tm_webfetch"],
-        "registered tm_* set includes tm_ptc_run + tm_webfetch + tm_memory + tm_browser",
+        ["tm_bash", "tm_browser", "tm_fetch", "tm_grep", "tm_memory", "tm_ptc_run", "tm_read", "tm_search", "tm_webfetch"],
+        "registered tm_* set includes tm_ptc_run + tm_webfetch + tm_search + tm_memory + tm_browser",
       )
       // program over the cap is rejected through the tool as an args error
       const big = await tool.execute({ program: "x".repeat(4001) }, { directory: process.cwd() })

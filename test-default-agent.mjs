@@ -185,12 +185,14 @@ console.log("1. default_agent promotion matrix: OK (opt-out default; custom/plan
     expected["tm_*"] = "allow"
     // M3: tm_ptc_run — all six agents get allow (overrides wildcard)
     expected["tm_ptc_run"] = "allow"
-    // tm_webfetch + tm_browser — governed web channels: ONLY team +
-    // researcher are network roles (explicit keys override the tm_* wildcard)
+    // tm_webfetch / tm_search / tm_browser — governed web channels: ONLY
+    // team + researcher are network roles (explicit keys override the tm_*
+    // wildcard)
     const isWebRole = name === "team" || name === "researcher"
     expected["tm_webfetch"] = isWebRole ? "allow" : "deny"
+    expected["tm_search"] = isWebRole ? "allow" : "deny"
     expected["tm_browser"] = isWebRole ? "allow" : "deny"
-    const allowCount = granted.length + tmTools.length + 2 + (isWebRole ? 2 : 0) // + wildcard + ptc + webfetch/browser
+    const allowCount = granted.length + tmTools.length + 2 + (isWebRole ? 3 : 0) // + wildcard + ptc + webfetch/search/browser
     assert.deepStrictEqual(
       perm, expected,
       name + ": whitelist content exact (" + allowCount + " allow entries / " +

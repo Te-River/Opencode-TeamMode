@@ -317,7 +317,7 @@ for (const expert of EXPERTS) {
   assert.ok(cfg2.agent[expert].prompt.includes("## Project memories"), expert + ": project memory rule present")
   assert.ok(cfg2.agent[expert].prompt.includes("run tm_memory search"), expert + ": memory pull-model instruction (search before assuming)")
   assert.ok(
-    cfg2.agent[expert].prompt.includes("Web lookups are NOT yours unless tm_webfetch / tm_browser"),
+    cfg2.agent[expert].prompt.includes("Web lookups are NOT yours unless tm_search / tm_webfetch / tm_browser"),
     expert + ": web boundary rule (network roles are lead + researcher only)",
   )
   assert.ok(cfg2.agent[expert].prompt.includes("1. TeamMode governed tools (tm_*)"), expert + ": priority ladder rung 1 (tm_* first)")
@@ -326,7 +326,11 @@ for (const expert of EXPERTS) {
   assert.ok(cfg2.agent[expert].prompt.includes("Batch your lookups: when one investigation step would chain ≥3"), expert + ": PTC trigger threshold (≥3 chained calls → one program)")
   assert.ok(cfg2.agent[expert].prompt.includes("aggregated value at the end of the program"), expert + ": PTC return-data rule (unreturned inline results are lost)")
 assert.ok(cfg2.agent["researcher"].prompt.includes("## Web lookups (two channels)"), "researcher: two-channel web policy (governed tools first, MCP fallback)")
+assert.ok(cfg2.agent["researcher"].prompt.includes("tm_search (open-ended lookups)"), "researcher: tm_search is the open-ended lookup front")
+assert.ok(cfg2.agent["researcher"].prompt.includes("bing-int"), "researcher: international-bing engine documented")
+assert.ok(cfg2.agent["researcher"].prompt.includes("registry.npmjs.org/-/v1/search"), "researcher: npm search endpoint documented")
 assert.ok(cfg2.agent["researcher"].prompt.includes("mobile.moegirl.org.cn"), "researcher: seeded web hosts documented")
+assert.ok(cfg2.agent["team"].prompt.includes("tm_search"), "lead: governed search front referenced")
 assert.ok(cfg2.agent["team"].prompt.includes("tm_webfetch"), "lead: governed web fallback referenced")
 assert.ok(cfg2.agent["team"].prompt.includes("tm_memory search"), "lead: memory consulted during research phase")
 assert.ok(cfg2.agent["team"].prompt.includes("Batch the recon in one tm_ptc_run program"), "lead: research-phase recon batched via PTC")

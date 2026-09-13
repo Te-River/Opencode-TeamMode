@@ -10,10 +10,11 @@
  *
  * Red lines carried over from the P5 network-zero era:
  *   - only http(s) URLs — file:// and every other scheme rejected outright;
- *   - the HOST must be on the allowlist (seeded with the four lookup hosts:
- *     mobile.moegirl.org.cn / search.bilibili.com / cn.bing.com /
- *     www.baidu.com; TM_WEBFETCH_ALLOWED_DOMAINS overrides, "*" opens every
- *     host);
+ *   - the HOST must be on the allowlist (seeded with the CN-reachable
+ *     lookup hosts: moegirl wiki / bilibili / bing CN+int / baidu / sogou /
+ *     360 / npm registry / GitHub API — see config.ts
+ *     DEFAULT_WEBFETCH_DOMAINS; TM_WEBFETCH_ALLOWED_DOMAINS overrides, "*"
+ *     opens every host);
  *   - redirects are followed MANUALLY and every hop re-checked against the
  *     allowlist (an allowlisted shortener cannot bounce off-site);
  *   - a URL naming an env file (isEnvFilePath) is refused — the R6 red
@@ -24,18 +25,10 @@
 
 import { isEnvFilePath } from "../envprotect.js"
 import type { ToolResult } from "../types.js"
-import { shorten, type TmConfig } from "./config.js"
+import { shorten, DEFAULT_WEBFETCH_DOMAINS, type TmConfig } from "./config.js"
 import { detectContentType } from "./preview.js"
 import { tmError, toToolResult } from "./result.js"
 import type { TmPipelines } from "./pipelines.js"
-
-/** Seeded allowlist — the four lookup hosts the design names. */
-export const DEFAULT_WEBFETCH_DOMAINS: readonly string[] = [
-  "mobile.moegirl.org.cn",
-  "search.bilibili.com",
-  "cn.bing.com",
-  "www.baidu.com",
-]
 
 const WEBFETCH_UA = "Mozilla/5.0 (compatible; TeamMode-tm_webfetch/1.0)"
 const WEBFETCH_TIMEOUT_MS = 20_000
@@ -114,6 +107,76 @@ export function htmlToText(html: string): string {
     .trim()
 }
 
+// ---------- search-result extraction ----------
+
+/** Anchor tag scanner — captures the href (double- or single-quoted) plus
+ *  the inner text. */
+const ANCHOR_RE = /<a\b[^>]*href\s*=\s*(?:"([^"]*)"|'([^']*)')[^>]*>([\s\S]*?)<\/a\s*>/gi
+
+/** Search-engine result pages whose raw HTML is worth collapsing into a
+ *  clean hit list (title + URL) instead of a wall of stripped page text. */
+export const SEARCH_PAGE_RE =
+  /(?:cn\.bing\.com|www\.bing\.com)\/search|\.baidu\.com\/s\b|sogou\.com\/web|so\.com\/s\b|search\.bilibili\.com\/all/i
+
+/** Click trackers / redirector links that point back at the engine instead
+ *  of the destination (bing /ck/, baidu /link?, sogou /link?, ms fwlink). */
+const ENGINE_TRACKER_RE =
+  /bing\.com\/ck\/|baidu\.com\/link\?|sogou\.com\/link\?|go\.microsoft\.com\/fwlink/i
+
+export interface SearchHit {
+  title: string
+  url: string
+}
+
+function decodeEntities(s: string): string {
+  return s
+    .replace(/&nbsp;/gi, " ")
+    .replace(/&amp;/gi, "&")
+    .replace(/&lt;/gi, "<")
+    .replace(/&gt;/gi, ">")
+    .replace(/&quot;/gi, '"')
+    .replace(/&#0?39;|&apos;/gi, "'")
+}
+
+/**
+ * Pull external result hits (title + URL) out of a search-engine result
+ * page's RAW HTML.  Dependency-free: anchor scan + noise filters (relative
+ * hrefs, click trackers, engine chrome, duplicates).  Engines rearrange
+ * their markup often, so the filter set is intentionally loose — callers
+ * fall back to plain text extraction when the list comes back thin.
+ */
+export function extractSearchHits(html: string, max = 10): SearchHit[] {
+  const hits: SearchHit[] = []
+  const seen = new Set<string>()
+  for (const m of html.matchAll(ANCHOR_RE)) {
+    const href = decodeEntities((m[1] ?? m[2] ?? "").trim())
+    if (!/^https?:\/\//i.test(href)) continue
+    if (ENGINE_TRACKER_RE.test(href)) continue
+    const title = decodeEntities(m[3].replace(/<[^>]+>/g, " "))
+      .replace(/\s+/g, " ")
+      .trim()
+    // <4 chars kills engine chrome (下一页 / 首页 / More) without risking real titles
+    if (title.length < 4) continue
+    const key = href.split("#")[0]
+    if (seen.has(key)) continue
+    seen.add(key)
+    hits.push({ title: title.length > 110 ? title.slice(0, 110) + "…" : title, url: href })
+    if (hits.length >= max) break
+  }
+  return hits
+}
+
+/** Compact numbered rendering — what actually enters the context. */
+export function renderSearchHits(query: string, engine: string, hits: SearchHit[]): string {
+  const lines = [`[search] ${engine} × "${query}" → ${hits.length} 条结果:`]
+  hits.forEach((h, i) => {
+    lines.push(`${i + 1}. ${h.title}`)
+    lines.push(`   ${h.url}`)
+  })
+  lines.push("(读正文: tm_webfetch 结果 URL；JS 渲染页用 tm_browser 打开。)")
+  return lines.join("\n")
+}
+
 // ---------- fetch (manual redirects, every hop re-checked) ----------
 
 export interface WebFetchResult {
@@ -122,7 +185,7 @@ export interface WebFetchResult {
   finalUrl: string
 }
 
-type FetchImpl = (input: string, init?: Record<string, unknown>) => Promise<{
+export type FetchImpl = (input: string, init?: Record<string, unknown>) => Promise<{
   ok?: boolean
   status: number
   headers: { get(name: string): string | null }
@@ -215,9 +278,9 @@ export function extractWebResponse(raw: string, contentType: string): { text: st
 
 // ---------- tool definition ----------
 
-const WEBFETCH_DESCRIPTION = `Fetch a web page through the governed pipeline (domain allowlist + threshold offload) — the FALLBACK web channel; PREFER user-configured MCP/browser/search tools when they are on your surface.
+const WEBFETCH_DESCRIPTION = `Fetch a web page through the governed pipeline (domain allowlist + threshold offload) — use it for a KNOWN URL; for open-ended lookups PREFER tm_search (multi-engine, extracted results) and user-configured MCP/browser/search tools.
 
-- Seeded hosts: mobile.moegirl.org.cn (wiki term: https://mobile.moegirl.org.cn/TERM) · search.bilibili.com (https://search.bilibili.com/all?keyword=QUERY) · cn.bing.com (https://cn.bing.com/search?q=QUERY) · www.baidu.com (https://www.baidu.com/s?wd=QUERY).  URL-encode the query (CJK terms too).  Expand colloquial/abbreviated terms to canonical forms and fetch BOTH spellings.
+- Seeded hosts (CN-reachable, no API keys): mobile.moegirl.org.cn (wiki term: https://mobile.moegirl.org.cn/TERM) · search.bilibili.com (https://search.bilibili.com/all?keyword=QUERY) · cn.bing.com (https://cn.bing.com/search?q=QUERY; append &ensearch=1 for international results) · www.baidu.com (https://www.baidu.com/s?wd=QUERY) · www.sogou.com (https://www.sogou.com/web?query=QUERY) · www.so.com (https://www.so.com/s?q=QUERY) · registry.npmjs.org (package JSON: https://registry.npmjs.org/<pkg>/latest, search: https://registry.npmjs.org/-/v1/search?text=QUERY) · api.github.com (repo search: https://api.github.com/search/repositories?q=QUERY).  URL-encode the query (CJK terms too).  Search-engine result pages are auto-extracted to a title+URL hit list.  Expand colloquial/abbreviated terms to canonical forms and fetch BOTH spellings.
 - Governance: only http(s), hosts must be allowlisted (extend via TM_WEBFETCH_ALLOWED_DOMAINS, "*" opens all), redirects re-checked per hop, HTML stripped to text; output above TM_OFFLOAD_THRESHOLD tokens is offloaded to a handle — page with tm_fetch (try mode:"structure" first).
 - This is a governed tool: out-of-allowlist hosts are rejected, not dialog-governed.`
 
@@ -251,6 +314,24 @@ export function buildTmWebfetchTool(deps: {
         const stepId = pipelines.nextStepId()
         pipelines.store.appendTrajectory({ tool, step_id: stepId, event: "call" })
         const res = await fetchWebText(verdict.url, allowlist, { fetchImpl: deps.fetchImpl })
+        // Search-engine result pages collapse to a clean hit list (title +
+        // URL) BEFORE governance — the stripped page text is ~90% engine
+        // chrome.  Thin extraction (markup changed / anti-bot shell) falls
+        // through to the plain-text path.
+        if (SEARCH_PAGE_RE.test(res.finalUrl)) {
+          const hits = extractSearchHits(res.text)
+          if (hits.length > 0) {
+            const sp = verdict.url.searchParams
+            const query = sp.get("q") ?? sp.get("wd") ?? sp.get("query") ?? sp.get("keyword") ?? ""
+            const listing = renderSearchHits(query || res.finalUrl, "webfetch", hits)
+            return toToolResult(
+              pipelines.govern(stepId, tool, listing, {
+                contentType: detectContentType(listing),
+                clue: `search url=${shorten(res.finalUrl, 120)}`,
+              }),
+            )
+          }
+        }
         const { text } = extractWebResponse(res.text, res.contentType)
         if (!text.trim()) {
           // anti-bot / JS-rendered pages (baidu is the usual offender) return
@@ -259,7 +340,7 @@ export function buildTmWebfetchTool(deps: {
             tmError(
               tool,
               "execute",
-              "页面内容为空——该站点可能是反爬或 JS 渲染页（baidu 常见）。换 cn.bing.com 搜索、用 tm_browser 打开，或直接访问数据源 URL（如 registry.npmjs.org/<pkg>/latest）。",
+              "页面内容为空——该站点可能是反爬或 JS 渲染页（baidu 常见）。换 tm_search 的其他引擎（bing/sogou/so）、用 tm_browser 打开，或直接访问数据源 URL（如 registry.npmjs.org/<pkg>/latest）。",
             ),
           )
         }

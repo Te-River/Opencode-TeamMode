@@ -119,11 +119,12 @@ const whitelist = (
   }
   for (const tool of TM_TOOLS) permission[tool] = "allow"
   permission["tm_*"] = "allow"
-  // Governed web channels (tm_webfetch + tm_browser) — default DENY for
-  // every agent; the explicit keys override the tm_* wildcard.
+  // Governed web channels (tm_webfetch / tm_search / tm_browser) — default
+  // DENY for every agent; the explicit keys override the tm_* wildcard.
   // applyNetworkPermission grants them back to the lead + researcher only
   // (network capability is a two-role grant).
   permission["tm_webfetch"] = "deny"
+  permission["tm_search"] = "deny"
   permission["tm_browser"] = "deny"
   return permission
 }
@@ -135,11 +136,12 @@ function applyPtcPermission(permission: AgentPermission, _isTeamLead: boolean): 
 }
 
 /** Apply the network grant: ONLY the team lead and the researcher carry
- *  the governed web channels (tm_webfetch + tm_browser — explicit allow
- *  overrides the tm_* wildcard); architect / implementer / reviewer /
- *  tester keep the whitelist deny. */
+ *  the governed web channels (tm_webfetch / tm_search / tm_browser —
+ *  explicit allow overrides the tm_* wildcard); architect / implementer /
+ *  reviewer / tester keep the whitelist deny. */
 function applyNetworkPermission(permission: AgentPermission, isWebRole: boolean): void {
   permission["tm_webfetch"] = isWebRole ? "allow" : "deny"
+  permission["tm_search"] = isWebRole ? "allow" : "deny"
   permission["tm_browser"] = isWebRole ? "allow" : "deny"
 }
 
@@ -158,7 +160,7 @@ const teamLead: AgentConfig = {
     "different expertise areas.",
   prompt: TEAM_LEAD_PROMPT,
   color: "#E879F9", // purple
-  // Whitelist: tm_* x4 + tm_ptc_run + tm_webfetch + tm_browser (the lead is
+  // Whitelist: tm_* x4 + tm_ptc_run + tm_webfetch/tm_search/tm_browser (the lead is
   // a network role) + task dispatch + edit (<=10-line non-product edits) +
   // write (board files) + bash (discovery-gate probes) + todowrite + question
   // (the lead's TodoList discipline and batched blocking questions are
@@ -241,17 +243,18 @@ const researcher: AgentConfig = {
     "Researcher — investigates the local repository (code, configs, " +
     "installed/vendored packages, shipped documentation) and, when local " +
     "sources are insufficient, the web via the priority ladder: governed " +
-    "tm_browser / tm_webfetch first, user-configured MCP tools second.  " +
-    "Every finding carries a source (file:line or URL) and a confidence " +
-    "tag so the team can decide what needs verification.  Use for " +
-    "information that must inform a technical decision.",
+    "tm_search / tm_browser / tm_webfetch first, user-configured MCP tools " +
+    "second.  Every finding carries a source (file:line or URL) and a " +
+    "confidence tag so the team can decide what needs verification.  Use " +
+    "for information that must inform a technical decision.",
   prompt: RESEARCHER_PROMPT,
   color: "#A78BFA", // violet
-  // Whitelist: tm_* x4 + tm_webfetch (the researcher is a network role).
-  // The built-in webfetch/websearch tools stay removed — web lookups ride
-  // user-configured MCP tools (preferred) or the governed tm_webfetch
-  // (domain-allowlisted, threshold-offloaded).  No bash / no execution
-  // rights is intentional trimming — local research reads, it does not run.
+  // Whitelist: tm_* x4 + tm_webfetch / tm_search / tm_browser (the
+  // researcher is a network role).  The built-in webfetch/websearch tools
+  // stay removed — web lookups ride user-configured MCP tools (preferred)
+  // or the governed tm_* web channels (allowlisted, threshold-offloaded).
+  // No bash / no execution rights is intentional trimming — local research
+  // reads, it does not run.
   permission: whitelist(),
   temperature: 0.2,
 }
