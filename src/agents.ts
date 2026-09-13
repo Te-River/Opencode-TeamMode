@@ -91,8 +91,9 @@ const PER_AGENT_TOOLS = ["edit", "write", "task", "bash"] as const
 
 /** The governed tools, named explicitly next to the "tm_*" wildcard
  *  (belt-and-braces: the explicit allows survive even if a host ever
- *  stops expanding the wildcard). */
-const TM_TOOLS = ["tm_read", "tm_grep", "tm_bash", "tm_fetch"] as const
+ *  stops expanding the wildcard).  tm_memory is the project memory store —
+ *  not a network channel, available to all six agents. */
+const TM_TOOLS = ["tm_read", "tm_grep", "tm_bash", "tm_fetch", "tm_memory"] as const
 
 /** M3: tm_ptc_run — explicit per-agent grant.  v1.5.4 revised the original
  *  M3 ruling (five specialists = allow, team = deny): ALL SIX agents now

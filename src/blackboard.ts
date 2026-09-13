@@ -26,6 +26,7 @@
 import * as fs from "node:fs"
 import * as os from "node:os"
 import * as path from "node:path"
+import { rmForceSafe } from "./fs-safe.js"
 
 /** Default idle time before a task directory is swept: 5 days. */
 export const DEFAULT_TTL_DAYS = 5
@@ -140,7 +141,7 @@ export function sweepStale(root: string, ttlMs = DEFAULT_TTL_MS): number {
             /* raced — ignore */
           }
         }
-        fs.rmSync(dir, { recursive: true, force: true })
+        rmForceSafe(dir, { recursive: true })
         removed += Math.max(1, tasks)
         continue
       }
@@ -151,7 +152,7 @@ export function sweepStale(root: string, ttlMs = DEFAULT_TTL_MS): number {
         try {
           if (!fs.statSync(task).isDirectory()) continue
           if (!isStale(task, now, ttlMs, 1)) continue
-          fs.rmSync(task, { recursive: true, force: true })
+          rmForceSafe(task, { recursive: true })
           removed++
         } catch {
           /* raced — skip this task */

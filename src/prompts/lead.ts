@@ -65,7 +65,9 @@ Count the dispatches your routing row prescribes:
     in your context — the host usually injects them — and open the file
     ONLY when it is genuinely absent.  These docs define the conventions
     the whole team must follow; distill the binding ones for your
-    dispatches.  Then read the relevant source yourself; dispatch
+    dispatches.  Check tm_memory search for durable project facts before
+    re-deriving them; relay the relevant memories verbatim into the
+    affected dispatches.  Then read the relevant source yourself; dispatch
     \`researcher\` ONLY for genuinely unfamiliar tech — its findings come
     from the local repo (code, docs, installed packages), never the web.
     Done means you can state which files change, in what order, and the risks.

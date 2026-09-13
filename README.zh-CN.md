@@ -251,6 +251,15 @@ ERROR×N 统计 / 代码签名清单 / 二进制元信息，硬上限 80 token�
 拒绝。日常验证栈（`npm test`、`tsc`、`git status`/`diff`）**不在**门控
 之列，团队协作照常无打扰运行。
 
+**项目记忆（`tm_memory`）——全部 Agent 可用。** 跨会话持久的项目事实
+（构建命令、环境怪癖、架构决策、长期有效的用户约定）以带 frontmatter 的
+Markdown 文件存放在同一个 git 感知存储里
+（`<repo>/.git/opencode-team/memories/<项目slug>/<分类>/`）——人类可直接
+编辑，绝不进你的工作树。动作：`add` / `search`（确定性关键词评分，取前
+5）/ `list` / `forget`；单条内容上限 4000 字符——任务状态归 todo list，
+超长文档归黑板文件。所有 Agent 都被要求：在凭空假设项目约定之前先
+search，踩过坑后把结论 add 给下一次会话。
+
 **联网查询（两通道）——网络角色仅限 Team Lead 与 Researcher。**
 1. **高优先级——用户自有的 MCP/插件工具。** 用户配置的 MCP 服务器提供的
    浏览器自动化、搜索、抓取类工具原样通过白名单，不会被拦截；所有 Agent

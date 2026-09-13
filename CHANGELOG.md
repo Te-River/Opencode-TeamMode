@@ -8,6 +8,18 @@ registry saw 1.5.0 as the install-script fix release).
 ## [Unreleased]
 
 ### Added
+- **Project memory (`tm_memory`) — all agents**: durable project facts live
+  as Markdown files with YAML-ish frontmatter (title / usage_scenario /
+  keywords) under `<repo>/.git/opencode-team/memories/<project-slug>/<category>/`
+  (Qoder-inspired design, re-implemented from mechanism analysis; tmpdir
+  fallback outside a git repo).  Actions: `add` (4000-char cap, seeded
+  category taxonomy from Qoder's seven categories) / `search`
+  (deterministic keyword scoring: title ×5 > keywords ×4 > usage_scenario
+  ×3 > body ×1, top 5) / `list` (grouped) / `forget` (by title).  Pull-
+  model injection: agents are prompted to search before assuming project
+  conventions and to save hard-won facts; the lead relays relevant
+  memories into dispatches (asserted in test-tm-tools §6n,
+  test-blackboard, test-default-agent §6)
 - **Two-channel web access (network roles: Team Lead + Researcher ONLY)**:
   - **High priority — user MCP/plugin tools**: browser automation, search
     and fetch tools from user-configured MCP servers pass through the
@@ -29,6 +41,14 @@ registry saw 1.5.0 as the install-script fix release).
     test-default-agent §6, test-blackboard)
 
 ### Fixed
+- **win32 fs.rmSync silently no-ops on non-ASCII paths** (observed Node
+  24.12: CJK-named files survive `fs.rmSync` with no throw, while
+  `fs.unlinkSync` works): new `fs-safe.ts` `rmForceSafe` does rmSync then
+  an existence check with a manual depth-first unlink fallback; all
+  destructive call sites (blackboard sweeper, run-store TTL sweep,
+  tm_memory forget) route through it — a silent no-op deletion could have
+  left stale boards/payloads on disk forever (regression-pinned in
+  test-tm-tools §6n)
 - **PTC step-id namespace collision**: the PTC pipeline instance's step
   counter started at s0001 again — offloaded PTC bridge payloads could
   collide with same-numbered main-pipeline steps inside the shared run

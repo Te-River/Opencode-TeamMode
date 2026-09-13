@@ -182,3 +182,36 @@ export async function buildWebfetchArgsSchema(): Promise<Record<string, unknown>
       ),
   }
 }
+
+/**
+ * tm_memory args — same ZodRawShape treatment (BUG#3 class); descriptor
+ * fallback when zod is absent.
+ */
+export async function buildMemoryArgsSchema(): Promise<Record<string, unknown>> {
+  const z = await loadZod()
+  if (!z) {
+    return {
+      action: { descriptor: "action: add|search|list|forget (required)" },
+      title: { descriptor: "title: string (add/forget)" },
+      content: { descriptor: "content: string (add, ≤4000 chars)" },
+      category: { descriptor: "category: string (add, optional)" },
+      keywords: { descriptor: "keywords: string[] or comma string (add, optional)" },
+      usage_scenario: { descriptor: "usage_scenario: string[] or comma string (add, optional)" },
+      query: { descriptor: "query: string (search)" },
+      scope: { descriptor: "scope: project|global (optional, default project)" },
+    }
+  }
+  const zz = z as unknown as {
+    string: () => { describe: (d: string) => { optional: () => unknown } }
+  }
+  return {
+    action: zz.string().describe("add | search | list | forget."),
+    title: zz.string().describe("Memory title (add/forget).").optional(),
+    content: zz.string().describe("One condensed fact, ≤4000 chars (add).").optional(),
+    category: zz.string().describe("Category slug, e.g. project_tech_stack (add, optional).").optional(),
+    keywords: zz.string().describe("Comma-separated keywords (add, optional).").optional(),
+    usage_scenario: zz.string().describe("Comma-separated when-to-use scenarios (add, optional).").optional(),
+    query: zz.string().describe("Search query (search).").optional(),
+    scope: zz.string().describe("project (default) | global.").optional(),
+  }
+}

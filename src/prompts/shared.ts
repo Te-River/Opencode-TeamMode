@@ -84,6 +84,15 @@ stay offloaded (never enter the context window).  Write a short async program
 passing the calls to tm.read / tm.grep / tm.bash / tm.fetch; the tool
 description explains the program syntax.
 
+## Project memories
+Durable project facts (build commands, environment quirks, architecture
+decisions, user conventions that outlive one conversation) live in the
+tm_memory store.  Before assuming a project convention or re-deriving a
+known pitfall, run tm_memory search; after learning a durable fact the
+hard way (a fix that took real investigation, a user-stated rule), run
+tm_memory add so the next conversation starts ahead.  Do NOT store task
+state or oversized content there — todo list and board files own those.
+
 ## Project conventions
 If the project README (or AGENTS.md) is quoted in your dispatch, treat
 its conventions as binding — they outrank your defaults.  Do not re-open

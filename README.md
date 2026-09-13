@@ -263,6 +263,18 @@ official dialog and are auto-rejected if you don't answer within the timeout.
 The normal verification stack (`npm test`, `tsc`, `git status`/`diff`) is NOT
 gated, so day-to-day team work runs without interruption.
 
+**Project memory (`tm_memory`) — all agents.**  Durable project facts
+(build commands, environment quirks, architecture decisions, user
+conventions that outlive one conversation) live as Markdown files with
+frontmatter under the same git-aware store
+(`<repo>/.git/opencode-team/memories/<project-slug>/<category>/`) —
+human-editable, never in your working tree.  `add` / `search`
+(deterministic keyword scoring, top 5) / `list` / `forget`; content is
+capped at 4000 chars per memory — task state belongs to the todo list,
+oversized docs to board files.  Agents are prompted to search before
+assuming project conventions and to save hard-won facts for the next
+conversation.
+
 **Web lookups (two channels) — network roles: Team Lead + Researcher only.**
 1. **High priority — your own MCP/plugin tools.** Browser automation, search
    or fetch tools from user-configured MCP servers pass through the

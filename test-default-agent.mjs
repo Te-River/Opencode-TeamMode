@@ -151,7 +151,7 @@ console.log("1. default_agent promotion matrix: OK (opt-out default; custom/plan
   // Built-ins whose slot varies per agent; ungranted -> denied.
   const perAgent = ["edit", "write", "task", "bash"]
   // The four governed tools, named explicitly next to the tm_* wildcard.
-  const tmTools = ["tm_read", "tm_grep", "tm_bash", "tm_fetch"]
+  const tmTools = ["tm_read", "tm_grep", "tm_bash", "tm_fetch", "tm_memory"]
   // Revised T2.1 matrix: bash on execution roles only; architect/researcher
   // stay bash-free (unchanged from the pre-T2.1 posture).
   // The unified approval gate escalates the execution roles' bare
@@ -201,6 +201,8 @@ console.log("1. default_agent promotion matrix: OK (opt-out default; custom/plan
     for (const t of tmTools) {
       assert.equal(perm[t], "allow", name + ": governed tool " + t + " allowed explicitly")
     }
+    // tm_memory: project memory store — not a network channel, all roles
+    assert.equal(perm["tm_memory"], "allow", name + ": memory store allowed")
     assert.equal(perm["tm_*"], "allow", name + ": governed tm_* tools allowed")
     // M3: tm_ptc_run explicit grant (all six agents = allow)
     assert.equal(

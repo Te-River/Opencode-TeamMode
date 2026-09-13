@@ -29,9 +29,21 @@ import { hmacToken, newRunId } from "./refs.js"
 import { RunStore } from "./store.js"
 import { buildTmTools } from "./tools.js"
 import { buildPipelines } from "./pipelines.js"
-import { buildPtcArgsSchema, buildWebfetchArgsSchema } from "./args-schema.js"
+import { buildPtcArgsSchema, buildWebfetchArgsSchema, buildMemoryArgsSchema } from "./args-schema.js"
 import { buildPtcRunTool } from "./ptc/index.js"
 import { buildTmWebfetchTool } from "./webfetch.js"
+export { rmForceSafe } from "../fs-safe.js"
+export {
+  buildTmMemoryTool,
+  MEMORY_CATEGORIES,
+  MEMORY_CONTENT_MAX,
+  MEMORY_TITLE_MAX,
+  projectSlug,
+  scoreMemory,
+  parseMemoryMarkdown,
+  renderMemoryMarkdown,
+} from "./memory.js"
+import { buildTmMemoryTool } from "./memory.js"
 
 export interface TmRuntime {
   runId: string
@@ -124,6 +136,17 @@ export async function createTmTools(
   // deny for the other four (overrides the tm_* wildcard).
   const webfetchArgs = await buildWebfetchArgsSchema()
   tools.tm_webfetch = buildTmWebfetchTool({ pipelines, cfg, args: webfetchArgs })
+  // tm_memory — project/global memory mirror (Markdown + frontmatter under
+  // the same git-aware store base).  Available to ALL agents: memory is not
+  // a network channel, it is shared project knowledge.
+  const memoryArgs = await buildMemoryArgsSchema()
+  tools.tm_memory = buildTmMemoryTool({
+    storeBase,
+    directory,
+    cfg,
+    pipelines,
+    args: memoryArgs,
+  })
   // M3: build tm_ptc_run using a separate pipeline instance (governance
   // reused verbatim).  Its step counter starts at s0001 again — the
   // "ptc-" stepPrefix namespaces its step ids so offloaded payloads can

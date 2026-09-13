@@ -196,6 +196,7 @@ assert.equal(cfg.agent["team"].permission.task, "allow", "lead task dispatch all
 assert.equal(cfg.agent["team"].permission.tm_webfetch, "allow", "lead is a network role (governed tm_webfetch)")
 assert.equal(cfg.agent["implementer"].permission.tm_webfetch, "deny", "implementer is NOT a network role")
 assert.equal(cfg.agent["researcher"].permission.tm_webfetch, "allow", "researcher is a network role")
+assert.equal(cfg.agent["implementer"].permission.tm_memory, "allow", "memory store: all roles (not a network channel)")
 assert.equal(Object.keys(cfg.agent).length, 6, "exactly 6 agents injected")
 assert.equal(Object.keys(cfg.command).length, 6, "exactly 6 commands injected")
 
@@ -308,6 +309,8 @@ for (const expert of EXPERTS) {
   assert.ok(cfg2.agent[expert].prompt.includes("never answer unverified from memory"), expert + ": memory-second rule explicit")
   assert.ok(cfg2.agent[expert].prompt.includes("Expand colloquial, abbreviated, or aliased terms"), expert + ": term-expansion rule (generic, no baked-in examples)")
   assert.ok(cfg2.agent[expert].prompt.includes("never simulate"), expert + ": removed-tool capability reported as a gap, never simulated")
+  assert.ok(cfg2.agent[expert].prompt.includes("## Project memories"), expert + ": project memory rule present")
+  assert.ok(cfg2.agent[expert].prompt.includes("run tm_memory search"), expert + ": memory pull-model instruction (search before assuming)")
   assert.ok(
     cfg2.agent[expert].prompt.includes("Web lookups are NOT yours unless tm_webfetch is on your surface"),
     expert + ": web boundary rule (network roles are lead + researcher only)",
@@ -315,6 +318,7 @@ for (const expert of EXPERTS) {
 assert.ok(cfg2.agent["researcher"].prompt.includes("## Web lookups (two channels)"), "researcher: two-channel web policy (MCP first, tm_webfetch fallback)")
 assert.ok(cfg2.agent["researcher"].prompt.includes("mobile.moegirl.org.cn"), "researcher: seeded web hosts documented")
 assert.ok(cfg2.agent["team"].prompt.includes("tm_webfetch"), "lead: governed web fallback referenced")
+assert.ok(cfg2.agent["team"].prompt.includes("tm_memory search"), "lead: memory consulted during research phase")
 }
 /* v1.4.6 fix (kept): fix-mode append contradiction stays dead, round files stay */
 assert.ok(!cfg2.agent["implementer"].prompt.includes("append to the same file"), "implementer: fix-mode append contradiction removed")

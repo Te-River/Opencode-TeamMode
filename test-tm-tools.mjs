@@ -815,6 +815,74 @@ try {
   }
   console.log("6m. tm_webfetch: OK (allowlist matrix, scheme/env-file red lines, HTML strip, redirect re-check, threshold offload, structured errors)")
 
+  // 6n. tm_memory — project/global memory mirror (Markdown + frontmatter,
+  // Qoder-style: write side = files, retrieval = deterministic scoring).
+  // The per-mkdtemp project slug isolates each test run even under the
+  // shared tmpdir store base.
+  {
+    const mem = runtime.tools.tm_memory
+    assert.ok(mem && typeof mem.execute === "function", "tm_memory registered on the runtime tool surface")
+    const slug = tm.projectSlug(root6)
+    const cleanup = () => fs.rmSync(path.join(os.tmpdir(), "opencode-team", "memories", "projects", slug), { recursive: true, force: true })
+    try {
+      // add: project scope with frontmatter
+      const add = await mem.execute({
+        action: "add", title: "Go 测试运行命令", scope: "project",
+        category: "project_build_configuration",
+        content: "运行测试必须先 cd 到项目根目录，然后执行 go test ./Processor/ -v。",
+        keywords: "go test, Processor",
+        usage_scenario: "本地运行测试前;CI 配置时",
+      }, ctx)
+      assert.ok(add.output.includes("已保存"), "add saves the memory")
+      const projectDir = path.join(os.tmpdir(), "opencode-team", "memories", "projects", slug, "project_build_configuration")
+      const files = fs.readdirSync(projectDir)
+      assert.equal(files.length, 1, "one md file per title")
+      const raw = fs.readFileSync(path.join(projectDir, files[0]), "utf8")
+      assert.ok(raw.includes('"Go 测试运行命令"') && raw.includes("usage_scenario:") && raw.includes("go test"), "frontmatter + body round-trip")
+      // add: same title + same category = update (not duplicate)
+      await mem.execute({ action: "add", title: "Go 测试运行命令", scope: "project", category: "project_build_configuration", content: "更新后的内容。" }, ctx)
+      assert.equal(fs.readdirSync(projectDir).length, 1, "same title+category updates in place")
+      // add: same title WITHOUT category lands in the default slot — a
+      // different memory (identity = scope + category + title slug)
+      await mem.execute({ action: "add", title: "Go 测试运行命令", content: "更新后的内容。" }, ctx)
+      assert.equal(fs.readdirSync(projectDir).length, 1, "default-category add does not touch the original")
+      // add: global scope
+      await mem.execute({ action: "add", title: "全局记忆样例", content: "全局事实。", scope: "global" }, ctx)
+      // content cap
+      const tooBig = await mem.execute({ action: "add", title: "big", content: "x".repeat(4001) }, ctx)
+      assert.ok(tooBig.output.includes("4000"), "content over cap → args error")
+      // search: title/keyword scoring, excerpt
+      const search = await mem.execute({ action: "search", query: "go test" }, ctx)
+      assert.ok(search.output.includes("Go 测试运行命令") && search.output.includes("score"), "search hits by keyword/title with score")
+      assert.ok(search.output.includes("更新后的内容"), "search returns the updated body")
+      // search: scope filter
+      const globalOnly = await mem.execute({ action: "search", query: "全局", scope: "global" }, ctx)
+      assert.ok(globalOnly.output.includes("全局记忆样例"), "scope=global filter works")
+      const projectOnly = await mem.execute({ action: "search", query: "全局", scope: "project" }, ctx)
+      assert.ok(projectOnly.output.includes("无匹配"), "scope=project excludes global memories")
+      // list: grouped
+      const list = await mem.execute({ action: "list" }, ctx)
+      assert.ok(list.output.includes("project/project_build_configuration") && list.output.includes("global/notes"), "list groups by scope/category")
+      // forget: removes EVERY title match across scopes/categories
+      const forget = await mem.execute({ action: "forget", title: "Go 测试运行命令" }, ctx)
+      assert.ok(forget.output.includes("已删除 2"), "forget deletes all title matches (build-config + notes slots)")
+      const after = await mem.execute({ action: "search", query: "go test" }, ctx)
+      assert.ok(after.output.includes("无匹配"), "forgotten memory is gone")
+      // foreign md files are ignored by parse (project dir untouched otherwise)
+      assert.equal(fs.readdirSync(projectDir).length, 0, "project memory dir empty after forget")
+      // fs-safe regression: fs.rmSync silently no-ops on non-ASCII paths on
+      // some Node/win32 builds — rmForceSafe must actually delete.
+      const cjkFile = path.join(projectDir, "中文文件名.md")
+      fs.writeFileSync(cjkFile, "x")
+      tm.rmForceSafe(cjkFile)
+      assert.ok(!fs.existsSync(cjkFile), "rmForceSafe deletes non-ASCII paths (win32 rmSync no-op regression)")
+    } finally {
+      cleanup()
+      fs.rmSync(path.join(os.tmpdir(), "opencode-team", "memories", "global"), { recursive: true, force: true })
+    }
+  }
+  console.log("6n. tm_memory: OK (add/update/search scoring/list/forget, scope filter, content cap, frontmatter round-trip)")
+
   // 6h. degraded path: store failure -> truncated + warning, task NOT failed
   {
     const blocker = path.join(mktmp("degraded"), "blocker.txt")
@@ -1237,8 +1305,8 @@ try {
       assert.ok("tm_ptc_run" in hooks.tool, "tm_ptc_run registered in the tool segment (M3)")
       assert.deepEqual(
         Object.keys(hooks.tool).sort(),
-        ["tm_bash", "tm_fetch", "tm_grep", "tm_ptc_run", "tm_read", "tm_webfetch"],
-        "registered tm_* set includes tm_ptc_run + tm_webfetch",
+        ["tm_bash", "tm_fetch", "tm_grep", "tm_memory", "tm_ptc_run", "tm_read", "tm_webfetch"],
+        "registered tm_* set includes tm_ptc_run + tm_webfetch + tm_memory",
       )
       // program over the cap is rejected through the tool as an args error
       const big = await tool.execute({ program: "x".repeat(4001) }, { directory: process.cwd() })

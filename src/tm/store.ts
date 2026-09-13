@@ -22,6 +22,7 @@
 import * as fs from "node:fs"
 import * as path from "node:path"
 import { buildRef } from "./refs.js"
+import { rmForceSafe } from "../fs-safe.js"
 
 /** Reserved for T2.2 usage accounting — path constant only in this phase. */
 export const USAGE_JSONL_RELPATH = "usage.jsonl"
@@ -214,7 +215,7 @@ export class RunStore {
           // failure) keeps the dir — fail-closed.
           const last = lastActivityMs(dir)
           if (last !== 0 && now - last > this._ttlMs) {
-            fs.rmSync(dir, { recursive: true, force: true })
+            rmForceSafe(dir, { recursive: true })
             removed++
           }
         } catch {
