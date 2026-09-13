@@ -282,7 +282,8 @@ leaving the agent stuck. Two more channels complete the surface:
 Seeded allowlist (both tools): `mobile.moegirl.org.cn`, `search.bilibili.com`,
 `cn.bing.com`, `www.bing.com`, `www.baidu.com`, `www.sogou.com`, `www.so.com`,
 `registry.npmjs.org`, `api.github.com`, `raw.githubusercontent.com`,
-`ghproxy.net` (mainland mirror for github raw) — extend via
+`gist.githubusercontent.com`, `github.com`, `ghproxy.net` (mainland mirror
+for github raw) — extend via
 `TM_WEBFETCH_ALLOWED_DOMAINS` (`"*"` opens every host). Architect /
 implementer / reviewer have NO network grant — web questions come back as a
 reported gap, never simulated. The tester carries `tm_browser` ONLY, for
@@ -383,7 +384,7 @@ for overrides, extra agents and disabling roles.
 | `TM_BLACKBOARD_DIR` / `TM_TRAJECTORY_DIR` | `<repo>/.git/opencode-team/…` | offload store / trajectory ledger (tmpdir fallback; explicit = absolute or project-relative) |
 | `TM_BLACKBOARD_TTL` | `7` | store retention (days) |
 | `TM_BASH_READONLY_ALLOWED` | built-in table | tm_bash allowlist |
-| `TM_WEBFETCH_ALLOWED_DOMAINS` | the eleven seeded hosts | tm_webfetch / tm_search / tm_browser allowlist (`"*"` opens all; empty = deny all) |
+| `TM_WEBFETCH_ALLOWED_DOMAINS` | the thirteen seeded hosts | tm_webfetch / tm_search / tm_browser allowlist (`"*"` opens all; empty = deny all) |
 | `TM_BROWSER_PATH` | auto-detect | tm_browser executable override (Edge/Chrome/Chromium per OS) |
 | `TM_BROWSER_HEADLESS` | `auto` | `1` headless (CI) / `0` headful / `auto` (headless only on display-less Linux) |
 | `TM_MEMORY_GLOBAL_DIR` | `~/.opencode-team/memories/global/` | tm_memory GLOBAL scope store |

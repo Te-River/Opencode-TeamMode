@@ -99,9 +99,11 @@ try {
         "registry.npmjs.org",
         "api.github.com",
         "raw.githubusercontent.com",
+        "gist.githubusercontent.com",
+        "github.com",
         "ghproxy.net",
       ],
-      "default webfetch allowlist = the CN-reachable lookup hosts + github raw + mirror",
+      "default webfetch allowlist = the CN-reachable lookup hosts + github (api/raw/gist/site) + mirror",
     )
     assert.deepEqual(
       tm.resolveTmConfig({ TM_WEBFETCH_ALLOWED_DOMAINS: "docs.example.com, *" }).webfetchAllowedDomains,
@@ -769,9 +771,11 @@ try {
         "registry.npmjs.org",
         "api.github.com",
         "raw.githubusercontent.com",
+        "gist.githubusercontent.com",
+        "github.com",
         "ghproxy.net",
       ],
-      "seeded allowlist = the CN-reachable lookup hosts (engines + npm + github api + raw + mirror)",
+      "seeded allowlist = the CN-reachable lookup hosts (engines + npm + github + mirror)",
     )
     assert.equal(tm.hostAllowed("cn.bing.com", A), true, "exact host allowed")
     assert.equal(tm.hostAllowed("a.mobile.moegirl.org.cn", A), true, "subdomain of a listed host allowed")
