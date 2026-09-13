@@ -1,6 +1,6 @@
 /**
  * tm layer — the host `$` shell bridge + shell error hygiene.  Split out of
- * the former tools.ts hub; behavior unchanged.
+ * the former tools.ts hub.
  */
 
 /**
@@ -16,7 +16,11 @@
  */
 export async function runShellCommand($: unknown, command: string): Promise<string> {
   if (typeof $ !== "function") {
-    throw new Error("宿主 shell 桥（$）不可用")
+    // Desktop sidecar reality (1.18.30 probed): the plugin runs in a
+    // worker_threads worker on Electron's Node — neither input.$ nor Bun
+    // globals exist there.  Go straight to the platform-shell spawn
+    // (governance already classified the command before this call).
+    return spawnShellFallback(command)
   }
   const shell = $ as (...a: unknown[]) => unknown
   let proc: unknown
@@ -36,10 +40,17 @@ export async function runShellCommand($: unknown, command: string): Promise<stri
     }
   }
   if (proc == null) {
-    // rethrow the ORIGINAL error (Error or shell-error object) — wrapping it
-    // through String() would destroy stderr/stdout before cleanShellError
-    // can extract line numbers
-    throw lastErr ?? new Error("shell 桥调用失败")
+    // a $ shape that THREW carries the real shell error (stderr/stdout) —
+    // rethrow it so cleanShellError can extract the line; only a $ that is
+    // absent entirely (or returned nothing) falls back to the platform shell
+    if (lastErr != null) throw lastErr
+    // Desktop sidecar reality (1.18.30 probed): the plugin runs in a
+    // worker_threads worker on Electron's Node — neither input.$ nor Bun
+    // globals exist there, so every $ shape fails.  Fall back to spawning
+    // the platform shell directly (PowerShell on win32 / bash elsewhere).
+    // Governance (P3 allowlist + R6) already classified the command BEFORE
+    // this call — the fallback runs only cleared commands.
+    return await spawnShellFallback(command)
   }
   const p = proc as { text?: () => unknown; stdout?: unknown }
   if (typeof p.text === "function") return String(await p.text())
@@ -63,4 +74,41 @@ export function cleanShellError(err: unknown): { message: string; line?: number 
   if (msg.length > 400) msg = msg.slice(0, 400) + " …"
   const m = /(?:line|行)\s*[:#]?\s*(\d+)/i.exec(raw)
   return { message: msg || "shell 执行失败", line: m ? Number(m[1]) : undefined }
+}
+
+// ---------- platform-shell fallback (Desktop sidecar has no $ bridge) -----
+
+async function spawnShellFallback(command: string): Promise<string> {
+  const { spawn } = await import("node:child_process")
+  const isWin = process.platform === "win32"
+  const exe = isWin ? "powershell.exe" : (process.env.SHELL || "bash")
+  const args = isWin
+    ? ["-NoProfile", "-NonInteractive", "-Command", command]
+    : ["-c", command]
+  return await new Promise((resolve, reject) => {
+    let child: ReturnType<typeof spawn>
+    try {
+      child = spawn(exe, args, { windowsHide: true, timeout: 60_000 })
+    } catch (e) {
+      reject(new Error(`平台 shell 回退启动失败：${(e as Error).message}`))
+      return
+    }
+    let out = ""
+    let err = ""
+    child.stdout?.on("data", (d: Buffer) => { out += d.toString() })
+    child.stderr?.on("data", (d: Buffer) => { err += d.toString() })
+    child.on("error", (e: Error) => reject(e))
+    child.on("close", (code) => {
+      if (code === 0) resolve(out)
+      else {
+        const wrapped = new Error(err.trim() || `exit code ${code}`) as Error & {
+          stderr?: string
+          stdout?: string
+        }
+        wrapped.stderr = err
+        wrapped.stdout = out
+        reject(wrapped)
+      }
+    })
+  })
 }

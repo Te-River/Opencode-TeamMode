@@ -36,7 +36,7 @@ const TM_GREP_DESCRIPTION = `Full-text regex search inside the project (governed
 - Strategy: aggregate first (narrow pattern, counts), fetch raw lines only when needed.`
 
 const TM_BASH_DESCRIPTION = `Run a READ-ONLY shell command in the project (governed passthrough of the built-in bash). Dialect: bash on POSIX, PowerShell-like on Windows (Get-Content / Get-ChildItem / Select-String work; ls/cat/dir are aliased).
-- Allowlist only (P3): ls cat head tail grep rg find awk sort uniq wc cut dir Get-Content Get-ChildItem Select-String Measure-Object — extend via TM_BASH_READONLY_ALLOWED. Anything else is rejected with a read-only suggestion or an ask to HUMAN.
+- Allowlist only (P3): ls cat head tail grep rg find awk sort uniq wc cut dir Get-Content Get-ChildItem Select-String Measure-Object Select-Object Where-Object Sort-Object Group-Object — extend via TM_BASH_READONLY_ALLOWED. Anything else is rejected with a read-only suggestion or an ask to HUMAN.
 - R6 still applies on top: env dumps (env/printenv/set, $env:) and env-file paths are blocked exactly like the built-in bash — two layers, non-conflicting (R6 forbids, the allowlist permits).
 - Escapes rejected: output redirection (> >>), command substitution ($(), backticks, <() >()), find -delete/-exec, tail -f, Get-Content/Get-ChildItem -Wait, awk system(), rg --pre.
 - Governance: output up to TM_OFFLOAD_THRESHOLD tokens returns inline; larger output is offloaded to a tm_fetch handle. Use for aggregations (count/sort/uniq); for plain search prefer tm_grep (host index, auto-governed).`

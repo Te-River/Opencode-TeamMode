@@ -320,8 +320,8 @@ hard-won facts for the next conversation.
 
 Seeded allowlist hosts (both web tools): `mobile.moegirl.org.cn` (wiki
 term), `search.bilibili.com`, `cn.bing.com`, `www.baidu.com` (search URL
-templates); extend via `TM_WEBFETCH_ALLOWED_DOMAINS` (`"*"` opens every
-host).
+templates) and `registry.npmjs.org` (npm package metadata); extend via
+`TM_WEBFETCH_ALLOWED_DOMAINS` (`"*"` opens every host).
 
 Seeded allowlist hosts (both web tools): `mobile.moegirl.org.cn` (wiki
 term), `search.bilibili.com`, `cn.bing.com`, `www.baidu.com` (search URL

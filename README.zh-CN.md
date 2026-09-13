@@ -296,8 +296,9 @@ search，踩过坑后把结论 add 给下一次会话。
    工具保持移除；远程 `.env` 类 URL 拒绝（R6 红线）。
 
 白名单预置主机（两个联网工具共用）：`mobile.moegirl.org.cn`（词条）、
-`search.bilibili.com`、`cn.bing.com`、`www.baidu.com`（搜索 URL 模板）；
-通过 `TM_WEBFETCH_ALLOWED_DOMAINS` 扩展（`"*"` 放开全部主机）。
+`search.bilibili.com`、`cn.bing.com`、`www.baidu.com`（搜索 URL 模板）与
+`registry.npmjs.org`（npm 包元数据）；通过 `TM_WEBFETCH_ALLOWED_DOMAINS`
+扩展（`"*"` 放开全部主机）。
 
 白名单预置主机（两个联网工具共用）：`mobile.moegirl.org.cn`（词条）、
 `search.bilibili.com`、`cn.bing.com`、`www.baidu.com`（搜索 URL 模板）；

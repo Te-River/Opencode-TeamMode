@@ -8,6 +8,16 @@ registry saw 1.5.0 as the install-script fix release).
 ## [Unreleased]
 
 ### Fixed
+- **tm_bash works on the Desktop sidecar (P0)**: the shell bridge assumed
+  the host $ (Bun shell) — but the 1.18.30 desktop runs the plugin in a
+  worker on Electron's Node where neither input.$ nor Bun globals exist,
+  so every tm_bash / PTC tm.bash call died with 「宿主 shell 桥（$）不可用」
+  (caught in a real session transcript).  runShellCommand now falls back
+  to spawning the platform shell directly (PowerShell on win32 / bash
+  elsewhere) AFTER the $ shapes fail — P3/R6 governance still classifies
+  the command first, and a thrown shell error still rethrows (preserving
+  line extraction)
+- **README: plugin updates are manual**
 - **README: plugin updates are manual** — documented the true semantics
   (OpenCode caches plugins by spec string and never re-resolves @latest;
   upstream issues #25293 / #10546 / #21609) and the update recipe

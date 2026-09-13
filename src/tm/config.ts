@@ -21,24 +21,28 @@
  * cleanup path), not code.
  */
 
-/** Default tm_bash read-only allowlist (P3, command-level). */
+/** Default tm_bash read-only allowlist (P3, command-level).  The PS
+ *  -Object entries are pure pipeline formatters — no write capability. */
 export const DEFAULT_BASH_READONLY_ALLOWED: readonly string[] = [
   "ls", "cat", "head", "tail", "grep", "rg", "find", "awk", "sort", "uniq",
   "wc", "cut", "dir", "Get-Content", "Get-ChildItem", "Select-String",
-  "Measure-Object",
+  "Measure-Object", "Select-Object", "Where-Object", "Sort-Object",
+  "Group-Object",
 ]
 
 /**
- * Seeded tm_webfetch domain allowlist — the four lookup hosts the design
- * names (wiki term / bilibili search / bing / baidu).  Subdomains of an
- * entry are included; TM_WEBFETCH_ALLOWED_DOMAINS overrides the list
- * (comma/semicolon separated; a lone "*" opens every host).
+ * Seeded tm_webfetch domain allowlist — the lookup hosts the design names
+ * (wiki term / bilibili search / bing / baidu) plus the npm registry (JSON
+ * package-metadata queries).  Subdomains of an entry are included;
+ * TM_WEBFETCH_ALLOWED_DOMAINS overrides the list (comma/semicolon
+ * separated; a lone "*" opens every host).
  */
 export const DEFAULT_WEBFETCH_DOMAINS: readonly string[] = [
   "mobile.moegirl.org.cn",
   "search.bilibili.com",
   "cn.bing.com",
   "www.baidu.com",
+  "registry.npmjs.org",
 ]
 
 export interface TmConfig {

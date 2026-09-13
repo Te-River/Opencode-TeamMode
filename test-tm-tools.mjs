@@ -87,7 +87,7 @@ try {
     // webfetch allowlist: seeded four hosts, env override, explicit empty
     assert.deepEqual(
       cfg.webfetchAllowedDomains,
-      ["mobile.moegirl.org.cn", "search.bilibili.com", "cn.bing.com", "www.baidu.com"],
+      ["mobile.moegirl.org.cn", "search.bilibili.com", "cn.bing.com", "www.baidu.com", "registry.npmjs.org"],
       "default webfetch allowlist = the four lookup hosts",
     )
     assert.deepEqual(
@@ -744,7 +744,7 @@ try {
   {
     const A = tm.DEFAULT_WEBFETCH_DOMAINS
     assert.deepEqual(
-      A, ["mobile.moegirl.org.cn", "search.bilibili.com", "cn.bing.com", "www.baidu.com"],
+      A, ["mobile.moegirl.org.cn", "search.bilibili.com", "cn.bing.com", "www.baidu.com", "registry.npmjs.org"],
       "seeded allowlist = the four lookup hosts",
     )
     assert.equal(tm.hostAllowed("cn.bing.com", A), true, "exact host allowed")
@@ -794,6 +794,7 @@ try {
         }
       }
       if (url.includes("bing.com/big")) return htmlRes("w".repeat(200000))
+      if (url.includes("baidu.com")) return htmlRes("<html><head></head><body></body></html>")
       return htmlRes("<h1>Page</h1>content-here")
     }
     try {
@@ -811,6 +812,10 @@ try {
       )
       const foreign = await wf.execute({ url: "https://evil.example.com/x" }, ctx)
       assert.ok(foreign.output.includes("phase=permission"), "foreign host → structured permission error")
+      // empty anti-bot page (baidu in the real transcript) → actionable hint
+      // instead of a silently empty success
+      const empty = await wf.execute({ url: "https://www.baidu.com/s?wd=x" }, ctx)
+      assert.ok(empty.output.includes("页面内容为空"), "empty anti-bot page → hint to switch engine/site")
       const big = await wf.execute({ url: "https://cn.bing.com/big" }, ctx)
       assert.ok(big.output.includes("已卸载") && big.output.includes("ref: tm://runs/"), "oversized page offloads to a handle")
       const stepId = /steps\/([^/]+)\/result/.exec(big.output)[1]

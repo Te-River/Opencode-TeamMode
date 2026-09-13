@@ -252,6 +252,17 @@ export function buildTmWebfetchTool(deps: {
         pipelines.store.appendTrajectory({ tool, step_id: stepId, event: "call" })
         const res = await fetchWebText(verdict.url, allowlist, { fetchImpl: deps.fetchImpl })
         const { text } = extractWebResponse(res.text, res.contentType)
+        if (!text.trim()) {
+          // anti-bot / JS-rendered pages (baidu is the usual offender) return
+          // an empty shell — tell the agent instead of storing nothing
+          return toToolResult(
+            tmError(
+              tool,
+              "execute",
+              "页面内容为空——该站点可能是反爬或 JS 渲染页（baidu 常见）。换 cn.bing.com 搜索、用 tm_browser 打开，或直接访问数据源 URL（如 registry.npmjs.org/<pkg>/latest）。",
+            ),
+          )
+        }
         const contentType = detectContentType(text)
         return toToolResult(
           pipelines.govern(stepId, tool, text, {

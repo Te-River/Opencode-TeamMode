@@ -237,6 +237,7 @@ export type { TmDeps, TmPipelines } from "./pipelines.js"
 export { buildPtcArgsSchema, buildWebfetchArgsSchema } from "./args-schema.js"
 export { toToolResult, HANDLE_INVALID_MESSAGE, tmError } from "./result.js"
 export type { TmPhase } from "./result.js"
+export { runShellCommand, cleanShellError } from "./shell-bridge.js"
 export {
   buildTmWebfetchTool,
   checkWebUrl,
