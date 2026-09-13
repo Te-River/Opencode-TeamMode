@@ -62,6 +62,9 @@ export interface TmConfig {
   bashReadonlyAllowed: string[]
   /** tm_webfetch domain allowlist (subdomains included; "*" = any host). */
   webfetchAllowedDomains: string[]
+  /** tm_memory GLOBAL scope dir.  Empty = auto (~/.opencode-team/memories/global
+   *  — user-level, follows the user across projects). */
+  memoryGlobalDir: string
   // ---- tm_ptc_run (M1 contract) — see design 02-architect-ptc-run-design §2/§4.3 ----
   /** Hard cap on a PTC program source string length (chars). */
   ptcMaxProgramChars: number
@@ -151,6 +154,7 @@ export function resolveTmConfig(env: EnvLike = process.env): TmConfig {
     bashReadonlyAllowed: allowlist ?? [...DEFAULT_BASH_READONLY_ALLOWED],
     webfetchAllowedDomains:
       parseAllowlistEnv(env.TM_WEBFETCH_ALLOWED_DOMAINS) ?? [...DEFAULT_WEBFETCH_DOMAINS],
+    memoryGlobalDir: envStr(env, "TM_MEMORY_GLOBAL_DIR", ""),
     ptcMaxProgramChars: envInt(env, "TM_PTC_MAX_PROGRAM_CHARS", TM_CONFIG_DEFAULTS.ptcMaxProgramChars, PTC_BUDGET_BOUNDS.programChars.min, PTC_BUDGET_BOUNDS.programChars.max),
     ptcMaxCalls: envInt(env, "TM_PTC_MAX_CALLS", TM_CONFIG_DEFAULTS.ptcMaxCalls, PTC_BUDGET_BOUNDS.maxCalls.min, PTC_BUDGET_BOUNDS.maxCalls.max),
     ptcMaxErrors: envInt(env, "TM_PTC_MAX_ERRORS", TM_CONFIG_DEFAULTS.ptcMaxErrors, PTC_BUDGET_BOUNDS.maxErrors.min, PTC_BUDGET_BOUNDS.maxErrors.max),

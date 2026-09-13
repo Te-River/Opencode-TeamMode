@@ -5,6 +5,26 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 versioning is semver (the 1.4.x train shipped under working labels; the
 registry saw 1.5.0 as the install-script fix release).
 
+## [Unreleased]
+
+### Fixed
+- **Global memories now actually global**: the tm_memory `global` scope
+  wrote into the CURRENT repo's .git store — per-project despite the
+  label.  Global memories now live at `~/.opencode-team/memories/global`
+  (TM_MEMORY_GLOBAL_DIR override, isolated from any repo) and follow the
+  user across projects; the `project` scope is unchanged (asserted in
+  test-tm-tools §6n)
+
+### Changed
+- **tm_ptc_run adoption**: the tool description now leads with the trigger
+  (use INSTEAD of chaining ≥3 tm_read/tm_grep/tm_bash calls) and ships a
+  one-line example program; the aggregation summary carries an educator
+  line when a program with ok bridged calls returns no data (the #1
+  adoption killer — silent result loss); SHARED_RULES states the ≥3
+  threshold + return-data rule; the lead's research phase batches recon
+  in one tm_ptc_run program
+- TmRuntime now exposes the main pipelines instance (tests + tool builders)
+
 ## [1.5.6] - 2026-09-13
 
 ### Added

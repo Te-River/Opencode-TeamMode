@@ -51,6 +51,8 @@ export interface TmRuntime {
   runId: string
   config: TmConfig
   store: RunStore
+  /** The ONE main pipeline instance (exposed for tests + tool builders). */
+  pipelines: ReturnType<typeof import("./pipelines.js").buildPipelines>
   tools: Record<string, ToolDefinition>
   /** Kill any long-lived session the tools own (tm_browser child process). */
   dispose: () => void
@@ -96,6 +98,9 @@ export async function createTmTools(
   const storeBase = gitUsable
     ? path.join(gitDir as string, "opencode-team")
     : path.join(os.tmpdir(), "opencode-team")
+  // User-level global memory root — OUTSIDE any repo, so "global" scope
+  // really follows the user across projects (repo scope stays in .git).
+  const globalMemoriesDir = cfg.memoryGlobalDir || path.join(os.homedir(), ".opencode-team", "memories", "global")
   const store = new RunStore({
     projectRoot: directory,
     blackboardDir: cfg.blackboardDir || path.join(storeBase, "blackboard"),
@@ -146,6 +151,7 @@ export async function createTmTools(
   const memoryArgs = await buildMemoryArgsSchema()
   tools.tm_memory = buildTmMemoryTool({
     storeBase,
+    globalRoot: globalMemoriesDir,
     directory,
     cfg,
     pipelines,
@@ -186,7 +192,7 @@ export async function createTmTools(
     pipelines: ptcPipelines,
   })
   tools.tm_ptc_run = ptcTool
-  return { runId, config: cfg, store, tools, dispose: () => browserTool.dispose() }
+  return { runId, config: cfg, store, pipelines, tools, dispose: () => browserTool.dispose() }
 }
 
 // ---------- re-exports (stable import surface for tests + plugin entry) ----------

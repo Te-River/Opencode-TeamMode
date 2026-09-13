@@ -266,17 +266,19 @@ answering from memory or simulating removed tools.
 
 ### Project memory (tm_memory)
 
-**Project memory (`tm_memory`) — all agents.**  Durable project facts
-(build commands, environment quirks, architecture decisions, user
-conventions that outlive one conversation) live as Markdown files with
-frontmatter under the same git-aware store
-(`<repo>/.git/opencode-team/memories/<project-slug>/<category>/`) —
-human-editable, never in your working tree.  `add` / `search`
-(deterministic keyword scoring, top 5) / `list` / `forget`; content is
-capped at 4000 chars per memory — task state belongs to the todo list,
-oversized docs to board files.  Agents are prompted to search before
-assuming project conventions and to save hard-won facts for the next
-conversation.
+**Project memory (`tm_memory`) — all agents.**  Durable facts (build
+commands, environment quirks, architecture decisions, user conventions
+that outlive one conversation) live as Markdown files with frontmatter in
+two scopes — human-editable, never in your working tree:
+- **`project`** (default): `<repo>/.git/opencode-team/memories/<project-slug>/<category>/` — per checkout, git-adjacent.
+- **`global`**: `~/.opencode-team/memories/` (override
+  `TM_MEMORY_GLOBAL_DIR`) — **follows you across ALL projects**; use it
+  for personal preferences and cross-project conventions.
+Actions: `add` / `search` (deterministic keyword scoring, top 5) /
+`list` / `forget`; content is capped at 4000 chars per memory — task
+state belongs to the todo list, oversized docs to board files.  Agents
+are prompted to search before assuming project conventions and to save
+hard-won facts for the next conversation.
 
 ### Web access (tm_browser + tm_webfetch) — network roles only
 
@@ -392,6 +394,7 @@ gated, so day-to-day team work runs without interruption.
 | `TM_WEBFETCH_ALLOWED_DOMAINS` | `mobile.moegirl.org.cn, search.bilibili.com, cn.bing.com, www.baidu.com` | tm_webfetch/tm_browser allowlist (`"*"` opens every host; explicit empty = deny all) |
 | `TM_BROWSER_PATH` | auto-detect | tm_browser executable override (Edge/Chrome/Chromium probed per OS) |
 | `TM_BROWSER_HEADLESS` | `auto` | tm_browser: `1` headless (servers/CI) / `0` headful / `auto` (headless only on display-less Linux) |
+| `TM_MEMORY_GLOBAL_DIR` | `~/.opencode-team/memories/global/` | tm_memory GLOBAL scope store (user-level, cross-project) |
 | `TM_PTC_MAX_PROGRAM_CHARS` | `4000` | PTC program source length cap (chars) |
 | `TM_PTC_MAX_CALLS` | `20` | PTC per-run bridge-call budget (1–200) |
 | `TM_PTC_MAX_ERRORS` | `3` | PTC per-run error budget (1–50) |

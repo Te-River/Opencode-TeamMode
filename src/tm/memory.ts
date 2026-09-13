@@ -10,8 +10,10 @@
  * tree, TTL-free (memories are long-lived by design; forget is explicit).
  *
  * Layout:
- *   <storeBase>/memories/global/<category>/<title>.md
- *   <storeBase>/memories/projects/<project-slug>/<category>/<title>.md
+ *   GLOBAL  (user-level, follows you across projects):
+ *     <globalRoot>/<category>/<title>.md      — default ~/.opencode-team/memories/global/
+ *   PROJECT (repo-level, per checkout):
+ *     <storeBase>/memories/projects/<project-slug>/<category>/<title>.md
  *
  * The project slug is derived from the workspace path (drive letter + path
  * segments dashed, lowercased) so two checkouts never share a memory set.
@@ -77,14 +79,14 @@ function categorySlug(category: string): string {
     .replace(/^_+|_+$/g, "") || "notes"
 }
 
-function memoriesRoot(storeBase: string): string {
-  return path.join(storeBase, "memories")
+function projectRoot(storeBase: string, directory: string): string {
+  return path.join(storeBase, "memories", "projects", projectSlug(directory))
 }
 
-function scopeRoot(storeBase: string, scope: "project" | "global", directory: string): string {
+function scopeRoot(globalRoot: string, storeBase: string, scope: "project" | "global", directory: string): string {
   return scope === "global"
-    ? path.join(memoriesRoot(storeBase), "global")
-    : path.join(memoriesRoot(storeBase), "projects", projectSlug(directory))
+    ? globalRoot
+    : projectRoot(storeBase, directory)
 }
 
 // ---------- frontmatter (minimal writer/parser, no YAML dep) ------------------
@@ -176,16 +178,15 @@ function walkMemories(dir: string, out: string[]): void {
   }
 }
 
-function listMemoryFiles(storeBase: string, directory: string, scope?: "project" | "global"): string[] {
+function listMemoryFiles(globalRoot: string, storeBase: string, directory: string, scope?: "project" | "global"): string[] {
   const files: string[] = []
-  if (!scope || scope === "project") walkMemories(scopeRoot(storeBase, "project", directory), files)
-  if (!scope || scope === "global") walkMemories(scopeRoot(storeBase, "global", directory), files)
+  if (!scope || scope === "project") walkMemories(scopeRoot(globalRoot, storeBase, "project", directory), files)
+  if (!scope || scope === "global") walkMemories(scopeRoot(globalRoot, storeBase, "global", directory), files)
   return files
 }
 
-function scopeOf(storeBase: string, directory: string, filePath: string): "project" | "global" {
-  return filePath.startsWith(path.join(memoriesRoot(storeBase), "projects") + path.sep)
-    ? "project" : "global"
+function scopeOf(globalRoot: string, filePath: string): "project" | "global" {
+  return filePath.startsWith(globalRoot + path.sep) ? "global" : "project"
 }
 
 /**
@@ -214,16 +215,16 @@ export function scoreMemory(
   return score
 }
 
-function readAllMemories(storeBase: string, directory: string, scope?: "project" | "global"): MemoryHit[] {
+function readAllMemories(globalRoot: string, storeBase: string, directory: string, scope?: "project" | "global"): MemoryHit[] {
   const hits: MemoryHit[] = []
-  for (const file of listMemoryFiles(storeBase, directory, scope)) {
+  for (const file of listMemoryFiles(globalRoot, storeBase, directory, scope)) {
     try {
       const m = parseMemoryMarkdown(fs.readFileSync(file, "utf8"), file)
       if (!m) continue
       hits.push({
         title: m.title,
         category: m.category,
-        scope: scopeOf(storeBase, directory, file),
+        scope: scopeOf(globalRoot, file),
         filePath: file,
         keywords: m.keywords,
         usageScenario: m.usageScenario,
@@ -251,6 +252,10 @@ function normalizeScope(v: unknown): "project" | "global" {
 
 export function buildTmMemoryTool(deps: {
   storeBase: string
+  /** User-level global memory dir (default ~/.opencode-team/memories/global;
+   *  TM_MEMORY_GLOBAL_DIR override).  Lives OUTSIDE any repo so "global"
+   *  really follows the user across projects. */
+  globalRoot: string
   directory: string
   cfg: TmConfig
   pipelines: TmPipelines
@@ -260,7 +265,7 @@ export function buildTmMemoryTool(deps: {
   args: Record<string, unknown>
   execute: (rawArgs: Record<string, unknown>, ctx: unknown) => Promise<ToolResult>
 } {
-  const { storeBase, directory, pipelines } = deps
+  const { storeBase, globalRoot, directory, pipelines } = deps
   const tool = "tm_memory"
   const traj = (e: Record<string, unknown>) => pipelines.store.appendTrajectory({ tool, ...e })
 
@@ -281,7 +286,7 @@ export function buildTmMemoryTool(deps: {
         const usageScenario = asStringArray(args.usage_scenario).slice(0, 8)
         const keywords = asStringArray(args.keywords).slice(0, 10)
         const file = path.join(
-          scopeRoot(storeBase, scope, directory),
+          scopeRoot(globalRoot, storeBase, scope, directory),
           category,
           `${titleSlug(title)}.md`,
         )
@@ -301,7 +306,7 @@ export function buildTmMemoryTool(deps: {
         const query = String(args.query ?? "").trim()
         if (!query) return tmError(tool, "args", "缺少 query 参数")
         const scope = args.scope ? normalizeScope(args.scope) : undefined
-        const all = readAllMemories(storeBase, directory, scope)
+        const all = readAllMemories(globalRoot, storeBase, directory, scope)
         for (const m of all) m.score = scoreMemory(m, query)
         const top = all
           .filter((m) => m.score > 0)
@@ -321,7 +326,7 @@ export function buildTmMemoryTool(deps: {
       }
       if (action === "list") {
         const scope = args.scope ? normalizeScope(args.scope) : undefined
-        const all = readAllMemories(storeBase, directory, scope)
+        const all = readAllMemories(globalRoot, storeBase, directory, scope)
         traj({ step_id: "memory", event: "list", count: all.length })
         if (!all.length) return "当前没有任何记忆。用 tm_memory add 保存第一条。"
         const byScope = new Map<string, string[]>()
@@ -342,7 +347,7 @@ export function buildTmMemoryTool(deps: {
         if (!title) return tmError(tool, "args", "缺少 title 参数")
         const stem = titleSlug(title)
         const scope = args.scope ? normalizeScope(args.scope) : undefined
-        const files = listMemoryFiles(storeBase, directory, scope).filter((f) =>
+        const files = listMemoryFiles(globalRoot, storeBase, directory, scope).filter((f) =>
           path.basename(f, ".md") === stem,
         )
         if (!files.length) return tmError(tool, "args", `没有找到标题为 "${shorten(title, 80)}" 的记忆（可用 tm_memory list 确认）`)

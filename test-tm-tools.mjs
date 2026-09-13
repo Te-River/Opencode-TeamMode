@@ -34,7 +34,7 @@ const ENV_KEYS = [
   "TM_BLACKBOARD_TTL", "TM_BASH_READONLY_ALLOWED",
   "TM_ENV_PROTECT", "TM_ENV_PROTECT_EXTRA_DENY",
   "TM_PTC_MAX_PROGRAM_CHARS", "TM_PTC_MAX_CALLS", "TM_PTC_MAX_ERRORS",
-  "TM_PTC_TIMEOUT_MS", "TM_PTC_ENGINE", "TM_WEBFETCH_ALLOWED_DOMAINS",
+  "TM_PTC_TIMEOUT_MS", "TM_PTC_ENGINE", "TM_WEBFETCH_ALLOWED_DOMAINS", "TM_MEMORY_GLOBAL_DIR",
 ]
 const savedEnv = Object.fromEntries(ENV_KEYS.map((k) => [k, process.env[k]]))
 const clearTmEnv = () => { for (const k of ENV_KEYS) delete process.env[k] }
@@ -98,6 +98,12 @@ try {
     assert.deepEqual(
       tm.resolveTmConfig({ TM_WEBFETCH_ALLOWED_DOMAINS: "" }).webfetchAllowedDomains,
       [], "explicit empty webfetch allowlist = deny-all",
+    )
+    // memory global dir: empty = auto (~/.opencode-team/memories/global)
+    assert.equal(tm.resolveTmConfig({}).memoryGlobalDir, "", "memory global dir default = auto (user home)")
+    assert.equal(
+      tm.resolveTmConfig({ TM_MEMORY_GLOBAL_DIR: "D:/mem/global" }).memoryGlobalDir,
+      "D:/mem/global", "memory global dir override",
     )
     // explicit empty allowlist = deny-all (explicit user choice)
     assert.deepEqual(tm.resolveTmConfig({ TM_BASH_READONLY_ALLOWED: "," }).bashReadonlyAllowed, [], "empty allowlist honored")
@@ -815,13 +821,23 @@ try {
   }
   console.log("6m. tm_webfetch: OK (allowlist matrix, scheme/env-file red lines, HTML strip, redirect re-check, threshold offload, structured errors)")
 
-  // 6n. tm_memory — project/global memory mirror (Markdown + frontmatter,
-  // Qoder-style: write side = files, retrieval = deterministic scoring).
-  // The per-mkdtemp project slug isolates each test run even under the
-  // shared tmpdir store base.
+  // 6n. tm_memory — project (repo .git) + GLOBAL (user profile) memory
+  // mirror (Markdown + frontmatter, Qoder-style: write side = files,
+  // retrieval = deterministic scoring).  Standalone build with an isolated
+  // globalRoot so the user's real ~/.opencode-team is never touched; the
+  // per-mkdtemp project slug isolates each test run under the shared
+  // tmpdir store base.
   {
-    const mem = runtime.tools.tm_memory
-    assert.ok(mem && typeof mem.execute === "function", "tm_memory registered on the runtime tool surface")
+    const memReg = runtime.tools.tm_memory
+    assert.ok(memReg && typeof memReg.execute === "function", "tm_memory registered on the runtime tool surface")
+    const globalRoot = path.join(mktmp("memglobal"), "global")
+    const mem = tm.buildTmMemoryTool({
+      storeBase: path.join(os.tmpdir(), "opencode-team"),
+      globalRoot,
+      directory: root6,
+      cfg: runtime.config,
+      pipelines: runtime.pipelines,
+    })
     const slug = tm.projectSlug(root6)
     const cleanup = () => fs.rmSync(path.join(os.tmpdir(), "opencode-team", "memories", "projects", slug), { recursive: true, force: true })
     try {
@@ -846,8 +862,11 @@ try {
       // different memory (identity = scope + category + title slug)
       await mem.execute({ action: "add", title: "Go 测试运行命令", content: "更新后的内容。" }, ctx)
       assert.equal(fs.readdirSync(projectDir).length, 1, "default-category add does not touch the original")
-      // add: global scope
+      // add: global scope — lands in the USER-LEVEL dir (outside any repo),
+      // which is what makes "global" actually follow the user across projects
       await mem.execute({ action: "add", title: "全局记忆样例", content: "全局事实。", scope: "global" }, ctx)
+      const globalDirFiles = fs.readdirSync(globalRoot, { recursive: true }).filter((f) => String(f).endsWith(".md"))
+      assert.equal(globalDirFiles.length, 1, "global memory written under the user-level globalRoot, not the repo .git")
       // content cap
       const tooBig = await mem.execute({ action: "add", title: "big", content: "x".repeat(4001) }, ctx)
       assert.ok(tooBig.output.includes("4000"), "content over cap → args error")

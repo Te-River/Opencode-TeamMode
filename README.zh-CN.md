@@ -253,11 +253,14 @@ ERROR×N 统计 / 代码签名清单 / 二进制元信息，硬上限 80 token�
 
 ### 项目记忆（tm_memory）
 
-**项目记忆（`tm_memory`）——全部 Agent 可用。** 跨会话持久的项目事实
+**项目记忆（`tm_memory`）——全部 Agent 可用。** 跨会话持久的事实
 （构建命令、环境怪癖、架构决策、长期有效的用户约定）以带 frontmatter 的
-Markdown 文件存放在同一个 git 感知存储里
-（`<repo>/.git/opencode-team/memories/<项目slug>/<分类>/`）——人类可直接
-编辑，绝不进你的工作树。动作：`add` / `search`（确定性关键词评分，取前
+Markdown 文件存放，两个作用域——人类可直接编辑，绝不进你的工作树：
+- **`project`**（默认）：`<repo>/.git/opencode-team/memories/<项目slug>/<分类>/`
+  ——随仓库走，每个 checkout 一套。
+- **`global`**：`~/.opencode-team/memories/`（可用 `TM_MEMORY_GLOBAL_DIR`
+  覆盖）——**跟随你跨所有项目**；个人偏好与跨项目约定放这里。
+动作：`add` / `search`（确定性关键词评分，取前
 5）/ `list` / `forget`；单条内容上限 4000 字符——任务状态归 todo list，
 超长文档归黑板文件。所有 Agent 都被要求：在凭空假设项目约定之前先
 search，踩过坑后把结论 add 给下一次会话。
@@ -356,6 +359,7 @@ search，踩过坑后把结论 add 给下一次会话。
 | `TM_WEBFETCH_ALLOWED_DOMAINS` | `mobile.moegirl.org.cn, search.bilibili.com, cn.bing.com, www.baidu.com` | tm_webfetch/tm_browser 白名单（`"*"` 放开全部主机；显式留空 = 全拒绝） |
 | `TM_BROWSER_PATH` | 自动探测 | tm_browser 可执行文件覆盖（按 Edge/Chrome/Chromium 逐 OS 探测） |
 | `TM_BROWSER_HEADLESS` | `auto` | tm_browser：`1` 无头（服务器/CI） / `0` 有头 / `auto`（仅无显示器的 Linux 自动无头） |
+| `TM_MEMORY_GLOBAL_DIR` | `~/.opencode-team/memories/global/` | tm_memory GLOBAL 作用域存储（用户级，跨项目） |
 | `TM_PTC_MAX_PROGRAM_CHARS` | `4000` | PTC 程序源码长度上限（字符） |
 | `TM_PTC_MAX_CALLS` | `20` | PTC 单次运行桥接调用数上限（1–200） |
 | `TM_PTC_MAX_ERRORS` | `3` | PTC 单次运行错误数上限（1–50） |
