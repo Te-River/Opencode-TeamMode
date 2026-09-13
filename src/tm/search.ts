@@ -19,7 +19,8 @@
  * pipelines instance.
  */
 
-import { fetchWebText, extractSearchHits, renderSearchHits, type FetchImpl, type SearchHit } from "./webfetch.js"
+import { fetchWebText, extractSearchHits, renderSearchHits, hostAllowed, type FetchImpl, type SearchHit } from "./webfetch.js"
+import { askFnOf, askUserForTarget } from "./perm-ask.js"
 import { shorten, type TmConfig } from "./config.js"
 import { detectContentType } from "./preview.js"
 import { tmError, toToolResult } from "./result.js"
@@ -186,7 +187,7 @@ const SEARCH_DESCRIPTION = `Search the web through a governed multi-engine pipel
 - engines: bing (cn.bing.com, default) · bing-int (international results, ensearch=1) · sogou · so (360) · baidu · bilibili · moegirl (MediaWiki API: entry titles + snippets, structured) · npm (registry search: name@version + description, structured) · github (repo search API: stars + description, structured)
 - Returns an extracted title+URL hit list (max 10), NOT the raw page — output rides the same governance as the other tm_* tools.
 - Baidu/sogou sometimes serve anti-bot shells; an empty result names the alternative engines — switch, don't retry the same one.
-- Same red lines as tm_webfetch: allowlisted hosts only (the engine hosts are seeded; a custom TM_WEBFETCH_ALLOWED_DOMAINS must keep them), redirects re-checked per hop.
+- Governance: engine hosts outside a custom TM_WEBFETCH_ALLOWED_DOMAINS route through the OFFICIAL confirmation dialog (approve to proceed); redirects re-checked per hop; env-file URLs and non-http(s) schemes are hard-rejected.
 - URL-encode nothing yourself — pass the raw query; this tool encodes it.`
 
 /** Build the tm_search ToolDefinition over the SHARED main pipelines
@@ -211,7 +212,7 @@ export function buildTmSearchTool(deps: {
         descriptor: `engine: ${SEARCH_ENGINE_NAMES.join("|")} (optional, default bing)`,
       },
     },
-    execute: async (rawArgs): Promise<import("../types.js").ToolResult> => {
+    execute: async (rawArgs, ctx): Promise<import("../types.js").ToolResult> => {
       const tool = "tm_search"
       try {
         const args = rawArgs ?? {}
@@ -229,7 +230,36 @@ export function buildTmSearchTool(deps: {
         const stepId = pipelines.nextStepId()
         pipelines.store.appendTrajectory({ tool, step_id: stepId, event: "call" })
         const target = new URL(engine.buildUrl(encodeURIComponent(query)))
-        const res = await fetchWebText(target, allowlist, { fetchImpl: deps.fetchImpl })
+        // engine host outside a CUSTOM allowlist → the OFFICIAL dialog decides
+        // (seeded configs always cover every engine, so this only fires when
+        // the user narrowed TM_WEBFETCH_ALLOWED_DOMAINS)
+        const approvedHosts = new Set<string>()
+        let ask: import("./perm-ask.js").TmAskFn | null = null
+        if (!hostAllowed(target.hostname, allowlist)) {
+          const outcome = await askUserForTarget(ctx, {
+            permission: tool,
+            patterns: [target.toString()],
+            metadata: { tool, engine: engine.name, host: target.hostname, query: shorten(query, 120) },
+          })
+          if (outcome !== "approved") {
+            return toToolResult(
+              tmError(
+                tool,
+                "permission",
+                `主机 "${target.hostname}" 不在白名单内` +
+                  (outcome === "rejected" ? "，用户未批准。" : "，且宿主无法弹出确认窗口。") +
+                  `扩展: TM_WEBFETCH_ALLOWED_DOMAINS`,
+              ),
+            )
+          }
+          approvedHosts.add(target.hostname)
+          ask = askFnOf(ctx)
+        }
+        const res = await fetchWebText(target, allowlist, {
+          fetchImpl: deps.fetchImpl,
+          ask: ask ?? undefined,
+          skipAskHosts: approvedHosts,
+        })
         let rendered: string | null = null
         if (engine.kind === "npm-json") {
           rendered = renderNpmResults(query, res.text)

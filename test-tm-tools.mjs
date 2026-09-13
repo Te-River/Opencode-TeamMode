@@ -845,6 +845,18 @@ try {
       )
       const foreign = await wf.execute({ url: "https://evil.example.com/x" }, ctx)
       assert.ok(foreign.output.includes("phase=permission"), "foreign host → structured permission error")
+      // out-of-allowlist + a RESOLVING ctx.ask → the OFFICIAL dialog approves
+      // and the fetch proceeds (user decides, the plugin never self-allows)
+      const ctxAsk = { ...ctx, ask: async () => "once" }
+      const asked = await wf.execute({ url: "https://evil.example.com/x" }, ctxAsk)
+      assert.ok(asked.output.includes("Page") && asked.output.includes("content-here"), "approved out-of-allowlist fetch proceeds via the official dialog")
+      // ctx.ask rejecting → structured permission error naming the refusal
+      const ctxDeny = { ...ctx, ask: async () => { throw new Error("rejected by user") } }
+      const denied = await wf.execute({ url: "https://evil.example.com/x" }, ctxDeny)
+      assert.ok(denied.output.includes("phase=permission") && denied.output.includes("用户未批准"), "rejected dialog → permission error (user's verdict)")
+      // R6 red lines NEVER ask: env-file URL hard-blocks even with a resolver
+      const envAsk = await wf.execute({ url: "https://evil.example.com/.env" }, ctxAsk)
+      assert.ok(envAsk.output.includes("R6 红线") && envAsk.output.includes("phase=permission"), "env-file URL hard-blocks without any dialog")
       // empty anti-bot page (baidu in the real transcript) → actionable hint
       // instead of a silently empty success
       const empty = await wf.execute({ url: "https://www.baidu.com/s?wd=x" }, ctx)
@@ -976,6 +988,26 @@ try {
       )
     } finally {
       globalThis.fetch = realFetch
+    }
+
+    // narrowed allowlist + ctx.ask → out-of-allowlist ENGINE asks the user
+    {
+      const narrowCfg = { ...runtime.config, webfetchAllowedDomains: ["cn.bing.com"] }
+      const narrow = tm.buildTmSearchTool({ pipelines: runtime.pipelines, cfg: narrowCfg })
+      let askedPatterns = null
+      const ctxA = { directory: root6, ask: async (req) => { askedPatterns = req.patterns; return "once" } }
+      const ctxD = { directory: root6, ask: async () => { throw new Error("no") } }
+      const realFetch2 = globalThis.fetch
+      globalThis.fetch = async () => res200(npmJson, "application/json")
+      try {
+        const okNpm = await narrow.execute({ query: "left pad", engine: "npm" }, ctxA)
+        assert.ok(okNpm.output.includes("left-pad@1.3.0"), "approved out-of-allowlist engine proceeds via the official dialog")
+        assert.ok(Array.isArray(askedPatterns) && String(askedPatterns[0]).includes("registry.npmjs.org"), "dialog patterns carry the engine URL")
+        const noNpm = await narrow.execute({ query: "x", engine: "npm" }, ctxD)
+        assert.ok(noNpm.output.includes("phase=permission") && noNpm.output.includes("用户未批准"), "rejected engine dialog → permission error")
+      } finally {
+        globalThis.fetch = realFetch2
+      }
     }
 
     // unit-level: extractor handles single-quoted hrefs + entity titles

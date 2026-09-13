@@ -135,15 +135,26 @@ function applyPtcPermission(permission: AgentPermission, _isTeamLead: boolean): 
   permission[PTC_TOOL] = "allow"
 }
 
+/** Ask-map rules verified against the live host (1.18.30 asar probe):
+ * PermissionV2.evaluate uses findLast over the flat ruleset, so the
+ * explicit {"*": "ask"} rule registered here BEATS the later-matching
+ * tm_* wildcard allow — without it, ctx.ask would resolve silently (the
+ * tm_* allow rule matches every tm_* permission) and the official dialog
+ * would never pop for out-of-allowlist targets.  The tools' own allowlist
+ * short-circuit keeps seeded hosts dialog-free: ctx.ask is only called for
+ * out-of-allowlist targets, where the dialog MUST decide. */
+const WEB_ASK_MAP = { "*": "ask" } as const
+
 /** Apply the network grant: the team lead and the researcher carry the
- *  FULL governed web channels (tm_webfetch / tm_search / tm_browser —
- *  explicit allow overrides the tm_* wildcard); the TESTER carries
- *  tm_browser ONLY (governed UI verification — no open web fetching);
- *  architect / implementer / reviewer keep the whitelist deny. */
+ *  FULL governed web channels (tm_webfetch / tm_search / tm_browser — the
+ *  ask-map overrides the tm_* wildcard so out-of-allowlist targets pop the
+ *  official dialog); the TESTER carries tm_browser ONLY (governed UI
+ *  verification — no open web fetching); architect / implementer /
+ *  reviewer keep the whitelist deny. */
 function applyNetworkPermission(permission: AgentPermission, isWebRole: boolean, isTester = false): void {
-  permission["tm_webfetch"] = isWebRole ? "allow" : "deny"
-  permission["tm_search"] = isWebRole ? "allow" : "deny"
-  permission["tm_browser"] = isWebRole || isTester ? "allow" : "deny"
+  permission["tm_webfetch"] = isWebRole ? { ...WEB_ASK_MAP } : "deny"
+  permission["tm_search"] = isWebRole ? { ...WEB_ASK_MAP } : "deny"
+  permission["tm_browser"] = isWebRole || isTester ? { ...WEB_ASK_MAP } : "deny"
 }
 
 /* ------------------------------------------------------------------ */

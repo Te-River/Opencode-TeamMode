@@ -137,6 +137,11 @@ export interface ApprovalGateDeps {
   timers?: GateTimers
   /** Injectable clock (default: Date.now) for deterministic window tests. */
   now?: () => number
+  /** Best-effort attention hook — fired on EVERY permission.asked (all
+   *  dialogs: bash R2/R6 asks AND the tm_* ctx.ask web dialogs) so a user
+   *  not staring at the screen learns a confirmation is waiting.  index.ts
+   *  wires this to the host's `tui.showToast`.  Never throws into the gate. */
+  notify?: (message: string) => void
 }
 
 export interface ApprovalGate {
@@ -335,6 +340,7 @@ export function createApprovalGate(deps: ApprovalGateDeps): ApprovalGate {
     clearTimeoutFn: (h) => clearTimeout(h as NodeJS.Timeout),
   }
   const nowMs: () => number = deps.now ?? (() => Date.now())
+  const notify = deps.notify
   const reply = replyCapableFn(client)
   const list = listCapableFn(client)
   const pending = new Map<string, PendingEntry>()
@@ -462,7 +468,34 @@ export function createApprovalGate(deps: ApprovalGateDeps): ApprovalGate {
     }, POLL_INTERVAL_MS)
   }
 
+  /** Toasted request ids (cap-bounded) — duplicate `asked` replays for one
+   *  dialog must not spam notifications. */
+  const notified = new Set<string>()
+
   function onAsked(props: NonNullable<PermissionEvent["properties"]>): void {
+    // attention hook FIRST, for EVERY dialog (not just our categorized asks):
+    // the user asked to be notified wherever a confirmation window pops
+    const id = str(props.id, props.permissionID, props.requestID)
+    if (notify) {
+      if (!id || !notified.has(id)) {
+        if (id) {
+          notified.add(id)
+          if (notified.size > 256) {
+            // keep the set bounded; ids are tombstoned on reply anyway
+            const first = notified.values().next().value
+            if (first !== undefined) notified.delete(first)
+          }
+        }
+        try {
+          const perm = String(props.permission ?? props.permissionID ?? "permission")
+          const patterns = Array.isArray(props.patterns) ? props.patterns.map(String) : []
+          const detail = patterns.length > 0 ? patterns[0] : perm
+          notify(`等待你的批准：${detail}（${Math.round(timeoutMs / 60000)} 分钟无应答将自动拒绝）`)
+        } catch {
+          /* notification is best-effort — never break the gate */
+        }
+      }
+    }
     if (degraded) return // auto-reject is broken — do not open new timers
     const cat = categorizePermission(props)
     if (!cat) return // not one of our injected bash asks → leave it to the human

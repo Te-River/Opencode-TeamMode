@@ -289,6 +289,15 @@ reported gap, never simulated. The tester carries `tm_browser` ONLY, for
 governed UI verification of the project (local dev servers, preview routes);
 open web fetching stays with the two network roles.
 
+**Out-of-allowlist targets are a gate, not a wall.** When a fetch / search /
+browser-open points at a host outside the allowlist, the tool hands the URL
+to OpenCode's **official confirmation dialog** — you decide, once per
+target (an unanswered dialog is auto-rejected on the usual 10-minute timer,
+and the plugin still never self-allows). Every dialog also fires a
+**system toast notification**, so you know something is waiting even when
+you're not staring at the screen. Env-file URLs and non-http(s) schemes
+remain hard-rejected with no dialog — R6 red lines are never consentable.
+
 ### Security: the R6 + R2 approval gate
 
 **R6 environment protection.** With TeamMode active, the model cannot read
@@ -456,10 +465,12 @@ exist because a five-agent pipeline naively bolted onto one context window
 
 **Is the web access safe?**
 It's the most guarded surface in the plugin: two full web roles plus a
-browser-only tester grant, domain
-allowlist, redirects re-checked per hop, network-layer enforcement in the
-browser, env-file URL refusal, and every payload rides the same offload
-governance. No allowlisted page can bounce the fetch off-site.
+browser-only tester grant, a domain
+allowlist with dialog-gated escapes (you approve any out-of-allowlist
+target in OpenCode's official dialog, with a toast notification), redirects
+re-checked per hop, network-layer enforcement in the browser, env-file URL
+refusal, and every payload rides the same offload governance. No allowlisted
+page can bounce the fetch off-site.
 
 **Why doesn't the plugin auto-update?**
 OpenCode caches plugins by spec string and never re-resolves `@latest`

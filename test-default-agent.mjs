@@ -190,10 +190,14 @@ console.log("1. default_agent promotion matrix: OK (opt-out default; custom/plan
     // (governed UI verification); explicit keys override the tm_* wildcard
     const isWebRole = name === "team" || name === "researcher"
     const isTester = name === "tester"
-    expected["tm_webfetch"] = isWebRole ? "allow" : "deny"
-    expected["tm_search"] = isWebRole ? "allow" : "deny"
-    expected["tm_browser"] = isWebRole || isTester ? "allow" : "deny"
-    const allowCount = granted.length + tmTools.length + 2 + (isWebRole ? 3 : 0) + (isTester ? 1 : 0) // + wildcard + ptc + webfetch/search/browser (+ tester browser)
+    // web channels for network roles carry the ASK-MAP ({"*": "ask"}), not a
+    // bare allow — the official dialog must decide for out-of-allowlist
+    // targets (PermissionV2 findLast: the explicit rule beats the tm_* allow)
+    const webAsk = { "*": "ask" }
+    expected["tm_webfetch"] = isWebRole ? { ...webAsk } : "deny"
+    expected["tm_search"] = isWebRole ? { ...webAsk } : "deny"
+    expected["tm_browser"] = isWebRole || isTester ? { ...webAsk } : "deny"
+    const allowCount = granted.length + tmTools.length + 2 // + wildcard + ptc
     assert.deepStrictEqual(
       perm, expected,
       name + ": whitelist content exact (" + allowCount + " allow entries / " +
@@ -269,11 +273,12 @@ console.log("1. default_agent promotion matrix: OK (opt-out default; custom/plan
   // tm_webfetch / tm_search / tm_browser network-role split: team +
   // researcher carry the FULL governed web set; the tester carries
   // tm_browser only (governed UI verification of the project).
-  assert.equal(cfg.agent.team.permission.tm_webfetch, "allow", "team: network role (governed tm_webfetch)")
-  assert.equal(cfg.agent.researcher.permission.tm_webfetch, "allow", "researcher: network role (governed tm_webfetch)")
-  assert.equal(cfg.agent.team.permission.tm_browser, "allow", "team: network role (governed tm_browser)")
-  assert.equal(cfg.agent.researcher.permission.tm_browser, "allow", "researcher: network role (governed tm_browser)")
-  assert.equal(cfg.agent.tester.permission.tm_browser, "allow", "tester: browser-only grant (governed UI verification)")
+  const webAsk = { "*": "ask" }
+  assert.deepEqual(cfg.agent.team.permission.tm_webfetch, webAsk, "team: web ask-map (official dialog decides out-of-allowlist)")
+  assert.deepEqual(cfg.agent.researcher.permission.tm_webfetch, webAsk, "researcher: web ask-map")
+  assert.deepEqual(cfg.agent.team.permission.tm_browser, webAsk, "team: browser ask-map")
+  assert.deepEqual(cfg.agent.researcher.permission.tm_browser, webAsk, "researcher: browser ask-map")
+  assert.deepEqual(cfg.agent.tester.permission.tm_browser, webAsk, "tester: browser-only ask-map (governed UI verification)")
   assert.equal(cfg.agent.tester.permission.tm_webfetch, "deny", "tester: open web fetching stays denied")
   assert.equal(cfg.agent.tester.permission.tm_search, "deny", "tester: open web search stays denied")
   for (const name of ["architect", "implementer", "reviewer"]) {

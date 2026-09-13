@@ -7,6 +7,24 @@ registry saw 1.5.0 as the install-script fix release).
 
 ## [Unreleased]
 
+### Added
+- **Out-of-allowlist web targets now ASK, not reject**: tm_webfetch /
+  tm_search / tm_browser hand an unlisted URL to OpenCode's OFFICIAL
+  confirmation dialog via the plugin tool ctx's `ask` bridge (verified
+  against the 1.18.30 desktop binary: PermissionV2.ask evaluates the
+  agent's ruleset with findLast, so the web channels' new `{"*": "ask"}`
+  rules beat the tm_* wildcard allow and the dialog always pops; approval
+  lets the call proceed, rejection returns a structured permission error,
+  and the plugin still never self-allows).  R6 red lines (env-file URLs,
+  non-http(s) schemes) stay hard-rejected with no dialog — never
+  consentable.  Approved hosts pass the browser's CDP network layer for
+  the session (runtime approvedHosts set)
+- **Toast notification on every confirmation dialog**: the approval gate
+  now fires `tui.showToast` (warning, 15 s, title "OpenCode TeamMode")
+  for EVERY permission.asked it observes — bash R2/R6 asks and the new
+  tm_* web dialogs alike — naming the pending pattern and the auto-reject
+  timeout, deduped by request id (pinned in test-envprotect §7)
+
 ### Fixed
 - **The agent-install flow could not fetch its own installation guide**: the
   READMEs point agents at

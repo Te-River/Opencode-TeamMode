@@ -30,6 +30,7 @@ import * as fs from "node:fs"
 import * as os from "node:os"
 import * as path from "node:path"
 import { checkWebUrl } from "./webfetch.js"
+import { askUserForTarget } from "./perm-ask.js"
 import type { ToolResult } from "../types.js"
 import { tmError, toToolResult } from "./result.js"
 import type { TmConfig } from "./config.js"
@@ -200,6 +201,9 @@ export function buildTmBrowserTool(deps: {
   let session: BrowserSession | null = null
   const allowlist = (deps.cfg as { webfetchAllowedDomains?: readonly string[] }).webfetchAllowedDomains
     ?? ["*"]
+  // hosts approved through the OFFICIAL dialog this plugin lifetime — the
+  // CDP network-layer block consults this in addition to the static allowlist
+  const approvedHosts = new Set<string>()
 
   async function ensureSession(headless: boolean): Promise<BrowserSession> {
     if (session) return session
@@ -251,7 +255,16 @@ export function buildTmBrowserTool(deps: {
       const requestId = String((m.params as { requestId?: string }).requestId ?? "")
       const url = String((m.params as { request?: { url?: string } }).request?.url ?? "")
       const verdict = checkWebUrl(url, allowlist as readonly string[])
-      if (verdict.ok) {
+      let pass = verdict.ok
+      if (!pass) {
+        // an approved-via-dialog host passes the network layer too
+        try {
+          pass = approvedHosts.has(new URL(url).hostname)
+        } catch {
+          pass = false
+        }
+      }
+      if (pass) {
         void cdp.call("Fetch.continueRequest", { requestId }, sessionId, 5000).catch(() => {})
       } else {
         traj({ step_id: "browser", event: "blocked", url: url.slice(0, 200) })
@@ -298,15 +311,37 @@ export function buildTmBrowserTool(deps: {
     return "浏览器会话已关闭，临时配置目录已清理。"
   }
 
-  const execute = async (rawArgs: Record<string, unknown>): Promise<ToolResult> => {
+  const execute = async (rawArgs: Record<string, unknown>, ctx: unknown): Promise<ToolResult> => {
     try {
       const args = rawArgs ?? {}
       const action = String(args.action ?? "").trim()
       const url = String(args.url ?? "").trim()
-      // allowlist FIRST — a disallowed URL never spawns the browser
+      // allowlist FIRST — an out-of-allowlist URL only proceeds after the
+      // OFFICIAL dialog approves it (then the host passes the network layer
+      // too); hard red lines (scheme / env-file) reject with no dialog
       if ((action === "open" || action === "navigate") && url) {
         const verdict = checkWebUrl(url, allowlist as readonly string[])
-        if (!verdict.ok) return toToolResult(tmError(tool, "permission", verdict.message))
+        if (!verdict.ok) {
+          if (!verdict.askable || !verdict.url) {
+            return toToolResult(tmError(tool, "permission", verdict.message))
+          }
+          const outcome = await askUserForTarget(ctx, {
+            permission: tool,
+            patterns: [verdict.url.toString()],
+            metadata: { tool, url: url.slice(0, 200) },
+          })
+          if (outcome !== "approved") {
+            return toToolResult(
+              tmError(
+                tool,
+                "permission",
+                verdict.message +
+                  (outcome === "rejected" ? "。用户未批准。" : "。宿主无法弹出确认窗口（旧版协议）。"),
+              ),
+            )
+          }
+          approvedHosts.add(verdict.url.hostname)
+        }
       }
       if (action === "open") {
         if (!url) return toToolResult(tmError(tool, "args", "缺少 url 参数"))
@@ -381,7 +416,7 @@ export function buildTmBrowserTool(deps: {
 - open: { url } — launch (or reuse) the session and navigate.  Isolated temp profile (never your real profile); per-request DOMAIN ALLOWLIST enforced at the network layer (seeded = tm_webfetch's hosts; extend via TM_WEBFETCH_ALLOWED_DOMAINS).
 - navigate: { url } · read: extract page text (threshold-governed like tm_read) · screenshot: save PNG into the run store, only the path enters context · close: kill + cleanup.
 - Fixed priority ladder: ① tm_* governed tools → ② user MCP/plugin tools → ③ reasoning (never fabricate).  If no browser is installed (TM_BROWSER_PATH override exists), a structured error tells you to fall back to tm_webfetch / MCP.
-- Network role tool (team + researcher).  Non-allowlisted hosts are rejected at open/navigate AND blocked per-request.`
+- Network roles: team + researcher full grant, tester browser-only (UI verification).  Out-of-allowlist open/navigate routes through the OFFICIAL confirmation dialog (approved hosts pass the network layer for the session); env-file URLs and non-http(s) schemes hard-reject.`
 
   return {
     description: DESCRIPTION,

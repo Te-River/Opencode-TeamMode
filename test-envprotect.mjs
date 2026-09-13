@@ -524,6 +524,42 @@ console.log("6. loader integration: OK (hook installed, env wiring, off passthro
       clearTimeoutFn: (h) => { if (h) h.cleared = true },
     }
     let clock = 1000
+    // notify hook: EVERY permission.asked fires ONE toast message (dedupe by
+    // request id) naming the first pattern + the auto-reject timeout — the
+    // user asked to be notified wherever a confirmation window pops
+    {
+      const toasts = []
+      const nGate = createApprovalGate({
+        client, timeoutMs: 600000, timers: fake, now: () => clock,
+        notify: (m) => toasts.push(String(m)),
+      })
+      nGate.handleEvent({ type: "permission.asked", properties: {
+        id: "per_n1", sessionID: "ses_9", permission: "bash",
+        patterns: ["printenv PATH"], metadata: { command: "printenv PATH" },
+      } })
+      assert.equal(toasts.length, 1, "notify fired once for a fresh dialog")
+      assert.ok(toasts[0].includes("printenv PATH") && toasts[0].includes("自动拒绝"), "toast names the pending pattern + timeout")
+      nGate.handleEvent({ type: "permission.asked", properties: {
+        id: "per_n1", sessionID: "ses_9", permission: "bash",
+        patterns: ["printenv PATH"], metadata: { command: "printenv PATH" },
+      } })
+      assert.equal(toasts.length, 1, "duplicate asked replay does NOT re-notify")
+      nGate.handleEvent({ type: "permission.asked", properties: {
+        id: "per_n2", sessionID: "ses_9", permission: "tm_webfetch",
+        patterns: ["https://example.org/page"], metadata: {},
+      } })
+      assert.equal(toasts.length, 2, "tm_* ctx.ask dialogs notify too (non-bash permission covered)")
+      assert.ok(toasts[1].includes("https://example.org/page"), "web-dialog toast names the URL")
+      nGate.handleEvent({ type: "permission.replied", properties: {
+        sessionID: "ses_9", requestID: "per_n1", reply: "once",
+      } })
+      nGate.handleEvent({ type: "permission.asked", properties: {
+        id: "per_n1", sessionID: "ses_9", permission: "bash",
+        patterns: ["printenv PATH"], metadata: { command: "printenv PATH" },
+      } })
+      assert.equal(toasts.length, 2, "ghost asked replay after a reply does NOT re-notify")
+    }
+
     const gate = createApprovalGate({ client, timeoutMs: 600000, timers: fake, now: () => clock })
     assert.equal(gate.isArmed(), true, "armed while capable")
     // the exact 1.18.29 permission.asked payload (report-p5): no type field,

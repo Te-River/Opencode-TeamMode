@@ -24,6 +24,7 @@
  */
 
 import { isEnvFilePath } from "../envprotect.js"
+import { askFnOf, askUserForTarget, type TmAskFn } from "./perm-ask.js"
 import type { ToolResult } from "../types.js"
 import { shorten, DEFAULT_WEBFETCH_DOMAINS, type TmConfig } from "./config.js"
 import { detectContentType } from "./preview.js"
@@ -49,7 +50,15 @@ export function hostAllowed(hostname: string, allowlist: readonly string[]): boo
 
 export type UrlVerdict =
   | { ok: true; url: URL }
-  | { ok: false; message: string }
+  | {
+      ok: false
+      message: string
+      /** Allowlist misses are ASKABLE (official dialog via ctx.ask); scheme /
+       * env-file / URL-shape violations are hard red lines, never
+       * dialog-governed. */
+      askable?: boolean
+      url?: URL
+    }
 
 /**
  * Validate a fetch target: absolute http(s) URL, host on the allowlist
@@ -74,9 +83,11 @@ export function checkWebUrl(raw: unknown, allowlist: readonly string[]): UrlVerd
   if (!allowlist.includes("*") && !hostAllowed(url.hostname, allowlist)) {
     return {
       ok: false,
+      askable: true,
+      url,
       message:
         `主机 "${url.hostname}" 不在 tm_webfetch 域名白名单内（预置: ${DEFAULT_WEBFETCH_DOMAINS.join(", ")}）。` +
-        `用 TM_WEBFETCH_ALLOWED_DOMAINS 扩展（逗号/分号分隔，"*" 放开全部主机）`,
+        `已请求用户批准（官方确认弹窗）——批准后本次放行；用 TM_WEBFETCH_ALLOWED_DOMAINS 可永久扩展（逗号/分号分隔，"*" 放开全部主机）`,
     }
   }
   return { ok: true, url }
@@ -232,7 +243,18 @@ async function readBodyCapped(res: {
 export async function fetchWebText(
   url: URL,
   allowlist: readonly string[],
-  opts: { timeoutMs?: number; maxBytes?: number; fetchImpl?: FetchImpl } = {},
+  opts: {
+    timeoutMs?: number
+    maxBytes?: number
+    fetchImpl?: FetchImpl
+    /** When provided, an allowlist-missed hop drives the OFFICIAL permission
+     *  dialog (ctx.ask) instead of rejecting; approved hosts are remembered
+     *  for the rest of THIS fetch only. */
+    ask?: TmAskFn
+    /** Hosts already approved by the caller (e.g. the initial target) —
+     *  their hops pass without a second dialog. */
+    skipAskHosts?: Set<string>
+  } = {},
 ): Promise<WebFetchResult> {
   const doFetch = opts.fetchImpl ?? (globalThis as { fetch?: FetchImpl }).fetch
   if (typeof doFetch !== "function") {
@@ -241,10 +263,26 @@ export async function fetchWebText(
   const timeoutMs = opts.timeoutMs ?? WEBFETCH_TIMEOUT_MS
   const maxBytes = opts.maxBytes ?? WEBFETCH_MAX_BYTES
   let current = url
+  const approvedHosts = opts.skipAskHosts ?? new Set<string>()
   for (let hop = 0; hop <= WEBFETCH_MAX_REDIRECTS; hop++) {
     // every hop re-checked — an allowlisted shortener cannot bounce off-site
     const verdict = checkWebUrl(current.toString(), allowlist)
-    if (!verdict.ok) throw new Error(verdict.message)
+    if (!verdict.ok) {
+      // an ASKABLE miss (allowlist only) can be walked through the official
+      // dialog; hard red lines (scheme / env-file / bad URL) never ask
+      if (!verdict.askable || !verdict.url) throw new Error(verdict.message)
+      const host = verdict.url.hostname
+      if (!approvedHosts.has(host)) {
+        if (!opts.ask) throw new Error(verdict.message)
+        const outcome = await askUserForTarget({ ask: opts.ask }, {
+          permission: "tm_webfetch",
+          patterns: [current.toString()],
+          metadata: { source: "tm_webfetch redirect" },
+        })
+        if (outcome !== "approved") throw new Error(verdict.message)
+        approvedHosts.add(host)
+      }
+    }
     const ctrl = new AbortController()
     const timer = setTimeout(() => ctrl.abort(), timeoutMs)
     try {
@@ -287,7 +325,7 @@ const WEBFETCH_DESCRIPTION = `Fetch a web page through the governed pipeline (do
 
 - Seeded hosts (CN-reachable, no API keys): mobile.moegirl.org.cn (wiki term: https://mobile.moegirl.org.cn/TERM) · search.bilibili.com (https://search.bilibili.com/all?keyword=QUERY) · cn.bing.com (https://cn.bing.com/search?q=QUERY; append &ensearch=1 for international results) · www.baidu.com (https://www.baidu.com/s?wd=QUERY) · www.sogou.com (https://www.sogou.com/web?query=QUERY) · www.so.com (https://www.so.com/s?q=QUERY) · registry.npmjs.org (package JSON: https://registry.npmjs.org/<pkg>/latest, search: https://registry.npmjs.org/-/v1/search?text=QUERY) · api.github.com (repo search: https://api.github.com/search/repositories?q=QUERY) · raw.githubusercontent.com (raw docs/code) · ghproxy.net (mainland mirror for github raw: https://ghproxy.net/https://raw.githubusercontent.com/...).  URL-encode the query (CJK terms too).  Search-engine result pages are auto-extracted to a title+URL hit list.  Expand colloquial/abbreviated terms to canonical forms and fetch BOTH spellings.
 - Governance: only http(s), hosts must be allowlisted (extend via TM_WEBFETCH_ALLOWED_DOMAINS, "*" opens all), redirects re-checked per hop, HTML stripped to text; output above TM_OFFLOAD_THRESHOLD tokens is offloaded to a handle — page with tm_fetch (try mode:"structure" first).
-- This is a governed tool: out-of-allowlist hosts are rejected, not dialog-governed.`
+- Governance: out-of-allowlist hosts route through the OFFICIAL confirmation dialog (approve to proceed once; the 10-min unanswered auto-reject applies); env-file URLs and non-http(s) schemes are hard-rejected with no dialog.`
 
 /** Build the tm_webfetch ToolDefinition over the SHARED main pipelines
  *  instance (same step counter as tm_read/tm_grep/tm_bash — refs stay
@@ -315,10 +353,37 @@ export function buildTmWebfetchTool(deps: {
         const args = rawArgs ?? {}
         const requested = typeof args.url === "string" ? args.url.trim() : ""
         const verdict = checkWebUrl(requested, allowlist)
-        if (!verdict.ok) return toToolResult(tmError(tool, "permission", verdict.message))
+        if (!verdict.ok) {
+          // ASKABLE miss (allowlist only) → the OFFICIAL dialog decides, the
+          // plugin never self-allows; hard red lines reject outright
+          if (!verdict.askable || !verdict.url) {
+            return toToolResult(tmError(tool, "permission", verdict.message))
+          }
+          const outcome = await askUserForTarget(ctx, {
+            permission: tool,
+            patterns: [verdict.url.toString()],
+            metadata: { tool, url: shorten(requested, 200) },
+          })
+          if (outcome !== "approved") {
+            return toToolResult(
+              tmError(
+                tool,
+                "permission",
+                verdict.message +
+                  (outcome === "rejected" ? "。用户未批准。" : "。宿主无法弹出确认窗口（旧版协议）。"),
+              ),
+            )
+          }
+        }
         const stepId = pipelines.nextStepId()
         pipelines.store.appendTrajectory({ tool, step_id: stepId, event: "call" })
-        const res = await fetchWebText(verdict.url, allowlist, { fetchImpl: deps.fetchImpl })
+        const approvedHosts = new Set<string>([verdict.ok ? verdict.url.hostname : new URL(requested).hostname])
+        const askFn = askFnOf(ctx) ?? undefined
+        const res = await fetchWebText(verdict.ok ? verdict.url : new URL(requested), allowlist, {
+          fetchImpl: deps.fetchImpl,
+          ask: askFn,
+          skipAskHosts: approvedHosts,
+        })
         // Search-engine result pages collapse to a clean hit list (title +
         // URL) BEFORE governance — the stripped page text is ~90% engine
         // chrome.  Thin extraction (markup changed / anti-bot shell) falls
@@ -326,7 +391,7 @@ export function buildTmWebfetchTool(deps: {
         if (SEARCH_PAGE_RE.test(res.finalUrl)) {
           const hits = extractSearchHits(res.text)
           if (hits.length > 0) {
-            const sp = verdict.url.searchParams
+            const sp = (verdict.ok ? verdict.url : new URL(requested)).searchParams
             const query = sp.get("q") ?? sp.get("wd") ?? sp.get("query") ?? sp.get("keyword") ?? ""
             const listing = renderSearchHits(query || res.finalUrl, "webfetch", hits)
             return toToolResult(

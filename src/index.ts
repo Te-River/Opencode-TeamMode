@@ -100,11 +100,37 @@ const plugin: OpenCodePlugin = {
     // broken.  Armed ONLY when R6 is not off AND the client exposes a
     // permission-reply path — otherwise there is no live auto-reject and the
     // R6 hook must keep hard-throwing every env read (fail-closed).
+    // Attention hook for EVERY official dialog the plugin observes (bash R2/R6
+    // asks AND the tm_* ctx.ask web dialogs): the host's `tui.showToast` RPC
+    // (verified 1.18.30 route: payload { title?, message, variant, duration })
+    // surfaces a toast so a user not staring at the screen still learns a
+    // confirmation is waiting.  Best-effort — never breaks the gate.
+    const notifyAsk = (message: string): void => {
+      try {
+        const tui = (input?.client as { tui?: { showToast?: (p: unknown) => Promise<unknown> } } | null | undefined)
+          ?.tui
+        if (typeof tui?.showToast === "function") {
+          const r = tui.showToast({
+            title: "OpenCode TeamMode",
+            message,
+            variant: "warning",
+            duration: 15_000,
+          })
+          if (r && typeof (r as Promise<unknown>).catch === "function") {
+            ;(r as Promise<unknown>).catch(() => {})
+          }
+        }
+      } catch {
+        /* notification is best-effort */
+      }
+    }
+
     const approvalGate =
       envProtectMode !== "off" && hasPermissionReplyCapability(input?.client)
         ? createApprovalGate({
             client: input?.client,
             timeoutMs: resolveAskTimeoutMs(process.env),
+            notify: notifyAsk,
           })
         : null
     if (approvalGate) approvalGate.start()
