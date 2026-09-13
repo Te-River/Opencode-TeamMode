@@ -8,6 +8,26 @@ registry saw 1.5.0 as the install-script fix release).
 ## [Unreleased]
 
 ### Fixed
+- **Seed allowlist grows to 21 hosts** (13 -> 21): adds zhihu.com, juejin.cn,
+  csdn.net, cnblogs.com, gitee.com (CN sources) and stackoverflow.com,
+  npmjs.org (covers registry. + site), pypi.org, learn.microsoft.com
+  (international dev sources) — everything a coding agent researches daily,
+  reachable from mainland networks without API keys; hosts unreachable from
+  CN (wikipedia / reddit / x / youtube) stay OUT (timeouts otherwise) and
+  ride the official dialog when the user's network reaches them
+- **Seed allowlist uses PARENT domains for baidu + moegirl**: a real session
+  showed agents bouncing off `baike.baidu.com` (only `www.baidu.com` was
+  seeded) and `mzh.moegirl.org.cn` (only `mobile.` was seeded — moegirl's
+  main site is now the mzh subdomain, a SIBLING that subdomain matching can
+  never cover).  Seeds are now `baidu.com` and `moegirl.org.cn`, covering
+  every sibling (baike./tieba./www./mzh./mobile.) — host count unchanged at
+  thirteen
+- **tm_webfetch description hardens the tm_search priority**: leads with an
+  explicit anti-pattern line ("do NOT hand-build search-engine URLs here —
+  that is tm_search's job") after a session where the model hand-rolled
+  bing/baidu URLs through tm_webfetch
+
+### Fixed
 - **Installers + agent guide target `opencode.jsonc` first**: the .jsonc is
   the canonical name and OVERRIDES opencode.json when both exist — patching
   the .json risked our entry being shadowed.  install.sh / install.ps1 now

@@ -266,11 +266,14 @@ agent 永远看不到原始搜索页的噪音。
   headful 运行，隔离临时 profile，**域名白名单在网络层逐请求强制**
   （`Fetch.requestPaused` → 非白名单主机直接 `BlockedByClient`）。
 
-种子白名单（两个工具共用）：`mobile.moegirl.org.cn`、`search.bilibili.com`、
-`cn.bing.com`、`www.bing.com`、`www.baidu.com`、`www.sogou.com`、
-`www.so.com`、`registry.npmjs.org`、`api.github.com`、
-`raw.githubusercontent.com`、`gist.githubusercontent.com`、`github.com`、
-`ghproxy.net`（github raw 的大陆镜像）——用
+种子白名单（两个工具共用，21 个主机；baidu/moegirl/bilibili 用的是父域，
+所有兄弟子域——baike.baidu.com、mzh.moegirl.org.cn、space.bilibili.com——
+一并覆盖）：`baidu.com`、`moegirl.org.cn`、`bilibili.com`、`www.sogou.com`、
+`www.so.com`、`cn.bing.com`、`www.bing.com`、`zhihu.com`、`juejin.cn`、
+`csdn.net`、`cnblogs.com`、`gitee.com`、`github.com`、`api.github.com`、
+`raw.githubusercontent.com`、`gist.githubusercontent.com`、`ghproxy.net`
+（github raw 的大陆镜像）、`stackoverflow.com`、`npmjs.org`、`pypi.org`、
+`learn.microsoft.com`——用
 `TM_WEBFETCH_ALLOWED_DOMAINS` 扩展（`"*"` 放开全部主机）。architect /
 implementer / reviewer **没有**联网授权——网络问题会报告为缺口，绝不编造。
 tester 仅持有 `tm_browser`，用于本项目的治理化 UI 验证（本地开发服务器、
@@ -358,7 +361,7 @@ Team Lead 自己从不删黑板，你可以随时审计任何一次运行。
 | `TM_BLACKBOARD_DIR` / `TM_TRAJECTORY_DIR` | `<repo>/.git/opencode-team/…` | 卸载存储 / 轨迹账本（tmpdir 回退；显式值 = 绝对或项目相对） |
 | `TM_BLACKBOARD_TTL` | `7` | 存储保留天数 |
 | `TM_BASH_READONLY_ALLOWED` | 内置表 | tm_bash 白名单 |
-| `TM_WEBFETCH_ALLOWED_DOMAINS` | 十三个种子主机 | tm_webfetch / tm_search / tm_browser 白名单（`"*"` 全开；空 = 全拒） |
+| `TM_WEBFETCH_ALLOWED_DOMAINS` | 21 个种子主机 | tm_webfetch / tm_search / tm_browser 白名单（`"*"` 全开；空 = 全拒） |
 | `TM_BROWSER_PATH` | 自动探测 | tm_browser 可执行文件覆盖（按 OS 探测 Edge/Chrome/Chromium） |
 | `TM_BROWSER_HEADLESS` | `auto` | `1` 无头（CI）/ `0` 有头 / `auto`（仅无显示的 Linux 用无头） |
 | `TM_MEMORY_GLOBAL_DIR` | `~/.opencode-team/memories/global/` | tm_memory GLOBAL 作用域存储 |

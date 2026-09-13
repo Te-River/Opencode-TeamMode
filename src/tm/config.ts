@@ -35,8 +35,10 @@ export const DEFAULT_BASH_READONLY_ALLOWED: readonly string[] = [
  * engines and data sources ride (all reachable from mainland China without
  * API keys): wiki term / bilibili search / bing CN + international / baidu /
  * sogou / 360, the npm registry (JSON search + package metadata) and the
- * GitHub (search API + repo pages + raw/gist content) and its
- * ghproxy.net mainland mirror (the agent-install flow points
+ * GitHub (search API + repo pages + raw/gist content), its ghproxy.net
+ * mainland mirror, and PARENT domains for baidu/moegirl so every sibling
+ * subdomain (baike./tieba./mzh./mobile.) is covered — real sessions showed
+ * agents bouncing off baike.baidu.com and mzh.moegirl.org.cn (the agent-install flow points
  * agents at the installation guide on exactly these hosts).  Subdomains of
  * an entry are included;
  * TM_WEBFETCH_ALLOWED_DOMAINS overrides the list (comma/semicolon
@@ -44,19 +46,29 @@ export const DEFAULT_BASH_READONLY_ALLOWED: readonly string[] = [
  * tm_search's engines lose their targets).
  */
 export const DEFAULT_WEBFETCH_DOMAINS: readonly string[] = [
-  "mobile.moegirl.org.cn",
-  "search.bilibili.com",
-  "cn.bing.com",
-  "www.bing.com",
-  "www.baidu.com",
+  // CN search engines + content (parent domains cover every sibling subdomain)
+  "baidu.com", // www. search / baike. encyclopedia / tieba. — real sessions hit baike.baidu.com
+  "moegirl.org.cn", // mobile. term / mzh. main site — real sessions hit mzh
+  "bilibili.com", // search. / www. video pages / space.
   "www.sogou.com",
   "www.so.com",
-  "registry.npmjs.org",
+  "cn.bing.com",
+  "www.bing.com",
+  "zhihu.com", // CN Q&A
+  "juejin.cn", // CN dev community
+  "csdn.net", // CN dev blogs
+  "cnblogs.com", // CN dev blogs
+  "gitee.com", // CN code hosting
+  // international dev sources (reachable from CN, no API keys)
+  "github.com",
   "api.github.com",
   "raw.githubusercontent.com",
   "gist.githubusercontent.com",
-  "github.com",
-  "ghproxy.net",
+  "ghproxy.net", // mainland mirror for github raw
+  "stackoverflow.com",
+  "npmjs.org", // registry. + www. package pages
+  "pypi.org",
+  "learn.microsoft.com",
 ]
 
 export interface TmConfig {
