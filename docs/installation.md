@@ -14,12 +14,12 @@ An OpenCode plugin that injects a **six-agent development team** (Team Lead, Arc
 
 ### Step 1 — Locate the OpenCode config file
 
-Check, in order:
+**`opencode.jsonc` is the canonical name and OVERRIDES `opencode.json` when
+both exist — always prefer writing the `.jsonc`.**
 
-1. **Project config:** `opencode.json` or `opencode.jsonc` in the current project root.
-2. **Global config:** `~/.config/opencode/opencode.json` (or `.jsonc`) — on Windows typically `C:\Users\<user>\.config\opencode\opencode.json`.
-
-If neither exists, create the global one (`~/.config/opencode/opencode.jsonc`) so the team is available in every project.
+1. **Global config:** `~/.config/opencode/opencode.jsonc` (Windows: `C:\Users\<user>\.config\opencode\opencode.jsonc`) — patch it when present.
+2. If only an `opencode.json` exists in that directory, **migrate**: copy its full content into a new `opencode.jsonc` and add the plugin entry there (leave the original `.json` untouched — the migration guarantees nothing is lost).
+3. If neither exists, create the global `opencode.jsonc` fresh so the team is available in every project.
 
 ### Step 2 — Add the plugin entry
 
@@ -123,12 +123,11 @@ https://raw.githubusercontent.com/Te-River/Opencode-TeamMode/main/docs/installat
 
 ### 第 1 步 — 找到 OpenCode 配置文件
 
-按顺序检查：
+**`opencode.jsonc` 是规范文件名，与 `opencode.json` 并存时以 jsonc 为准——始终优先写 `.jsonc`。**
 
-1. **项目配置：** 当前项目根目录下的 `opencode.json` 或 `opencode.jsonc`。
-2. **全局配置：** `~/.config/opencode/opencode.json`（或 `.jsonc`）——Windows 下通常是 `C:\Users\<用户名>\.config\opencode\opencode.json`。
-
-都不存在时，创建全局配置（`~/.config/opencode/opencode.jsonc`），让团队在每个项目里都可用。
+1. **全局配置：** `~/.config/opencode/opencode.jsonc`（Windows：`C:\Users\<用户名>\.config\opencode\opencode.jsonc`）——存在则直接改它。
+2. 该目录下只有 `opencode.json` 时，**先迁移**：把它的完整内容复制进新的 `opencode.jsonc`，再在 jsonc 里加插件条目（原 `.json` 原样保留——迁移保证什么都不丢）。
+3. 两者都不存在时，新建全局 `opencode.jsonc`，让团队在每个项目里都可用。
 
 ### 第 2 步 — 加入插件条目
 

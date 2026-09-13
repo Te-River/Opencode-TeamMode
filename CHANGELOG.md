@@ -7,6 +7,14 @@ registry saw 1.5.0 as the install-script fix release).
 
 ## [Unreleased]
 
+### Fixed
+- **Installers + agent guide target `opencode.jsonc` first**: the .jsonc is
+  the canonical name and OVERRIDES opencode.json when both exist — patching
+  the .json risked our entry being shadowed.  install.sh / install.ps1 now
+  always patch the .jsonc, migrating an existing opencode.json's content
+  into a new .jsonc first (original left untouched); the agent-install
+  guide's Step 1 documents the same policy
+
 ### Added
 - **github.com + gist.githubusercontent.com join the seed allowlist** (now
   thirteen hosts): repo pages / issues / gists fetch dialog-free; the
