@@ -5,7 +5,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 versioning is semver (the 1.4.x train shipped under working labels; the
 registry saw 1.5.0 as the install-script fix release).
 
-## [Unreleased]
+## [1.5.8] - 2026-09-13
 
 ### Added
 - **Out-of-allowlist web targets now ASK, not reject**: tm_webfetch /
