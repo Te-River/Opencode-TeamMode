@@ -5,6 +5,28 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 versioning is semver (the 1.4.x train shipped under working labels; the
 registry saw 1.5.0 as the install-script fix release).
 
+## [Unreleased]
+
+### Fixed
+- **tm_browser drives the user's DEFAULT browser**: discovery order was
+  TM_BROWSER_PATH -> Edge-first probe list; it now resolves the system
+  default browser first (Windows `UserChoice` registry / Linux
+  `xdg-settings` + .desktop Exec) and uses it WHEN Chromium-family -- CDP's
+  pipe protocol is Chromium-proprietary, so a Firefox default falls back to
+  the probe list.  Parsers exported + pinned in test-tm-tools 6o
+- **403 after the header disguise is now a DIRECTIVE**: real sessions showed
+  baike.baidu.com / zhihu.com returning 403 even with the 1.5.10 Chrome UA --
+  the gate is JS-challenge / TLS-fingerprint based, so the error now tells
+  the agent exactly what to do: call tm_browser (action:"open" ->
+  action:"read") for that URL
+- **Search hit lists filter known noise**: engine-internal wrappers
+  (`so.com/link?`, `ai.so.com` -- 360 wraps every hit and surfaces its own
+  AI tab as a "result") join the tracker blacklist; a hit-domain blacklist
+  (default `maimai.cn` -- the professional-networking site 脉脉 that bing
+  returned 10/10 for every maimai DX query; extend via TM_HIT_BLACKLIST env)
+  drops same-name-different-site collisions before they reach the agent
+  (pinned in test-tm-tools 6m-s)
+
 ## [1.5.10] - 2026-09-13
 
 ### Fixed

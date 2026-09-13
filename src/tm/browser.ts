@@ -17,15 +17,17 @@
  *   - headful by default (Plan C); display-less Linux (no DISPLAY/
  *     WAYLAND_DISPLAY) automatically falls back to headless; TM_BROWSER_
  *     HEADLESS=1|0 forces either way;
- *   - browser discovery: TM_BROWSER_PATH override, then per-OS candidate
- *     paths (Edge first on Windows — it is always there; Chrome/Chromium
- *     elsewhere).  No browser → structured error, the agent falls back to
- *     tm_webfetch / user MCP tools per the priority ladder.
+ *   - browser discovery: TM_BROWSER_PATH override, then the USER'S DEFAULT
+ *     browser (Windows registry / Linux xdg-settings) when it is
+ *     Chromium-family — CDP's pipe protocol is Chromium-only, so Firefox as
+ *     default falls through — then per-OS candidate paths (Edge first on
+ *     Windows; Chrome/Chromium elsewhere).  No browser → structured error,
+ *     the agent falls back to tm_webfetch / user MCP tools.
  *
  * Role access mirrors tm_webfetch: network roles (team + researcher) only.
  */
 
-import { spawn, type ChildProcess } from "node:child_process"
+import { execFileSync, spawn, type ChildProcess } from "node:child_process"
 import * as fs from "node:fs"
 import * as os from "node:os"
 import * as path from "node:path"
@@ -60,8 +62,86 @@ const BROWSER_CANDIDATES: Record<string, string[]> = {
   ],
 }
 
-/** Resolve the browser executable: TM_BROWSER_PATH override, then per-OS
- *  candidates.  %LOCALAPPDATA% style vars are expanded on win32. */
+/** Subprocess runner for the shell/registry probes; injectable for tests. */
+export type CommandRunner = (cmd: string, args: string[]) => string
+
+const defaultRunner: CommandRunner = (cmd, args) =>
+  String(
+    execFileSync(cmd, args, { encoding: "utf8", timeout: 3000, windowsHide: true, stdio: ["ignore", "pipe", "ignore"] }),
+  )
+
+/** Chromium-family binaries only — --remote-debugging-pipe is a Chromium
+ *  protocol; Firefox/WebKit as the default browser cannot drive tm_browser. */
+const CHROMIUM_FAMILY_RE = /(?:^|[\\/])(?:chrome|msedge|brave|vivaldi|chromium|chromium-browser|opera|yandex)(?:\.exe)?$/i
+
+export function isChromiumFamily(exePath: string): boolean {
+  return CHROMIUM_FAMILY_RE.test(String(exePath ?? "").trim())
+}
+
+/** Parse `reg query "...UrlAssociations\http\UserChoice" /v ProgId` output. */
+export function parseProgId(stdout: string): string | null {
+  const m = /ProgId\s+REG_SZ\s+(\S+)/i.exec(String(stdout ?? ""))
+  return m ? m[1] : null
+}
+
+/** Parse `reg query "...\shell\open\command" /ve` output → exe path. */
+export function parseRegCommand(stdout: string): string | null {
+  const m = /REG_SZ\s+(?:"([^"]+)"|(\S+))/i.exec(String(stdout ?? ""))
+  return m ? (m[1] ?? m[2]) : null
+}
+
+/** Parse the Exec= line of an xdg .desktop file. */
+export function parseDesktopExec(text: string): string | null {
+  const m = /^Exec\s*=\s*(?:"([^"]+)"|(\S+))/m.exec(String(text ?? ""))
+  return m ? (m[1] ?? m[2]) : null
+}
+
+/** The user's DEFAULT browser, when it is Chromium-family and present.
+ *  null → the caller falls back to the per-OS probe list (detection is
+ *  best-effort and must never throw into tool discovery). */
+export function defaultBrowserExecutable(
+  env: Record<string, string | undefined> = process.env,
+  run: CommandRunner = defaultRunner,
+): string | null {
+  try {
+    if (process.platform === "win32") {
+      const choice = run("reg", [
+        "query",
+        "HKCU\\Software\\Microsoft\\Windows\\Shell\\Associations\\UrlAssociations\\http\\UserChoice",
+        "/v",
+        "ProgId",
+      ])
+      const progId = parseProgId(choice)
+      if (!progId) return null
+      const cmd = run("reg", ["query", `HKCU\\Software\\Classes\\${progId}\\shell\\open\\command`, "/ve"])
+      const exe = parseRegCommand(cmd)
+      return exe && isChromiumFamily(exe) && fs.existsSync(exe) ? exe : null
+    }
+    if (process.platform === "linux") {
+      const desk = run("xdg-settings", ["get", "default-web-browser"]).trim()
+      if (!desk) return null
+      const name = desk.endsWith(".desktop") ? desk : desk + ".desktop"
+      const dirs = [
+        "/usr/share/applications",
+        "/usr/local/share/applications",
+        path.join(String(env.HOME ?? ""), ".local/share/applications"),
+      ]
+      for (const dir of dirs) {
+        const f = path.join(dir, name)
+        if (!fs.existsSync(f)) continue
+        const exe = parseDesktopExec(fs.readFileSync(f, "utf8"))
+        if (exe && isChromiumFamily(exe) && fs.existsSync(exe)) return exe
+      }
+    }
+  } catch {
+    /* best-effort — the probe list takes over */
+  }
+  return null
+}
+
+/** Resolve the browser executable: TM_BROWSER_PATH override → the user's
+ *  DEFAULT browser (Chromium-family only) → per-OS candidate paths.
+ *  %LOCALAPPDATA% style vars are expanded on win32. */
 export function findBrowserExecutable(env: Record<string, string | undefined> = process.env): string | null {
   const override = String(env.TM_BROWSER_PATH ?? "").trim()
   const tryPath = (p: string): string | null => {
@@ -73,6 +153,8 @@ export function findBrowserExecutable(env: Record<string, string | undefined> = 
     }
   }
   if (override) return tryPath(override)
+  const def = defaultBrowserExecutable(env)
+  if (def) return def
   for (const c of BROWSER_CANDIDATES[process.platform] ?? []) {
     const hit = tryPath(c)
     if (hit) return hit
@@ -417,7 +499,7 @@ export function buildTmBrowserTool(deps: {
   }
 
   const DESCRIPTION = `Interactive browser (governed, Plan C): drives the user's own Chromium-family browser HEADFUL via CDP pipe — a visible window opens on desktops; display-less Linux hosts automatically run headless (TM_BROWSER_HEADLESS=1|0 forces either way).  Actions:
-- open: { url } — launch (or reuse) the session and navigate.  Isolated temp profile (never your real profile); per-request DOMAIN ALLOWLIST enforced at the network layer (seeded = tm_webfetch's hosts; extend via TM_WEBFETCH_ALLOWED_DOMAINS).
+- open: { url } — launch (or reuse) the session and navigate.  Uses your DEFAULT browser (Chromium-family; TM_BROWSER_PATH overrides; falls back to Edge/Chrome probes when the default is Firefox — CDP is Chromium-only).  Isolated temp profile (never your real profile); per-request DOMAIN ALLOWLIST enforced at the network layer (seeded = tm_webfetch's hosts; extend via TM_WEBFETCH_ALLOWED_DOMAINS).
 - navigate: { url } · read: extract page text (threshold-governed like tm_read) · screenshot: save PNG into the run store, only the path enters context · close: kill + cleanup.
 - Fixed priority ladder: ① tm_* governed tools → ② user MCP/plugin tools → ③ reasoning (never fabricate).  If no browser is installed (TM_BROWSER_PATH override exists), a structured error tells you to fall back to tm_webfetch / MCP.
 - Network roles: team + researcher full grant, tester browser-only (UI verification).  Out-of-allowlist open/navigate routes through the OFFICIAL confirmation dialog (approved hosts pass the network layer for the session); env-file URLs and non-http(s) schemes hard-reject.`

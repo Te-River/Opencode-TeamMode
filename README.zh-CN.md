@@ -207,7 +207,7 @@ HMAC 句柄，agent 真需要 payload 时用 `tm_fetch` 分页取。
 | `tm_ptc_run` | 批量编排：一个程序、N 次受治理调用、零 LLM 回合 | 全部六个 agent |
 | `tm_search` | 多引擎网络搜索，返回提取去重后的命中列表 | Lead + Researcher |
 | `tm_webfetch` | 白名单页面的单次受治理 GET（搜索页自动提取） | Lead + Researcher |
-| `tm_browser` | 交互式浏览器会话（headful CDP）：open / navigate / read / screenshot / close | Lead + Researcher + Tester（仅 UI 验证） |
+| `tm_browser` | 交互式浏览器会话（CDP，**驱动你的默认浏览器**）：open / navigate / read / screenshot / close | Lead + Researcher + Tester（仅 UI 验证） |
 
 > **固定工具优先级阶梯（每个任务都适用）：① TeamMode 受治理工具（`tm_*`）
 > → ② 用户 MCP/插件工具 → ③ 模型自己的推理。** 它同时是回退链：某个受治理
@@ -262,9 +262,19 @@ agent 永远看不到原始搜索页的噪音。
 - `tm_webfetch` —— 已知 URL，单次受治理 GET。它抓到的搜索引擎页面同样
   自动提取为命中列表。`registry.npmjs.org/<pkg>/latest` 这类 JSON 端点
   原样透传。
-- `tm_browser` —— JS 渲染页：驱动你自己的 Chromium 系浏览器，CDP pipe
-  headful 运行，隔离临时 profile，**域名白名单在网络层逐请求强制**
-  （`Fetch.requestPaused` → 非白名单主机直接 `BlockedByClient`）。
+- `tm_browser` —— JS 渲染页：**驱动你的默认浏览器**（Windows 读注册表 /
+  Linux 读 xdg-settings；仅限 Chromium 系——默认是 Firefox 时回退到
+  Edge/Chrome 探测顺序，因为 CDP 是 Chromium 专有协议；`TM_BROWSER_PATH`
+  可强制指定），CDP pipe headful 运行，隔离临时 profile，**域名白名单在
+  网络层逐请求强制**（`Fetch.requestPaused` → 非白名单主机直接
+  `BlockedByClient`）。
+
+**伪装浏览器请求头后仍收到 403** 时，错误信息是一条指令：该站点的门槛是
+JS 挑战 / TLS 指纹级别，只有真实浏览器能过——会直接让 agent 调 `tm_browser`
+（`action:"open"` → `action:"read"`）打开该 URL。搜索结果提取同时过滤已知
+噪音：引擎自身包装链接（`so.com/link?`、`ai.so.com`）和同名不同站的域名
+（`maimai.cn` 脉脉 ≠ maimai DX 游戏）不会混入命中列表——用
+`TM_HIT_BLACKLIST` 可扩展命中黑名单。
 
 种子白名单（两个工具共用，21 个主机；baidu/moegirl/bilibili 用的是父域，
 所有兄弟子域——baike.baidu.com、mzh.moegirl.org.cn、space.bilibili.com——
@@ -362,9 +372,10 @@ Team Lead 自己从不删黑板，你可以随时审计任何一次运行。
 | `TM_BLACKBOARD_TTL` | `7` | 存储保留天数 |
 | `TM_BASH_READONLY_ALLOWED` | 内置表 | tm_bash 白名单 |
 | `TM_WEBFETCH_ALLOWED_DOMAINS` | 21 个种子主机 | tm_webfetch / tm_search / tm_browser 白名单（`"*"` 全开；空 = 全拒） |
-| `TM_BROWSER_PATH` | 自动探测 | tm_browser 可执行文件覆盖（按 OS 探测 Edge/Chrome/Chromium） |
+| `TM_BROWSER_PATH` | 自动探测 | tm_browser 可执行文件覆盖（默认用你的默认浏览器——Chromium 系时；否则回退 Edge/Chrome 探测） |
 | `TM_BROWSER_HEADLESS` | `auto` | `1` 无头（CI）/ `0` 有头 / `auto`（仅无显示的 Linux 用无头） |
 | `TM_MEMORY_GLOBAL_DIR` | `~/.opencode-team/memories/global/` | tm_memory GLOBAL 作用域存储 |
+| `TM_HIT_BLACKLIST` | `maimai.cn` | 永不进入搜索命中列表的额外域名（逗号/分号分隔；过滤同名不同站噪音） |
 | `TM_PTC_MAX_PROGRAM_CHARS` | `4000` | PTC 程序源码上限 |
 | `TM_PTC_MAX_CALLS` | `20` | PTC 单次运行桥接调用预算（1–200） |
 | `TM_PTC_MAX_ERRORS` | `3` | PTC 单次运行错误预算（1–50） |

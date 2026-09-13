@@ -213,7 +213,7 @@ genuinely needs the payload.
 | `tm_ptc_run` | Batch orchestration: one program, N governed calls, zero LLM round-trips | all six agents |
 | `tm_search` | Multi-engine web search with extracted, deduplicated hit lists | Lead + Researcher |
 | `tm_webfetch` | Single governed GET of an allowlisted page (search pages auto-extracted) | Lead + Researcher |
-| `tm_browser` | Interactive browser session (headful CDP): open / navigate / read / screenshot / close | Lead + Researcher + Tester (UI verification) |
+| `tm_browser` | Interactive browser session (CDP, **your default browser**): open / navigate / read / screenshot / close | Lead + Researcher + Tester (UI verification) |
 
 > **Fixed tool priority ladder (every task): ① TeamMode governed tools
 > (`tm_*`) → ② user MCP/plugin tools → ③ the model's own reasoning.**
@@ -274,10 +274,20 @@ leaving the agent stuck. Two more channels complete the surface:
 - `tm_webfetch` — a known URL, one governed GET. Search-engine pages it
   fetches are auto-extracted to hit lists too. JSON endpoints like
   `registry.npmjs.org/<pkg>/latest` pass through untouched.
-- `tm_browser` — JS-rendered pages: your own Chromium-family browser, headful
-  via CDP pipe, isolated temp profile, **domain allowlist enforced at the
-  network layer** per request (`Fetch.requestPaused` → non-allowlisted hosts
-  get `BlockedByClient`).
+- `tm_browser` — JS-rendered pages: **your DEFAULT browser** (Windows
+  registry / Linux `xdg-settings`; Chromium-family only — Firefox falls back
+  to the Edge/Chrome probe order because CDP is Chromium-proprietary;
+  `TM_BROWSER_PATH` overrides), headful via CDP pipe, isolated temp profile,
+  **domain allowlist enforced at the network layer** per request
+  (`Fetch.requestPaused` → non-allowlisted hosts get `BlockedByClient`).
+
+When a fetch still returns **403 after the real-Chrome headers**, the error
+is a DIRECTIVE: the gate is JS-challenge / TLS-fingerprint based and only a
+real browser passes — the agent is told to call `tm_browser`
+(`action:"open"` → `action:"read"`) for that URL. Search hit lists also
+filter known noise: engine-internal wrappers (`so.com/link?`, `ai.so.com`)
+and same-name-different-site domains (`maimai.cn` 脉脉 vs the maimai DX
+game) never ride along — extend the hit blacklist with `TM_HIT_BLACKLIST`.
 
 Seeded allowlist (both tools; 21 hosts — baidu/moegirl/bilibili are PARENT
 domains, so every sibling subdomain — baike.baidu.com, mzh.moegirl.org.cn,
@@ -389,9 +399,10 @@ for overrides, extra agents and disabling roles.
 | `TM_BLACKBOARD_TTL` | `7` | store retention (days) |
 | `TM_BASH_READONLY_ALLOWED` | built-in table | tm_bash allowlist |
 | `TM_WEBFETCH_ALLOWED_DOMAINS` | the 21 seeded hosts | tm_webfetch / tm_search / tm_browser allowlist (`"*"` opens all; empty = deny all) |
-| `TM_BROWSER_PATH` | auto-detect | tm_browser executable override (Edge/Chrome/Chromium per OS) |
+| `TM_BROWSER_PATH` | auto-detect | tm_browser executable override (default: your DEFAULT browser when Chromium-family, else Edge/Chrome probes) |
 | `TM_BROWSER_HEADLESS` | `auto` | `1` headless (CI) / `0` headful / `auto` (headless only on display-less Linux) |
 | `TM_MEMORY_GLOBAL_DIR` | `~/.opencode-team/memories/global/` | tm_memory GLOBAL scope store |
+| `TM_HIT_BLACKLIST` | `maimai.cn` | extra domains never listed as search hits (comma/semicolon separated; same-name-different-site noise like 脉脉) |
 | `TM_PTC_MAX_PROGRAM_CHARS` | `4000` | PTC program source cap |
 | `TM_PTC_MAX_CALLS` | `20` | PTC per-run bridge-call budget (1–200) |
 | `TM_PTC_MAX_ERRORS` | `3` | PTC per-run error budget (1–50) |

@@ -46,7 +46,16 @@ export {
   parseMemoryMarkdown,
   renderMemoryMarkdown,
 } from "./memory.js"
-export { buildTmBrowserTool, findBrowserExecutable, resolveHeadless } from "./browser.js"
+export {
+  buildTmBrowserTool,
+  defaultBrowserExecutable,
+  findBrowserExecutable,
+  isChromiumFamily,
+  parseDesktopExec,
+  parseProgId,
+  parseRegCommand,
+  resolveHeadless,
+} from "./browser.js"
 import { buildTmMemoryTool } from "./memory.js"
 import { buildTmBrowserTool } from "./browser.js"
 
@@ -253,6 +262,8 @@ export {
   extractSearchHits,
   renderSearchHits,
   fetchWebText,
+  hitDomainBlacklist,
+  HIT_DOMAIN_BLACKLIST_DEFAULT,
   hostAllowed,
   htmlToText,
 } from "./webfetch.js"

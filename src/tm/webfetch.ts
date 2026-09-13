@@ -138,10 +138,29 @@ const ANCHOR_RE = /<a\b[^>]*href\s*=\s*(?:"([^"]*)"|'([^']*)')[^>]*>([\s\S]*?)<\
 export const SEARCH_PAGE_RE =
   /(?:cn\.bing\.com|www\.bing\.com)\/search|\.baidu\.com\/s\b|sogou\.com\/web|so\.com\/s\b|search\.bilibili\.com\/all/i
 
-/** Click trackers / redirector links that point back at the engine instead
- *  of the destination (bing /ck/, baidu /link?, sogou /link?, ms fwlink). */
+/** Click trackers / redirectors that point back at the engine OR at the
+ *  engine's own JS/AI answer page instead of the destination.  360/so.com
+ *  wraps every hit through `so.com/link?m=...` (a real session showed this
+ *  poisoning the hit list with 360's own AI-answer URLs); so.com also
+ *  surfaces ai.so.com as a "hit" (its own AI search tab), which is an
+ *  internal page, not an external result. */
 const ENGINE_TRACKER_RE =
-  /bing\.com\/ck\/|baidu\.com\/link\?|sogou\.com\/link\?|go\.microsoft\.com\/fwlink/i
+  /bing\.com\/ck\/|baidu\.com\/link\?|sogou\.com\/link\?|go\.microsoft\.com\/fwlink|so\.com\/link\?|ai\.so\.com/i
+
+/** Domains that collide with common search terms (e.g. maimai.cn is the
+ *  Chinese professional-networking site 脉脉, NOT the SEGA maimai DX rhythm
+ *  game — a real session showed bing returning 10/10 maimai.cn hits for
+ *  every maimai DX query).  Extend via TM_HIT_BLACKLIST (comma/semicolon
+ *  separated); read lazily so tests and long-lived processes see updates. */
+export const HIT_DOMAIN_BLACKLIST_DEFAULT: readonly string[] = ["maimai.cn"]
+
+export function hitDomainBlacklist(): string[] {
+  const env = process.env.TM_HIT_BLACKLIST ?? ""
+  return [
+    ...HIT_DOMAIN_BLACKLIST_DEFAULT,
+    ...env.split(/[,;]/).map((d) => d.trim().toLowerCase()).filter(Boolean),
+  ]
+}
 
 export interface SearchHit {
   title: string
@@ -165,7 +184,11 @@ function decodeEntities(s: string): string {
  * their markup often, so the filter set is intentionally loose — callers
  * fall back to plain text extraction when the list comes back thin.
  */
-export function extractSearchHits(html: string, max = 10): SearchHit[] {
+export function extractSearchHits(
+  html: string,
+  max = 10,
+  blacklist: readonly string[] = hitDomainBlacklist(),
+): SearchHit[] {
   const hits: SearchHit[] = []
   const seen = new Set<string>()
   for (const m of html.matchAll(ANCHOR_RE)) {
@@ -179,6 +202,14 @@ export function extractSearchHits(html: string, max = 10): SearchHit[] {
     if (title.length < 4) continue
     const key = href.split("#")[0]
     if (seen.has(key)) continue
+    // domain blacklist: same-name-different-site collisions (maimai.cn 脉脉
+    // vs the maimai DX game) must not ride the hit list as "results"
+    try {
+      const host = new URL(href).hostname.toLowerCase()
+      if (blacklist.some((d) => host === d || host.endsWith("." + d))) continue
+    } catch {
+      /* URL parse fail: keep the hit (the anchor scan already vetted it) */
+    }
     seen.add(key)
     hits.push({ title: title.length > 110 ? title.slice(0, 110) + "…" : title, url: href })
     if (hits.length >= max) break
@@ -311,15 +342,19 @@ export async function fetchWebText(
         continue
       }
       if (res.status === 403 || res.status === 418) {
+        // Already sent real-Chrome UA + Accept headers and still rejected:
+        // the gate is JS-challenge / TLS-fingerprint based — only a real
+        // browser passes.  DIRECTIVE to the agent: call tm_browser.
         const u = current.toString()
-        const hint = u.includes("baike.baidu.com")
-          ? `baike.baidu.com 是 JS 渲染 SPA——fetch 拿不到正文。用 tm_browser 打开此词条。`
+        const known = u.includes("baike.baidu.com")
+          ? "（baike.baidu.com 是 JS 渲染 SPA）"
           : u.includes("zhihu.com")
-            ? `zhihu.com 反爬严格——用 tm_browser 打开（登录态页面 fetch 一律 403）。`
-            : `站点反爬仍拒绝。`
+            ? "（知乎对 fetch 一律 403）"
+            : ""
         throw new Error(
-          `HTTP ${res.status}——${hint}（最终 URL: ${shorten(u, 120)}）。` +
-            `换 tm_search 的其他引擎、用 tm_browser（真实浏览器渲染）打开，或找该数据的直接源站。`,
+          `HTTP ${res.status}${known}——伪装浏览器请求头后仍被拒，该站需要真实浏览器会话。` +
+            `下一步：调用 tm_browser 打开此 URL（action:"open" → action:"read"）` +
+            `（${shorten(u, 120)}）；或换 tm_search 引擎 / 找直接源站。`,
         )
       }
       if (res.status < 200 || res.status >= 300) {

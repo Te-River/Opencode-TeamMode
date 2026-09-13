@@ -849,6 +849,9 @@ try {
         }
       }
       if (url.includes("bing.com/big")) return htmlRes("w".repeat(200000))
+      if (url.includes("baike.baidu.com")) {
+        return { status: 403, headers: { get: () => null }, body: null }
+      }
       if (url.includes("baidu.com")) return htmlRes("<html><head></head><body></body></html>")
       if (url.includes("moegirl.org.cn/nobody")) {
         return {
@@ -883,6 +886,13 @@ try {
       const ctxDeny = { ...ctx, ask: async () => { throw new Error("rejected by user") } }
       const denied = await wf.execute({ url: "https://evil.example.com/x" }, ctxDeny)
       assert.ok(denied.output.includes("phase=permission") && denied.output.includes("用户未批准"), "rejected dialog → permission error (user's verdict)")
+      // 403 after header disguise → DIRECTIVE: call tm_browser (not "try again")
+      const forbidden = await wf.execute({ url: "https://baike.baidu.com/item/x" }, ctx)
+      assert.ok(
+        forbidden.output.includes("tm_browser") && forbidden.output.includes('action:"open"'),
+        "403 → directive to call tm_browser with the exact action chain",
+      )
+      assert.ok(forbidden.output.includes("真实浏览器会话"), "403 explains WHY (JS/TLS gate, fetch cannot pass)")
       // R6 red lines NEVER ask: env-file URL hard-blocks even with a resolver
       const envAsk = await wf.execute({ url: "https://evil.example.com/.env" }, ctxAsk)
       assert.ok(envAsk.output.includes("R6 红线") && envAsk.output.includes("phase=permission"), "env-file URL hard-blocks without any dialog")
@@ -1039,11 +1049,45 @@ try {
       }
     }
 
+    // tracker + hit-blacklist pins (real-session regressions):
+    //  - so.com wraps hits through so.com/link?m=… and surfaces ai.so.com
+    //    (its own AI tab) — both are engine-internal, never "results"
+    //  - maimai.cn is 脉脉 (professional networking), NOT the maimai DX game
+    //    — bing returned 10/10 maimai.cn hits for every maimai DX query
+    {
+      const noisy = [
+        '<a href="https://www.so.com/link?m=abc123def">舞萌DX 入坑教程</a>',
+        '<a href="https://ai.so.com/search/?q=x">AI问答结果标题</a>',
+        '<a href="https://maimai.cn/jobs">脉脉招聘页标题</a>',
+        '<a href="https://maimai-net.cn/songs">maimai DX 曲库</a>',
+        '<a href="https://zhuanlan.zhihu.com/p/1">知乎专栏文章</a>',
+      ].join("\n")
+      const hits = tm.extractSearchHits(noisy)
+      const urls = hits.map((h) => h.url)
+      assert.ok(!urls.some((u) => u.includes("so.com/link?")), "so.com/link? tracker excluded")
+      assert.ok(!urls.some((u) => u.includes("ai.so.com")), "ai.so.com engine-internal page excluded")
+      assert.ok(!urls.some((u) => u.includes("maimai.cn/")), "maimai.cn (脉脉) excluded by the default blacklist")
+      assert.ok(urls.some((u) => u.includes("maimai-net.cn")), "legit maimai-net.cn hit kept")
+      assert.ok(urls.some((u) => u.includes("zhihu.com")), "legit zhihu hit kept")
+      // custom blacklist param (caller-level)
+      const custom = tm.extractSearchHits(noisy, 10, ["zhihu.com"])
+      assert.ok(!custom.some((h) => h.url.includes("zhihu.com")), "injected blacklist respected")
+      // env extension (lazy read)
+      process.env.TM_HIT_BLACKLIST = "maimai-net.cn"
+      try {
+        const envHits = tm.extractSearchHits(noisy)
+        assert.ok(!envHits.some((h) => h.url.includes("maimai-net.cn")), "TM_HIT_BLACKLIST env extension respected")
+      } finally {
+        delete process.env.TM_HIT_BLACKLIST
+      }
+      assert.ok(tm.HIT_DOMAIN_BLACKLIST_DEFAULT.includes("maimai.cn"), "default blacklist pins maimai.cn")
+    }
+
     // unit-level: extractor handles single-quoted hrefs + entity titles
     const unit = tm.extractSearchHits(`<a href='https://example.com/a&amp;b'>A &amp; B research</a>`)
     assert.ok(unit.length === 1 && unit[0].url === "https://example.com/a&b" && unit[0].title === "A & B research", "extractor: single-quote href + entity decode")
   }
-  console.log("6m-s. tm_search: OK (9-engine table allowlisted, SERP → hit list, trackers/chrome excluded, npm/github/moegirl structured, switch-engine hint, args-phase validation)")
+  console.log("6m-s. tm_search: OK (9-engine table allowlisted, SERP → hit list, trackers/chrome + hit-domain blacklist (maimai.cn, so.com/link?, ai.so.com, env-extensible), npm/github/moegirl structured, switch-engine hint, args-phase validation)")
 
   // 6p. PARALLEL SAFETY — the host may Promise.all a batch of tool calls;
   // tm_search / tm_webfetch / tm_fetch executes must never cross-
@@ -1232,6 +1276,44 @@ try {
     fs.writeFileSync(fake, "x")
     assert.equal(tm.findBrowserExecutable({ TM_BROWSER_PATH: fake }), path.resolve(fake), "TM_BROWSER_PATH override wins")
     fs.rmSync(fake, { force: true })
+    // default-browser resolution: Chromium-family filter + registry parsers
+    assert.equal(tm.isChromiumFamily("C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe"), true, "chrome.exe is Chromium-family")
+    assert.equal(tm.isChromiumFamily("/usr/bin/brave"), true, "brave (linux) is Chromium-family")
+    assert.equal(tm.isChromiumFamily("C:\\Program Files\\Mozilla Firefox\\firefox.exe"), false, "firefox is NOT CDP-capable")
+    assert.equal(
+      tm.parseProgId("HKEY_CURRENT_USER\\...\\UserChoice\r\n    ProgId    REG_SZ    ChromeHTML\r\n"),
+      "ChromeHTML",
+      "reg ProgId parsed",
+    )
+    assert.equal(
+      tm.parseRegCommand('    (Default)    REG_SZ    "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe" --single-argument %1\r\n'),
+      "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",
+      "reg open-command exe parsed",
+    )
+    assert.equal(
+      tm.parseDesktopExec('[Desktop Entry]\nName=Chrome\nExec=/usr/bin/google-chrome-stable %U\n'),
+      "/usr/bin/google-chrome-stable",
+      "xdg desktop Exec parsed",
+    )
+    if (process.platform === "win32") {
+      // fake registry: default = a REAL file named chrome.exe → resolver returns it
+      const chromeFake = path.join(mktmp("defbrowser"), "chrome.exe")
+      fs.writeFileSync(chromeFake, "x")
+      const fakeReg = (cmd, args) =>
+        args.some((a) => String(a).includes("UserChoice"))
+          ? "    ProgId    REG_SZ    ChromeHTML\r\n"
+          : `    (Default)    REG_SZ    "${chromeFake}" --single-argument %1\r\n`
+      assert.equal(
+        tm.defaultBrowserExecutable({}, fakeReg),
+        chromeFake,
+        "default browser (Chromium-family) resolved from the registry",
+      )
+      const ffReg = (cmd, args) =>
+        args.some((a) => String(a).includes("UserChoice"))
+          ? "    ProgId    REG_SZ    FirefoxURL\r\n"
+          : "    (Default)    REG_SZ    \"C:\\FF\\firefox.exe\" -osint -url \"%1\"\r\n"
+      assert.equal(tm.defaultBrowserExecutable({}, ffReg), null, "Firefox default → null (CDP cannot drive it; probe list takes over)")
+    }
     // allowlist is checked BEFORE any browser spawns (works without a browser)
     const blocked = await runtime.tools.tm_browser.execute({ action: "open", url: "https://evil.example.com/x" }, ctx)
     assert.ok(blocked.output.includes("phase=permission"), "disallowed host → permission error, no spawn")
@@ -1253,7 +1335,7 @@ try {
       console.log("  (no browser found — live round-trip skipped)")
     }
   }
-  console.log("6o. tm_browser: OK (headless matrix, discovery override, pre-spawn allowlist, live round-trip when a browser exists)")
+  console.log("6o. tm_browser: OK (headless matrix, discovery override + DEFAULT-browser registry/xdg resolution with Chromium-family filter, pre-spawn allowlist, live round-trip when a browser exists)")
 
   // 6h. degraded path: store failure -> truncated + warning, task NOT failed
   {
