@@ -311,8 +311,14 @@ export async function fetchWebText(
         continue
       }
       if (res.status === 403 || res.status === 418) {
+        const u = current.toString()
+        const hint = u.includes("baike.baidu.com")
+          ? `baike.baidu.com 是 JS 渲染 SPA——fetch 拿不到正文。用 tm_browser 打开此词条。`
+          : u.includes("zhihu.com")
+            ? `zhihu.com 反爬严格——用 tm_browser 打开（登录态页面 fetch 一律 403）。`
+            : `站点反爬仍拒绝。`
         throw new Error(
-          `HTTP ${res.status}——站点反爬仍拒绝（最终 URL: ${shorten(current.toString(), 120)}）。` +
+          `HTTP ${res.status}——${hint}（最终 URL: ${shorten(u, 120)}）。` +
             `换 tm_search 的其他引擎、用 tm_browser（真实浏览器渲染）打开，或找该数据的直接源站。`,
         )
       }
