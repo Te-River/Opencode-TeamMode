@@ -275,22 +275,41 @@ oversized docs to board files.  Agents are prompted to search before
 assuming project conventions and to save hard-won facts for the next
 conversation.
 
-**Web lookups (two channels) — network roles: Team Lead + Researcher only.**
-1. **High priority — your own MCP/plugin tools.** Browser automation, search
-   or fetch tools from user-configured MCP servers pass through the
-   whitelist untouched; agents are prompted to scan their tool surface and
-   prefer them.
-2. **Fallback — `tm_webfetch` (governed).** A domain-allowlisted fetch whose
-   output rides the same governance as the other tm_* tools (threshold
-   offload, content-aware preview, `tm_fetch` handle) so a web page can
-   never flood the context.  Seeded hosts: `mobile.moegirl.org.cn` (wiki
-   term), `search.bilibili.com`, `cn.bing.com`, `www.baidu.com` (search
-   URL templates); extend via `TM_WEBFETCH_ALLOWED_DOMAINS` (`"*"` opens
-   every host).  Only http(s); redirects are re-checked per hop; remote
-   `.env`-style URLs are refused (R6 red line); the built-in
-   webfetch/websearch tools stay removed.  The other four agents
-   (architect / implementer / reviewer / tester) have NO network grant —
-   web questions are reported as a gap, never simulated.
+**Web lookups — network roles: Team Lead + Researcher only.**
+
+> **Fixed tool priority ladder (every task): ① TeamMode governed tools
+> (`tm_*`) → ② user MCP/plugin tools → ③ the model's own reasoning
+> (a missing capability is reported as a gap, never fabricated).**  The
+> ladder is also a fallback chain: when a governed tool errors (no browser
+> on this host, blocked host), the agent says so and drops to the next
+> rung instead of giving up.
+
+1. **Governed web tools.**  `tm_browser` — an interactive browser session
+   driving **your own Chromium-family browser** (Edge probed first on
+   Windows) headful via the CDP pipe protocol: open → navigate → read
+   (page text, threshold-governed like tm_read) → screenshot (PNG saved
+   to the run store, only the path enters context) → close.  Isolated
+   temp profile (never your real one); the **domain allowlist is enforced
+   at the network layer** per request (CDP `Fetch.requestPaused` —
+   non-allowlisted hosts get `BlockedByClient`).  Display-less Linux
+   hosts run headless automatically; `TM_BROWSER_HEADLESS` forces either
+   way, `TM_BROWSER_PATH` points at a specific executable.  `tm_webfetch`
+   — a single governed GET of an allowlisted page.  Both ride the same
+   governance as every tm_* tool (threshold offload + content-aware
+   preview + `tm_fetch` handle), so a web page can never flood the
+   context.
+2. **User MCP/plugin tools.**  Browser automation, search or fetch tools
+   from user-configured MCP servers are the fallback for what the
+   governed tools cannot do — the whitelist never touches them.
+3. The other four agents (architect / implementer / reviewer / tester)
+   have NO network grant — web questions are reported as a gap, never
+   simulated.  The built-in webfetch/websearch tools stay removed; remote
+   `.env`-style URLs are refused (R6 red line).
+
+Seeded allowlist hosts (both web tools): `mobile.moegirl.org.cn` (wiki
+term), `search.bilibili.com`, `cn.bing.com`, `www.baidu.com` (search URL
+templates); extend via `TM_WEBFETCH_ALLOWED_DOMAINS` (`"*"` opens every
+host).
 
 > ⚠️ **When you approve a dialog, pick "once" — not "always".** Verified on
 > the live host, "always" records a far broader rule than the command you
@@ -338,7 +357,9 @@ conversation.
 | `TM_TRAJECTORY_DIR` | `<repo>/.git/opencode-team/trajectory/` | append-only tool-call ledger (tmpdir fallback outside a git repo) |
 | `TM_BLACKBOARD_TTL` | `7` | store retention (days) |
 | `TM_BASH_READONLY_ALLOWED` | built-in table | tm_bash allowlist |
-| `TM_WEBFETCH_ALLOWED_DOMAINS` | `mobile.moegirl.org.cn, search.bilibili.com, cn.bing.com, www.baidu.com` | tm_webfetch allowlist (`"*"` opens every host; explicit empty = deny all) |
+| `TM_WEBFETCH_ALLOWED_DOMAINS` | `mobile.moegirl.org.cn, search.bilibili.com, cn.bing.com, www.baidu.com` | tm_webfetch/tm_browser allowlist (`"*"` opens every host; explicit empty = deny all) |
+| `TM_BROWSER_PATH` | auto-detect | tm_browser executable override (Edge/Chrome/Chromium probed per OS) |
+| `TM_BROWSER_HEADLESS` | `auto` | tm_browser: `1` headless (servers/CI) / `0` headful / `auto` (headless only on display-less Linux) |
 | `TM_PTC_MAX_PROGRAM_CHARS` | `4000` | PTC program source length cap (chars) |
 | `TM_PTC_MAX_CALLS` | `20` | PTC per-run bridge-call budget (1–200) |
 | `TM_PTC_MAX_ERRORS` | `3` | PTC per-run error budget (1–50) |
@@ -414,7 +435,7 @@ opencode-team-mode/
 │   ├── blackboard.ts     ← Shared blackboard + TTL auto-cleanup sweeper
 │   ├── envprotect.ts     ← R6 facade → envprotect/ (patterns / bash-classify / path-classify / gate-predicates / hook)
 │   ├── approval-gate.ts  ← Unified approval gate: host-dialog timeout auto-reject (never self-allows)
-│   ├── tm/               ← JIT layer-2 tools: pipelines / result / client-unwrap / shell-bridge / args-schema / tools / guard / preview / store / refs / config / webfetch / ptc/ (9 modules)
+│   ├── tm/               ← JIT layer-2 tools: pipelines / result / client-unwrap / shell-bridge / args-schema / tools / guard / preview / store / refs / config / webfetch / memory / browser / ptc/ (9 modules)
 │   └── types.ts          ← Loader-contract type definitions (1.18.x)
 ├── scripts/
 │   ├── install.sh        ← One-click installer (bash)

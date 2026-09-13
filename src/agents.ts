@@ -86,8 +86,13 @@ const NEVER_ALLOWED = [
   "question",
 ] as const
 
-/** Built-ins granted per agent; every one NOT granted is denied. */
-const PER_AGENT_TOOLS = ["edit", "write", "task", "bash"] as const
+/** Built-ins granted per agent; every one NOT granted is denied.  todowrite
+ *  and question are LEAD-ONLY grants (see the whitelist call below): the
+ *  lead's prompt MANDATES a todo list ("your state memory is the todo
+ *  list") and batched blocking questions — denying those tools to the lead
+ *  made the prompt unfulfillable; specialists answer through the lead
+ *  (STATUS: blocked), never interrupt the user directly. */
+const PER_AGENT_TOOLS = ["edit", "write", "task", "bash", "todowrite", "question"] as const
 
 /** The governed tools, named explicitly next to the "tm_*" wildcard
  *  (belt-and-braces: the explicit allows survive even if a host ever
@@ -114,10 +119,12 @@ const whitelist = (
   }
   for (const tool of TM_TOOLS) permission[tool] = "allow"
   permission["tm_*"] = "allow"
-  // Governed web fallback — default DENY for every agent; the explicit key
-  // overrides the tm_* wildcard.  applyWebfetchPermission grants it back to
-  // the lead + researcher only (network capability is a two-role grant).
+  // Governed web channels (tm_webfetch + tm_browser) — default DENY for
+  // every agent; the explicit keys override the tm_* wildcard.
+  // applyNetworkPermission grants them back to the lead + researcher only
+  // (network capability is a two-role grant).
   permission["tm_webfetch"] = "deny"
+  permission["tm_browser"] = "deny"
   return permission
 }
 
@@ -127,11 +134,13 @@ function applyPtcPermission(permission: AgentPermission, _isTeamLead: boolean): 
   permission[PTC_TOOL] = "allow"
 }
 
-/** Apply the tm_webfetch grant: ONLY the team lead and the researcher carry
- *  the governed web channel (explicit allow overrides the tm_* wildcard);
- *  architect / implementer / reviewer / tester keep the whitelist deny. */
-function applyWebfetchPermission(permission: AgentPermission, isWebRole: boolean): void {
+/** Apply the network grant: ONLY the team lead and the researcher carry
+ *  the governed web channels (tm_webfetch + tm_browser — explicit allow
+ *  overrides the tm_* wildcard); architect / implementer / reviewer /
+ *  tester keep the whitelist deny. */
+function applyNetworkPermission(permission: AgentPermission, isWebRole: boolean): void {
   permission["tm_webfetch"] = isWebRole ? "allow" : "deny"
+  permission["tm_browser"] = isWebRole ? "allow" : "deny"
 }
 
 /* ------------------------------------------------------------------ */
@@ -149,11 +158,12 @@ const teamLead: AgentConfig = {
     "different expertise areas.",
   prompt: TEAM_LEAD_PROMPT,
   color: "#E879F9", // purple
-  // Whitelist: tm_* x4 + tm_ptc_run + tm_webfetch (the lead is a network
-  // role) + task dispatch + edit (<=10-line non-product edits, see "When
-  // you may edit directly") + write (board files) + bash (discovery-gate
-  // probes: --help, installed versions).
-  permission: whitelist("task", "edit", "write", "bash"),
+  // Whitelist: tm_* x4 + tm_ptc_run + tm_webfetch + tm_browser (the lead is
+  // a network role) + task dispatch + edit (<=10-line non-product edits) +
+  // write (board files) + bash (discovery-gate probes) + todowrite + question
+  // (the lead's TodoList discipline and batched blocking questions are
+  // prompt mandates — they need their tools).
+  permission: whitelist("task", "edit", "write", "bash", "todowrite", "question"),
   temperature: 0.2,
 }
 
@@ -258,12 +268,12 @@ for (const a of [architect, implementer, reviewer, tester, researcher]) {
  * at module init. */
 if (teamLead.permission) {
   applyPtcPermission(teamLead.permission, true)
-  applyWebfetchPermission(teamLead.permission, true)
+  applyNetworkPermission(teamLead.permission, true)
 }
 for (const a of [architect, implementer, reviewer, tester, researcher]) {
   if (a.permission) {
     applyPtcPermission(a.permission, false)
-    applyWebfetchPermission(a.permission, a === researcher)
+    applyNetworkPermission(a.permission, a === researcher)
   }
 }
 

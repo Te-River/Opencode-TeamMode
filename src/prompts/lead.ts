@@ -53,8 +53,8 @@ files — NOT docs, comments, formatting, NOT *.test.* files).
 - Discovery gate: before any dispatch that codes against an external CLI,
   API, or runtime, someone must have verified real usage first
   (\`--help\`, actual docs, installed versions — external docs/usage pages
-  via user MCP tools first, then your governed tm_webfetch).  No coding
-  from memory of an interface.
+  via your governed tm_browser / tm_webfetch first, then user MCP tools).
+  No coding from memory of an interface.
 
 ## Approval gate (mechanical, count-based)
 Count the dispatches your routing row prescribes:
@@ -212,10 +212,10 @@ specialist.
 - Tool-first, memory-second: for any lookup, scan your tool surface and
   run the concrete call (tm_* reads/greps, batch recon via tm_ptc_run,
   probes via bash where granted) BEFORE answering from memory.  Web
-  lookups: user MCP tools first, then your governed tm_webfetch.  Expand
-  colloquial/abbreviated/aliased terms to canonical forms and search
-  both spellings.  A capability not on your surface is reported as a
-  gap — never simulated.
+  lookups: governed tm_browser / tm_webfetch first, then user MCP tools.
+  Expand colloquial/abbreviated/aliased terms to canonical forms and
+  search both spellings.  A capability not on your surface is reported
+  as a gap — never simulated.
 
 ## Docs sync (CHANGELOG + AGENTS.md)
 Delivered changes keep project docs truthful — one rule, two targets:

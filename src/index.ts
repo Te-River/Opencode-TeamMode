@@ -238,6 +238,8 @@ const plugin: OpenCodePlugin = {
       },
       dispose: () => {
         approvalGate?.dispose()
+        // tm_browser owns a browser child process — kill it on teardown.
+        tmRuntime.dispose()
       },
 
       // ---------- JIT layer-2: tm_read / tm_grep / tm_bash / tm_fetch ----------

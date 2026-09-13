@@ -196,7 +196,12 @@ assert.equal(cfg.agent["team"].permission.task, "allow", "lead task dispatch all
 assert.equal(cfg.agent["team"].permission.tm_webfetch, "allow", "lead is a network role (governed tm_webfetch)")
 assert.equal(cfg.agent["implementer"].permission.tm_webfetch, "deny", "implementer is NOT a network role")
 assert.equal(cfg.agent["researcher"].permission.tm_webfetch, "allow", "researcher is a network role")
+assert.equal(cfg.agent["team"].permission.tm_browser, "allow", "lead is a network role (governed tm_browser)")
+assert.equal(cfg.agent["implementer"].permission.tm_browser, "deny", "implementer is NOT a network role (browser)")
 assert.equal(cfg.agent["implementer"].permission.tm_memory, "allow", "memory store: all roles (not a network channel)")
+assert.equal(cfg.agent["team"].permission.todowrite, "allow", "lead: todowrite granted (TodoList discipline is a prompt mandate)")
+assert.equal(cfg.agent["team"].permission.question, "allow", "lead: question granted (batched blocking questions)")
+assert.equal(cfg.agent["implementer"].permission.todowrite, "deny", "specialists: todowrite denied (lead-only)")
 assert.equal(Object.keys(cfg.agent).length, 6, "exactly 6 agents injected")
 assert.equal(Object.keys(cfg.command).length, 6, "exactly 6 commands injected")
 
@@ -312,9 +317,12 @@ for (const expert of EXPERTS) {
   assert.ok(cfg2.agent[expert].prompt.includes("## Project memories"), expert + ": project memory rule present")
   assert.ok(cfg2.agent[expert].prompt.includes("run tm_memory search"), expert + ": memory pull-model instruction (search before assuming)")
   assert.ok(
-    cfg2.agent[expert].prompt.includes("Web lookups are NOT yours unless tm_webfetch is on your surface"),
+    cfg2.agent[expert].prompt.includes("Web lookups are NOT yours unless tm_webfetch / tm_browser"),
     expert + ": web boundary rule (network roles are lead + researcher only)",
   )
+  assert.ok(cfg2.agent[expert].prompt.includes("1. TeamMode governed tools (tm_*)"), expert + ": priority ladder rung 1 (tm_* first)")
+  assert.ok(cfg2.agent[expert].prompt.includes("2. User MCP/plugin tools"), expert + ": priority ladder rung 2 (MCP second)")
+  assert.ok(cfg2.agent[expert].prompt.includes("3. Your own reasoning"), expert + ": priority ladder rung 3 (reasoning, never fabricate)")
 assert.ok(cfg2.agent["researcher"].prompt.includes("## Web lookups (two channels)"), "researcher: two-channel web policy (MCP first, tm_webfetch fallback)")
 assert.ok(cfg2.agent["researcher"].prompt.includes("mobile.moegirl.org.cn"), "researcher: seeded web hosts documented")
 assert.ok(cfg2.agent["team"].prompt.includes("tm_webfetch"), "lead: governed web fallback referenced")

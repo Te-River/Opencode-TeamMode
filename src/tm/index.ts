@@ -29,7 +29,7 @@ import { hmacToken, newRunId } from "./refs.js"
 import { RunStore } from "./store.js"
 import { buildTmTools } from "./tools.js"
 import { buildPipelines } from "./pipelines.js"
-import { buildPtcArgsSchema, buildWebfetchArgsSchema, buildMemoryArgsSchema } from "./args-schema.js"
+import { buildPtcArgsSchema, buildWebfetchArgsSchema, buildMemoryArgsSchema, buildBrowserArgsSchema } from "./args-schema.js"
 import { buildPtcRunTool } from "./ptc/index.js"
 import { buildTmWebfetchTool } from "./webfetch.js"
 export { rmForceSafe } from "../fs-safe.js"
@@ -43,13 +43,17 @@ export {
   parseMemoryMarkdown,
   renderMemoryMarkdown,
 } from "./memory.js"
+export { buildTmBrowserTool, findBrowserExecutable, resolveHeadless } from "./browser.js"
 import { buildTmMemoryTool } from "./memory.js"
+import { buildTmBrowserTool } from "./browser.js"
 
 export interface TmRuntime {
   runId: string
   config: TmConfig
   store: RunStore
   tools: Record<string, ToolDefinition>
+  /** Kill any long-lived session the tools own (tm_browser child process). */
+  dispose: () => void
 }
 
 export interface CreateTmToolsOptions {
@@ -147,6 +151,12 @@ export async function createTmTools(
     pipelines,
     args: memoryArgs,
   })
+  // tm_browser — governed interactive browser (Plan C, headful CDP pipe).
+  // Network role tool: team + researcher carry the allow; the other four
+  // hold an explicit deny (overrides the tm_* wildcard).  dispose() kills
+  // the browser child when the host tears the plugin down.
+  const browserTool = buildTmBrowserTool({ pipelines, cfg, args: await buildBrowserArgsSchema() })
+  tools.tm_browser = browserTool
   // M3: build tm_ptc_run using a separate pipeline instance (governance
   // reused verbatim).  Its step counter starts at s0001 again — the
   // "ptc-" stepPrefix namespaces its step ids so offloaded payloads can
@@ -176,7 +186,7 @@ export async function createTmTools(
     pipelines: ptcPipelines,
   })
   tools.tm_ptc_run = ptcTool
-  return { runId, config: cfg, store, tools }
+  return { runId, config: cfg, store, tools, dispose: () => browserTool.dispose() }
 }
 
 // ---------- re-exports (stable import surface for tests + plugin entry) ----------

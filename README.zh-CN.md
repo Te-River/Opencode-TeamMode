@@ -260,18 +260,32 @@ Markdown 文件存放在同一个 git 感知存储里
 超长文档归黑板文件。所有 Agent 都被要求：在凭空假设项目约定之前先
 search，踩过坑后把结论 add 给下一次会话。
 
-**联网查询（两通道）——网络角色仅限 Team Lead 与 Researcher。**
-1. **高优先级——用户自有的 MCP/插件工具。** 用户配置的 MCP 服务器提供的
-   浏览器自动化、搜索、抓取类工具原样通过白名单，不会被拦截；所有 Agent
-   都被要求先扫描自己的工具面、优先使用它们。
-2. **兜底——`tm_webfetch`（受治理）。** 域名白名单内的受治理抓取，输出与
-   其他 tm_* 工具走同一套治理（阈值卸载、内容感知预览、`tm_fetch` 句柄），
-   网页永远冲不爆上下文。预置主机：`mobile.moegirl.org.cn`（词条）、
-   `search.bilibili.com`、`cn.bing.com`、`www.baidu.com`（搜索 URL 模板）；
-   通过 `TM_WEBFETCH_ALLOWED_DOMAINS` 扩展（`"*"` 放开全部主机）。仅允许
-   http(s)；重定向逐跳复检；远程 `.env` 类 URL 拒绝（R6 红线）；内置
-   webfetch/websearch 工具保持移除。其余四个角色（architect / implementer /
-   reviewer / tester）**没有**网络授权——联网问题按缺口上报，绝不伪装结果。
+**联网查询——网络角色仅限 Team Lead 与 Researcher。**
+
+> **固定工具优先级梯子（所有任务）：① TeamMode 受治理工具（`tm_*`）→
+> ② 用户 MCP/插件工具 → ③ 模型自行推理（能力缺失按缺口上报，绝不伪装）。**
+> 梯子同时是回退链：受治理工具报错（本机无浏览器、主机被拦）时，Agent
+> 会如实说明并落到下一级，而不是放弃。
+
+1. **受治理联网工具。** `tm_browser`——交互式浏览器会话，经 CDP 管道协议
+   驱动**你本机的 Chromium 系浏览器**（Windows 优先探测 Edge）有头运行：
+   open → navigate → read（页面正文，与 tm_read 同阈值治理）→ screenshot
+   （PNG 落 run store，进上下文的只有路径）→ close。隔离临时配置（绝不碰
+   你的真实配置）；**域名白名单在网络层逐请求强制**（CDP
+   `Fetch.requestPaused`——白名单外主机直接 `BlockedByClient`）。无显示器
+   的 Linux 主机自动转无头；`TM_BROWSER_HEADLESS` 可强制，`TM_BROWSER_PATH`
+   可指定可执行文件。`tm_webfetch`——单个白名单页面的受治理 GET。两者与
+   所有 tm_* 工具走同一套治理（阈值卸载 + 内容感知预览 + `tm_fetch`
+   句柄），网页永远冲不爆上下文。
+2. **用户 MCP/插件工具。** 用户配置的 MCP 服务器提供的浏览器自动化、搜索、
+   抓取类工具，作为受治理工具覆盖不到时的回退，白名单不干预。
+3. 其余四个角色（architect / implementer / reviewer / tester）**没有**
+   网络授权——联网问题按缺口上报，绝不伪装结果。内置 webfetch/websearch
+   工具保持移除；远程 `.env` 类 URL 拒绝（R6 红线）。
+
+白名单预置主机（两个联网工具共用）：`mobile.moegirl.org.cn`（词条）、
+`search.bilibili.com`、`cn.bing.com`、`www.baidu.com`（搜索 URL 模板）；
+通过 `TM_WEBFETCH_ALLOWED_DOMAINS` 扩展（`"*"` 放开全部主机）。
 
 > ⚠️ **批准弹窗时请选 once（仅此一次），不要选 always。** 真实宿主实测：
 > always 记录的泛化规则远比当次命令宽——对 `Get-ChildItem env:PATH` 选
@@ -311,7 +325,9 @@ search，踩过坑后把结论 add 给下一次会话。
 | `TM_TRAJECTORY_DIR` | `<repo>/.git/opencode-team/trajectory/` | 只追加工具调用账本（非 git 仓库回退 tmpdir） |
 | `TM_BLACKBOARD_TTL` | `7` | 存储保留天数 |
 | `TM_BASH_READONLY_ALLOWED` | 内置表 | tm_bash 只读白名单 |
-| `TM_WEBFETCH_ALLOWED_DOMAINS` | `mobile.moegirl.org.cn, search.bilibili.com, cn.bing.com, www.baidu.com` | tm_webfetch 白名单（`"*"` 放开全部主机；显式留空 = 全拒绝） |
+| `TM_WEBFETCH_ALLOWED_DOMAINS` | `mobile.moegirl.org.cn, search.bilibili.com, cn.bing.com, www.baidu.com` | tm_webfetch/tm_browser 白名单（`"*"` 放开全部主机；显式留空 = 全拒绝） |
+| `TM_BROWSER_PATH` | 自动探测 | tm_browser 可执行文件覆盖（按 Edge/Chrome/Chromium 逐 OS 探测） |
+| `TM_BROWSER_HEADLESS` | `auto` | tm_browser：`1` 无头（服务器/CI） / `0` 有头 / `auto`（仅无显示器的 Linux 自动无头） |
 | `TM_PTC_MAX_PROGRAM_CHARS` | `4000` | PTC 程序源码长度上限（字符） |
 | `TM_PTC_MAX_CALLS` | `20` | PTC 单次运行桥接调用数上限（1–200） |
 | `TM_PTC_MAX_ERRORS` | `3` | PTC 单次运行错误数上限（1–50） |
@@ -378,7 +394,7 @@ opencode-team-mode/
 │   ├── blackboard.ts     ← 共享黑板 + TTL 自动清理清扫器
 │   ├── envprotect.ts     ← R6 门面 → envprotect/（patterns / bash-classify / path-classify / gate-predicates / hook）
 │   ├── approval-gate.ts  ← 统一审批门：官方弹窗超时自动拒绝（绝不自我放行）
-│   ├── tm/               ← JIT 层 2 工具：pipelines / result / client-unwrap / shell-bridge / args-schema / tools / guard / preview / store / refs / config / webfetch / ptc/（9 模块）
+│   ├── tm/               ← JIT 层 2 工具：pipelines / result / client-unwrap / shell-bridge / args-schema / tools / guard / preview / store / refs / config / webfetch / memory / browser / ptc/（9 模块）
 │   └── types.ts          ← 加载器契约类型定义（1.18.x）
 ├── scripts/
 │   ├── install.sh        ← 一键安装脚本（bash）

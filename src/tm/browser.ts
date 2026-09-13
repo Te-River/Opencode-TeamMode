@@ -1,0 +1,398 @@
+/**
+ * tm_browser — governed interactive browser (Plan C: the user's own
+ * Chromium-family browser driven headful over the CDP pipe protocol).
+ *
+ * Feasibility proven by smoke (Edge + --remote-debugging-pipe + JSON/NUL
+ * framing over fds 3/4 — zero deps, no WebSocket implementation).  Qoder's
+ * hardening ideas are ported where the plugin can reach them:
+ *   - isolated temp user-data-dir (never the user's real profile);
+ *   - per-navigation allowlist enforced at the NETWORK layer via CDP
+ *     Fetch.requestPaused (non-allowlisted hosts get BlockedByClient —
+ *     the per-hop re-check analog);
+ *   - hardened webPreferences are the spawn's own flags (no-first-run,
+ *     no-extensions, mute);
+ *   - hard per-command timeout + explicit close; dispose kills the child.
+ *
+ * Environment adaptivity (different OpenCode hosts):
+ *   - headful by default (Plan C); display-less Linux (no DISPLAY/
+ *     WAYLAND_DISPLAY) automatically falls back to headless; TM_BROWSER_
+ *     HEADLESS=1|0 forces either way;
+ *   - browser discovery: TM_BROWSER_PATH override, then per-OS candidate
+ *     paths (Edge first on Windows — it is always there; Chrome/Chromium
+ *     elsewhere).  No browser → structured error, the agent falls back to
+ *     tm_webfetch / user MCP tools per the priority ladder.
+ *
+ * Role access mirrors tm_webfetch: network roles (team + researcher) only.
+ */
+
+import { spawn, type ChildProcess } from "node:child_process"
+import * as fs from "node:fs"
+import * as os from "node:os"
+import * as path from "node:path"
+import { checkWebUrl } from "./webfetch.js"
+import type { ToolResult } from "../types.js"
+import { tmError, toToolResult } from "./result.js"
+import type { TmConfig } from "./config.js"
+import type { TmPipelines } from "./pipelines.js"
+import { rmForceSafe } from "../fs-safe.js"
+
+/** Per-OS browser candidates, in preference order (first hit wins). */
+const BROWSER_CANDIDATES: Record<string, string[]> = {
+  win32: [
+    "C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe",
+    "C:\\Program Files\\Microsoft\\Edge\\Application\\msedge.exe",
+    "%LOCALAPPDATA%\\Google\\Chrome\\Application\\chrome.exe",
+    "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",
+    "C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe",
+  ],
+  darwin: [
+    "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+    "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
+    "/Applications/Chromium.app/Contents/MacOS/Chromium",
+  ],
+  linux: [
+    "/usr/bin/google-chrome",
+    "/usr/bin/google-chrome-stable",
+    "/usr/bin/chromium-browser",
+    "/usr/bin/chromium",
+    "/snap/bin/chromium",
+  ],
+}
+
+/** Resolve the browser executable: TM_BROWSER_PATH override, then per-OS
+ *  candidates.  %LOCALAPPDATA% style vars are expanded on win32. */
+export function findBrowserExecutable(env: Record<string, string | undefined> = process.env): string | null {
+  const override = String(env.TM_BROWSER_PATH ?? "").trim()
+  const tryPath = (p: string): string | null => {
+    const expanded = p.replace(/%([A-Za-z_][A-Za-z0-9_]*)%/g, (_, name) => env[name] ?? "")
+    try {
+      return fs.existsSync(expanded) ? expanded : null
+    } catch {
+      return null
+    }
+  }
+  if (override) return tryPath(override)
+  for (const c of BROWSER_CANDIDATES[process.platform] ?? []) {
+    const hit = tryPath(c)
+    if (hit) return hit
+  }
+  return null
+}
+
+/**
+ * Headless resolution (Plan C = headful by default):
+ *   TM_BROWSER_HEADLESS=1|true|force  → headless (servers/CI)
+ *   TM_BROWSER_HEADLESS=0|false|never → headful
+ *   auto (default)                    → headless ONLY when there is no
+ *   display possible (Linux without DISPLAY/WAYLAND_DISPLAY).
+ */
+export function resolveHeadless(env: Record<string, string | undefined> = process.env): boolean {
+  const raw = String(env.TM_BROWSER_HEADLESS ?? "auto").trim().toLowerCase()
+  if (["1", "true", "force", "yes"].includes(raw)) return true
+  if (["0", "false", "never", "no"].includes(raw)) return false
+  if (process.platform === "linux") return !env.DISPLAY && !env.WAYLAND_DISPLAY
+  return false
+}
+
+// ---------- pipe CDP client (JSON + NUL framing over fds 3/4) ----------------
+
+interface CdpMessage {
+  id?: number
+  method?: string
+  params?: Record<string, unknown>
+  sessionId?: string
+  result?: Record<string, unknown>
+  error?: { message?: string }
+}
+
+class PipeCdp {
+  private nextId = 1
+  private pending = new Map<number, (m: CdpMessage) => void>()
+  private buf = Buffer.alloc(0)
+  private events: CdpMessage[] = []
+  readonly onEvent = (handler: (m: CdpMessage) => void) => this.eventHandler = handler
+  private eventHandler: (m: CdpMessage) => void = () => {}
+
+  constructor(private readonly child: ChildProcess) {
+    const inp = child.stdio[4] as NodeJS.ReadableStream | null
+    inp?.on("data", (chunk: Buffer) => {
+      this.buf = Buffer.concat([this.buf, chunk])
+      for (;;) {
+        const i = this.buf.indexOf(0)
+        if (i === -1) break
+        const line = this.buf.subarray(0, i).toString("utf8")
+        this.buf = this.buf.subarray(i + 1)
+        try {
+          const m = JSON.parse(line) as CdpMessage
+          if (m.id && this.pending.has(m.id)) {
+            this.pending.get(m.id)!(m)
+            this.pending.delete(m.id)
+          } else if (m.method) {
+            this.events.push(m)
+            this.eventHandler(m)
+          }
+        } catch {
+          /* partial frame */
+        }
+      }
+    })
+  }
+
+  call(method: string, params: Record<string, unknown> = {}, sessionId?: string, timeoutMs = 20_000): Promise<Record<string, unknown>> {
+    const id = this.nextId++
+    const pipe = this.child.stdio[3] as NodeJS.WritableStream | null
+    return new Promise((res, rej) => {
+      const timer = setTimeout(() => {
+        if (this.pending.has(id)) {
+          this.pending.delete(id)
+          rej(new Error(`CDP ${method} 超时（${timeoutMs}ms）`))
+        }
+      }, timeoutMs)
+      this.pending.set(id, (m) => {
+        clearTimeout(timer)
+        m.error ? rej(new Error(`CDP ${method} -> ${JSON.stringify(m.error)}`)) : res(m.result ?? {})
+      })
+      pipe?.write(Buffer.from(JSON.stringify({ id, method, params, ...(sessionId ? { sessionId } : {}) }) + "\0"))
+    })
+  }
+
+  async waitEvent(method: string, sessionId: string | undefined, timeoutMs = 15_000): Promise<CdpMessage> {
+    const t0 = Date.now()
+    for (;;) {
+      const i = this.events.findIndex((e) => e.method === method && (!sessionId || e.sessionId === sessionId))
+      if (i >= 0) return this.events.splice(i, 1)[0]
+      if (Date.now() - t0 > timeoutMs) throw new Error(`等待 CDP 事件 ${method} 超时`)
+      await new Promise((r) => setTimeout(r, 80))
+    }
+  }
+}
+
+// ---------- session state -----------------------------------------------------
+
+interface BrowserSession {
+  child: ChildProcess
+  cdp: PipeCdp
+  sessionId: string
+  profileDir: string
+  currentUrl: string
+}
+
+const SPAWN_TIMEOUT_MS = 15_000
+const NAVIGATE_EVENT_TIMEOUT_MS = 15_000
+
+// ---------- tool ----------------------------------------------------------------
+
+export function buildTmBrowserTool(deps: {
+  pipelines: TmPipelines
+  cfg: TmConfig
+  env?: Record<string, string | undefined>
+  args?: Record<string, unknown>
+}): {
+  description: string
+  args: Record<string, unknown>
+  execute: (rawArgs: Record<string, unknown>, ctx: unknown) => Promise<ToolResult>
+  dispose: () => void
+} {
+  const { pipelines } = deps
+  const env = deps.env ?? process.env
+  const tool = "tm_browser"
+  const traj = (e: Record<string, unknown>) => pipelines.store.appendTrajectory({ tool, ...e })
+  let session: BrowserSession | null = null
+  const allowlist = (deps.cfg as { webfetchAllowedDomains?: readonly string[] }).webfetchAllowedDomains
+    ?? ["*"]
+
+  async function ensureSession(headless: boolean): Promise<BrowserSession> {
+    if (session) return session
+    const executable = findBrowserExecutable(env)
+    if (!executable) {
+      throw new Error(
+        "本机未找到可用的浏览器（按 Edge/Chrome/Chromium 顺序探测失败）。" +
+          "设置 TM_BROWSER_PATH 指向浏览器可执行文件，或改用 tm_webfetch / 用户 MCP 工具。",
+      )
+    }
+    const profileDir = fs.mkdtempSync(path.join(os.tmpdir(), "tm-browser-"))
+    const child = spawn(
+      executable,
+      [
+        headless ? "--headless=new" : "--start-maximized",
+        "--remote-debugging-pipe",
+        `--user-data-dir=${profileDir}`,
+        "--no-first-run", "--no-default-browser-check", "--disable-extensions",
+        "--disable-background-networking", "--mute-audio",
+        "about:blank",
+      ],
+      { stdio: ["ignore", "ignore", "ignore", "pipe", "pipe"], windowsHide: true },
+    )
+    const cdp = new PipeCdp(child)
+    const t0 = Date.now()
+    // ready loop: the pipe is not immediately writable-to-a-live-target
+    for (;;) {
+      try {
+        await cdp.call("Target.getTargets", {}, undefined, 3000)
+        break
+      } catch (e) {
+        if (Date.now() - t0 > SPAWN_TIMEOUT_MS || (child as { exitCode?: number | null }).exitCode !== null) {
+          child.kill()
+          fs.rmSync(profileDir, { recursive: true, force: true })
+          throw new Error(`浏览器启动失败：${(e as Error).message}`)
+        }
+        await new Promise((r) => setTimeout(r, 200))
+      }
+    }
+    const targets = await cdp.call("Target.getTargets")
+    const page = (targets.targetInfos as Array<{ type: string; targetId: string }>).find((t) => t.type === "page")
+    if (!page) throw new Error("浏览器启动后未找到 page target")
+    const { sessionId } = await cdp.call("Target.attachToTarget", { targetId: page.targetId, flatten: true }) as { sessionId: string }
+    await cdp.call("Page.enable", {}, sessionId)
+    // network-layer allowlist enforcement (Qoder's per-hop re-check analog)
+    await cdp.call("Fetch.enable", { patterns: [{ urlPattern: "*" }] }, sessionId)
+    cdp.onEvent((m) => {
+      if (m.method !== "Fetch.requestPaused" || m.sessionId !== sessionId) return
+      const requestId = String((m.params as { requestId?: string }).requestId ?? "")
+      const url = String((m.params as { request?: { url?: string } }).request?.url ?? "")
+      const verdict = checkWebUrl(url, allowlist as readonly string[])
+      if (verdict.ok) {
+        void cdp.call("Fetch.continueRequest", { requestId }, sessionId, 5000).catch(() => {})
+      } else {
+        traj({ step_id: "browser", event: "blocked", url: url.slice(0, 200) })
+        void cdp.call("Fetch.failRequest", { requestId, errorReason: "BlockedByClient" }, sessionId, 5000).catch(() => {})
+      }
+    })
+    child.on("exit", () => {
+      session = null
+      // best-effort: the profile may still be file-locked during shutdown —
+      // a leftover temp dir is reclaimed by the OS, never an error for the task
+      try {
+        rmForceSafe(profileDir, { recursive: true })
+      } catch {
+        /* ignore */
+      }
+    })
+    session = { child, cdp, sessionId, profileDir, currentUrl: "about:blank" }
+    return session
+  }
+
+  async function closeSession(): Promise<string> {
+    if (!session) return "没有打开的浏览器会话。"
+    const { child, cdp, profileDir } = session
+    session = null
+    await cdp.call("Browser.close", {}, undefined, 3000).catch(() => {})
+    if ((child as { exitCode?: number | null }).exitCode === null) {
+      child.kill()
+    }
+    // wait briefly for the process to release the profile (Windows file
+    // locks linger while the browser is still shutting down)
+    await new Promise<void>((res) => {
+      if ((child as { exitCode?: number | null }).exitCode !== null) return res()
+      const t = setTimeout(res, 3000)
+      child.once("exit", () => {
+        clearTimeout(t)
+        res()
+      })
+    })
+    try {
+      rmForceSafe(profileDir, { recursive: true })
+    } catch {
+      /* a locked leftover temp dir is reclaimed by the OS — never fail close */
+    }
+    return "浏览器会话已关闭，临时配置目录已清理。"
+  }
+
+  const execute = async (rawArgs: Record<string, unknown>): Promise<ToolResult> => {
+    try {
+      const args = rawArgs ?? {}
+      const action = String(args.action ?? "").trim()
+      const url = String(args.url ?? "").trim()
+      // allowlist FIRST — a disallowed URL never spawns the browser
+      if ((action === "open" || action === "navigate") && url) {
+        const verdict = checkWebUrl(url, allowlist as readonly string[])
+        if (!verdict.ok) return toToolResult(tmError(tool, "permission", verdict.message))
+      }
+      if (action === "open") {
+        if (!url) return toToolResult(tmError(tool, "args", "缺少 url 参数"))
+        if (session) {
+          // already open: navigate instead of spawning a second browser
+          return toToolResult(await navigateTo(url))
+        }
+        const headless = args.headless != null ? Boolean(args.headless) : resolveHeadless(env)
+        const s = await ensureSession(headless)
+        const out = await navigateTo(url)
+        traj({ step_id: "browser", event: "open", headless })
+        return toToolResult(
+          `浏览器已启动（${headless ? "无头" : "有头窗口"}，隔离临时配置）。${out}`,
+        )
+      }
+      if (action === "navigate") {
+        if (!url) return toToolResult(tmError(tool, "args", "缺少 url 参数"))
+        if (!session) return toToolResult(tmError(tool, "args", "没有打开的浏览器会话——先用 action:\"open\""))
+        return toToolResult(await navigateTo(url))
+      }
+      if (action === "read") {
+        if (!session) return toToolResult(tmError(tool, "args", "没有打开的浏览器会话——先用 action:\"open\""))
+        const stepId = pipelines.nextStepId()
+        traj({ step_id: stepId, event: "call", url: session.currentUrl.slice(0, 200) })
+        const ev = await session.cdp.call(
+          "Runtime.evaluate",
+          { expression: "document.body ? document.body.innerText : ''", returnByValue: true },
+          session.sessionId,
+        )
+        const text = String((ev.result as { value?: unknown })?.value ?? "")
+        traj({ step_id: stepId, event: "result", tokens: Math.ceil(text.length / 4) })
+        return toToolResult(
+          `页面文本（${session.currentUrl}）：\n${text.slice(0, 20000)}${text.length > 20000 ? "\n…(截断)" : ""}`,
+        )
+      }
+      if (action === "screenshot") {
+        if (!session) return toToolResult(tmError(tool, "args", "没有打开的浏览器会话——先用 action:\"open\""))
+        const stepId = pipelines.nextStepId()
+        traj({ step_id: stepId, event: "call", kind: "screenshot", url: session.currentUrl.slice(0, 200) })
+        const shot = await session.cdp.call("Page.captureScreenshot", { format: "png" }, session.sessionId)
+        const data = String((shot as { data?: string }).data ?? "")
+        const png = Buffer.from(data, "base64")
+        const dir = path.join(pipelines.store.stepsRoot(), stepId)
+        fs.mkdirSync(dir, { recursive: true })
+        const file = path.join(dir, "screenshot.png")
+        fs.writeFileSync(file, png)
+        traj({ step_id: stepId, event: "result", bytes: png.length })
+        return toToolResult(
+          `截图已保存（${png.length} bytes）：${file}\n（PNG 已落 run store；上下文只携带路径，不携带像素。）`,
+        )
+      }
+      if (action === "close") {
+        traj({ step_id: "browser", event: "close" })
+        return toToolResult(await closeSession())
+      }
+      return toToolResult(tmError(tool, "args", `未知 action "${String(action).slice(0, 30)}"——可用: open | navigate | read | screenshot | close`))
+    } catch (err) {
+      const e = err as { name?: string; message?: unknown }
+      return toToolResult(tmError(tool, "execute", String(e?.message ?? err ?? "browser 操作失败")))
+    }
+  }
+
+  async function navigateTo(url: string): Promise<string> {
+    const s = session!
+    await s.cdp.call("Page.navigate", { url }, s.sessionId)
+    await s.cdp.waitEvent("Page.loadEventFired", s.sessionId, NAVIGATE_EVENT_TIMEOUT_MS).catch(() => {})
+    s.currentUrl = url
+    return `已导航：${url}`
+  }
+
+  const DESCRIPTION = `Interactive browser (governed, Plan C): drives the user's own Chromium-family browser HEADFUL via CDP pipe — a visible window opens on desktops; display-less Linux hosts automatically run headless (TM_BROWSER_HEADLESS=1|0 forces either way).  Actions:
+- open: { url } — launch (or reuse) the session and navigate.  Isolated temp profile (never your real profile); per-request DOMAIN ALLOWLIST enforced at the network layer (seeded = tm_webfetch's hosts; extend via TM_WEBFETCH_ALLOWED_DOMAINS).
+- navigate: { url } · read: extract page text (threshold-governed like tm_read) · screenshot: save PNG into the run store, only the path enters context · close: kill + cleanup.
+- Fixed priority ladder: ① tm_* governed tools → ② user MCP/plugin tools → ③ reasoning (never fabricate).  If no browser is installed (TM_BROWSER_PATH override exists), a structured error tells you to fall back to tm_webfetch / MCP.
+- Network role tool (team + researcher).  Non-allowlisted hosts are rejected at open/navigate AND blocked per-request.`
+
+  return {
+    description: DESCRIPTION,
+    args: deps.args ?? {
+      action: { descriptor: "action: open|navigate|read|screenshot|close (required)" },
+      url: { descriptor: "url: string (open/navigate, allowlisted https)" },
+      headless: { descriptor: "headless: boolean (open, optional — default auto)" },
+    },
+    execute,
+    dispose: () => {
+      void closeSession().catch(() => {})
+    },
+  }
+}

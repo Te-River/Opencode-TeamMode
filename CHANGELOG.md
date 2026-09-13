@@ -8,6 +8,26 @@ registry saw 1.5.0 as the install-script fix release).
 ## [Unreleased]
 
 ### Added
+- **`tm_browser` — governed interactive browser (Plan C, headful)**: drives
+  the user's own Chromium-family browser (Edge probed first on Windows) via
+  the CDP **pipe** protocol (`--remote-debugging-pipe`, JSON+NUL framing
+  over fds 3/4 — zero deps, no WebSocket).  Actions: open / navigate /
+  read (page text, threshold-governed) / screenshot (PNG to the run store,
+  only the path enters context) / close.  Hardening ported from the Qoder
+  mechanism analysis: isolated temp user-data-dir, domain allowlist
+  enforced at the NETWORK layer per request (CDP `Fetch.requestPaused` →
+  `BlockedByClient`), hard per-command timeouts, `dispose()` kills the
+  child.  Environment-adaptive: headful by default, auto-headless on
+  display-less Linux, `TM_BROWSER_PATH` / `TM_BROWSER_HEADLESS` overrides;
+  no browser found → structured error with fallback guidance to
+  tm_webfetch / user MCP tools.  Network role tool (team + researcher only;
+  assert in test-tm-tools §6o, test-default-agent §6)
+- **Lead-only `todowrite` + `question` grants**: the lead's prompt
+  MANDATES a todo list ("your state memory is the todo list") and batched
+  blocking questions — those built-ins were deny-listed, making the
+  mandates unfulfillable.  Now granted to the team lead; specialists keep
+  the deny (they answer through the lead via `STATUS: blocked`, never
+  interrupt the user directly)
 - **Project memory (`tm_memory`) — all agents**: durable project facts live
   as Markdown files with YAML-ish frontmatter (title / usage_scenario /
   keywords) under `<repo>/.git/opencode-team/memories/<project-slug>/<category>/`

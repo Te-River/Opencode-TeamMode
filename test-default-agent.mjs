@@ -148,8 +148,10 @@ console.log("1. default_agent promotion matrix: OK (opt-out default; custom/plan
     "read", "grep", "glob", "list", "apply_patch",
     "webfetch", "websearch", "todowrite", "lsp", "skill", "question",
   ]
-  // Built-ins whose slot varies per agent; ungranted -> denied.
-  const perAgent = ["edit", "write", "task", "bash"]
+  // Built-ins whose slot varies per agent; ungranted -> denied.  todowrite
+  // + question are LEAD-ONLY grants (the lead's prompt mandates a todo list
+  // and batched blocking questions — the tools must exist to comply).
+  const perAgent = ["edit", "write", "task", "bash", "todowrite", "question"]
   // The four governed tools, named explicitly next to the tm_* wildcard.
   const tmTools = ["tm_read", "tm_grep", "tm_bash", "tm_fetch", "tm_memory"]
   // Revised T2.1 matrix: bash on execution roles only; architect/researcher
@@ -161,7 +163,7 @@ console.log("1. default_agent promotion matrix: OK (opt-out default; custom/plan
   // the deep-equality below cannot drift from the runtime shape.
   const BASH_ASK = ep.bashAskPatterns("strict")
   const grants = {
-    team: ["task", "edit", "write", "bash"],
+    team: ["task", "edit", "write", "bash", "todowrite", "question"],
     architect: ["task"],
     implementer: ["edit", "write", "bash"],
     reviewer: ["task", "bash"],
@@ -183,11 +185,12 @@ console.log("1. default_agent promotion matrix: OK (opt-out default; custom/plan
     expected["tm_*"] = "allow"
     // M3: tm_ptc_run — all six agents get allow (overrides wildcard)
     expected["tm_ptc_run"] = "allow"
-    // tm_webfetch — governed web fallback: ONLY team + researcher are
-    // network roles (explicit key overrides the tm_* wildcard)
+    // tm_webfetch + tm_browser — governed web channels: ONLY team +
+    // researcher are network roles (explicit keys override the tm_* wildcard)
     const isWebRole = name === "team" || name === "researcher"
     expected["tm_webfetch"] = isWebRole ? "allow" : "deny"
-    const allowCount = granted.length + tmTools.length + 2 + (isWebRole ? 1 : 0) // + wildcard + ptc + webfetch?
+    expected["tm_browser"] = isWebRole ? "allow" : "deny"
+    const allowCount = granted.length + tmTools.length + 2 + (isWebRole ? 2 : 0) // + wildcard + ptc + webfetch/browser
     assert.deepStrictEqual(
       perm, expected,
       name + ": whitelist content exact (" + allowCount + " allow entries / " +
@@ -249,12 +252,26 @@ console.log("1. default_agent promotion matrix: OK (opt-out default; custom/plan
   // direct edit" promise (prompt: When you may edit directly) is executable.
   assert.equal(cfg.agent.team.permission.edit, "allow", "team: edit allowed (non-product direct edits)")
 
-  // tm_webfetch network-role split: the two-channel web policy grants the
-  // governed fallback to the lead + researcher ONLY.
+  // Lead-only grants: the lead's prompt MANDATES a todo list ("your state
+  // memory is the todo list") and batched blocking questions — the tools
+  // must exist for the mandate to be fulfillable.  Specialists answer
+  // through the lead (STATUS: blocked), never interrupt the user directly.
+  assert.equal(cfg.agent.team.permission.todowrite, "allow", "team: todowrite granted (TodoList discipline is a prompt mandate)")
+  assert.equal(cfg.agent.team.permission.question, "allow", "team: question granted (batched blocking questions)")
+  for (const name of ["architect", "implementer", "reviewer", "tester", "researcher"]) {
+    assert.equal(cfg.agent[name].permission.todowrite, "deny", name + ": todowrite denied (lead-only)")
+    assert.equal(cfg.agent[name].permission.question, "deny", name + ": question denied (specialists answer through the lead)")
+  }
+
+  // tm_webfetch / tm_browser network-role split: the two-channel web policy
+  // grants the governed channels to the lead + researcher ONLY.
   assert.equal(cfg.agent.team.permission.tm_webfetch, "allow", "team: network role (governed tm_webfetch)")
   assert.equal(cfg.agent.researcher.permission.tm_webfetch, "allow", "researcher: network role (governed tm_webfetch)")
+  assert.equal(cfg.agent.team.permission.tm_browser, "allow", "team: network role (governed tm_browser)")
+  assert.equal(cfg.agent.researcher.permission.tm_browser, "allow", "researcher: network role (governed tm_browser)")
   for (const name of ["architect", "implementer", "reviewer", "tester"]) {
     assert.equal(cfg.agent[name].permission.tm_webfetch, "deny", name + ": NOT a network role (tm_webfetch denied)")
+    assert.equal(cfg.agent[name].permission.tm_browser, "deny", name + ": NOT a network role (tm_browser denied)")
   }
 
   // researcher: dangling websearch:allow (T0.3) gone — deny, never allow

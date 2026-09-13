@@ -883,6 +883,45 @@ try {
   }
   console.log("6n. tm_memory: OK (add/update/search scoring/list/forget, scope filter, content cap, frontmatter round-trip)")
 
+  // 6o. tm_browser — governed interactive browser (Plan C: headful CDP pipe).
+  {
+    // headless resolution matrix (environment adaptivity)
+    assert.equal(tm.resolveHeadless({ TM_BROWSER_HEADLESS: "1" }), true, "force headless")
+    assert.equal(tm.resolveHeadless({ TM_BROWSER_HEADLESS: "0" }), false, "force headful")
+    if (process.platform === "linux") {
+      assert.equal(tm.resolveHeadless({ DISPLAY: ":0" }), false, "auto: DISPLAY present → headful")
+      assert.equal(tm.resolveHeadless({}), true, "auto: no DISPLAY/WAYLAND → headless")
+    } else {
+      assert.equal(tm.resolveHeadless({}), false, "auto: win/mac desktop sessions → headful")
+    }
+    // discovery: TM_BROWSER_PATH override wins
+    const fake = path.join(os.tmpdir(), `tm-browser-fake-${Date.now()}.exe`)
+    fs.writeFileSync(fake, "x")
+    assert.equal(tm.findBrowserExecutable({ TM_BROWSER_PATH: fake }), path.resolve(fake), "TM_BROWSER_PATH override wins")
+    fs.rmSync(fake, { force: true })
+    // allowlist is checked BEFORE any browser spawns (works without a browser)
+    const blocked = await runtime.tools.tm_browser.execute({ action: "open", url: "https://evil.example.com/x" }, ctx)
+    assert.ok(blocked.output.includes("phase=permission"), "disallowed host → permission error, no spawn")
+    const noUrl = await runtime.tools.tm_browser.execute({ action: "open" }, ctx)
+    assert.ok(noUrl.output.includes("缺少 url"), "open without url → args error")
+    // real round-trip ONLY when a browser exists (skip on bare CI)
+    if (tm.findBrowserExecutable()) {
+      const open = await runtime.tools.tm_browser.execute({ action: "open", url: "https://cn.bing.com", headless: true }, ctx)
+      assert.ok(open.output.includes("浏览器已启动") && open.output.includes("已导航"), "open launches + navigates")
+      const read = await runtime.tools.tm_browser.execute({ action: "read" }, ctx)
+      assert.ok(/bing/i.test(read.output), "read extracts page text")
+      const shot = await runtime.tools.tm_browser.execute({ action: "screenshot" }, ctx)
+      const shotPath = /截图已保存（\d+ bytes）：(.+)$/m.exec(shot.output)?.[1]
+      assert.ok(shotPath && fs.existsSync(shotPath.trim()) && fs.statSync(shotPath.trim()).size > 1000, "screenshot PNG written to the run store")
+      const closed = await runtime.tools.tm_browser.execute({ action: "close" }, ctx)
+      assert.ok(closed.output.includes("已关闭"), "close kills the child + cleans the temp profile")
+      assert.ok(fs.existsSync(shotPath.trim()), "screenshot stays in the run store after close (TTL owns reclamation)")
+    } else {
+      console.log("  (no browser found — live round-trip skipped)")
+    }
+  }
+  console.log("6o. tm_browser: OK (headless matrix, discovery override, pre-spawn allowlist, live round-trip when a browser exists)")
+
   // 6h. degraded path: store failure -> truncated + warning, task NOT failed
   {
     const blocker = path.join(mktmp("degraded"), "blocker.txt")
@@ -1305,8 +1344,8 @@ try {
       assert.ok("tm_ptc_run" in hooks.tool, "tm_ptc_run registered in the tool segment (M3)")
       assert.deepEqual(
         Object.keys(hooks.tool).sort(),
-        ["tm_bash", "tm_fetch", "tm_grep", "tm_memory", "tm_ptc_run", "tm_read", "tm_webfetch"],
-        "registered tm_* set includes tm_ptc_run + tm_webfetch + tm_memory",
+        ["tm_bash", "tm_browser", "tm_fetch", "tm_grep", "tm_memory", "tm_ptc_run", "tm_read", "tm_webfetch"],
+        "registered tm_* set includes tm_ptc_run + tm_webfetch + tm_memory + tm_browser",
       )
       // program over the cap is rejected through the tool as an args error
       const big = await tool.execute({ program: "x".repeat(4001) }, { directory: process.cwd() })

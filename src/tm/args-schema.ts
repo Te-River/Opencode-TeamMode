@@ -215,3 +215,27 @@ export async function buildMemoryArgsSchema(): Promise<Record<string, unknown>> 
     scope: zz.string().describe("project (default) | global.").optional(),
   }
 }
+
+/**
+ * tm_browser args — same ZodRawShape treatment (BUG#3 class); descriptor
+ * fallback when zod is absent.
+ */
+export async function buildBrowserArgsSchema(): Promise<Record<string, unknown>> {
+  const z = await loadZod()
+  if (!z) {
+    return {
+      action: { descriptor: 'action: open|navigate|read|screenshot|close (required)' },
+      url: { descriptor: 'url: string (open/navigate, allowlisted https)' },
+      headless: { descriptor: 'headless: boolean (open, optional — default auto)' },
+    }
+  }
+  const zz = z as unknown as {
+    string: () => { describe: (d: string) => { optional: () => unknown } }
+    boolean: () => { describe: (d: string) => { optional: () => unknown } }
+  }
+  return {
+    action: zz.string().describe('open | navigate | read | screenshot | close.'),
+    url: zz.string().describe('Absolute https URL on an allowlisted host (open/navigate). URL-encode the query (CJK terms too).').optional(),
+    headless: zz.boolean().describe('Force headless/headful on open (optional — default auto by display availability).').optional(),
+  }
+}
