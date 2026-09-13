@@ -5,7 +5,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 versioning is semver (the 1.4.x train shipped under working labels; the
 registry saw 1.5.0 as the install-script fix release).
 
-## [Unreleased]
+## [1.5.11] - 2026-09-13
 
 ### Fixed
 - **tm_browser drives the user's DEFAULT browser**: discovery order was
