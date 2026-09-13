@@ -218,7 +218,7 @@ team   完成。
 TeamMode 新增的每一个工具都跑在同一条治理管线上：超过 `TM_OFFLOAD_THRESHOLD`
 token 的输出绝不进入上下文——全量卸载到 run 存储，只回传内容感知预览 +
 HMAC 签名句柄，agent 确实需要全文时经 `tm_fetch` 分页取回。安全、记忆与
-联网能力在 v1.5.1–v1.5.5 间陆续交付，历史见 [CHANGELOG.md](./CHANGELOG.md)。
+联网能力在 v1.5.1–v1.5.6 间陆续交付，历史见 [CHANGELOG.md](./CHANGELOG.md)。
 
 | 工具 | 作用 | 角色 |
 |---|---|---|

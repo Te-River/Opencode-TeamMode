@@ -225,7 +225,7 @@ Every tool TeamMode adds runs under ONE governance pipeline: outputs above
 offloaded to a run store and replaced by a content-aware preview plus an
 HMAC-signed handle that the agent pages through with `tm_fetch` when it
 genuinely needs the payload. Security, memory and web access shipped
-across v1.5.1–v1.5.5; see [CHANGELOG.md](./CHANGELOG.md) for the history.
+across v1.5.1–v1.5.6; see [CHANGELOG.md](./CHANGELOG.md) for the history.
 
 | Tool | What it does | Roles |
 |---|---|---|
