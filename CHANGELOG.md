@@ -5,6 +5,31 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 versioning is semver (the 1.4.x train shipped under working labels; the
 registry saw 1.5.0 as the install-script fix release).
 
+## [Unreleased]
+
+### Fixed
+- **All web channels send real-browser headers**: tm_webfetch / tm_search
+  (via the shared fetch) now send a mainstream Chrome UA + Accept +
+  Accept-Language (zh-CN) — a real session collected 403s from
+  baike.baidu.com and zhihu.com against the old robot-shaped
+  "compatible; TeamMode" UA; tm_browser pins the same Chrome UA via
+  --user-agent (defeating the HeadlessChrome token under --headless=new)
+  and --accept-lang.  HTTP 403/418 now returns a switch-engine /
+  tm_browser hint instead of a bare status line
+- **PTC trigger now counts built-in bash chains**: a real version-check run
+  fired 3 sequential built-in bash probes (Test-Path ×2 + npm view) without
+  batching — the old trigger text said "≥3 tm_read/tm_grep/tm_bash calls",
+  which a literal-minded model dodges by using built-in bash.  The rule now
+  reads "≥3 read/search/shell probes ... OR built-in bash alike" and
+  prescribes the right batch per case: ONE tm_ptc_run program when the
+  probes fit the governed tools, else ONE compound built-in bash command
+  (a; b; c) — never N round-trips for one question (pinned in
+  test-blackboard)
+- **Test-Path joins the tm_bash readonly allowlist**: existence probes are
+  read-only and were the exact command class the unbatched session ran;
+  adding them lets tm_bash / tm_ptc_run carry such probes (embedded $env:
+  expansion still trips R6 by design — the tm_* channel never reads env)
+
 ## [1.5.9] - 2026-09-13
 
 ### Fixed

@@ -707,6 +707,15 @@ try {
     assert.ok(assignCmd.output.includes("phase=permission"), "assignment prefix -> permission in-tool")
     assert.ok(assignCmd.output.includes("赋值"), "assignment prefix reason surfaced in-tool")
   }
+  // Test-Path: existence probes are read-only — allowlisted so PTC/tm_bash
+  // can run the version/env-path check batch a real session ran as 3 bash
+  // round-trips (embedded $env: inside the command still trips R6 by design)
+  assert.equal(
+    tm.classifyReadonlyCommand("Test-Path \"x\"", tm.DEFAULT_BASH_READONLY_ALLOWED).ok,
+    true,
+    "Test-Path allowlisted (read-only existence probe)",
+  )
+
   console.log("6f. P3 matrix through tm_bash: OK (allow, deny, redirect, substitution, find -delete, tail -f, -Wait, quoted pipe, assignment prefix)")
 
   // 6g. tm_bash success + offload + shell error structure

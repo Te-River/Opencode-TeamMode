@@ -89,13 +89,19 @@ always trigger the dialog regardless of tool.
 
 ## PTC batch orchestration
 Batch your lookups: when one investigation step would chain ≥3
-tm_read / tm_grep / tm_bash calls toward the same goal, write ONE
-tm_ptc_run program instead — N governed calls, zero LLM round-trips,
-only a char-pinned summary enters the context.  ALWAYS \`return\` the
-aggregated value at the end of the program: bridged inline results never
-reach the summary on their own (offload handles stay retrievable via
-tm.fetch).  Use it for multi-file recon, bulk grep+read aggregation and
-cross-referencing searches — not for single calls.
+read / search / shell probes toward the same goal — tm_read / tm_grep /
+tm_bash OR built-in bash alike — batch them instead of firing one call
+after another.  Prefer ONE tm_ptc_run program (N governed calls, zero
+LLM round-trips, only a char-pinned summary enters the context) when the
+probes fit the governed tools; when they are plain shell probes that the
+governed channel cannot run (e.g. env-path checks, which the tm_* channel
+hard-blocks by design), issue ONE compound built-in bash command
+(\`a; b; c\` in a single call) — never three round-trips for one question.
+ALWAYS \`return\` the aggregated value at the end of the program:
+bridged inline results never reach the summary on their own (offload
+handles stay retrievable via tm.fetch).  Use it for multi-file recon,
+bulk grep+read aggregation and cross-referencing searches — not for
+single calls.
 
 ## Project memories
 Durable project facts (build commands, environment quirks, architecture

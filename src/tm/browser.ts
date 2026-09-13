@@ -221,6 +221,10 @@ export function buildTmBrowserTool(deps: {
         headless ? "--headless=new" : "--start-maximized",
         "--remote-debugging-pipe",
         `--user-data-dir=${profileDir}`,
+        // real-Chrome UA even under --headless=new (which some sites detect
+        // via the "HeadlessChrome" token otherwise) + zh-CN Accept-Language
+        "--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+        "--accept-lang=zh-CN,zh;q=0.9,en;q=0.8",
         "--no-first-run", "--no-default-browser-check", "--disable-extensions",
         "--disable-background-networking", "--mute-audio",
         "about:blank",

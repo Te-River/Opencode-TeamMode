@@ -328,6 +328,8 @@ for (const expert of EXPERTS) {
   assert.ok(cfg2.agent[expert].prompt.includes("2. User MCP/plugin tools"), expert + ": priority ladder rung 2 (MCP second)")
   assert.ok(cfg2.agent[expert].prompt.includes("3. Your own reasoning"), expert + ": priority ladder rung 3 (reasoning, never fabricate)")
   assert.ok(cfg2.agent[expert].prompt.includes("Batch your lookups: when one investigation step would chain ≥3"), expert + ": PTC trigger threshold (≥3 chained calls → one program)")
+  assert.ok(cfg2.agent[expert].prompt.includes("OR built-in bash alike"), expert + ": PTC trigger counts built-in bash chains, not just tm_* calls")
+  assert.ok(cfg2.agent[expert].prompt.includes("ONE compound built-in bash command"), expert + ": plain-shell batches prescribe one compound command, not N round-trips")
   assert.ok(cfg2.agent[expert].prompt.includes("aggregated value at the end of the program"), expert + ": PTC return-data rule (unreturned inline results are lost)")
 assert.ok(cfg2.agent["researcher"].prompt.includes("## Web lookups (two channels)"), "researcher: two-channel web policy (governed tools first, MCP fallback)")
 assert.ok(cfg2.agent["researcher"].prompt.includes("tm_search (open-ended lookups)"), "researcher: tm_search is the open-ended lookup front")

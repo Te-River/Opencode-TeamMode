@@ -31,7 +31,16 @@ import { detectContentType } from "./preview.js"
 import { tmError, toToolResult } from "./result.js"
 import type { TmPipelines } from "./pipelines.js"
 
-const WEBFETCH_UA = "Mozilla/5.0 (compatible; TeamMode-tm_webfetch/1.0)"
+/** Real-browser request headers.  Anti-bot gates (baike.baidu.com, zhihu,
+ *  csdn — a real session collected 403s from both) reject robot-shaped UAs
+ *  like the old "compatible; TeamMode" one before any content check; a
+ *  mainstream Chrome UA + Accept headers passes the gate and the content
+ *  filters downstream still apply. */
+const WEBFETCH_UA =
+  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+const WEBFETCH_ACCEPT =
+  "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8"
+const WEBFETCH_ACCEPT_LANGUAGE = "zh-CN,zh;q=0.9,en;q=0.8"
 const WEBFETCH_TIMEOUT_MS = 20_000
 const WEBFETCH_MAX_BYTES = 2_000_000
 const WEBFETCH_MAX_REDIRECTS = 5
@@ -289,13 +298,23 @@ export async function fetchWebText(
       const res = (await doFetch(current.toString(), {
         redirect: "manual",
         signal: ctrl.signal,
-        headers: { "user-agent": WEBFETCH_UA },
+        headers: {
+          "user-agent": WEBFETCH_UA,
+          accept: WEBFETCH_ACCEPT,
+          "accept-language": WEBFETCH_ACCEPT_LANGUAGE,
+        },
       })) as Awaited<ReturnType<FetchImpl>>
       if (REDIRECT_STATUSES.has(res.status)) {
         const loc = res.headers.get("location")
         if (!loc) throw new Error(`重定向 ${res.status} 缺少 Location 头`)
         current = new URL(loc, current)
         continue
+      }
+      if (res.status === 403 || res.status === 418) {
+        throw new Error(
+          `HTTP ${res.status}——站点反爬仍拒绝（最终 URL: ${shorten(current.toString(), 120)}）。` +
+            `换 tm_search 的其他引擎、用 tm_browser（真实浏览器渲染）打开，或找该数据的直接源站。`,
+        )
       }
       if (res.status < 200 || res.status >= 300) {
         throw new Error(`HTTP ${res.status}（最终 URL: ${shorten(current.toString(), 120)}）`)

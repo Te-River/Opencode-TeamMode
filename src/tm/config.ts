@@ -27,7 +27,7 @@ export const DEFAULT_BASH_READONLY_ALLOWED: readonly string[] = [
   "ls", "cat", "head", "tail", "grep", "rg", "find", "awk", "sort", "uniq",
   "wc", "cut", "dir", "Get-Content", "Get-ChildItem", "Select-String",
   "Measure-Object", "Select-Object", "Where-Object", "Sort-Object",
-  "Group-Object",
+  "Group-Object", "Test-Path",
 ]
 
 /**
