@@ -123,7 +123,7 @@ TeamMode 为 OpenCode 添加了六个斜杠命令，在聊天输入框中输入�
 | `/team-implement <任务>` | Implementer | 为功能或任务编写生产代码 |
 | `/team-review [范围]` | Reviewer | 审查代码的 Bug、安全问题和质量问题 |
 | `/team-test [范围]` | Tester | 生成全面的测试，覆盖边界场景 |
-| `/team-research <主题>` | Researcher | 本地仓库调研优先；联网走用户 MCP 工具或受治理的 `tm_webfetch` |
+| `/team-research <主题>` | Researcher | 本地仓库调研优先；联网走受治理的 `tm_browser` / `tm_webfetch`（先），再用户 MCP 工具 |
 | `/team-run <任务>` | Team Lead | **完整工作流** — 端到端调度所有 Agent |
 
 #### 示例工作流
@@ -213,10 +213,31 @@ team   完成。
 
 ---
 
-## 🧯 上下文治理（tm_* + R6 + R2）—— v1.5.1 起提供
+## 🧰 受治理工具与安全
 
-> ⚠️ 需 `@te-river/opencode-team-mode@1.5.1` 或更新（2026-09-08 发布）。
-> 配置里钉 `@latest` 的用户，下次启动自动升级。
+TeamMode 新增的每一个工具都跑在同一条治理管线上：超过 `TM_OFFLOAD_THRESHOLD`
+token 的输出绝不进入上下文——全量卸载到 run 存储，只回传内容感知预览 +
+HMAC 签名句柄，agent 确实需要全文时经 `tm_fetch` 分页取回。安全、记忆与
+联网能力在 v1.5.1–v1.5.5 间陆续交付，历史见 [CHANGELOG.md](./CHANGELOG.md)。
+
+| 工具 | 作用 | 角色 |
+|---|---|---|
+| `tm_read` / `tm_grep` / `tm_bash` / `tm_fetch` | 受治理的文件读取 / 正则搜索（宿主索引）/ 只读 shell（白名单）/ 句柄分页取回 | 全部六个 Agent |
+| `tm_memory` | 项目记忆库（Markdown + frontmatter）：add / search / list / forget | 全部六个 Agent |
+| `tm_webfetch` | 单个白名单页面的受治理 GET | Lead + Researcher |
+| `tm_browser` | 交互式浏览器会话（有头 CDP）：open / navigate / read / screenshot / close | Lead + Researcher |
+| `tm_ptc_run` | 批量编排：一个程序、N 次受治理调用、零 LLM 往返 | 全部六个 Agent |
+
+> **固定工具优先级梯子（所有任务）：① TeamMode 受治理工具（`tm_*`）→
+> ② 用户 MCP/插件工具 → ③ 模型自行推理（能力缺失按缺口上报，绝不伪装）。**
+> 梯子同时是回退链：受治理工具报错（本机无浏览器、主机被拦）时，Agent
+> 会如实说明并落到下一级，而不是放弃。
+
+所有 Agent 都被要求把每次查询路由到这些工具——先扫描工具面、规划具体
+调用，再把口语化/缩写/别名称呼展开为规范名、两种写法都查——而不是凭
+记忆作答或伪装被移除工具的输出。
+
+### 上下文治理：卸载、句柄、预览
 
 **JIT 层 2 工具（`tm_read` / `tm_grep` / `tm_bash` / `tm_fetch`）。**
 大体积工具输出是上下文成本的主要来源：智能体每走一步都要重发整个窗口。
@@ -229,6 +250,45 @@ ERROR×N 统计 / 代码签名清单 / 二进制元信息，硬上限 80 token�
 所有 Agent 都被要求把每次查询优先路由到这些工具——先扫描自己的工具面、
 规划具体调用，再把口语化/缩写/别名称呼展开为规范名、两种写法都查——
 而不是凭记忆作答或伪装被移除工具的输出。
+
+### 项目记忆（tm_memory）
+
+**项目记忆（`tm_memory`）——全部 Agent 可用。** 跨会话持久的项目事实
+（构建命令、环境怪癖、架构决策、长期有效的用户约定）以带 frontmatter 的
+Markdown 文件存放在同一个 git 感知存储里
+（`<repo>/.git/opencode-team/memories/<项目slug>/<分类>/`）——人类可直接
+编辑，绝不进你的工作树。动作：`add` / `search`（确定性关键词评分，取前
+5）/ `list` / `forget`；单条内容上限 4000 字符——任务状态归 todo list，
+超长文档归黑板文件。所有 Agent 都被要求：在凭空假设项目约定之前先
+search，踩过坑后把结论 add 给下一次会话。
+
+### 联网访问（tm_browser + tm_webfetch）——仅网络角色
+
+1. **受治理联网工具。** `tm_browser`——交互式浏览器会话，经 CDP 管道协议
+   驱动**你本机的 Chromium 系浏览器**（Windows 优先探测 Edge）有头运行：
+   open → navigate → read（页面正文，与 tm_read 同阈值治理）→ screenshot
+   （PNG 落 run store，进上下文的只有路径）→ close。隔离临时配置（绝不碰
+   你的真实配置）；**域名白名单在网络层逐请求强制**（CDP
+   `Fetch.requestPaused`——白名单外主机直接 `BlockedByClient`）。无显示器
+   的 Linux 主机自动转无头；`TM_BROWSER_HEADLESS` 可强制，`TM_BROWSER_PATH`
+   可指定可执行文件。`tm_webfetch`——单个白名单页面的受治理 GET。两者与
+   所有 tm_* 工具走同一套治理（阈值卸载 + 内容感知预览 + `tm_fetch`
+   句柄），网页永远冲不爆上下文。
+2. **用户 MCP/插件工具。** 用户配置的 MCP 服务器提供的浏览器自动化、搜索、
+   抓取类工具，作为受治理工具覆盖不到时的回退，白名单不干预。
+3. 其余四个角色（architect / implementer / reviewer / tester）**没有**
+   网络授权——联网问题按缺口上报，绝不伪装结果。内置 webfetch/websearch
+   工具保持移除；远程 `.env` 类 URL 拒绝（R6 红线）。
+
+白名单预置主机（两个联网工具共用）：`mobile.moegirl.org.cn`（词条）、
+`search.bilibili.com`、`cn.bing.com`、`www.baidu.com`（搜索 URL 模板）；
+通过 `TM_WEBFETCH_ALLOWED_DOMAINS` 扩展（`"*"` 放开全部主机）。
+
+白名单预置主机（两个联网工具共用）：`mobile.moegirl.org.cn`（词条）、
+`search.bilibili.com`、`cn.bing.com`、`www.baidu.com`（搜索 URL 模板）；
+通过 `TM_WEBFETCH_ALLOWED_DOMAINS` 扩展（`"*"` 放开全部主机）。
+
+### 安全：R6 + R2 审批门
 
 **R6 环境变量保护（现已升级为审批门控）。** TeamMode 激活时，模型无法
 静默读取环境变量。env 导出命令（`printenv`、`env`、`Get-ChildItem env:`
@@ -251,42 +311,6 @@ ERROR×N 统计 / 代码签名清单 / 二进制元信息，硬上限 80 token�
 拒绝。日常验证栈（`npm test`、`tsc`、`git status`/`diff`）**不在**门控
 之列，团队协作照常无打扰运行。
 
-**项目记忆（`tm_memory`）——全部 Agent 可用。** 跨会话持久的项目事实
-（构建命令、环境怪癖、架构决策、长期有效的用户约定）以带 frontmatter 的
-Markdown 文件存放在同一个 git 感知存储里
-（`<repo>/.git/opencode-team/memories/<项目slug>/<分类>/`）——人类可直接
-编辑，绝不进你的工作树。动作：`add` / `search`（确定性关键词评分，取前
-5）/ `list` / `forget`；单条内容上限 4000 字符——任务状态归 todo list，
-超长文档归黑板文件。所有 Agent 都被要求：在凭空假设项目约定之前先
-search，踩过坑后把结论 add 给下一次会话。
-
-**联网查询——网络角色仅限 Team Lead 与 Researcher。**
-
-> **固定工具优先级梯子（所有任务）：① TeamMode 受治理工具（`tm_*`）→
-> ② 用户 MCP/插件工具 → ③ 模型自行推理（能力缺失按缺口上报，绝不伪装）。**
-> 梯子同时是回退链：受治理工具报错（本机无浏览器、主机被拦）时，Agent
-> 会如实说明并落到下一级，而不是放弃。
-
-1. **受治理联网工具。** `tm_browser`——交互式浏览器会话，经 CDP 管道协议
-   驱动**你本机的 Chromium 系浏览器**（Windows 优先探测 Edge）有头运行：
-   open → navigate → read（页面正文，与 tm_read 同阈值治理）→ screenshot
-   （PNG 落 run store，进上下文的只有路径）→ close。隔离临时配置（绝不碰
-   你的真实配置）；**域名白名单在网络层逐请求强制**（CDP
-   `Fetch.requestPaused`——白名单外主机直接 `BlockedByClient`）。无显示器
-   的 Linux 主机自动转无头；`TM_BROWSER_HEADLESS` 可强制，`TM_BROWSER_PATH`
-   可指定可执行文件。`tm_webfetch`——单个白名单页面的受治理 GET。两者与
-   所有 tm_* 工具走同一套治理（阈值卸载 + 内容感知预览 + `tm_fetch`
-   句柄），网页永远冲不爆上下文。
-2. **用户 MCP/插件工具。** 用户配置的 MCP 服务器提供的浏览器自动化、搜索、
-   抓取类工具，作为受治理工具覆盖不到时的回退，白名单不干预。
-3. 其余四个角色（architect / implementer / reviewer / tester）**没有**
-   网络授权——联网问题按缺口上报，绝不伪装结果。内置 webfetch/websearch
-   工具保持移除；远程 `.env` 类 URL 拒绝（R6 红线）。
-
-白名单预置主机（两个联网工具共用）：`mobile.moegirl.org.cn`（词条）、
-`search.bilibili.com`、`cn.bing.com`、`www.baidu.com`（搜索 URL 模板）；
-通过 `TM_WEBFETCH_ALLOWED_DOMAINS` 扩展（`"*"` 放开全部主机）。
-
 > ⚠️ **批准弹窗时请选 once（仅此一次），不要选 always。** 真实宿主实测：
 > always 记录的泛化规则远比当次命令宽——对 `Get-ChildItem env:PATH` 选
 > always 会记下 `Get-ChildItem *`，此后所有 `Get-ChildItem` 都不再弹窗。
@@ -307,11 +331,15 @@ search，踩过坑后把结论 add 给下一次会话。
 > 核验；桌面弹窗的渲染本身仍需在真实 Desktop 会话里目视确认一次。非交互
 > `opencode run` 下，无人应答的 `ask` 会被立即自动拒绝（没有人类可弹）。
 
+### 仓库卫生与路径语义
+
 > **仓库卫生。** 卸载载荷与轨迹账本存储在 `<repo>/.git/opencode-team/` 下
 > （非 git 仓库回退系统临时目录）——绝不污染你的工作树。所有 Agent 都被
 > 要求在汇报完成前**删除自己创建的临时/草稿文件**，一次性工作直接放到系统
 > 临时目录，从源头避免落进仓库。`tm_read` / `tm_grep` 的路径相对**项目根目录**
 > （而非 Agent 的工作目录）。
+
+### 环境变量
 
 | 环境变量 | 默认 | 作用 |
 |---|---|---|
@@ -334,17 +362,13 @@ search，踩过坑后把结论 add 给下一次会话。
 | `TM_PTC_TIMEOUT_MS` | `60000` | PTC 单次运行墙钟超时（5 秒–10 分钟） |
 | `TM_PTC_ENGINE` | `auto` | PTC 引擎：`auto`（worker→inline 整体重跑降级）/ `worker` / `inline` |
 
----
-
-## ⚡ 批量编排（`tm_ptc_run`）—— v1.5.2 起提供
-
-> 已随 **v1.5.2**（2026-09-10）发布。需 `@te-river/opencode-team-mode@1.5.2` 或更新。
+### 批量编排（tm_ptc_run）
 
 `tm_ptc_run` 让专家代理编写**一个异步程序**，在单次回合中执行 N 次受治理的
 `tm_*` 调用——运行期间零 LLM 往返，仅将聚合摘要返回上下文。设计用于批量
 只读任务：多文件侦察、批量 grep + read 聚合、交叉引用搜索结果。
 
-### 工作原理
+#### 工作原理
 
 代理使用 `tm.read(args)`、`tm.grep(args)`、`tm.bash(args)`、`tm.fetch(args)`
 编写程序体——参数与四个受治理工具相同。每次调用返回 `{ok:true, data}`（已受
@@ -354,13 +378,13 @@ search，踩过坑后把结论 add 给下一次会话。
 包含 `require`、`import`、`process`、`globalThis`、`Deno`、`Bun`、`fs`、`net`
 或 `child_process` 的程序会在执行前被拒绝（静态预扫描，辅助防护）。
 
-### 预算（仅收紧）
+#### 预算（仅收紧）
 
 调用方可收紧 `max_calls`、`max_errors` 和 `timeout_ms`——超过 `TM_PTC_*` 上限
 的值会被钳制到上限；低于下限的值会被钳制到下限。触达任一预算即整体停止运行；
 已产出的输出不会丢失。
 
-### 引擎（`TM_PTC_ENGINE`）
+#### 引擎（`TM_PTC_ENGINE`）
 
 | 模式 | 行为 |
 |---|---|
@@ -372,7 +396,7 @@ worker 引擎在专用线程中运行程序，`env:{}` 清空 process.env、`res
 限量、硬墙钟 `terminate()`。所有治理（P2 路径范围、P3 白名单、R6、阈值卸载、
 TTL）对每次桥接调用生效——PTC 不是绕过层。
 
-### 访问权限
+#### 访问权限
 
 **全部六个**代理的白名单中都包含 `tm_ptc_run`（`team` lead 也包含——v1.5.4
 修订了最初的拒绝裁定）。每次桥接调用仍然运行完整的 tm_* 治理管线（P2 路径
@@ -415,7 +439,7 @@ opencode-team-mode/
 
 ---
 
-## 🗂️ 协作机制：结构化交接优先，文件其次（混合制）
+## 🤖 团队如何运作
 
 子代理之间无法实时互发消息（平台限制），TeamMode 通过**结构化回复骨架**协调它们，
 文件黑板只保留给超大产出：
@@ -435,7 +459,7 @@ opencode-team-mode/
 - **反馈闭环**：Critical/Major 发现和产品 bug 自动转化为跟踪的修复任务，
   直到交付物收敛（最多 2 轮，之后升级给用户）。
 
-### 确定性路由、审批门与自适应评审（v1.4.7）
+### 确定性路由、审批门与自适应评审
 
 - **路由表**：lead 按任务形状查固定流水线行——提问 → 直接回答；纯文档 →
   implementer；产品行为变更 → implementer → tester → reviewer；多模块/跨接口

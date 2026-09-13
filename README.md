@@ -125,7 +125,7 @@ TeamMode adds six slash commands to OpenCode. Type them in the chat input:
 | `/team-implement <task>` | Implementer | Write production code for a feature or task |
 | `/team-review [scope]` | Reviewer | Audit code for bugs, security issues, and quality problems |
 | `/team-test [scope]` | Tester | Generate comprehensive tests with edge-case coverage |
-| `/team-research <topic>` | Researcher | Investigate the local repository first; web lookups via user MCP tools or the governed `tm_webfetch` |
+| `/team-research <topic>` | Researcher | Investigate the local repository first; web lookups via the governed `tm_browser` / `tm_webfetch`, then user MCP tools |
 | `/team-run <task>` | Team Lead | **Full workflow** — orchestrates all agents end-to-end |
 
 #### Example workflow
@@ -218,10 +218,36 @@ In **OpenCode Desktop**, you get additional UX benefits:
 
 ---
 
-## 🧯 Context governance (tm_* + R6 + R2) — new in v1.5.1
+## 🧰 Governed tools & security
 
-> ⚠️ Requires `@te-river/opencode-team-mode@1.5.1` or later (released
-> 2026-09-08). If your config pins `@latest`, OpenCode upgrades on next start.
+Every tool TeamMode adds runs under ONE governance pipeline: outputs above
+`TM_OFFLOAD_THRESHOLD` tokens never enter the context window — they are
+offloaded to a run store and replaced by a content-aware preview plus an
+HMAC-signed handle that the agent pages through with `tm_fetch` when it
+genuinely needs the payload. Security, memory and web access shipped
+across v1.5.1–v1.5.5; see [CHANGELOG.md](./CHANGELOG.md) for the history.
+
+| Tool | What it does | Roles |
+|---|---|---|
+| `tm_read` / `tm_grep` / `tm_bash` / `tm_fetch` | Governed file read / regex search (host index) / read-only shell (allowlist) / paged handle retrieval | all six agents |
+| `tm_memory` | Project memory store (Markdown + frontmatter): add / search / list / forget | all six agents |
+| `tm_webfetch` | Single governed GET of an allowlisted web page | Lead + Researcher |
+| `tm_browser` | Interactive browser session (headful CDP): open / navigate / read / screenshot / close | Lead + Researcher |
+| `tm_ptc_run` | Batch orchestration: one program, N governed calls, zero LLM round-trips | all six agents |
+
+> **Fixed tool priority ladder (every task): ① TeamMode governed tools
+> (`tm_*`) → ② user MCP/plugin tools → ③ the model's own reasoning
+> (a missing capability is reported as a gap, never fabricated).**  The
+> ladder is also a fallback chain: when a governed tool errors (no browser
+> on this host, blocked host), the agent says so and drops to the next
+> rung instead of giving up.
+
+Agents are prompted to route every lookup through these tools — scan the
+tool surface, plan the concrete call, expand colloquial or abbreviated
+terms to canonical forms and search both spellings — instead of answering
+from memory or simulating removed tools.
+
+### Context governance: offload, handles, previews
 
 **JIT layer-2 tools (`tm_read` / `tm_grep` / `tm_bash` / `tm_fetch`).**
 Large tool outputs are context cost's main driver: every step re-sends the
@@ -238,30 +264,7 @@ scan the tool surface, plan the concrete call, expand colloquial or
 abbreviated terms to canonical forms and search both spellings — instead of
 answering from memory or simulating removed tools.
 
-**R6 environment protection (now an approval gate).** With TeamMode active,
-the model cannot read environment variables silently. Env-var reads
-(`printenv`, `env`, `Get-ChildItem env:`, …) and env files (`.env`, shell rc
-files) route through OpenCode's **official confirmation dialog**: you get a
-native prompt to approve or deny, and an unanswered prompt is **auto-rejected
-after `TM_ASK_TIMEOUT_MIN` (default 10 min)** — the plugin only ever rejects
-on timeout, never approves on the model's behalf. Env reads that no wildcard
-can express (embedded `$VAR` / `${VAR}` / `$env:` inside another command,
-command substitution, subshell/escaped forms) and the `tm_*` wrapper channel
-stay a **hard block** (no dialog to slip through). tm_* wrappers route through
-the same checks (no backdoor via the wrappers). Audit lines record only tool
-name + pattern category + the verdict (`ask` / `allowed-once` /
-`allowed-always` / `rejected` / `timeout-rejected` / `degraded`) — never
-command text, paths, variable names or values.
-
-**R2 dangerous operations (same dialog).** Delete (`rm`/`del`/`Remove-Item`/
-`rmdir`), git publishing (`git push`/`git commit`), network fetch (`curl`/
-`wget`/`Invoke-WebRequest`/`Invoke-RestMethod`), package installs/publishes
-(`npm install`/`npm publish`/`pip install`/`winget`/`choco`), process/system
-(`taskkill`/`Stop-Process`/`kill`/`shutdown`/`format`) and privilege changes
-(`chmod`/`takeown`/`icacls`) — none are silently allowed. They pop the same
-official dialog and are auto-rejected if you don't answer within the timeout.
-The normal verification stack (`npm test`, `tsc`, `git status`/`diff`) is NOT
-gated, so day-to-day team work runs without interruption.
+### Project memory (tm_memory)
 
 **Project memory (`tm_memory`) — all agents.**  Durable project facts
 (build commands, environment quirks, architecture decisions, user
@@ -275,14 +278,7 @@ oversized docs to board files.  Agents are prompted to search before
 assuming project conventions and to save hard-won facts for the next
 conversation.
 
-**Web lookups — network roles: Team Lead + Researcher only.**
-
-> **Fixed tool priority ladder (every task): ① TeamMode governed tools
-> (`tm_*`) → ② user MCP/plugin tools → ③ the model's own reasoning
-> (a missing capability is reported as a gap, never fabricated).**  The
-> ladder is also a fallback chain: when a governed tool errors (no browser
-> on this host, blocked host), the agent says so and drops to the next
-> rung instead of giving up.
+### Web access (tm_browser + tm_webfetch) — network roles only
 
 1. **Governed web tools.**  `tm_browser` — an interactive browser session
    driving **your own Chromium-family browser** (Edge probed first on
@@ -311,6 +307,38 @@ term), `search.bilibili.com`, `cn.bing.com`, `www.baidu.com` (search URL
 templates); extend via `TM_WEBFETCH_ALLOWED_DOMAINS` (`"*"` opens every
 host).
 
+Seeded allowlist hosts (both web tools): `mobile.moegirl.org.cn` (wiki
+term), `search.bilibili.com`, `cn.bing.com`, `www.baidu.com` (search URL
+templates); extend via `TM_WEBFETCH_ALLOWED_DOMAINS` (`"*"` opens every
+host).
+
+### Security: R6 + R2 approval gate
+
+**R6 environment protection (now an approval gate).** With TeamMode active,
+the model cannot read environment variables silently. Env-var reads
+(`printenv`, `env`, `Get-ChildItem env:`, …) and env files (`.env`, shell rc
+files) route through OpenCode's **official confirmation dialog**: you get a
+native prompt to approve or deny, and an unanswered prompt is **auto-rejected
+after `TM_ASK_TIMEOUT_MIN` (default 10 min)** — the plugin only ever rejects
+on timeout, never approves on the model's behalf. Env reads that no wildcard
+can express (embedded `$VAR` / `${VAR}` / `$env:` inside another command,
+command substitution, subshell/escaped forms) and the `tm_*` wrapper channel
+stay a **hard block** (no dialog to slip through). tm_* wrappers route through
+the same checks (no backdoor via the wrappers). Audit lines record only tool
+name + pattern category + the verdict (`ask` / `allowed-once` /
+`allowed-always` / `rejected` / `timeout-rejected` / `degraded`) — never
+command text, paths, variable names or values.
+
+**R2 dangerous operations (same dialog).** Delete (`rm`/`del`/`Remove-Item`/
+`rmdir`), git publishing (`git push`/`git commit`), network fetch (`curl`/
+`wget`/`Invoke-WebRequest`/`Invoke-RestMethod`), package installs/publishes
+(`npm install`/`npm publish`/`pip install`/`winget`/`choco`), process/system
+(`taskkill`/`Stop-Process`/`kill`/`shutdown`/`format`) and privilege changes
+(`chmod`/`takeown`/`icacls`) — none are silently allowed. They pop the same
+official dialog and are auto-rejected if you don't answer within the timeout.
+The normal verification stack (`npm test`, `tsc`, `git status`/`diff`) is NOT
+gated, so day-to-day team work runs without interruption.
+
 > ⚠️ **When you approve a dialog, pick "once" — not "always".** Verified on
 > the live host, "always" records a far broader rule than the command you
 > saw: approving `Get-ChildItem env:PATH` with "always" stores `Get-ChildItem
@@ -337,6 +365,8 @@ host).
 > `opencode run` auto-rejects an unanswered `ask` immediately (there is no
 > human to prompt).
 
+### Repo hygiene & path semantics
+
 > **Repo hygiene.** The offload/trajectory stores live under
 > `<repo>/.git/opencode-team/` (or the OS temp dir outside a git repo) —
 > never your working tree. Every agent is instructed to delete scratch /
@@ -345,12 +375,14 @@ host).
 > `tm_grep` paths are relative to the **project root** (not the agent's
 > working directory).
 
+### Environment variables
+
 | Env var | Default | Purpose |
 |---|---|---|
 | `TM_ENV_PROTECT` | `strict` | R6 mode: `strict` / `standard` / `off` (off also disarms the approval timer) |
 | `TM_ASK_TIMEOUT_MIN` | `10` | minutes before an unanswered R6/R2 confirmation dialog is auto-rejected; minimum 3 minutes (the host's `permission.replied` reaches the plugin ~120 s late on the event bus — shorter values would auto-reject a just-approved request) |
 | `TM_ENV_PROTECT_EXTRA_DENY` | — | extra block patterns (regex list; always a hard block, never dialog-governed) |
-| `TM_OFFLOAD_THRESHOLD` | `2000` | offload threshold (tokens, chars/4 estimate) |
+| `TM_OFFLOAD_THRESHOLD` | `2000` | offload threshold (tokens, CJK-aware estimate) |
 | `TM_PREVIEW_MAX_TOKENS` | `80` | preview hard cap |
 | `TM_FETCH_MAX_LINES` | `2000` | tm_fetch page cap |
 | `TM_BLACKBOARD_DIR` | `<repo>/.git/opencode-team/blackboard/` | offloaded payload store (tmpdir fallback outside a git repo; explicit value = absolute or project-relative) |
@@ -366,12 +398,7 @@ host).
 | `TM_PTC_TIMEOUT_MS` | `60000` | PTC per-run wall-clock timeout (5s–10min) |
 | `TM_PTC_ENGINE` | `auto` | PTC engine: `auto` (worker→inline degrade) / `worker` / `inline` |
 
----
-
-## ⚡ Batch orchestration (`tm_ptc_run`) — new in v1.5.2
-
-> Shipped in **v1.5.2** (2026-09-10).  Requires `@te-river/opencode-team-mode@1.5.2`
-> or later.
+### Batch orchestration (tm_ptc_run)
 
 `tm_ptc_run` lets a specialist agent write **one async program** that makes N
 governed `tm_*` calls in a single turn — zero LLM round-trips during the run,
@@ -379,7 +406,7 @@ only an aggregation summary returns to context.  It is designed for batch
 read-only tasks: multi-file reconnaissance, bulk grep + read aggregation,
 cross-referencing search results.
 
-### How it works
+#### How it works
 
 The agent writes a program body using `tm.read(args)`, `tm.grep(args)`,
 `tm.bash(args)`, `tm.fetch(args)` — same args as the four governed tools.
@@ -391,14 +418,14 @@ Programs containing `require`, `import`, `process`, `globalThis`, `Deno`,
 `Bun`, `fs`, `net`, or `child_process` are rejected before execution (static
 pre-scan, auxiliary guard).
 
-### Budgets (tighten-only)
+#### Budgets (tighten-only)
 
 The caller may tighten `max_calls`, `max_errors`, and `timeout_ms` — values
 above the `TM_PTC_*` ceilings are clamped down; values below the floor are
 clamped up.  Hitting any budget stops the whole run; produced output is NOT
 lost.
 
-### Engine (`TM_PTC_ENGINE`)
+#### Engine (`TM_PTC_ENGINE`)
 
 | Mode | Behavior |
 |---|---|
@@ -411,7 +438,7 @@ The worker engine runs the program in a dedicated thread with `env:{}`
 All governance (P2 path scope, P3 allowlist, R6, threshold offload, TTL)
 applies to every bridged call — PTC is not a bypass layer.
 
-### Access
+#### Access
 
 `tm_ptc_run` is in the whitelist of **all six** agents (the `team` lead
 included — v1.5.4 revised the original deny ruling).  Every bridged call
@@ -450,13 +477,13 @@ opencode-team-mode/
 
 1. OpenCode Desktop starts and loads `opencode.json(c)`.
 2. It sees `"@te-river/opencode-team-mode@latest"` in the `plugin` array and loads the npm package.
-3. The loader calls the plugin's `server(input, options)`, which registers a `config` hook; the hook injects 6 agents and 6 commands into the merged config. The same call installs the R6 `tool.execute.before` guard, arms the unified R6/R2 approval gate (official dialog + `TM_ASK_TIMEOUT_MIN` auto-reject, wired through an `event` hook), and registers the governed `tm_*` tools (see [Context governance](#-context-governance-tm--r6--r2--new-in-v151) below).
+3. The loader calls the plugin's `server(input, options)`, which registers a `config` hook; the hook injects 6 agents and 6 commands into the merged config. The same call installs the R6 `tool.execute.before` guard, arms the unified R6/R2 approval gate (official dialog + `TM_ASK_TIMEOUT_MIN` auto-reject, wired through an `event` hook), and registers the governed `tm_*` tools (see [Governed tools & security](#-governed-tools--security) below).
 4. The plugin's `id: "team-mode"` is displayed as the plugin name in the Desktop UI.
 5. Agents and commands are immediately available in the Desktop UI — no file copying needed. User-defined agents with the same name always win (the plugin never clobbers them).
 
 ---
 
-## 🗂️ Coordination: structured handoffs first, files second (hybrid)
+## 🤖 How the team works
 
 Sub-agents cannot message each other live (platform limitation), so TeamMode
 coordinates them through a **structured reply skeleton**, with a file
@@ -480,7 +507,7 @@ blackboard reserved for oversized output:
   become tracked fix tasks until the deliverable converges (max 2 loops,
   then escalate to you).
 
-### Deterministic routing, approval gate & adaptive review (v1.4.7)
+### Deterministic routing, approval gate & adaptive review
 
 - **Routing table:** the lead picks a fixed pipeline row by task shape —
   question → direct answer; docs-only → implementer; product behavior
