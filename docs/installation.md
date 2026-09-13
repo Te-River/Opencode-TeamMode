@@ -40,6 +40,16 @@ If a `"plugin"` array already exists, append the string to it. If the entry is a
 
 The plugin is resolved and loaded **once at startup**. The user must fully quit and restart OpenCode (Desktop: quit from the tray/menu, not just close the window; CLI: restart the `opencode` process).
 
+### Network note (mainland China)
+
+This guide is served from `raw.githubusercontent.com`, which is often
+unreachable from mainland-China networks. If fetching it fails, retry with
+the mirror prefix — `https://ghproxy.net/` + the same full URL. Both hosts
+are on TeamMode's seeded `tm_webfetch` allowlist, so the governed fetch tool
+can read either. After the plugin is installed and OpenCode restarted, the
+same guide also ships inside the package at
+`<opencode-cache>/packages/@te_river+opencode-team-mode@<version>/docs/installation.md`.
+
 ### Step 4 — Verify
 
 After restart, verify in this order:
@@ -138,6 +148,14 @@ https://raw.githubusercontent.com/Te-River/Opencode-TeamMode/main/docs/installat
 ### 第 3 步 — 重启 OpenCode
 
 插件只在**启动时**解析和加载一次。用户需要完全退出并重启 OpenCode（桌面版：从托盘/菜单退出，不是只关窗口；CLI：重启 `opencode` 进程）。
+
+### 网络提示（中国大陆）
+
+本指南托管在 `raw.githubusercontent.com`，中国大陆网络经常无法直达。抓取
+失败时改用镜像前缀重试——`https://ghproxy.net/` + 同样的完整 URL。两个主机
+都在 TeamMode 的 `tm_webfetch` 种子白名单内，受治理的抓取工具可以直读。
+插件装好、OpenCode 重启之后，同一份指南也在包内：
+`<opencode-cache>/packages/@te_river+opencode-team-mode@<版本>/docs/installation.md`。
 
 ### 第 4 步 — 验证
 

@@ -83,6 +83,8 @@ TeamMode 对每一个的回应：
 安装 OpenCode 插件 @te-river/opencode-team-mode：按照
 https://raw.githubusercontent.com/Te-River/Opencode-TeamMode/main/docs/installation.md
 的指引完成安装，并按该指南里的检查项验证。
+（若该 URL 无法访问——中国大陆网络常见——改用镜像前缀重试：
+https://ghproxy.net/ + 原路径。）
 ```
 
 （该指南就是完整的手动流程——配置文件位置、插件条目、重启、验证、更新、
@@ -266,7 +268,8 @@ agent 永远看不到原始搜索页的噪音。
 
 种子白名单（两个工具共用）：`mobile.moegirl.org.cn`、`search.bilibili.com`、
 `cn.bing.com`、`www.bing.com`、`www.baidu.com`、`www.sogou.com`、
-`www.so.com`、`registry.npmjs.org`、`api.github.com`——用
+`www.so.com`、`registry.npmjs.org`、`api.github.com`、
+`raw.githubusercontent.com`、`ghproxy.net`（github raw 的大陆镜像）——用
 `TM_WEBFETCH_ALLOWED_DOMAINS` 扩展（`"*"` 放开全部主机）。architect /
 implementer / reviewer **没有**联网授权——网络问题会报告为缺口，绝不编造。
 tester 仅持有 `tm_browser`，用于本项目的治理化 UI 验证（本地开发服务器、
@@ -348,7 +351,7 @@ Team Lead 自己从不删黑板，你可以随时审计任何一次运行。
 | `TM_BLACKBOARD_DIR` / `TM_TRAJECTORY_DIR` | `<repo>/.git/opencode-team/…` | 卸载存储 / 轨迹账本（tmpdir 回退；显式值 = 绝对或项目相对） |
 | `TM_BLACKBOARD_TTL` | `7` | 存储保留天数 |
 | `TM_BASH_READONLY_ALLOWED` | 内置表 | tm_bash 白名单 |
-| `TM_WEBFETCH_ALLOWED_DOMAINS` | 九个种子主机 | tm_webfetch / tm_search / tm_browser 白名单（`"*"` 全开；空 = 全拒） |
+| `TM_WEBFETCH_ALLOWED_DOMAINS` | 十一个种子主机 | tm_webfetch / tm_search / tm_browser 白名单（`"*"` 全开；空 = 全拒） |
 | `TM_BROWSER_PATH` | 自动探测 | tm_browser 可执行文件覆盖（按 OS 探测 Edge/Chrome/Chromium） |
 | `TM_BROWSER_HEADLESS` | `auto` | `1` 无头（CI）/ `0` 有头 / `auto`（仅无显示的 Linux 用无头） |
 | `TM_MEMORY_GLOBAL_DIR` | `~/.opencode-team/memories/global/` | tm_memory GLOBAL 作用域存储 |

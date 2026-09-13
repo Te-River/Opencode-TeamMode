@@ -5,6 +5,20 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 versioning is semver (the 1.4.x train shipped under working labels; the
 registry saw 1.5.0 as the install-script fix release).
 
+## [Unreleased]
+
+### Fixed
+- **The agent-install flow could not fetch its own installation guide**: the
+  READMEs point agents at
+  `raw.githubusercontent.com/.../docs/installation.md`, but that host was
+  NOT on the seeded tm_webfetch allowlist — a real session showed the team
+  agent rejected by its own tool, then bounced off bash fallbacks
+  (Invoke-WebRequest 502 from mainland networks).  Seeds now include
+  `raw.githubusercontent.com` AND `ghproxy.net` (the mainland mirror the
+  installers already use — eleven hosts total); the install prompt and the
+  guide itself document the mirror retry, and the packaged copy of the guide
+  under the plugin cache dir is noted for post-install reading
+
 ## [1.5.7] - 2026-09-13
 
 ### Added

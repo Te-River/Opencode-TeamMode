@@ -226,6 +226,9 @@ You are one of the two network roles (the other is the team lead).
    - npm pkg:    https://registry.npmjs.org/<pkg>/latest
    - npm search: https://registry.npmjs.org/-/v1/search?text=QUERY
    - gh repos:   https://api.github.com/search/repositories?q=QUERY
+   - gh raw:     https://raw.githubusercontent.com/<owner>/<repo>/<branch>/<path>
+   - gh mirror:  https://ghproxy.net/https://raw.githubusercontent.com/...
+                 (use when raw.githubusercontent.com is unreachable)
    URL-encode the query (CJK terms too).  Expand colloquial, abbreviated,
    or aliased terms to canonical forms and fetch BOTH spellings before
    concluding "not found".

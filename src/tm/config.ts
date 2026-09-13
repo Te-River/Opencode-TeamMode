@@ -35,7 +35,10 @@ export const DEFAULT_BASH_READONLY_ALLOWED: readonly string[] = [
  * engines and data sources ride (all reachable from mainland China without
  * API keys): wiki term / bilibili search / bing CN + international / baidu /
  * sogou / 360, the npm registry (JSON search + package metadata) and the
- * GitHub search API (JSON).  Subdomains of an entry are included;
+ * GitHub search API (JSON) plus the raw.githubusercontent.com docs/code
+ * host and its ghproxy.net mainland mirror (the agent-install flow points
+ * agents at the installation guide on exactly these hosts).  Subdomains of
+ * an entry are included;
  * TM_WEBFETCH_ALLOWED_DOMAINS overrides the list (comma/semicolon
  * separated; a lone "*" opens every host — keep the engine hosts or
  * tm_search's engines lose their targets).
@@ -50,6 +53,8 @@ export const DEFAULT_WEBFETCH_DOMAINS: readonly string[] = [
   "www.so.com",
   "registry.npmjs.org",
   "api.github.com",
+  "raw.githubusercontent.com",
+  "ghproxy.net",
 ]
 
 export interface TmConfig {
