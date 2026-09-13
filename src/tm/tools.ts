@@ -25,7 +25,7 @@ const TM_READ_DESCRIPTION = `Read a file inside the project (governed passthroug
 - Path semantics: paths are relative to the PROJECT ROOT (not the agent's working directory). To read pt07/workspace/src/config.js, pass path="pt07/workspace/src/config.js".
 - Read scope (P2, fail-closed): project root + blackboard dir + trajectory dir; anything outside is rejected, and so is a nonexistent/unresolvable path (realpath-verified).
 - R6 applies: env files (.env, *.env, .bashrc family) are refused — same interception source as the built-in read; tm_* is NOT a bypass.
-- Governance: results up to TM_OFFLOAD_THRESHOLD tokens (default 2000, chars/4 estimate) return inline; larger payloads are offloaded to a handle {offloaded, ref, access_token, expire_at, tokens, preview} — page through with tm_fetch (try mode:"structure" first).
+- Governance: results up to TM_OFFLOAD_THRESHOLD tokens (default 2000, CJK-aware estimate) return inline; larger payloads are offloaded to a handle {offloaded, ref, access_token, expire_at, tokens, preview} — page through with tm_fetch (try mode:"structure" first).
 - The preview is content-aware (JSON / CSV / log / code / binary branches, hard-capped at 80 tokens) and embeds retrieval clues.`
 
 const TM_GREP_DESCRIPTION = `Full-text regex search inside the project (governed passthrough of the host's ripgrep index). PREFER this over running rg inside tm_bash: it uses the host's search index and auto-governs oversized results instead of flooding the context.

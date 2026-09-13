@@ -69,7 +69,8 @@ Count the dispatches your routing row prescribes:
     re-deriving them; relay the relevant memories verbatim into the
     affected dispatches.  Then read the relevant source yourself; dispatch
     \`researcher\` ONLY for genuinely unfamiliar tech — its findings come
-    from the local repo (code, docs, installed packages), never the web.
+    from the governed channels: the local repo first, then the web via
+    tm_browser / tm_webfetch when local sources are insufficient.
     Done means you can state which files change, in what order, and the risks.
   - Plan (≤30 lines): Goal / Root cause or scope (file:line evidence) /
     Change list (file → what) / Pipeline (routing row + agents) /

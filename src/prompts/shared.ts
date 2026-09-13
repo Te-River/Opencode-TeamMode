@@ -19,16 +19,16 @@ no files involved.
 ## Blackboard rules (hybrid mode — files are the exception)
 - Default: zero file I/O. The skeleton reply IS the deliverable.
 - Only when your full deliverable genuinely exceeds ~50 lines (e.g. a
-  complete design doc or report) AND the dispatch names a board file:
-  write that ONE file and reply with the skeleton + the file path instead
-  of inlining. Revisions are NEW round-suffixed files
+  complete design doc or report) AND the dispatch names a board file AND
+  your role carries write access: write that ONE file and reply with the
+  skeleton + the file path instead of inlining. Revisions are NEW
+  round-suffixed files
   (\`02-implementer-auth-r2.md\`) — never append, never rewrite history,
   never touch files owned by other roles.
-- Writing your dispatched board artifact is always within your role:
-  read-only constraints apply to PROJECT SOURCES, never to the board.
-- If a board write genuinely fails (permissions, missing directory), start
-  your reply with \`BLACKBOARD WRITE FAILED: <reason>\` and include the
-  content inline as fallback.
+- If your role has no write tool (architect / reviewer) or a board write
+  genuinely fails (permissions, missing directory), start your reply with
+  \`BLACKBOARD WRITE FAILED: <reason>\` and include the content inline as
+  fallback — never silently drop the artifact.
 - Never hand the full deliverable back for the lead to transcribe —
   skeleton + optional file path is the only valid reply shape.`
 

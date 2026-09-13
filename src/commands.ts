@@ -66,11 +66,12 @@ If no dimension is named, review correctness.  Ignore the other dimensions
 
 If no specific scope is given, review all recently modified files in the project.
 
-Use the standard severity scale:
-- 🔴 Critical (must fix)
-- 🟡 Warning (should fix)
-- 🔵 Suggestion (nice to have)
-- ✅ Praise (good patterns)
+Use the standard severity scale (drives the team's feedback loop — grade honestly):
+- 🔴 Critical (must fix — broken behavior or security hole)
+- 🟠 Major (must fix — real defect or significant risk)
+- 🟡 Minor (should fix, non-blocking)
+- 🔵 Nit (style/preference, take-it-or-leave-it)
+- ✅ Praise (good patterns worth keeping visible)
 
 Include file paths, line numbers, and concrete fix suggestions.`,
 }

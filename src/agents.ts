@@ -240,12 +240,11 @@ const researcher: AgentConfig = {
   description:
     "Researcher — investigates the local repository (code, configs, " +
     "installed/vendored packages, shipped documentation) and, when local " +
-    "sources are insufficient, the web via the two-channel policy: " +
-    "user-configured MCP tools first, then the governed tm_webfetch " +
-    "(domain-allowlisted).  Every finding carries a source (file:line or " +
-    "URL) and a confidence tag so the team can decide what needs " +
-    "verification.  Use for information that must inform a technical " +
-    "decision.",
+    "sources are insufficient, the web via the priority ladder: governed " +
+    "tm_browser / tm_webfetch first, user-configured MCP tools second.  " +
+    "Every finding carries a source (file:line or URL) and a confidence " +
+    "tag so the team can decide what needs verification.  Use for " +
+    "information that must inform a technical decision.",
   prompt: RESEARCHER_PROMPT,
   color: "#A78BFA", // violet
   // Whitelist: tm_* x4 + tm_webfetch (the researcher is a network role).
