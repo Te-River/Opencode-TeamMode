@@ -24,10 +24,18 @@ echo "=========================="
 echo ""
 
 # ── patch config ────────────────────────────────────────────────────────────
+# opencode.jsonc is the canonical name and OVERRIDES opencode.json when both
+# exist — so we ALWAYS target the .jsonc: patch it when present, and when only
+# an opencode.json exists, migrate its content into a new opencode.jsonc first
+# (writing the .json instead would risk our entry being shadowed).
 CFG_DIR="${HOME}/.config/opencode"
 CFG="${CFG_DIR}/opencode.jsonc"
-if [ ! -f "$CFG" ] && [ -f "${CFG_DIR}/opencode.json" ]; then CFG="${CFG_DIR}/opencode.json"; fi
+LEGACY="${CFG_DIR}/opencode.json"
 mkdir -p "$CFG_DIR"
+if [ ! -f "$CFG" ] && [ -f "$LEGACY" ]; then
+  cp "$LEGACY" "$CFG"
+  echo "ℹ  Migrated opencode.json → opencode.jsonc (jsonc takes precedence; the original .json is left untouched)"
+fi
 
 if [ ! -f "$CFG" ]; then
   cat > "$CFG" <<EOF

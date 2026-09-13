@@ -26,14 +26,20 @@ Write-Host "==========================" -ForegroundColor Cyan
 Write-Host ""
 
 # ── patch config ────────────────────────────────────────────────────────────
+# opencode.jsonc is the canonical name and OVERRIDES opencode.json when both
+# exist — so we ALWAYS target the .jsonc: patch it when present, and when only
+# an opencode.json exists, migrate its content into a new opencode.jsonc first
+# (writing the .json instead would risk our entry being shadowed).
 $CFG_DIR = Join-Path $env:USERPROFILE ".config\opencode"
 $CFG_FILE = Join-Path $CFG_DIR "opencode.jsonc"
-if ((-not (Test-Path $CFG_FILE)) -and (Test-Path (Join-Path $CFG_DIR "opencode.json"))) {
-    $CFG_FILE = Join-Path $CFG_DIR "opencode.json"
-}
+$LEGACY = Join-Path $CFG_DIR "opencode.json"
 
 if (-not (Test-Path $CFG_DIR)) {
     New-Item -ItemType Directory -Path $CFG_DIR -Force | Out-Null
+}
+if ((-not (Test-Path $CFG_FILE)) -and (Test-Path $LEGACY)) {
+    Copy-Item $LEGACY $CFG_FILE
+    Write-Host "ℹ  Migrated opencode.json → opencode.jsonc (jsonc takes precedence; the original .json is left untouched)" -ForegroundColor Yellow
 }
 
 if (-not (Test-Path $CFG_FILE)) {
