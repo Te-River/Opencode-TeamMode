@@ -1315,6 +1315,16 @@ try {
         { call: async () => ({ ok: true, data: { offloaded: true, ref: "tm://runs/r/steps/s0007.k01/result", tokens: 9000 } }) }, MAX,
       )
       assert.ok(tm.renderPtcSummary(oc2).includes("ref:s0007.k01"), "offloaded row shows ref short code")
+      // educator line: ok steps + no returned data → warning present;
+      // runs WITH a return value carry no warning
+      const nr = await runWith(
+        'await tm.read({ path: "a" }); await tm.grep({ pattern: "x" })',
+        { call: async () => ({ ok: true, data: "piece" }) }, MAX,
+      )
+      const nrText = tm.renderPtcSummary(nr)
+      assert.ok(nrText.includes("程序未 return 数据"), "no-return educator warning present")
+      assert.ok(nrText.includes("2 次成功桥接"), "warning counts the discarded ok steps")
+      assert.ok(!tm.renderPtcSummary(oc).includes("程序未 return 数据"), "runs with a return value carry no warning")
       // engine-error row shows the program tool + message
       const ee = await runWith('throw new Error("kaboom")', { call: async () => ({ ok: true, data: "x" }) }, MAX)
       const eeText = tm.renderPtcSummary(ee)
@@ -1331,7 +1341,7 @@ try {
         bridge: { call: async () => ({ ok: true, data: "hi" }) },
       })
       assert.equal(typeof tool.execute, "function", "ptc tool execute present")
-      assert.ok(tool.description.includes("tm.read") && tool.description.includes("zero LLM round-trips"), "ptc description documents the program protocol")
+      assert.ok(tool.description.includes("tm.read") && /zero LLM round-trips/i.test(tool.description) && tool.description.includes("≥3 tm_read"), "ptc description documents the program protocol + trigger threshold")
       // ZodRawShape-style args (no z.object wrapper; descriptor fallback path)
       assert.ok(tool.args.program && typeof tool.args.program === "object", "ptc args.raw shape present")
       const res = await tool.execute({ program: 'const r = await tm.read({ path: "a" }); return r.ok', budgets: { max_calls: 3 } }, { directory: process.cwd() })

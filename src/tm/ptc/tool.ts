@@ -54,8 +54,9 @@ export function pipelineBridge(pipelines: TmPipelines, ctx: unknown): PtcBridge 
 
 // ---------- the tool definition ----------------------------------------------
 
-const PTC_RUN_DESCRIPTION = `Program-mode batch orchestration over the four governed tm_* tools.  One program, N bridged calls, zero LLM round-trips during the run; only an aggregation summary returns to context.
+const PTC_RUN_DESCRIPTION = `Batch orchestration: ONE async program makes N governed tm_* calls with ZERO LLM round-trips — use it INSTEAD of chaining ≥3 tm_read / tm_grep / tm_bash calls toward the same goal (multi-file recon, bulk grep+read aggregation, cross-referencing search results).  Only a char-pinned aggregation summary returns to context, so ALWAYS \`return\` the aggregated value at the end of the program: unreturned inline results are discarded (offload handles stay retrievable via tm.fetch).
 
+- Example: \`const out = []; for (const p of ["a.ts", "b.ts", "c.ts"]) { const f = await tm.read({ path: p }); if (f.ok) out.push({ p, head: String(f.data).slice(0, 400) }); } return out;\`
 - program: an async function body.  Available: \`tm.read(args)\`, \`tm.grep(args)\`, \`tm.bash(args)\`, \`tm.fetch(args)\` — same args as the tm_* four.  Each returns \`{ok:true, data}\` (data is already governed: inline text, or an offload handle you can tm.fetch again) or \`{ok:false, error:{tool,phase,line?,message}}\`.  \`return\` a value; it is JSON-serialized into the summary (capped 2000 chars, oversized → handle).
 - budgets (optional, tighten-only; clamped to TM_PTC_* ceilings): max_calls, max_errors, timeout_ms.  Hitting any budget stops the whole run (produced output is NOT lost).  Errors are retried at most once and only on idempotent phases (client/execute/store).
 - Governance is NOT bypassed: every bridged call runs the full tm_* pipeline (P2 path scope, P3 allowlist, R6, threshold offload + handles, TTL).  Status is one of ok | stopped-error-budget | stopped-call-budget | timeout | engine-error.

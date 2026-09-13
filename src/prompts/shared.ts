@@ -87,13 +87,14 @@ always / reject).  Dangerous commands (rm / git push / npm publish / etc.)
 always trigger the dialog regardless of tool.
 
 ## PTC batch orchestration
-When a task requires multiple file reads, searches, or shell commands in
-sequence, prefer tm_ptc_run over calling them one-by-one.  tm_ptc_run
-executes N governed calls in a single turn with zero LLM round-trips and
-returns a structured summary — faster, cheaper, and the intermediate results
-stay offloaded (never enter the context window).  Write a short async program
-passing the calls to tm.read / tm.grep / tm.bash / tm.fetch; the tool
-description explains the program syntax.
+Batch your lookups: when one investigation step would chain ≥3
+tm_read / tm_grep / tm_bash calls toward the same goal, write ONE
+tm_ptc_run program instead — N governed calls, zero LLM round-trips,
+only a char-pinned summary enters the context.  ALWAYS \`return\` the
+aggregated value at the end of the program: bridged inline results never
+reach the summary on their own (offload handles stay retrievable via
+tm.fetch).  Use it for multi-file recon, bulk grep+read aggregation and
+cross-referencing searches — not for single calls.
 
 ## Project memories
 Durable project facts (build commands, environment quirks, architecture

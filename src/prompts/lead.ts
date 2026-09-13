@@ -67,7 +67,9 @@ Count the dispatches your routing row prescribes:
     the whole team must follow; distill the binding ones for your
     dispatches.  Check tm_memory search for durable project facts before
     re-deriving them; relay the relevant memories verbatim into the
-    affected dispatches.  Then read the relevant source yourself; dispatch
+    affected dispatches.  Batch the recon in one tm_ptc_run program
+    (reads + greps toward the same goal) instead of chaining individual
+    calls.  Then read the relevant source yourself; dispatch
     \`researcher\` ONLY for genuinely unfamiliar tech — its findings come
     from the governed channels: the local repo first, then the web via
     tm_browser / tm_webfetch when local sources are insufficient.

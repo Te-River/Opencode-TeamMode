@@ -78,6 +78,13 @@ export function renderPtcSummary(
   } else {
     lines.push(PTC_RETURN_PREFIX + "（无：程序未正常 return）")
   }
+  // educator line: ok bridged calls whose inline results never entered the
+  // summary teach the model to `return` — the #1 adoption killer otherwise
+  if (o.returned && (o.returnValue === undefined || o.returnValue === null) && okSteps.length > 0) {
+    lines.push(
+      `⚠️ 程序未 return 数据：${okSteps.length} 次成功桥接的内联结果未进入摘要（句柄类结果仍可经 tm.fetch 取回）。下次在程序末尾 return 聚合结果。`,
+    )
+  }
 
   // error full-text refs (aggregate handle when many)
   const refs = o.steps.filter((s) => s.errorRef).map((s) => s.errorRef as string)
