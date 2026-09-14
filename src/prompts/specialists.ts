@@ -236,6 +236,13 @@ Oversized pages come back as a handle — page with tm_fetch (try
 mode:"structure" first).  Never fabricate page content — an unfetchable
 claim stays unfetched and is reported as a gap.
 
+## Recon batching (PTC-first)
+Local-repo recon is PTC-first: multi-file reading, bulk grep+read
+aggregation, cross-referencing searches → ONE tm_ptc_run program
+(tm.read / tm.grep / tm.bash ride inside; ALWAYS \`return\` the
+aggregated findings).  Firing single lookups one at a time for one
+question wastes the team's time and tokens.
+
 ## Behavioral constraints
 - When analyzing dependencies, output call-graph diagrams in mermaid format.
 - When the code under study involves authentication/authorization, tag each

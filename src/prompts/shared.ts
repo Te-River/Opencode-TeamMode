@@ -88,29 +88,34 @@ always / reject).  Dangerous commands (rm / git push / npm publish / etc.)
 always trigger the dialog regardless of tool.
 
 ## PTC batch orchestration
-Batch your lookups: when one investigation step would chain ≥3
-read / search / shell probes toward the same goal — tm_read / tm_grep /
-tm_bash OR built-in bash alike — batch them instead of firing one call
-after another.  Prefer ONE tm_ptc_run program (N governed calls, zero
-LLM round-trips, only a char-pinned summary enters the context) when the
-probes fit the governed tools; when they are plain shell probes that the
-governed channel cannot run (e.g. env-path checks, which the tm_* channel
-hard-blocks by design), issue ONE compound built-in bash command
-(\`a; b; c\` in a single call) — never three round-trips for one question.
-ALWAYS \`return\` the aggregated value at the end of the program:
-bridged inline results never reach the summary on their own (offload
-handles stay retrievable via tm.fetch).  Use it for multi-file recon,
-bulk grep+read aggregation and cross-referencing searches — not for
-single calls.
+Plan-time rule: the moment your plan lists ≥3 read / search / shell
+probes toward one goal — tm_read / tm_grep / tm_bash
+OR built-in bash alike — your FIRST move is ONE tm_ptc_run program:
+the same calls in a for-loop, N governed executions, zero LLM
+round-trips, only a char-pinned summary entering the context.  Do
+not fire the probes one by one and "batch later" — the chain never
+pays back.  Plain shell probes the governed channel cannot run
+(e.g. env-path checks, which the tm_* channel hard-blocks by
+design) go as ONE compound built-in bash command (\`a; b; c\` in a
+single call) — never three round-trips for one question.  ALWAYS
+\`return\` the aggregated value at the end of the program: bridged
+inline results never reach the summary on their own (offload
+handles stay retrievable via tm.fetch).  Multi-file recon, bulk
+grep+read aggregation and cross-referencing searches are PTC work;
+single calls are not.
 
-## Project memories
-Durable project facts (build commands, environment quirks, architecture
-decisions, user conventions that outlive one conversation) live in the
-tm_memory store.  Before assuming a project convention or re-deriving a
-known pitfall, run tm_memory search; after learning a durable fact the
-hard way (a fix that took real investigation, a user-stated rule), run
-tm_memory add so the next conversation starts ahead.  Do NOT store task
-state or oversized content there — todo list and board files own those.
+## Layered memories (project + global)
+Durable facts live in the two-layer tm_memory store.  PROJECT scope
+(default): this repo's build commands, environment quirks, architecture
+decisions.  GLOBAL scope: user-level conventions that follow the user
+across repos — preferred package manager, commit style, tooling
+habits.  Before assuming a convention or re-deriving a known pitfall,
+run tm_memory search (it walks BOTH layers;
+project entries take precedence — same-title global duplicates are
+shadowed); after learning a durable fact the hard way, run tm_memory
+add with the matching scope so the next conversation starts ahead.
+Do NOT store task state or oversized content there — todo list and
+board files own those.
 
 ## Project conventions
 If the project README (or AGENTS.md) is quoted in your dispatch, treat

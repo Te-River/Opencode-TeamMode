@@ -314,8 +314,9 @@ for (const expert of EXPERTS) {
   assert.ok(cfg2.agent[expert].prompt.includes("never answer unverified from memory"), expert + ": memory-second rule explicit")
   assert.ok(cfg2.agent[expert].prompt.includes("Expand colloquial, abbreviated, or aliased terms"), expert + ": term-expansion rule (generic, no baked-in examples)")
   assert.ok(cfg2.agent[expert].prompt.includes("never simulate"), expert + ": removed-tool capability reported as a gap, never simulated")
-  assert.ok(cfg2.agent[expert].prompt.includes("## Project memories"), expert + ": project memory rule present")
+  assert.ok(cfg2.agent[expert].prompt.includes("## Layered memories (project + global)"), expert + ": layered memory rule present")
   assert.ok(cfg2.agent[expert].prompt.includes("run tm_memory search"), expert + ": memory pull-model instruction (search before assuming)")
+  assert.ok(cfg2.agent[expert].prompt.includes("project entries take precedence"), expert + ": layered memories — project entries take precedence over global")
   assert.ok(
     cfg2.agent[expert].prompt.includes("Web lookups are NOT yours unless tm_search / tm_webfetch / tm_browser"),
     expert + ": web boundary rule (network roles are lead + researcher only)",
@@ -327,10 +328,15 @@ for (const expert of EXPERTS) {
   assert.ok(cfg2.agent[expert].prompt.includes("1. TeamMode governed tools (tm_*)"), expert + ": priority ladder rung 1 (tm_* first)")
   assert.ok(cfg2.agent[expert].prompt.includes("2. User MCP/plugin tools"), expert + ": priority ladder rung 2 (MCP second)")
   assert.ok(cfg2.agent[expert].prompt.includes("3. Your own reasoning"), expert + ": priority ladder rung 3 (reasoning, never fabricate)")
-  assert.ok(cfg2.agent[expert].prompt.includes("Batch your lookups: when one investigation step would chain ≥3"), expert + ": PTC trigger threshold (≥3 chained calls → one program)")
+  assert.ok(
+    cfg2.agent[expert].prompt.includes("Plan-time rule: the moment your plan lists ≥3") &&
+      cfg2.agent[expert].prompt.includes("your FIRST move is ONE tm_ptc_run program"),
+    expert + ": PTC trigger is plan-time (plan lists ≥3 probes → FIRST move is ONE tm_ptc_run program)",
+  )
   assert.ok(cfg2.agent[expert].prompt.includes("OR built-in bash alike"), expert + ": PTC trigger counts built-in bash chains, not just tm_* calls")
   assert.ok(cfg2.agent[expert].prompt.includes("ONE compound built-in bash command"), expert + ": plain-shell batches prescribe one compound command, not N round-trips")
   assert.ok(cfg2.agent[expert].prompt.includes("aggregated value at the end of the program"), expert + ": PTC return-data rule (unreturned inline results are lost)")
+assert.ok(cfg2.agent["researcher"].prompt.includes("Recon batching (PTC-first)"), "researcher: PTC-first recon section present")
 assert.ok(cfg2.agent["researcher"].prompt.includes("## Web lookups (two channels)"), "researcher: two-channel web policy (governed tools first, MCP fallback)")
 assert.ok(cfg2.agent["researcher"].prompt.includes("tm_search (open-ended lookups)"), "researcher: tm_search is the open-ended lookup front")
 assert.ok(cfg2.agent["researcher"].prompt.includes("bing-int"), "researcher: international-bing engine documented")
@@ -341,6 +347,7 @@ assert.ok(cfg2.agent["team"].prompt.includes("tm_webfetch"), "lead: governed web
 assert.ok(cfg2.agent["tester"].prompt.includes("## UI verification (tm_browser"), "tester: governed UI verification section present")
 assert.ok(cfg2.agent["tester"].prompt.includes("UI NOT VERIFIED"), "tester: honest-gap fallback kept alongside the browser grant")
 assert.ok(cfg2.agent["team"].prompt.includes("tm_memory search"), "lead: memory consulted during research phase")
+assert.ok(cfg2.agent["team"].prompt.includes("project layer first, global layer for cross-repo conventions"), "lead: memory layering (project layer first, global for cross-repo conventions)")
 assert.ok(cfg2.agent["team"].prompt.includes("Batch the recon in one tm_ptc_run program"), "lead: research-phase recon batched via PTC")
 }
 /* v1.4.6 fix (kept): fix-mode append contradiction stays dead, round files stay */

@@ -5,6 +5,12 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 versioning is semver (the 1.4.x train shipped under working labels; the
 registry saw 1.5.0 as the install-script fix release).
 
+## [Unreleased]
+
+### Changed
+- tm_memory search now enforces project > global precedence: same-title global entries are shadowed by project entries, project entries get a +2 near-tie weight; tool description and agent prompts document the project/global layer split.
+- tm_ptc_run intent: the PTC batching rule is now a plan-time trigger ("plan lists ≥3 probes → FIRST move is ONE tm_ptc_run"); researcher prompt gains a PTC-first recon section.
+
 ## [1.5.11] - 2026-09-13
 
 ### Fixed

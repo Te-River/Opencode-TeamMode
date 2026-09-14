@@ -1253,12 +1253,33 @@ try {
       fs.writeFileSync(cjkFile, "x")
       tm.rmForceSafe(cjkFile)
       assert.ok(!fs.existsSync(cjkFile), "rmForceSafe deletes non-ASCII paths (win32 rmSync no-op regression)")
+      // layered precedence (a): same-title global entry is SHADOWED by the
+      // project one — search walks both layers but the global duplicate
+      // never surfaces, and the shadow note says so
+      await mem.execute({ action: "add", title: "分层记忆测试", scope: "project", content: "构建命令事实：npm run build" }, ctx)
+      await mem.execute({ action: "add", title: "分层记忆测试", scope: "global", content: "构建命令事实：npm run build" }, ctx)
+      const layered = await mem.execute({ action: "search", query: "构建命令" }, ctx)
+      assert.ok(layered.output.includes("分层记忆测试") && layered.output.includes("(project/"), "shadowing: the project-layer hit is present")
+      const shadowBlock = layered.output.split("\n\n").find((b) => b.includes("(global/") && b.includes("分层记忆测试"))
+      assert.equal(shadowBlock, undefined, "shadowing: the same-title global entry never surfaces")
+      assert.ok(layered.output.includes("已被项目层优先遮蔽"), "shadowing: the shadow note names the hidden global duplicate")
+      // layered precedence (b): +2 project scope weight wins the near tie —
+      // two DIFFERENT titles, one per scope, equivalent keyword relevance
+      await mem.execute({ action: "add", title: "Near Tie Project", scope: "project", content: "kafka bootstrap servers fact" }, ctx)
+      await mem.execute({ action: "add", title: "Near Tie Global", scope: "global", content: "kafka bootstrap servers fact" }, ctx)
+      const nearTie = await mem.execute({ action: "search", query: "kafka" }, ctx)
+      const projIdx = nearTie.output.indexOf("Near Tie Project")
+      const globIdx = nearTie.output.indexOf("Near Tie Global")
+      assert.ok(projIdx !== -1 && globIdx !== -1, "near-tie: both scope hits surface (different titles, no shadowing)")
+      assert.ok(projIdx < globIdx, "near-tie: project block ranks BEFORE the global block (+2 project scope weight)")
+      // layer guidance ships to agents via the tool description
+      assert.ok(mem.description.includes("global — user-level conventions"), "tm_memory description documents the global layer")
     } finally {
       cleanup()
       fs.rmSync(path.join(os.tmpdir(), "opencode-team", "memories", "global"), { recursive: true, force: true })
     }
   }
-  console.log("6n. tm_memory: OK (add/update/search scoring/list/forget, slug-collision guard, scope filter, content cap, frontmatter round-trip)")
+  console.log("6n. tm_memory: OK (add/update/search scoring/list/forget, slug-collision guard, scope filter, content cap, frontmatter round-trip, layered project>global precedence (same-title shadowing + +2 weight))")
 
   // 6o. tm_browser — governed interactive browser (Plan C: headful CDP pipe).
   {

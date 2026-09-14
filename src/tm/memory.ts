@@ -14,6 +14,7 @@
  *     <globalRoot>/<category>/<title>.md      — default ~/.opencode-team/memories/global/
  *   PROJECT (repo-level, per checkout):
  *     <storeBase>/memories/projects/<project-slug>/<category>/<title>.md
+ *   search precedence: project > global (same-title shadowing + +2 project scope weight).
  *
  * The project slug is derived from the workspace path (drive letter + path
  * segments dashed, lowercased) so two checkouts never share a memory set.
@@ -34,6 +35,11 @@ export const MEMORY_TITLE_MAX = 120
 export const MEMORY_CONTENT_MAX = 4000
 export const MEMORY_SEARCH_RESULTS = 5
 export const MEMORY_EXCERPT_MAX = 600
+
+/** Layered precedence: project > global — (a) same-title global entries
+ *  are shadowed by project entries in search, (b) project entries get a
+ *  +2 near-tie weight (matches category ×2 in the scoring grammar). */
+export const MEMORY_PROJECT_SCOPE_BONUS = 2
 
 /** Seeded category taxonomy (Qoder's seven, reused as the starting point). */
 export const MEMORY_CATEGORIES: readonly string[] = [
@@ -300,16 +306,32 @@ export function buildTmMemoryTool(deps: {
         })
         fs.writeFileSync(file, md, "utf8")
         traj({ step_id: "memory", event: "add", scope, category, title: shorten(title, 80) })
-        return `记忆已${existed ? "更新" : "保存"}（${scope}）：${file}\n分类: ${category}\n标题: ${shorten(title, 80)}\n注入时机: 该项目的 lead/researcher 通过 tm_memory search 检索后进入派发上下文。`
+        const injectTiming = scope === "global"
+          ? "注入时机: 任何项目的 lead/researcher 通过 tm_memory search 检索后进入派发上下文（跨项目可见）。"
+          : "注入时机: 该项目的 lead/researcher 通过 tm_memory search 检索后进入派发上下文。"
+        return `记忆已${existed ? "更新" : "保存"}（${scope}）：${file}\n分类: ${category}\n标题: ${shorten(title, 80)}\n${injectTiming}`
       }
       if (action === "search") {
         const query = String(args.query ?? "").trim()
         if (!query) return tmError(tool, "args", "缺少 query 参数")
         const scope = args.scope ? normalizeScope(args.scope) : undefined
         const all = readAllMemories(globalRoot, storeBase, directory, scope)
-        for (const m of all) m.score = scoreMemory(m, query)
-        const top = all
-          .filter((m) => m.score > 0)
+        for (const m of all) {
+          // the +2 is a NEAR-TIE weight: it ranks relevant project entries
+          // above global ones, but must never turn a zero-relevance project
+          // entry into a candidate (score > 0 still means "matched")
+          const base = scoreMemory(m, query)
+          m.score = base > 0 && m.scope === "project" ? base + MEMORY_PROJECT_SCOPE_BONUS : base
+        }
+        const candidates = all.filter((m) => m.score > 0)
+        const projectTitles = new Set(
+          candidates.filter((m) => m.scope === "project").map((m) => m.title.trim().toLowerCase()),
+        )
+        const shadowed = candidates.filter(
+          (m) => m.scope === "global" && projectTitles.has(m.title.trim().toLowerCase()),
+        )
+        const top = candidates
+          .filter((m) => !(m.scope === "global" && projectTitles.has(m.title.trim().toLowerCase())))
           .sort((a, b) => b.score - a.score || a.title.localeCompare(b.title))
           .slice(0, MEMORY_SEARCH_RESULTS)
         traj({ step_id: "memory", event: "search", query: shorten(query, 80), hits: top.length })
@@ -322,7 +344,9 @@ export function buildTmMemoryTool(deps: {
             shorten(m.content, MEMORY_EXCERPT_MAX),
           ].filter(Boolean).join("\n"),
         )
-        return `命中 ${top.length}/${all.length} 条记忆（按相关度，取前 ${MEMORY_SEARCH_RESULTS}）：\n\n${blocks.join("\n\n")}`
+        const header = `命中 ${top.length}/${all.length} 条记忆（按相关度，取前 ${MEMORY_SEARCH_RESULTS}）：`
+        const shadowNote = shadowed.length > 0 ? `\n（${shadowed.length} 条同名全局记忆已被项目层优先遮蔽）` : ""
+        return `${header}${shadowNote}\n\n${blocks.join("\n\n")}`
       }
       if (action === "list") {
         const scope = args.scope ? normalizeScope(args.scope) : undefined
@@ -372,7 +396,8 @@ export function buildTmMemoryTool(deps: {
 - search: { query } — deterministic substring scoring (title > keywords > usage_scenario > body), top ${MEMORY_SEARCH_RESULTS}.  Use BEFORE assuming project conventions.
 - list: { scope? } — everything, grouped.
 - forget: { title } — delete by title.
-- What belongs here: durable project facts (build commands, environment quirks, architecture decisions, user-stated conventions that outlive one conversation).  What does NOT: task state (todo list owns that), oversized docs (board files own those).`
+- Layers: project (default) — facts about THIS repo (build commands, environment quirks, architecture decisions); global — user-level conventions and preferences that follow the user across repos (preferred toolchain, commit style).  search walks BOTH layers with project > global precedence: +2 scope weight, same-title global entries shadowed by the project one.
+- What does NOT belong: task state (todo list owns that), oversized docs (board files own those).`
 
   return {
     description: DESCRIPTION,

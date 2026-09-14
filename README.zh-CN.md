@@ -232,12 +232,14 @@ payload 时用 `tm_fetch`（HMAC 签名、run 域、带过期）分页读。`tm_
 耐久的事实——构建命令、环境怪癖、架构决策、你的约定——以人可编辑的
 Markdown + frontmatter 存放：
 
-- **`project`**（默认）：`<repo>/.git/opencode-team/memories/…` —— 每 checkout 一份，贴近 git。
-- **`global`**：`~/.opencode-team/memories/global/`（可用 `TM_MEMORY_GLOBAL_DIR` 覆盖）——**跟着你走遍所有项目**。
+- **`project`**（默认）：`<repo>/.git/opencode-team/memories/…` —— 每 checkout 一份，贴近 git。存放本仓库的事实：构建命令、环境怪癖、架构决策。
+- **`global`**：`~/.opencode-team/memories/global/`（可用 `TM_MEMORY_GLOBAL_DIR` 覆盖）——**跟着你走遍所有项目**。存放用户级约定：偏好的包管理器、提交风格、工具习惯。
 
 动作：`add` / `search`（确定性关键词打分）/ `list` / `forget`；每条记忆
-上限 4000 字符。agent 被要求先搜记忆再做项目假设，也把来之不易的事实
-存下来留给下个会话。
+上限 4000 字符。`search` 同时走两层，**项目层优先于全局层**：项目条目
+获得 +2 的近似同分加权，同名全局条目会被项目层遮蔽（永不浮出）。
+agent 被要求先搜记忆再做项目假设，也把来之不易的事实存下来留给下个
+会话。
 
 ### 🌐 真正好用的网络搜索（中国可用）
 

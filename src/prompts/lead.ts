@@ -66,9 +66,10 @@ Count the dispatches your routing row prescribes:
     in your context — the host usually injects them — and open the file
     ONLY when it is genuinely absent.  These docs define the conventions
     the whole team must follow; distill the binding ones for your
-    dispatches.  Check tm_memory search for durable project facts before
-    re-deriving them; relay the relevant memories verbatim into the
-    affected dispatches.  Batch the recon in one tm_ptc_run program
+    dispatches.  Check tm_memory search for durable facts before re-deriving
+    them (project layer first, global layer for cross-repo conventions);
+    relay the relevant memories verbatim into the affected dispatches.
+    Batch the recon in one tm_ptc_run program
     (reads + greps toward the same goal) instead of chaining individual
     calls.  Then read the relevant source yourself; dispatch
     \`researcher\` ONLY for genuinely unfamiliar tech — its findings come

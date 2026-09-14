@@ -242,12 +242,15 @@ errors instead of raw dumps.
 Durable facts — build commands, environment quirks, architecture decisions,
 your conventions — live as human-editable Markdown with frontmatter:
 
-- **`project`** (default): `<repo>/.git/opencode-team/memories/…` — per checkout, git-adjacent.
-- **`global`**: `~/.opencode-team/memories/global/` (override `TM_MEMORY_GLOBAL_DIR`) — **follows you across ALL projects**.
+- **`project`** (default): `<repo>/.git/opencode-team/memories/…` — per checkout, git-adjacent. Facts about THIS repo: build commands, environment quirks, architecture decisions.
+- **`global`**: `~/.opencode-team/memories/global/` (override `TM_MEMORY_GLOBAL_DIR`) — **follows you across ALL projects**. User-level conventions: preferred package manager, commit style, tooling habits.
 
 Actions: `add` / `search` (deterministic keyword scoring) / `list` / `forget`;
-4000 chars per memory. Agents are prompted to search before assuming
-conventions and to save hard-won facts for the next conversation.
+4000 chars per memory. `search` walks BOTH layers with **project > global
+precedence**: project entries get a +2 near-tie weight, and a same-title
+global entry is shadowed by its project twin (it never surfaces). Agents
+are prompted to search before assuming conventions and to save hard-won
+facts for the next conversation.
 
 ### 🌐 Web search that actually works (in China)
 
