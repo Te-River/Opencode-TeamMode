@@ -251,6 +251,16 @@ assert.ok(leadPrompt.includes("ANTI-SPLITTING"), "lead: anti-splitting rule")
 assert.ok(leadPrompt.includes("Discovery gate"), "lead: pre-implementation discovery (kept)")
 assert.ok(leadPrompt.includes("Brevity discipline"), "lead: <=5-line planning text")
 
+/* T3: dispatch-concurrency guidance + pre-commit hygiene (lead side) */
+assert.ok(leadPrompt.includes("## Dispatch concurrency"), "lead: dispatch concurrency section present")
+assert.ok(
+  leadPrompt.indexOf("## Routing table") < leadPrompt.indexOf("## Dispatch concurrency") &&
+    leadPrompt.indexOf("## Dispatch concurrency") < leadPrompt.indexOf("## Approval gate"),
+  "lead: dispatch concurrency section sits between routing table and approval gate",
+)
+assert.ok(leadPrompt.includes("CONCURRENTLY IN ONE ROUND"), "lead: independent dispatches batch into one round, actively")
+assert.ok(leadPrompt.includes("Pre-commit hygiene"), "lead: hygiene check before ANY commit")
+
 /* v1.4.7: approval gate + uncertainty policy + no-ceremony fast path */
 assert.ok(leadPrompt.includes("## Approval gate"), "lead: approval gate present")
 assert.ok(leadPrompt.includes("≥2 dispatches"), "lead: gate triggers at 2 dispatches")
@@ -310,6 +320,10 @@ for (const expert of EXPERTS) {
   assert.ok(cfg2.agent[expert].prompt.includes("## Repo hygiene (temp files)"), expert + ": repo hygiene rule present")
   assert.ok(cfg2.agent[expert].prompt.includes("DELETED before you report done"), expert + ": scratch/temp files deleted before done (repo never polluted)")
   assert.ok(cfg2.agent[expert].prompt.includes("Prefer the OS temp dir"), expert + ": throwaway work goes to the OS temp dir")
+  assert.ok(cfg2.agent[expert].prompt.includes("not owned by the plan"), expert + ": one-off verification tests never enter the repo (plan ownership)")
+  assert.ok(cfg2.agent[expert].prompt.includes("## Pre-commit hygiene"), expert + ": pre-commit hygiene section present")
+  assert.ok(cfg2.agent[expert].prompt.includes("to `.gitignore` in the same commit"), expert + ": untracked noise auto-ignored before commit")
+  assert.ok(cfg2.agent[expert].prompt.includes("Never stage a `.env`-class file without explicit user confirmation"), expert + ": .env git-add guard needs user consent (separate from R6 reads)")
   assert.ok(cfg2.agent[expert].prompt.includes("## Use your tools first"), expert + ": tool-first lookup rule present")
   assert.ok(cfg2.agent[expert].prompt.includes("never answer unverified from memory"), expert + ": memory-second rule explicit")
   assert.ok(cfg2.agent[expert].prompt.includes("Expand colloquial, abbreviated, or aliased terms"), expert + ": term-expansion rule (generic, no baked-in examples)")
@@ -317,6 +331,12 @@ for (const expert of EXPERTS) {
   assert.ok(cfg2.agent[expert].prompt.includes("## Layered memories (project + global)"), expert + ": layered memory rule present")
   assert.ok(cfg2.agent[expert].prompt.includes("run tm_memory search"), expert + ": memory pull-model instruction (search before assuming)")
   assert.ok(cfg2.agent[expert].prompt.includes("project entries take precedence"), expert + ": layered memories — project entries take precedence over global")
+  /* T1: three-tier memory + near-duplicate merge + compaction runbook (shared.ts) */
+  assert.ok(cfg2.agent[expert].prompt.includes("## Memory tiers, dedup and compaction"), expert + ": memory tiers/dedup/compaction section present")
+  assert.ok(cfg2.agent[expert].prompt.includes("Precedence on retrieval is session > project >"), expert + ": three-tier retrieval precedence spelled out (session > project > global)")
+  assert.ok(cfg2.agent[expert].prompt.includes("已合并"), expert + ": near-duplicate add folds and answers 已合并 (do not re-add)")
+  assert.ok(cfg2.agent[expert].prompt.includes("apply:true"), expert + ": compact is dry-run by default, apply:true performs it")
+  assert.ok(cfg2.agent[expert].prompt.includes(".compact-backup"), expert + ": .compact-backup tree is the compaction rollback path")
   assert.ok(
     cfg2.agent[expert].prompt.includes("Web lookups are NOT yours unless tm_search / tm_webfetch / tm_browser"),
     expert + ": web boundary rule (network roles are lead + researcher only)",

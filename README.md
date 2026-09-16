@@ -44,7 +44,7 @@ TeamMode's answer to each:
 
 | Pain | TeamMode's answer |
 |---|---|
-| 🔥 **Context flooding** | Every governed tool output over 2000 tokens is offloaded to a local run store and replaced by an 80-token preview + an HMAC handle. The agent pages through what it needs — the window never drowns. |
+| 🔥 **Context flooding** | Every governed tool output over its content-class offload threshold (prose 4000 / data 2000 tokens, CJK-aware) is offloaded to a local run store and replaced by an 80-token preview + an HMAC handle. The agent pages through what it needs — the window never drowns. |
 | 🐌 **Round-trip overhead** | `tm_ptc_run`: the agent writes ONE program that makes N governed calls in a single turn. Zero LLM round-trips during the run. |
 | 🕳️ **Silent side effects** | R6/R2 approval gate: env-var reads and dangerous ops route through OpenCode's official confirmation dialog, auto-rejected after 10 unanswered minutes. The plugin never approves on its own — it only ever rejects. |
 | 🌫️ **Hallucinated research** | Web access is a two-role grant with an allowlisted, governed tool chain. A fact that couldn't be fetched is reported as a gap — never fabricated. |
@@ -201,19 +201,22 @@ as a structured skeleton — nothing landed in your repo, nothing was guessed.
 ## 🧰 Governed tools & security
 
 Every tool TeamMode adds runs under ONE governance pipeline: outputs above
-`TM_OFFLOAD_THRESHOLD` tokens never enter the context window — they are
-offloaded to a run store and replaced by a content-aware preview plus an
-HMAC-signed handle that the agent pages through with `tm_fetch` when it
-genuinely needs the payload.
+the offload threshold never enter the context window — the boundary is
+content-class aware (`TM_OFFLOAD_THRESHOLD_TEXT` = 4000 for prose:
+text/log/markdown; `TM_OFFLOAD_THRESHOLD_DATA` = 2000 for json/csv/code/
+binary; an unknown class falls back to the global `TM_OFFLOAD_THRESHOLD`) —
+and oversized results are offloaded to a run store and replaced by a
+content-aware preview plus an HMAC-signed handle that the agent pages
+through with `tm_fetch` when it genuinely needs the payload.
 
 | Tool | What it does | Roles |
 |---|---|---|
-| `tm_read` / `tm_grep` / `tm_bash` / `tm_fetch` | Governed file read / regex search / read-only shell (allowlist) / paged handle retrieval | all six agents |
-| `tm_memory` | Project + global memory store (Markdown + frontmatter): add / search / list / forget | all six agents |
-| `tm_ptc_run` | Batch orchestration: one program, N governed calls, zero LLM round-trips | all six agents |
-| `tm_search` | Multi-engine web search with extracted, deduplicated hit lists | Lead + Researcher |
+| `tm_read` / `tm_grep` / `tm_bash` / `tm_fetch` | Governed file read / regex search / read-only shell (allowlist) / paged handle retrieval (JSON handles take a `fields` dot-path projection — a deliberately small jq subset like `items[].name`) | all six agents |
+| `tm_memory` | Session + project + global memory store (Markdown + frontmatter): add / search / list / forget / compact | all six agents |
+| `tm_ptc_run` | Batch orchestration: one program, N governed calls, zero LLM round-trips; web roles also get `tm.search` / `tm.webfetch` inside the program | all six agents |
+| `tm_search` | Multi-engine web search with extracted, deduplicated, RRF-fused hit lists | Lead + Researcher |
 | `tm_webfetch` | Single governed GET of an allowlisted page (search pages auto-extracted) | Lead + Researcher |
-| `tm_browser` | Interactive browser session (CDP, **your default browser**): open / navigate / read / screenshot / close | Lead + Researcher + Tester (UI verification) |
+| `tm_browser` | Interactive browser session (**your default browser**): 16 Playwright verbs (snapshot-first `take_snapshot` → uid-addressed `click`/`fill`/`drag`/…) + 5 legacy compat verbs (open/navigate/read/screenshot/close); Playwright engine needs Node ≥ 20, below that (or on any import failure) it auto-degrades to the legacy CDP engine | Lead + Researcher + Tester (UI verification) |
 
 > **Fixed tool priority ladder (every task): ① TeamMode governed tools
 > (`tm_*`) → ② user MCP/plugin tools → ③ the model's own reasoning.**
@@ -228,27 +231,46 @@ its own step id and its own payload, and nothing cross-contaminates
 ### Context governance: offload, handles, previews
 
 Large tool outputs are context cost's main driver — every step re-sends the
-whole window. So results above `TM_OFFLOAD_THRESHOLD` tokens are written to a
-local run store (`<repo>/.git/opencode-team/`, never your working tree) and
-replaced by a handle with a content-aware preview: JSON keys / CSV header +
-shape / log ERROR×N stats / code signatures / binary metadata, hard-capped at
-80 tokens. When the agent actually needs the payload, it pages through with
-`tm_fetch` using an HMAC-signed, run-scoped, expiring handle. `tm_bash` only
-allows read-only commands (allowlist), and failures come back as structured
-errors instead of raw dumps.
+whole window. So results above the content-class offload boundary (prose →
+`TM_OFFLOAD_THRESHOLD_TEXT`, structured data → `TM_OFFLOAD_THRESHOLD_DATA`,
+unknown → global `TM_OFFLOAD_THRESHOLD`) are written to a local run store
+(`<repo>/.git/opencode-team/`, never your working tree) and replaced by a
+handle with a content-aware preview: JSON keys / CSV header + shape / log
+ERROR×N stats / code signatures / binary metadata, hard-capped at 80 tokens.
+When the agent actually needs the payload, it pages through with `tm_fetch`
+using an HMAC-signed, run-scoped, expiring handle — and on a JSON handle it
+can ask for a `fields` dot-path projection instead (a deliberately small jq
+subset: `items[].name`, `[].stargazers_count`), so a big API dump narrows to
+just the values needed without the raw body ever entering the window.
+`tm_bash` only allows read-only commands (allowlist), and failures come back
+as structured errors instead of raw dumps.
 
-### Project + global memory (tm_memory)
+### Session + project + global memory (tm_memory)
 
 Durable facts — build commands, environment quirks, architecture decisions,
-your conventions — live as human-editable Markdown with frontmatter:
+your conventions — live as human-editable Markdown with frontmatter, in
+THREE tiers:
 
+- **`session`**: this conversation's transients only — in-process, TTL-swept
+  (`TM_MEMORY_SESSION_TTL_MIN`, default 240 min), invisible to other
+  sessions; ephemeral unless `TM_MEMORY_SESSION_PERSIST=1` writes them under
+  `memories/sessions/<sid>/`.
 - **`project`** (default): `<repo>/.git/opencode-team/memories/…` — per checkout, git-adjacent. Facts about THIS repo: build commands, environment quirks, architecture decisions.
 - **`global`**: `~/.opencode-team/memories/global/` (override `TM_MEMORY_GLOBAL_DIR`) — **follows you across ALL projects**. User-level conventions: preferred package manager, commit style, tooling habits.
 
-Actions: `add` / `search` (deterministic keyword scoring) / `list` / `forget`;
-4000 chars per memory. `search` walks BOTH layers with **project > global
-precedence**: project entries get a +2 near-tie weight, and a same-title
-global entry is shadowed by its project twin (it never surfaces). Agents
+Actions: `add` / `search` (deterministic keyword scoring) / `list` / `forget` /
+`compact`; 4000 chars per memory. `search` walks ALL tiers with **session >
+project > global precedence** — project entries get a +2 near-tie weight and a
+same-title higher-layer twin shadows the lower one (it never surfaces).
+Near-duplicates never pile up: an `add` that hits an existing entry in the same
+tier and category (dedup key, or title+keywords Jaccard ≥ 0.6) **folds into
+it** — new content wins, keywords union, the old slug moves to `supersedes:`,
+and the answer says 已合并 (that is normal; don't re-add under a variant title).
+When a tier reaches `TM_MEMORY_MAX_ENTRIES` (200 per scope) the add fails on
+purpose: run `compact` first — it dry-runs the merge plan by default, and
+re-running with `apply:true` performs it after copying every original to a
+timestamped `.compact-backup` tree (the rollback path). Entries older than
+`TM_MEMORY_STALE_DAYS` (30) surface tagged `[stale Nd]` in search. Agents
 are prompted to search before assuming conventions and to save hard-won
 facts for the next conversation.
 
@@ -261,18 +283,22 @@ sees raw SERP chrome.
 
 | Engine | Notes |
 |---|---|
-| `bing` (default) | cn.bing.com; `bing-int` forces international results (`ensearch=1`) |
-| `sogou` / `so` (360) | CN-native engines, good for CJK content |
-| `baidu` | flakiest (anti-bot) but sometimes the only CN-specific index; failures name alternatives |
+| `auto` (default) | Classifies the query, fans out to 2–3 engines **in parallel**, dedupes by host+path and fuses with weighted RRF (stackoverflow/bing 0.4, others 0.2) into a top-10 list tagged with each hit's source engine(s). Routing: errors / camelCase APIs → `stackoverflow`+`github`+`bing`; dev-ecosystem (releases, frameworks, open source) → `hn`+`github`+`npm`; Chinese / general → `bing`. Pin another default via `TM_SEARCH_DEFAULT_ENGINE` |
+| `bing` | cn.bing.com — the only live CN HTML SERP; multi-word CJK queries get their phrase boundary protected (quoted) so markup shuffle can't split the result list |
+| `stackoverflow` | api.stackexchange.com question search (no key, 300/day/IP) → numbered questions with composite snippets; `auto` tracks the quota and swaps in `bing` once spent |
+| `hn` | Hacker News via Algolia API (no key) → story titles + snippets with direct article URLs |
 | `bilibili` | video search |
 | `moegirl` | MediaWiki search API — entry titles + snippets, structured |
 | `npm` | registry search → name@version + description, structured |
-| `github` | repo search API → stars + description, structured |
+| `github` | repo search API → stars + description, structured; `org:` / `user:` / `stars:` / `language:` qualifiers fold into the query (e.g. `vector db stars:>500 language:rust`) |
 
-All nine engines are reachable from mainland China **without API keys**, and
-every one of them sits on the seeded domain allowlist. On an empty result
-(an anti-bot shell), the error names the alternative engines instead of
-leaving the agent stuck. Two more channels complete the surface:
+All seven engines are reachable from mainland China **without API keys**, and
+every one of them sits on the seeded domain allowlist. The previous CN HTML
+SERPs (`sogou` / `so` / `baidu` / `bing-int`) were **removed** — a live
+benchmark (2026-09-14) showed them serving anti-bot shells or 100% empty
+results; they are not even manually selectable. On an empty result,
+the error names the alternative engines instead of leaving the agent stuck.
+Two more channels complete the surface:
 
 - `tm_webfetch` — a known URL, one governed GET. Search-engine pages it
   fetches are auto-extracted to hit lists too. JSON endpoints like
@@ -280,9 +306,28 @@ leaving the agent stuck. Two more channels complete the surface:
 - `tm_browser` — JS-rendered pages: **your DEFAULT browser** (Windows
   registry / Linux `xdg-settings`; Chromium-family only — Firefox falls back
   to the Edge/Chrome probe order because CDP is Chromium-proprietary;
-  `TM_BROWSER_PATH` overrides), headful via CDP pipe, isolated temp profile,
-  **domain allowlist enforced at the network layer** per request
-  (`Fetch.requestPaused` → non-allowlisted hosts get `BlockedByClient`).
+  `TM_BROWSER_PATH` overrides), headful by default, isolated temp profile,
+  **domain allowlist enforced at the network layer** per request and per
+  redirect hop. The action surface is chrome-devtools-mcp aligned: **16
+  Playwright verbs** (`navigate_page` · `take_snapshot` · `click` · `fill` ·
+  `hover` · `drag` · `press_key` · `select_page` · `upload_file` · `wait_for`
+  · `evaluate_script` · `list_console_messages` · `list_network_requests` ·
+  `list_pages` · `take_screenshot` · `handle_dialog`) plus 5 legacy compat
+  verbs (`open` / `navigate` / `read` / `screenshot` / `close`).
+  Snapshot-first: `take_snapshot` returns the aria snapshot with injected
+  `[uid=eN]` tokens, follow-up actions address nodes by uid instead of
+  guessed locators; snapshots are hard-capped by
+  `TM_BROWSER_SNAPSHOT_MAX_TOKENS` (default 1200).
+  **Engine split:** the primary engine is `playwright-core` (an optional
+  dependency — needs **Node ≥ 20**; on older Node, or if the import fails,
+  the session auto-degrades per instance to the zero-dep `cdp-legacy`
+  engine, which keeps the core verbs only; pin either via
+  `TM_BROWSER_ENGINE=playwright|cdp-legacy`). No browser download is ever
+  involved — Playwright launches YOUR installed browser by path, so
+  `npx playwright install` is not part of the user flow (the dependency
+  itself resolves at npm install/publish time). Isolated temp profile by
+  default: persistent logins only if you explicitly set
+  `TM_BROWSER_USER_DATA_DIR`.
 
 When a fetch still returns **403 after the real-Chrome headers**, the error
 is a DIRECTIVE: the gate is JS-challenge / TLS-fingerprint based and only a
@@ -292,16 +337,18 @@ filter known noise: engine-internal wrappers (`so.com/link?`, `ai.so.com`)
 and same-name-different-site domains (`maimai.cn` 脉脉 vs the maimai DX
 game) never ride along — extend the hit blacklist with `TM_HIT_BLACKLIST`.
 
-Seeded allowlist (both tools; 21 hosts — baidu/moegirl/bilibili are PARENT
-domains, so every sibling subdomain — baike.baidu.com, mzh.moegirl.org.cn,
-space.bilibili.com — is covered):
+Seeded allowlist (all three web tools; 23 hosts — baidu/moegirl/bilibili are
+PARENT domains, so every sibling subdomain — baike.baidu.com,
+mzh.moegirl.org.cn, space.bilibili.com — is covered):
 `baidu.com`, `moegirl.org.cn`, `bilibili.com`, `www.sogou.com`, `www.so.com`,
 `cn.bing.com`, `www.bing.com`, `zhihu.com`, `juejin.cn`, `csdn.net`,
 `cnblogs.com`, `gitee.com`, `github.com`, `api.github.com`,
 `raw.githubusercontent.com`, `gist.githubusercontent.com`, `ghproxy.net`
-(mainland mirror for github raw), `stackoverflow.com`, `npmjs.org`,
-`pypi.org`, `learn.microsoft.com` — extend via
-`TM_WEBFETCH_ALLOWED_DOMAINS` (`"*"` opens every host). Architect /
+(mainland mirror for github raw), `stackoverflow.com`, `api.stackexchange.com`
++ `hn.algolia.com` (the two JSON search engines), `npmjs.org`, `pypi.org`,
+`learn.microsoft.com` — extend via
+`TM_WEBFETCH_ALLOWED_DOMAINS` (`"*"` opens every host; a custom list REPLACES
+the seed, so keep the engine hosts or `tm_search` loses its targets). Architect /
 implementer / reviewer have NO network grant — web questions come back as a
 reported gap, never simulated. The tester carries `tm_browser` ONLY, for
 governed UI verification of the project (local dev servers, preview routes);
@@ -326,7 +373,14 @@ confirmation dialog; unanswered prompts are **auto-rejected after
 (embedded `$VAR` / `${VAR}` / `$env:` inside another command, command
 substitution) and the `tm_*` wrapper channel stay a **hard block** — no dialog
 to slip through. The audit log records only tool name + pattern category +
-verdict — never command text, paths, variable names or values.
+verdict — never command text, paths, variable names or values. Verdicts now
+also explain a dialog that cannot be answered anymore: a reply that hits an
+**already-closed** dialog (host 404 — the timer already auto-rejected) audits
+as `already-closed` without degrading the gate, a plugin-side bad reply shape
+audits as `rejected-shape-bug`, and a user reply that arrives *after* the
+auto-reject is recorded as `late-<verdict>` for observability only (the
+rejection stands — the plugin still never self-allows). The 3-minute auto-reject
+floor above the host's event lag is tunable via `TM_ASK_TIMEOUT_FLOOR_MIN`.
 
 **R2 dangerous operations (same dialog).** Delete, git publish, network
 fetch, package install/publish, process/system, privilege changes — none are
@@ -393,24 +447,36 @@ for overrides, extra agents and disabling roles.
 | Env var | Default | Purpose |
 |---|---|---|
 | `TM_ENV_PROTECT` | `strict` | R6 mode: `strict` / `standard` / `off` (off also disarms the approval timer) |
-| `TM_ASK_TIMEOUT_MIN` | `10` | minutes before an unanswered dialog is auto-rejected (hard floor 3 — the host's reply event reaches the plugin ~120 s late) |
+| `TM_ASK_TIMEOUT_MIN` | `10` | minutes before an unanswered dialog is auto-rejected (floored — the host's reply event reaches the plugin ~120 s late) |
+| `TM_ASK_TIMEOUT_FLOOR_MIN` | `3` | minimum enforced for the ask timeout above |
 | `TM_ENV_PROTECT_EXTRA_DENY` | — | extra block patterns (regex; always hard block, never dialog-governed) |
-| `TM_OFFLOAD_THRESHOLD` | `2000` | offload threshold (tokens, CJK-aware estimate) |
+| `TM_OFFLOAD_THRESHOLD` | `2000` | global offload fallback (tokens, CJK-aware estimate) — used when the content class is unknown |
+| `TM_OFFLOAD_THRESHOLD_TEXT` | `4000` | offload boundary for prose (text / log / markdown) |
+| `TM_OFFLOAD_THRESHOLD_DATA` | `2000` | offload boundary for structured payloads (json / csv / code / binary) |
 | `TM_PREVIEW_MAX_TOKENS` | `80` | preview hard cap |
 | `TM_FETCH_MAX_LINES` | `2000` | tm_fetch page cap |
 | `TM_BLACKBOARD_DIR` / `TM_TRAJECTORY_DIR` | `<repo>/.git/opencode-team/…` | offload store / trajectory ledger (tmpdir fallback; explicit = absolute or project-relative) |
 | `TM_BLACKBOARD_TTL` | `7` | store retention (days) |
 | `TM_BASH_READONLY_ALLOWED` | built-in table | tm_bash allowlist |
-| `TM_WEBFETCH_ALLOWED_DOMAINS` | the 21 seeded hosts | tm_webfetch / tm_search / tm_browser allowlist (`"*"` opens all; empty = deny all) |
+| `TM_SEARCH_DEFAULT_ENGINE` | `auto` | tm_search engine when no `engine` arg is given (`auto` = classify + parallel fan-out + RRF fusion; any table name also pins a manual default) |
+| `TM_WEBFETCH_ALLOWED_DOMAINS` | the 23 seeded hosts | tm_webfetch / tm_search / tm_browser allowlist (`"*"` opens all; empty = deny all; a custom list REPLACES the seed — keep the engine hosts) |
 | `TM_BROWSER_PATH` | auto-detect | tm_browser executable override (default: your DEFAULT browser when Chromium-family, else Edge/Chrome probes) |
 | `TM_BROWSER_HEADLESS` | `auto` | `1` headless (CI) / `0` headful / `auto` (headless only on display-less Linux) |
-| `TM_MEMORY_GLOBAL_DIR` | `~/.opencode-team/memories/global/` | tm_memory GLOBAL scope store |
+| `TM_BROWSER_ENGINE` | `playwright` | `playwright` (needs Node ≥ 20; any import failure auto-degrades) / `cdp-legacy` (zero-dep CDP pipe, core verbs only) |
+| `TM_BROWSER_SNAPSHOT_MAX_TOKENS` | `1200` | hard cap on `take_snapshot` payloads |
+| `TM_BROWSER_USER_DATA_DIR` | — (isolated temp profile) | explicit persistent profile dir — the ONLY way logins survive between sessions |
+| `TM_MEMORY_GLOBAL_DIR` | `~/.opencode-team/memories/global/` | tm_memory GLOBAL tier store |
+| `TM_MEMORY_SESSION_TTL_MIN` | `240` | session-tier entry TTL (lazy + boot sweep) |
+| `TM_MEMORY_MAX_ENTRIES` | `200` | per-scope entry cap; over it `add` fails on purpose — run `compact` |
+| `TM_MEMORY_STALE_DAYS` | `30` | age after which search hits are tagged `[stale Nd]` (`0` disables) |
+| `TM_MEMORY_SESSION_PERSIST` | — (ephemeral) | `1` also writes session entries under `memories/sessions/<sid>/` |
 | `TM_HIT_BLACKLIST` | `maimai.cn` | extra domains never listed as search hits (comma/semicolon separated; same-name-different-site noise like 脉脉) |
 | `TM_PTC_MAX_PROGRAM_CHARS` | `4000` | PTC program source cap |
 | `TM_PTC_MAX_CALLS` | `20` | PTC per-run bridge-call budget (1–200) |
 | `TM_PTC_MAX_ERRORS` | `3` | PTC per-run error budget (1–50) |
 | `TM_PTC_TIMEOUT_MS` | `60000` | PTC per-run wall-clock timeout (5s–10min) |
 | `TM_PTC_ENGINE` | `auto` | `auto` (worker→inline degrade) / `worker` / `inline` |
+| `TM_PTC_WEB_BRIDGE` | `on` | expose `tm.search` / `tm.webfetch` to PTC programs (`off` removes them from the bridge set) |
 
 ---
 
@@ -430,6 +496,10 @@ not the rule: a deliverable over ~50 lines goes to ONE named board file under
   routing bug.
 - **Approval gate (count-based):** ≥2 dispatches → plan (≤30 lines) → **your
   approval** → execute. Blocking questions are batched and asked immediately.
+- **Concurrent dispatch:** independent dispatches batch into the SAME round
+  (parallel implementers with per-file ownership + verbatim contracts,
+  3-dimension reviews, split test suites); only the Team Lead dispatches —
+  specialists no longer hold `task`, so no sub-agent spawns a sub-agent.
 - **Adaptive review:** one reviewer by default; three parallel dimensions
   only for high-risk profiles (auth/security, cross-module contracts, public APIs).
 - **Static verification:** build / typecheck / lint / tests. Improvised

@@ -145,6 +145,9 @@ export async function createTmTools(
     expireAt,
     mode,
     extra,
+    // fix batch T3: the ctxDir fallback — the host process cwd is the user
+    // HOME on the desktop sidecar, never a valid workspace root.
+    workspaceDir: directory,
   }
   // ONE main pipeline instance shared by the four tools AND tm_webfetch —
   // a shared step counter keeps their refs unambiguous (a second instance
@@ -197,16 +200,43 @@ export async function createTmTools(
     mode,
     extra,
     stepPrefix: "ptc-",
+    workspaceDir: directory,
   }
   const ptcPipelines = buildPipelines(ptcDeps)
+  // T6 web bridge: when TM_PTC_WEB_BRIDGE=on, PTC's tm.search / tm.webfetch
+  // run SECONDARY tm_search / tm_webfetch instances over the SAME "ptc-"
+  // pipeline, so their step ids stay namespaced.  They are NOT registered on
+  // the host tool surface here (the main `tools.tm_search` / `tools.tm_webfetch`
+  // already are) — they exist only as the bridge's call targets.  Role gating
+  // is automatic: each bridged call is executed with the CALLER's per-execute
+  // ctx (see buildPtcRunTool.makeBridge), so the host's permission.asked runs
+  // against the calling agent's own ruleset and a non-web role is denied.
+  const ptcWebTools =
+    cfg.ptcWebBridge === "on"
+      ? {
+          tm_search: buildTmSearchTool({
+            pipelines: ptcPipelines,
+            cfg,
+            args: await buildSearchArgsSchema(),
+          }),
+          tm_webfetch: buildTmWebfetchTool({
+            pipelines: ptcPipelines,
+            cfg,
+            args: await buildWebfetchArgsSchema(),
+          }),
+        }
+      : undefined
   const ptcTool = buildPtcRunTool({
     cfg,
     store,
     nextStepId: ptcPipelines.nextStepId,
+    // assembly-time ctx is only the directory fallback; the bridge re-binds
+    // to the real per-execute ctx inside execute(rawArgs, callCtx).
     ctx: { directory },
     accessToken,
     args: await buildPtcArgsSchema(),
     pipelines: ptcPipelines,
+    webTools: ptcWebTools,
   })
   tools.tm_ptc_run = ptcTool
   return { runId, config: cfg, store, pipelines, tools, dispose: () => browserTool.dispose() }
@@ -254,7 +284,7 @@ export type { TmDeps, TmPipelines } from "./pipelines.js"
 export { buildPtcArgsSchema, buildWebfetchArgsSchema, buildSearchArgsSchema } from "./args-schema.js"
 export { toToolResult, HANDLE_INVALID_MESSAGE, tmError } from "./result.js"
 export type { TmPhase } from "./result.js"
-export { runShellCommand, cleanShellError } from "./shell-bridge.js"
+export { runShellCommand, spawnShellFallback, cleanShellError } from "./shell-bridge.js"
 export {
   buildTmWebfetchTool,
   checkWebUrl,
@@ -289,6 +319,8 @@ export {
   WorkerEngine,
   PTC_LABEL_MAX,
   PTC_STATUS_VALUES,
+  PtcProgramError,
+  PtcStopSignal,
   RETRYABLE_PHASES,
   PTC_SUMMARY_HEADER,
   PTC_OK_SECTION,
@@ -303,14 +335,21 @@ export {
   pipelineBridge,
   renderPtcSummary,
   resolvePtcBudgets,
+  resolvePtcBudgetsDetailed,
   runPtc,
   selectEngine,
   staticPscan,
 } from "./ptc/index.js"
+// T6 additions pulled straight from their submodules so ptc/index.ts (a
+// frozen re-export facade, owned by the PTC split) is not edited: the
+// literal-strip helper the pre-scan uses + the web-bridge tool subset.
+export { stripNonExecutable } from "./ptc/pscan.js"
+export { WEB_BRIDGE_TOOLS } from "./ptc/contract.js"
 export type {
   PtcStatus,
   PtcEngine,
   PtcEngineName,
+  PtcEngineRunOpts,
   PtcBridge,
   PtcCallResult,
   PtcErrorBody,
@@ -320,6 +359,7 @@ export type {
   PtcRpcAbort,
   PtcEngineMessage,
   PtcBudgets,
+  PtcBudgetResolution,
   PtcStepRecord,
   PtcRunOutcome,
   RunPtcOptions,

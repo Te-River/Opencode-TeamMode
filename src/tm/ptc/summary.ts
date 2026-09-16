@@ -35,6 +35,22 @@ export function renderPtcSummary(
   lines.push(
     `steps=${o.okCount + o.errCount} ok=${o.okCount} err=${o.errCount} retries=${o.retries} ms=${o.ms}  engine=${engineLabel(o)}`,
   )
+  // budgets echo (fix batch T1): the operator must SEE the effective values
+  // and any clamping — a silently-clamped budget is an invisible contract
+  // change.  Absent on hand-built outcomes (backward compatible).
+  // T6: the note now names WHICH fields the caller set (custom=) AND which
+  // were clamped (CLAMPED=), so a mixed run (one field tightened, one clamped)
+  // is fully transparent — not just "some numbers changed".
+  if (o.budgets) {
+    const b = o.budgets
+    const setBy = b.setByUser && b.setByUser.length > 0 ? b.setByUser.join(", ") : ""
+    const clamp = b.clamped && b.clamped.length > 0 ? b.clamped.join(", ") : ""
+    let note: string
+    if (clamp) note = `(custom: ${setBy || "—"} · CLAMPED: ${clamp})`
+    else if (setBy) note = `(custom: ${setBy})`
+    else note = "(defaults)"
+    lines.push(`budgets: calls≤${b.maxCalls} err≤${b.maxErrors} to=${b.timeoutMs}ms ${note}`)
+  }
 
   const okSteps = o.steps.filter((s) => s.ok)
   const errSteps = o.steps.filter((s) => !s.ok)
@@ -53,6 +69,9 @@ export function renderPtcSummary(
   lines.push(PTC_ERR_HEADER)
   for (const s of errSteps) lines.push(errRow(s))
   if (o.engineError) {
+    // T5: program faults and engine faults render DISTINCTLY so the
+    // operator can tell a bad program from a bad engine at a glance.
+    const faultKind = o.status === "program-error" ? "程序错误" : "引擎错误"
     lines.push(
       errRow({
         n: 0,
@@ -60,7 +79,7 @@ export function renderPtcSummary(
         phase: o.engineError.phase,
         line: o.engineError.line,
         retry: false,
-        message: `程序抛出：${o.engineError.message}`,
+        message: `${faultKind}：${o.engineError.message}`,
       }),
     )
   }

@@ -65,6 +65,7 @@
 
 import type { PermissionEvent } from "./types.js"
 import { ENV_PROTECT_SERVICE, categorizePermission } from "./envprotect.js"
+import { resolveTmConfig } from "./tm/config.js"
 
 /** Default timeout, in minutes, before an unanswered dialog is auto-rejected. */
 export const DEFAULT_ASK_TIMEOUT_MIN = 10
@@ -78,6 +79,12 @@ export const DEFAULT_ASK_TIMEOUT_MIN = 10
  * double-reject race).  3 min = observed ~120s lag + margin; in-range
  * values below the floor clamp UP to it (a longer timeout is always the
  * safe direction — the dialog just stays open a bit longer).
+ *
+ * This is the FALLBACK default of the floor.  The live floor now comes from
+ * the P0 config knob `TM_ASK_TIMEOUT_FLOOR_MIN`
+ * (`resolveTmConfig().askTimeoutFloorMin`, itself defaulted to 3), so
+ * lowering the timeout toward 1 min is a config change pending the real-host
+ * latency probe (design §② decision tree) rather than a source edit.
  */
 export const MIN_ASK_TIMEOUT_MIN = 3
 
@@ -92,26 +99,34 @@ const POLL_INTERVAL_MS = 60 * 1000
  *  for this short period, never a self-allow. */
 const GHOST_ASK_WINDOW_MS = 60 * 1000
 
-/** Cap on the closed-permission-id tombstone set (ids are unique, so the
- *  set is purely an anti-ghost cache — pruning oldest is sufficient). */
+/** Cap on the closed-permission-id tombstone LRU (ids are unique, so it is
+ *  purely an anti-ghost cache + late-verdict provenance store — pruning the
+ *  oldest is sufficient). */
 const MAX_TOMBSTONES = 500
 
 /** The verdict vocabulary recorded in the audit trail (privacy: no command
- *  text, path, variable name or value is ever logged). */
+ *  text, path, variable name or value is ever logged).  `already-closed` /
+ *  `rejected-shape-bug` split the old blanket `degraded` on a failed reply by
+ *  `classifyReplyFailure`; a late reply past the auto-reject is recorded as a
+ *  dynamic `late-<verdict>` string (observability only — never re-runs or
+ *  revives the command). */
 export type ApprovalVerdict =
   | "ask"
   | "allowed-once"
   | "allowed-always"
   | "rejected"
   | "timeout-rejected"
+  | "already-closed"
+  | "rejected-shape-bug"
   | "degraded"
 
 /**
  * Resolve `TM_ASK_TIMEOUT_MIN`.  Unset / blank / non-numeric / <1 / >1440
  * (24h) fall back to the 10-minute default — a mistyped value can never
- * disable the timeout or make it absurdly long.  Valid values below the
- * 3-minute bus-lag floor clamp UP to it (1→3, 2→3; see
- * `MIN_ASK_TIMEOUT_MIN` for the measured ~120s replied-event lag).
+ * disable the timeout or make it absurdly long.  Valid values below the bus-
+ * lag floor clamp UP to it — the floor is the P0 config knob
+ * `TM_ASK_TIMEOUT_FLOOR_MIN` (`resolveTmConfig().askTimeoutFloorMin`, default
+ * 3, from the measured ~120s replied-event lag; see `MIN_ASK_TIMEOUT_MIN`).
  */
 export function resolveAskTimeoutMs(env: Record<string, string | undefined> = process.env): number {
   const raw = env.TM_ASK_TIMEOUT_MIN
@@ -120,7 +135,10 @@ export function resolveAskTimeoutMs(env: Record<string, string | undefined> = pr
   if (!Number.isFinite(n)) return DEFAULT_ASK_TIMEOUT_MIN * 60 * 1000
   const min = Math.trunc(n)
   if (min < 1 || min > 1440) return DEFAULT_ASK_TIMEOUT_MIN * 60 * 1000
-  return Math.max(min, MIN_ASK_TIMEOUT_MIN) * 60 * 1000
+  // Floor read from the config knob (bounded to [1,1440] by envInt) so a
+  // future probe can lower it WITHOUT a source change; default stays 3.
+  const floorMin = resolveTmConfig(env).askTimeoutFloorMin
+  return Math.max(min, floorMin) * 60 * 1000
 }
 
 type TimerHandle = unknown
@@ -223,7 +241,17 @@ function auditAsk(client: unknown, tool: string, category: string, verdict: stri
 function unwrapSdkEnvelope(res: unknown): unknown {
   if (res && typeof res === "object" && "error" in res) {
     const err = (res as { error?: unknown }).error
-    if (err) throw err
+    if (err) {
+      // Carry the HTTP status ONTO the thrown error.  On the real v1 host the
+      // status sits at `res.response.status` (NOT on the error body), and
+      // `classifyReplyFailure` needs it to tell a benign 404 (dialog already
+      // closed — the D4 late-reply race) from a shape-bug 400 / a transport
+      // failure.  Falls back to an error-body status, then undefined.
+      const status =
+        (res as { response?: { status?: unknown } }).response?.status ??
+        (err as { status?: unknown }).status
+      throw Object.assign(err as object, { status })
+    }
   }
   return res
 }
@@ -250,6 +278,53 @@ function errorDiagnostic(err: unknown): string {
     (v) => typeof v === "number" && Number.isFinite(v),
   )
   return ` err=${name}${rawStatus !== undefined ? ` status=${rawStatus}` : ""}`
+}
+
+/** How a FAILED permission-reply call should be treated by the gate. */
+export type ReplyFailureClass = "benign-closed" | "param-shape" | "transport"
+
+/**
+ * Classify a reply-call failure so the gate no longer flips permanently
+ * `degraded` on a harmless close.  `unwrapSdkEnvelope` has already hoisted the
+ * HTTP status onto the thrown envelope error; a genuine `Promise.reject`
+ * arrives as a plain Error with no status.
+ *   - `benign-closed`: 404, or a NotFound/PermissionNotFound name/_tag — the
+ *     dialog was ALREADY closed on the host (the D4 late-reply race): our
+ *     reject was a no-op, so the popup path stays trustworthy.
+ *   - `param-shape`: 400, or a BadRequest/InvalidRequest name/_tag — our
+ *     reply body/params are wrong for this host: a real integration bug.
+ *   - `transport`: everything else — a genuine Error, a 5xx, or an empty /
+ *     status-less body — we could not reach or close the dialog.
+ * Reads only the error CLASS + status number (privacy: never message text).
+ */
+export function classifyReplyFailure(err: unknown): ReplyFailureClass {
+  const e = err as {
+    status?: unknown
+    statusCode?: unknown
+    status_code?: unknown
+    name?: unknown
+    _tag?: unknown
+  } | null | undefined
+  const rawStatus = [e?.status, e?.statusCode, e?.status_code].find(
+    (v) => typeof v === "number" && Number.isFinite(v),
+  )
+  const tag =
+    `${typeof e?.name === "string" ? e.name : ""} ${typeof e?._tag === "string" ? e._tag : ""}`.trim()
+  if (rawStatus === 404 || /NotFound|PermissionNotFound/.test(tag)) return "benign-closed"
+  if (rawStatus === 400 || /BadRequest|InvalidRequest/.test(tag)) return "param-shape"
+  return "transport"
+}
+
+/** A recognized human reply word -> its audit verdict; null for anything the
+ *  out-of-vocabulary path keeps silent about (used by the LATE-verdict audit
+ *  so an unknown late word can never fabricate a verdict or a `late-degraded`). */
+function lateVerdictWord(
+  lower: string,
+): "rejected" | "allowed-always" | "allowed-once" | null {
+  if (lower === "reject") return "rejected"
+  if (lower === "always") return "allowed-always"
+  if (lower === "once") return "allowed-once"
+  return null
 }
 
 /**
@@ -313,6 +388,15 @@ interface PendingEntry {
   timer: TimerHandle
 }
 
+/** A closed permission id's provenance, held in the `closed` LRU so a LATE
+ *  `permission.replied` (arriving past the auto-reject) can be audited with
+ *  its real category.  { sid, cat, at } only — never command text/path/value. */
+interface ClosedEntry {
+  sid: string
+  cat: "env" | "danger"
+  at: number
+}
+
 /** First string-ish value among the host's several id/response spellings. */
 function str(...values: unknown[]): string | undefined {
   for (const v of values) {
@@ -347,8 +431,12 @@ export function createApprovalGate(deps: ApprovalGateDeps): ApprovalGate {
   /** Sessions known to carry our injected ask set (deferral whitelist). */
   const liveAsk = new Set<string>()
   /** Permission ids already closed (replied / timed out): a late or
-   *  duplicated `asked` replay for one must never re-arm a ghost timer. */
-  const closedIds = new Set<string>()
+   *  duplicated `asked` replay for one must never re-arm a ghost timer.
+   *  Upgraded from a bare Set to a small LRU map — R1#8 — so a LATE
+   *  `permission.replied` (the human's decision reaching the plugin AFTER the
+   *  timer already auto-rejected) can be audited with its real category.
+   *  Bounded at MAX_TOMBSTONES with the oldest evicted. */
+  const closed = new Map<string, ClosedEntry>()
   /** Sessions whose reply carried NO permission id → suppress fresh asks of
    *  that session briefly (map sid → expiry ms). */
   const repliedNoId = new Map<string, number>()
@@ -367,11 +455,22 @@ export function createApprovalGate(deps: ApprovalGateDeps): ApprovalGate {
     return rec
   }
 
-  function tombstone(id: string): void {
-    closedIds.add(id)
-    if (closedIds.size > MAX_TOMBSTONES) {
-      const oldest = closedIds.values().next().value as string | undefined
-      if (oldest !== undefined) closedIds.delete(oldest)
+  function tombstone(id: string, sid?: string, cat?: "env" | "danger"): void {
+    // LRU touch: delete+set moves the id to the newest end.  Re-inserting a
+    // known id preserves its recorded cat/sid when THIS call omits them, so a
+    // late/duplicate reply never overwrites the real category a prior close
+    // (fireReject / first reply) recorded.
+    const prev = closed.get(id)
+    closed.delete(id)
+    closed.set(id, {
+      sid: sid ?? prev?.sid ?? "",
+      cat: cat ?? prev?.cat ?? "danger",
+      at: nowMs(),
+    })
+    while (closed.size > MAX_TOMBSTONES) {
+      const oldest = closed.keys().next().value as string | undefined
+      if (oldest === undefined) break
+      closed.delete(oldest)
     }
   }
 
@@ -390,28 +489,47 @@ export function createApprovalGate(deps: ApprovalGateDeps): ApprovalGate {
     const rec = pending.get(id)
     if (!rec) return
     pending.delete(id)
-    tombstone(id)
+    tombstone(id, rec.sid, rec.cat)
     let ok = false
     let errDiag = ""
+    let failClass: ReplyFailureClass | null = null
     try {
       if (reply) {
-        // unwrapSdkEnvelope inside `reply` turns the v1 {error} envelope into
-        // a throw; a rejecting transport lands in the same catch.
+        // unwrapSdkEnvelope inside `reply` turns the v1 {error} envelope into a
+        // throw (carrying the hoisted HTTP status); a rejecting transport
+        // lands in the same catch.
         await reply(rec.sid, id)
         ok = true
       }
     } catch (err) {
       ok = false
+      failClass = classifyReplyFailure(err)
       errDiag = errorDiagnostic(err)
     }
-    if (!ok) {
-      // Layer 3 fallback: we could not close the dialog ⇒ stop trusting the
-      // popup path; the hook reverts to hard-throwing env reads.
+    // Classify a failed reply instead of a blanket degraded flip:
+    //   benign-closed (404 / NotFound) — the dialog was ALREADY closed on the
+    //     host (the D4 late-reply race): our reject was a harmless no-op, NOT
+    //     an integration fault, so the popup path stays trustworthy.  Do NOT
+    //     flip degraded — one dead-id reject must never poison the whole gate.
+    //   param-shape (400 / BadRequest) — our reply shape is wrong for this
+    //     host: a real bug, fail closed.
+    //   transport (a real Error / 5xx / status-less body) — we could not reach
+    //     or close the dialog: fail closed (the historic behaviour).
+    if (!ok && failClass !== "benign-closed") {
+      // Layer 3 fallback: stop trusting the popup path; the hook reverts to
+      // hard-throwing env reads.
       degraded = true
     }
-    // degraded carries the non-privacy error class/status tail (see
-    // errorDiagnostic) so a live-host failure is diagnosable from the log
-    auditAsk(client, "bash", cat, (ok ? "timeout-rejected" : "degraded") + errDiag)
+    const verdict = ok
+      ? "timeout-rejected"
+      : failClass === "benign-closed"
+        ? "already-closed"
+        : failClass === "param-shape"
+          ? "rejected-shape-bug"
+          : "degraded"
+    // every failure verdict carries the non-privacy error class/status tail
+    // (see errorDiagnostic) so a live-host failure is diagnosable from the log
+    auditAsk(client, "bash", cat, verdict + errDiag)
   }
 
   function arm(id: string, sid: string, cat: "env" | "danger"): void {
@@ -427,7 +545,7 @@ export function createApprovalGate(deps: ApprovalGateDeps): ApprovalGate {
     cat: "env" | "danger",
   ): void {
     if (!id || !sid) return
-    if (closedIds.has(id)) return // ghost replay of a closed request
+    if (closed.has(id)) return // ghost replay of a closed request
     if (ghostSuppressed(sid)) return // replied-without-id; assume a replay
     if (pending.has(id)) return
     // The R6 ENV face is the deferral proof: only sessions whose dialogs
@@ -506,26 +624,46 @@ export function createApprovalGate(deps: ApprovalGateDeps): ApprovalGate {
     const sid = str(props.sessionID)
     const id = str(props.requestID, props.permissionID, props.id)
     const resp = str(props.reply, props.response)
-    if (id) tombstone(id)
+    // Capture prior-closed state BEFORE this reply tombstones the id: the
+    // late-verdict audit must fire only for a reply that arrives AFTER the id
+    // was already closed (a timeout auto-reject / an earlier reply), not for
+    // the first-ever reply we happen to be tombstoning right now.
+    const wasClosed = id ? closed.has(id) : false
+    const prec = id ? pending.get(id) : undefined
+    if (id) tombstone(id, sid ?? prec?.sid, prec?.cat)
     // Real 1.18.29 replied props identify the request via `requestID` — and
     // the plugin-side observer has seen builds carrying ONLY { sessionID }.
     // Cancel EVERY pending timer of the session either way: an approved
     // command left timed would fire a reject on a dead id (4xx) and flip the
     // gate permanently degraded.
     const affected: Array<PendingEntry> = []
+    let removed: PendingEntry | undefined
     if (id) {
-      const rec = remove(id)
-      if (rec) affected.push(rec)
+      removed = remove(id)
+      if (removed) affected.push(removed)
     }
     for (const [pid, rec] of [...pending]) {
       if (sid && rec.sid === sid) {
         pending.delete(pid)
         timers.clearTimeoutFn(rec.timer)
-        tombstone(pid)
+        tombstone(pid, rec.sid, rec.cat)
         affected.push(rec)
       }
     }
     if (!id && sid) repliedNoId.set(sid, nowMs() + GHOST_ASK_WINDOW_MS)
+    // R1#8 — LATE VERDICT OBSERVABILITY: the id was ALREADY closed (remove()
+    // found nothing, and it was closed before this reply — `wasClosed`), yet a
+    // real reply word rode in afterwards: the human's decision reached the
+    // plugin past the auto-reject (the D4 race the timeout floor guards).  The
+    // reject already landed, so this is OBSERVABILITY ONLY — it never re-arms a
+    // timer, never revives the command, and sends NO SDK reply, so it cannot
+    // breach "the plugin only ever rejects".  The category comes from the
+    // original close, so the audit line stays well-formed with no command text.
+    if (id && !removed && wasClosed && resp) {
+      const entry = closed.get(id)
+      const late = entry ? lateVerdictWord(resp.toLowerCase()) : null
+      if (entry && late) auditAsk(client, "bash", entry.cat, `late-${late}`)
+    }
     for (const rec of affected) {
       if (!resp) continue // outcome unknown: cancel silently, never invent a verdict
       const lower = resp.toLowerCase()

@@ -12,6 +12,7 @@ export type {
   PtcEngine,
   PtcEngineMessage,
   PtcEngineName,
+  PtcEngineRunOpts,
   PtcErrorBody,
   PtcRunOutcome,
   PtcRpcAbort,
@@ -24,12 +25,13 @@ export type {
 export {
   BRIDGE_ALLOW,
   PTC_STATUS_VALUES,
+  PtcProgramError,
   PtcStopSignal,
   RETRYABLE_PHASES,
   shortRefCode,
 } from "./contract.js"
-export type { PtcArgsResult, PtcBudgets, PtcCallerBudgets, PtcValidArgs } from "./budgets.js"
-export { parsePtcArgs, PTC_LABEL_MAX, resolvePtcBudgets } from "./budgets.js"
+export type { PtcArgsResult, PtcBudgets, PtcBudgetResolution, PtcCallerBudgets, PtcValidArgs } from "./budgets.js"
+export { parsePtcArgs, PTC_LABEL_MAX, resolvePtcBudgets, resolvePtcBudgetsDetailed } from "./budgets.js"
 export { staticPscan } from "./pscan.js"
 export { InlineSequentialEngine, InlineVmEngine, WorkerEngine } from "./engines.js"
 export type { GateState } from "./gate.js"

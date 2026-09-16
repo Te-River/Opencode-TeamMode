@@ -20,7 +20,7 @@
   ],
   "scripts": {
     "build": "tsc",
-    "test": "tsc && node test-blackboard.mjs && node test-envprotect.mjs && node test-tm-tools.mjs && node test-default-agent.mjs",
+    "test": "tsc && node test-blackboard.mjs && node test-envprotect.mjs && node test-tm-tools.mjs && node test-default-agent.mjs && node test-memory.mjs && node test-browser.mjs",
     "prepublishOnly": "tsc",
     "dev": "tsc --watch"
   },
@@ -38,6 +38,9 @@
   "license": "Apache-2.0",
   "publishConfig": {
     "access": "public"
+  },
+  "optionalDependencies": {
+    "playwright-core": "1.63.0"
   },
   "peerDependencies": {
     "@opencode-ai/plugin": ">=0.1.0"

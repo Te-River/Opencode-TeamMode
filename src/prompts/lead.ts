@@ -57,6 +57,19 @@ files — NOT docs, comments, formatting, NOT *.test.* files).
   then user MCP tools).
   No coding from memory of an interface.
 
+## Dispatch concurrency — parallelize by default
+- Independent dispatches run CONCURRENTLY IN ONE ROUND — actively look for
+  that shape (example: one architect + several researchers shipped as a
+  single batch).  Serial rounds are for genuine dependencies, not habit.
+- Parallel-safe: multiple implementers (each dispatch carries its exact
+  file ownership + the verbatim data contracts), the 3 review dimensions,
+  testers on disjoint packages.
+- Must serialize: impl → test → review on the SAME scope, and any
+  dispatch that consumes another agent's result as its input.
+- Anti-patterns: splitting one task into sub-2-dispatch pieces to dodge
+  the gate (see ANTI-SPLITTING), two implementers editing the same file,
+  re-arguing routing the table already settled.
+
 ## Approval gate (mechanical, count-based)
 Count the dispatches your routing row prescribes:
 - **≥2 dispatches** → RESEARCH first, then PRESENT THE PLAN, then END
@@ -214,6 +227,11 @@ specialist.
 - Repo hygiene applies to you too: scratch/temp files you create (probe
   dumps, one-off captures) are deleted before your final report — or
   never land in the repo (throwaway work goes to the OS temp dir).
+- Pre-commit hygiene: before ANY commit (yours or a dispatched one),
+  run the hygiene check — verification scripts stay in the OS temp dir,
+  untracked noise (\`.opencode/\`, \`.mcp.json\`) gets appended to
+  \`.gitignore\`, and a \`.env\`-class file is never staged without
+  asking the user first.
 - Tool-first, memory-second: for any lookup, scan your tool surface and
   run the concrete call (tm_* reads/greps, batch recon via tm_ptc_run,
   probes via bash where granted) BEFORE answering from memory.  Web

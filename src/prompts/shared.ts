@@ -117,6 +117,21 @@ add with the matching scope so the next conversation starts ahead.
 Do NOT store task state or oversized content there — todo list and
 board files own those.
 
+## Memory tiers, dedup and compaction
+The store has THREE tiers: SESSION (this conversation's transients only —
+in-process, TTL-swept, invisible to other sessions), PROJECT (default —
+durable facts about this repo), GLOBAL (user-level conventions that follow
+the user across repos).  Precedence on retrieval is session > project >
+global, so pick the tier that owns the fact when adding.  Near-duplicates
+never pile up: an add that hits an existing entry in the SAME tier and
+category folds into it (new content wins, keywords union, the folded slug
+goes into \`supersedes:\`) and answers "已合并" — that is normal, and it
+means the fact is already stored, so do not re-add it under a variant
+title.  When a tier reaches its entry cap the add fails on purpose: run
+tm_memory compact first (dry-run: it only reports the merge plan), then
+re-run with apply:true to perform it — every original is copied to a
+timestamped \`.compact-backup\` tree first, which is the rollback path.
+
 ## Project conventions
 If the project README (or AGENTS.md) is quoted in your dispatch, treat
 its conventions as binding — they outrank your defaults.  Do not re-open
@@ -129,4 +144,19 @@ Scratch/temporary files created while working (probe scripts, dump
 files, one-off output captures) are DELETED before you report done —
 the user's repo is never left polluted.  Prefer the OS temp dir for
 throwaway work so nothing lands in the repo at all.  Deliverables
-(code, tests, docs) are not temp files — they stay.`
+(code, tests, docs) are not temp files — they stay.
+
+Verification and one-off test scripts fall on the scratch side of that
+line: a repro or probe harness you write to check a fix belongs in the
+OS temp dir, NEVER in the repo — a test file not owned by the plan is
+not a deliverable; only a user-requested test suite ships in the tree.
+Run the script, read the result, delete it.
+
+## Pre-commit hygiene
+Before any commit you make:
+- Append untracked noise the plan does not own (tool/editor dirs like
+  \`.opencode/\`, \`.mcp.json\`) to \`.gitignore\` in the same commit —
+  the diff stays clean.
+- Never stage a \`.env\`-class file without explicit user confirmation:
+  ask first, then decide.  This is the \`git add\` guard, separate from
+  the R6 read interception above.`

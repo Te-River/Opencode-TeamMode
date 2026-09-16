@@ -148,9 +148,11 @@ console.log("1. default_agent promotion matrix: OK (opt-out default; custom/plan
     "read", "grep", "glob", "list", "apply_patch",
     "webfetch", "websearch", "todowrite", "lsp", "skill", "question",
   ]
-  // Built-ins whose slot varies per agent; ungranted -> denied.  todowrite
-  // + question are LEAD-ONLY grants (the lead's prompt mandates a todo list
-  // and batched blocking questions — the tools must exist to comply).
+  // Built-ins whose slot varies per agent; ungranted -> denied.  task,
+  // todowrite + question are LEAD-ONLY grants (T3 task-reclaim: no
+  // specialist dispatches sub-agents — architect and reviewer lost
+  // "task"; the lead's prompt mandates a todo list and batched blocking
+  // questions — the tools must exist to comply).
   const perAgent = ["edit", "write", "task", "bash", "todowrite", "question"]
   // The four governed tools, named explicitly next to the tm_* wildcard.
   const tmTools = ["tm_read", "tm_grep", "tm_bash", "tm_fetch", "tm_memory"]
@@ -164,9 +166,9 @@ console.log("1. default_agent promotion matrix: OK (opt-out default; custom/plan
   const BASH_ASK = ep.bashAskPatterns("strict")
   const grants = {
     team: ["task", "edit", "write", "bash", "todowrite", "question"],
-    architect: ["task"],
+    architect: [],
     implementer: ["edit", "write", "bash"],
-    reviewer: ["task", "bash"],
+    reviewer: ["bash"],
     tester: ["edit", "write", "bash"],
     researcher: [],
   }
@@ -265,9 +267,14 @@ console.log("1. default_agent promotion matrix: OK (opt-out default; custom/plan
   // through the lead (STATUS: blocked), never interrupt the user directly.
   assert.equal(cfg.agent.team.permission.todowrite, "allow", "team: todowrite granted (TodoList discipline is a prompt mandate)")
   assert.equal(cfg.agent.team.permission.question, "allow", "team: question granted (batched blocking questions)")
+  // T3 task-reclaim: "task" joins the lead-only set — five specialists
+  // all deny, matrix deny is zero-bypass (live-verified T0.4③, agents.ts
+  // header), so no sub-agent can spawn a sub-agent.
+  assert.equal(cfg.agent.team.permission.task, "allow", "team: task granted (the lead is the only dispatcher)")
   for (const name of ["architect", "implementer", "reviewer", "tester", "researcher"]) {
     assert.equal(cfg.agent[name].permission.todowrite, "deny", name + ": todowrite denied (lead-only)")
     assert.equal(cfg.agent[name].permission.question, "deny", name + ": question denied (specialists answer through the lead)")
+    assert.equal(cfg.agent[name].permission.task, "deny", name + ": task denied (lead-only — no nested dispatch)")
   }
 
   // tm_webfetch / tm_search / tm_browser network-role split: team +

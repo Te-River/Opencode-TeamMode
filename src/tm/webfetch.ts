@@ -27,9 +27,24 @@ import { isEnvFilePath } from "../envprotect.js"
 import { askFnOf, askUserForTarget, type TmAskFn } from "./perm-ask.js"
 import type { ToolResult } from "../types.js"
 import { shorten, DEFAULT_WEBFETCH_DOMAINS, type TmConfig } from "./config.js"
+
+/** T4 (tm_search quality upgrade): the two new no-key engine hosts.
+ *  DEFAULT_WEBFETCH_DOMAINS itself lives in config.ts (owned by the P0
+ *  batch — NOT editable by this package), so the seed extension is applied
+ *  consumer-side: `seedWebfetchDomains` appends these ONLY to the built-in
+ *  default list.  A narrowed TM_WEBFETCH_ALLOWED_DOMAINS is never widened
+ *  (an out-of-allowlist engine host still routes to the official dialog). */
+export const T4_SEEDED_DOMAINS: readonly string[] = ["api.stackexchange.com", "hn.algolia.com"]
+
+export function seedWebfetchDomains(allowlist: readonly string[]): string[] {
+  const isDefaultSeed =
+    allowlist.length === DEFAULT_WEBFETCH_DOMAINS.length &&
+    allowlist.every((d, i) => d === DEFAULT_WEBFETCH_DOMAINS[i])
+  return isDefaultSeed ? [...allowlist, ...T4_SEEDED_DOMAINS] : [...allowlist]
+}
 import { detectContentType } from "./preview.js"
 import { tmError, toToolResult } from "./result.js"
-import type { TmPipelines } from "./pipelines.js"
+import { projectJsonFields, type TmPipelines } from "./pipelines.js"
 
 /** Real-browser request headers.  Anti-bot gates (baike.baidu.com, zhihu,
  *  csdn — a real session collected 403s from both) reject robot-shaped UAs
@@ -95,7 +110,7 @@ export function checkWebUrl(raw: unknown, allowlist: readonly string[]): UrlVerd
       askable: true,
       url,
       message:
-        `主机 "${url.hostname}" 不在 tm_webfetch 域名白名单内（预置: ${DEFAULT_WEBFETCH_DOMAINS.join(", ")}）。` +
+        `主机 "${url.hostname}" 不在 tm_webfetch 域名白名单内（预置: ${[...DEFAULT_WEBFETCH_DOMAINS, ...T4_SEEDED_DOMAINS].join(", ")}）。` +
         `已请求用户批准（官方确认弹窗）——批准后本次放行；用 TM_WEBFETCH_ALLOWED_DOMAINS 可永久扩展（逗号/分号分隔，"*" 放开全部主机）`,
     }
   }
@@ -165,6 +180,13 @@ export function hitDomainBlacklist(): string[] {
 export interface SearchHit {
   title: string
   url: string
+  /** 1-2 line summary when the ENGINE carries one (bing b_caption, SO's
+   *  score/tags composite, HN's points/comments) — never fabricated. */
+  snippet?: string
+  /** Which engine produced the hit (set by tm_search auto-fusion only). */
+  source?: string
+  /** 1-based fused rank (auto-fusion only). */
+  rank?: number
 }
 
 function decodeEntities(s: string): string {
@@ -177,12 +199,29 @@ function decodeEntities(s: string): string {
     .replace(/&#0?39;|&apos;/gi, "'")
 }
 
+/** Bing's caption block lives AFTER the result anchor (same b_algo item):
+ *  `<div class="b_caption"><p …>TEXT</p></div>`.  Real-world CN bing often
+ *  ships no caption at all — then the hit simply has NO snippet (never
+ *  invented from surrounding chrome). */
+const CAPTION_RE = /b_caption[\s\S]{0,240}?<p[^>]*>([\s\S]*?)<\/p>/i
+
+function extractCaptionSnippet(window: string): string | undefined {
+  const m = CAPTION_RE.exec(window)
+  if (!m) return undefined
+  const text = decodeEntities(m[1].replace(/<[^>]+>/g, " "))
+    .replace(/\s+/g, " ")
+    .trim()
+  if (!text) return undefined
+  return text.length > 160 ? text.slice(0, 160) + "…" : text
+}
+
 /**
- * Pull external result hits (title + URL) out of a search-engine result
- * page's RAW HTML.  Dependency-free: anchor scan + noise filters (relative
- * hrefs, click trackers, engine chrome, duplicates).  Engines rearrange
- * their markup often, so the filter set is intentionally loose — callers
- * fall back to plain text extraction when the list comes back thin.
+ * Pull external result hits (title + URL [+ engine snippet when present])
+ * out of a search-engine result page's RAW HTML.  Dependency-free: anchor
+ * scan + noise filters (relative hrefs, click trackers, engine chrome,
+ * duplicates).  Engines rearrange their markup often, so the filter set is
+ * intentionally loose — callers fall back to plain text extraction when
+ * the list comes back thin.
  */
 export function extractSearchHits(
   html: string,
@@ -191,7 +230,9 @@ export function extractSearchHits(
 ): SearchHit[] {
   const hits: SearchHit[] = []
   const seen = new Set<string>()
-  for (const m of html.matchAll(ANCHOR_RE)) {
+  const anchors = [...html.matchAll(ANCHOR_RE)]
+  for (let ai = 0; ai < anchors.length; ai++) {
+    const m = anchors[ai]
     const href = decodeEntities((m[1] ?? m[2] ?? "").trim())
     if (!/^https?:\/\//i.test(href)) continue
     if (ENGINE_TRACKER_RE.test(href)) continue
@@ -211,18 +252,30 @@ export function extractSearchHits(
       /* URL parse fail: keep the hit (the anchor scan already vetted it) */
     }
     seen.add(key)
-    hits.push({ title: title.length > 110 ? title.slice(0, 110) + "…" : title, url: href })
+    // snippet window: this anchor's end up to the NEXT anchor (or 600
+    // chars) — bounded so a SERP chrome wall can't bleed in
+    const start = (m.index ?? 0) + m[0].length
+    const nextStart = ai + 1 < anchors.length ? (anchors[ai + 1].index ?? start + 600) : start + 600
+    const snippet = extractCaptionSnippet(html.slice(start, Math.min(nextStart, start + 600)))
+    hits.push({
+      title: title.length > 110 ? title.slice(0, 110) + "…" : title,
+      url: href,
+      ...(snippet ? { snippet } : {}),
+    })
     if (hits.length >= max) break
   }
   return hits
 }
 
-/** Compact numbered rendering — what actually enters the context. */
+/** Compact numbered rendering — what actually enters the context.  Carries
+ *  the engine-provided snippet (one line) and the fusion source tag when
+ *  the caller supplied them; plain title+URL otherwise. */
 export function renderSearchHits(query: string, engine: string, hits: SearchHit[]): string {
   const lines = [`[search] ${engine} × "${query}" → ${hits.length} 条结果:`]
   hits.forEach((h, i) => {
-    lines.push(`${i + 1}. ${h.title}`)
+    lines.push(`${i + 1}. ${h.source ? `[${h.source}] ` : ""}${h.title}`)
     lines.push(`   ${h.url}`)
+    if (h.snippet) lines.push(`   ${h.snippet}`)
   })
   lines.push("(读正文: tm_webfetch 结果 URL；JS 渲染页用 tm_browser 打开。)")
   return lines.join("\n")
@@ -384,7 +437,7 @@ export function extractWebResponse(raw: string, contentType: string): { text: st
 const WEBFETCH_DESCRIPTION = `Fetch a web page through the governed pipeline (domain allowlist + threshold offload) — use it for a KNOWN URL only.  For open-ended lookups use tm_search FIRST (multi-engine, extracted hit lists); never hand-build search URLs here.
 
 - ANTI-PATTERN: do NOT hand-build search-engine URLs here — that is tm_search's job (multi-engine, extracted hit lists).  Use THIS tool for a page you already know: a direct article/wiki term, a registry JSON endpoint, a raw file.
-- Seeded hosts (CN-reachable, no API keys): moegirl.org.cn (parent — all subdomains: mobile. term https://mobile.moegirl.org.cn/TERM, mzh. main site) · search.bilibili.com · cn.bing.com (search: https://cn.bing.com/search?q=QUERY; &ensearch=1 for international results) · baidu.com (parent: www. search /s?wd=QUERY, baike. encyclopedia entries) · www.sogou.com (https://www.sogou.com/web?query=QUERY) · www.so.com (https://www.so.com/s?q=QUERY) · registry.npmjs.org (package JSON: https://registry.npmjs.org/<pkg>/latest, search: https://registry.npmjs.org/-/v1/search?text=QUERY) · api.github.com (repo search: https://api.github.com/search/repositories?q=QUERY) · raw.githubusercontent.com + gist.githubusercontent.com + github.com (docs/code/issues) · ghproxy.net (mainland mirror for github raw).  URL-encode the query (CJK terms too).  Search-engine result pages are auto-extracted to a title+URL hit list.  Expand colloquial/abbreviated terms to canonical forms and fetch BOTH spellings.
+- Seeded hosts (CN-reachable, no API keys): moegirl.org.cn (parent — all subdomains: mobile. term https://mobile.moegirl.org.cn/TERM, mzh. main site) · search.bilibili.com · cn.bing.com (search: https://cn.bing.com/search?q=QUERY; &ensearch=1 for international results) · baidu.com (parent: www. search /s?wd=QUERY, baike. encyclopedia entries) · www.sogou.com (https://www.sogou.com/web?query=QUERY) · www.so.com (https://www.so.com/s?q=QUERY) · registry.npmjs.org (package JSON: https://registry.npmjs.org/<pkg>/latest, search: https://registry.npmjs.org/-/v1/search?text=QUERY) · api.github.com (repo search: https://api.github.com/search/repositories?q=QUERY) · api.stackexchange.com (question search: https://api.stackexchange.com/2.3/search/advanced?order=desc&sort=relevance&q=QUERY&site=stackoverflow&pagesize=10) · hn.algolia.com (HN story search: https://hn.algolia.com/api/v1/search?query=QUERY&tags=story) · raw.githubusercontent.com + gist.githubusercontent.com + github.com (docs/code/issues) · ghproxy.net (mainland mirror for github raw).  URL-encode the query (CJK terms too).  Search-engine result pages are auto-extracted to a title+URL hit list.  Expand colloquial/abbreviated terms to canonical forms and fetch BOTH spellings.
 - Governance: only http(s), hosts must be allowlisted (extend via TM_WEBFETCH_ALLOWED_DOMAINS, "*" opens all), redirects re-checked per hop, HTML stripped to text; output above TM_OFFLOAD_THRESHOLD tokens is offloaded to a handle — page with tm_fetch (try mode:"structure" first).
 - Governance: out-of-allowlist hosts route through the OFFICIAL confirmation dialog (approve to proceed once; the 10-min unanswered auto-reject applies); env-file URLs and non-http(s) schemes are hard-rejected with no dialog.`
 
@@ -402,11 +455,14 @@ export function buildTmWebfetchTool(deps: {
   execute: (rawArgs: Record<string, unknown>, ctx: unknown) => Promise<ToolResult>
 } {
   const { pipelines, cfg } = deps
-  const allowlist = cfg.webfetchAllowedDomains
+  // T4: the DEFAULT seed gains api.stackexchange.com + hn.algolia.com; a
+  // user-narrowed TM_WEBFETCH_ALLOWED_DOMAINS passes through untouched.
+  const allowlist = seedWebfetchDomains(cfg.webfetchAllowedDomains)
   return {
     description: WEBFETCH_DESCRIPTION,
     args: deps.args ?? {
       url: { descriptor: "url: string (required, absolute https URL on an allowlisted host, query URL-encoded)" },
+      fields: { descriptor: "fields: string (optional, dot-path projection over a JSON response body, e.g. items[].name; ignored on non-JSON)" },
     },
     execute: async (rawArgs, ctx): Promise<ToolResult> => {
       const tool = "tm_webfetch"
@@ -471,11 +527,41 @@ export function buildTmWebfetchTool(deps: {
             tmError(
               tool,
               "execute",
-              "页面内容为空——该站点可能是反爬或 JS 渲染页（baidu 常见）。换 tm_search 的其他引擎（bing/sogou/so）、用 tm_browser 打开，或直接访问数据源 URL（如 registry.npmjs.org/<pkg>/latest）。",
+              "页面内容为空——该站点可能是反爬或 JS 渲染页（baidu 常见）。换 tm_search 的其他引擎（bing/stackoverflow/hn）、用 tm_browser 打开，或直接访问数据源 URL（如 registry.npmjs.org/<pkg>/latest）。",
             ),
           )
         }
         const contentType = detectContentType(text)
+        // Wave B M2 — `fields` dot-path projection on a JSON response body.
+        // The PTC bridge advertises tm.webfetch({url, fields?}) and the
+        // direct tool surface now HONORS it (was contract-only, projection
+        // lived only in the tm_fetch handle path): a JSON body is projected
+        // through the SAME projectJsonFields pipelines' tm_fetch uses, so
+        // only the matched values ride back.  A non-JSON body — or one that
+        // no longer parses — IGNORES fields and serves the normal full text.
+        const fields = typeof args.fields === "string" ? args.fields.trim() : ""
+        if (fields && contentType === "json") {
+          const proj = projectJsonFields(text, fields, cfg.fetchMaxLines)
+          if (proj) {
+            const head = [
+              `[webfetch fields] ${shorten(res.finalUrl, 120)}`,
+              `fields: ${fields} | matched: ${proj.matched}${
+                proj.truncated ? ` | 仅前 ${cfg.fetchMaxLines} 个值（已截断）` : ""
+              }`,
+              proj.matched === 0
+                ? "投影无匹配值（路径不存在或全为 undefined）——去掉 fields 重取原始 JSON 核对键名。"
+                : "只回投影结果；取原始全文请去掉 fields 参数。",
+              "--- 投影 ---",
+            ].join("\n")
+            const projected = proj.values.length ? `${head}\n${proj.values.join("\n")}` : head
+            return toToolResult(
+              pipelines.govern(stepId, tool, projected, {
+                contentType: "text",
+                clue: `url=${shorten(res.finalUrl, 120)} fields=${shorten(fields, 60)}`,
+              }),
+            )
+          }
+        }
         return toToolResult(
           pipelines.govern(stepId, tool, text, {
             contentType,

@@ -7,13 +7,18 @@
  *   tm_bash  — read-only allowlisted shell via the host `$` bridge
  *   tm_fetch — paged/structured retrieval of offloaded payloads (handles)
  *
- * Shared governance (every tool): threshold offload (TM_OFFLOAD_THRESHOLD,
- * == threshold offloads), R6 reuse (same envprotect matchers as the global
- * hook — anti-backdoor), structured errors (never a bare throw), and store
+ * Shared governance (every tool): threshold offload (per content class:
+ * TM_OFFLOAD_THRESHOLD_TEXT for markdown/text/log prose,
+ * TM_OFFLOAD_THRESHOLD_DATA for json/csv/code/binary; an unknown/absent
+ * class falls back to the global TM_OFFLOAD_THRESHOLD — backward
+ * compatible), R6 reuse (same envprotect matchers as the global hook —
+ * anti-backdoor), structured errors (never a bare throw), and store
  * failure degradation (governance faults never fail the task).
  */
 
 import type * as crypto from "node:crypto"
+import type { Stats } from "node:fs"
+import { stat as fsStat } from "node:fs/promises"
 import { ENV_PROTECT_MESSAGE, classifyBashCommand, classifyPathFields, type EnvProtectMode } from "../envprotect.js"
 import { estimateTokens, shouldOffload, shorten, type TmConfig } from "./config.js"
 import { isExpired, parseRef as parseTmRef, verifyToken } from "./refs.js"
@@ -63,6 +68,13 @@ export interface TmDeps {
    * WRONG payload).  PTC passes "ptc-"; the main instance stays "".
    */
   stepPrefix?: string
+  /**
+   * Workspace root (the server() directory).  Fix batch T3: the ctxDir
+   * fallback when the execute ctx carries no directory — the desktop
+   * sidecar's process cwd is the user HOME, NOT the workspace, so a
+   * HOME-cwd would misresolve every relative path.
+   */
+  workspaceDir?: string
 }
 
 // ---------- pipelines ----------------------------------------------------------
@@ -70,6 +82,108 @@ export interface TmDeps {
 interface GovernOptions {
   contentType: ReturnType<typeof detectContentType>
   clue?: string
+}
+
+/** Best-effort stat — null when the path does not exist / cannot resolve. */
+async function statOrNull(p: string): Promise<Stats | null> {
+  try {
+    return await fsStat(p)
+  } catch {
+    return null
+  }
+}
+
+/**
+ * T4 threshold tiering — content class → offload boundary.
+ *   PROSE class (markdown / HTML already stripped to text / line logs)
+ *     → offloadThresholdText (literal default 4000): prose is cheap to
+ *       skim, the old 2000 boundary offloaded whole readable pages into a
+ *       handle.
+ *   DATA class (json / csv / code / binary)
+ *     → offloadThresholdData (literal default 2000 == the historical
+ *       global baseline).
+ *   Absent / unrecognized class → the global offloadThreshold (defensive
+ *   fallback; every govern call site passes a known detectContentType
+ *   result, so this branch is belt-and-braces).
+ * Wave B M1 — the global TM_OFFLOAD_THRESHOLD is NOT dead here: config.ts
+ * resolveTmConfig makes both tiers INHERIT it when it is explicitly set and
+ * the tier env is not, so a user who raised the global is honored on every
+ * class (an explicit tier env still wins).  See config.ts offloadThreshold*.
+ */
+function offloadThresholdFor(cfg: TmConfig, contentType: string | undefined): number {
+  switch (contentType) {
+    case "text":
+    case "log":
+      return cfg.offloadThresholdText
+    case "json":
+    case "csv":
+    case "code":
+    case "binary":
+      return cfg.offloadThresholdData
+    default:
+      return cfg.offloadThreshold
+  }
+}
+
+// ---------- tm_fetch json field projection (T4) ----------
+
+/**
+ * Dot-path projection over an offloaded JSON payload.  Grammar (the
+ * deliberately small jq subset): segments split on ".", each `name`,
+ * `name[]` (map into the array) or `[]` (expand the current arrays) —
+ * e.g. `items[].name`, `[].stargazers_count`, `query.pages`.  Returns null
+ * when the body is not valid JSON (the caller then IGNORES `fields` and
+ * serves the normal paged mode — non-JSON handles keep the old behavior).
+ */
+export function projectJsonFields(
+  body: string,
+  path: string,
+  cap: number,
+): { values: string[]; matched: number; truncated: boolean } | null {
+  let data: unknown
+  try {
+    data = JSON.parse(body)
+  } catch {
+    return null
+  }
+  let cur: unknown[] = [data]
+  for (const seg of path.split(".")) {
+    const s = seg.trim()
+    if (!s) continue
+    const m = /^([^[\]]*)(\[\])?$/.exec(s)
+    if (!m) return { values: [], matched: 0, truncated: false } // malformed → empty projection
+    const prop = m[1]
+    const iterate = Boolean(m[2])
+    const next: unknown[] = []
+    for (const v of cur) {
+      let picked: unknown
+      if (prop) {
+        if (v == null || typeof v !== "object") continue
+        picked = (v as Record<string, unknown>)[prop]
+      } else {
+        picked = v
+      }
+      if (iterate) {
+        if (Array.isArray(picked)) next.push(...picked)
+      } else {
+        next.push(picked)
+      }
+    }
+    cur = next
+  }
+  const values: string[] = []
+  let matched = 0
+  let truncated = false
+  for (const v of cur) {
+    if (v === undefined) continue
+    matched++
+    if (values.length >= cap) {
+      truncated = true
+      continue
+    }
+    values.push(typeof v === "string" ? v : JSON.stringify(v) ?? String(v))
+  }
+  return { values, matched, truncated }
 }
 
 export function buildPipelines(deps: TmDeps) {
@@ -86,17 +200,22 @@ export function buildPipelines(deps: TmDeps) {
 
   function ctxDir(ctx: unknown): string {
     const d = (ctx as { directory?: unknown } | null | undefined)?.directory
-    return typeof d === "string" && d ? d : process.cwd()
+    if (typeof d === "string" && d) return d
+    // fix batch T3: prefer the workspace root the runtime knows over the
+    // HOST process cwd (HOME on the desktop sidecar)
+    return deps.workspaceDir ?? process.cwd()
   }
 
   /**
-   * Threshold governance.  Inline under the threshold; otherwise store full
-   * content + append trajectory and return the handle.  A store failure
-   * degrades to truncated content + warning (never fails the task).
+   * Threshold governance.  Inline under the content-class threshold;
+   * otherwise store full content + append trajectory and return the
+   * handle.  A store failure degrades to truncated content + warning
+   * (never fails the task).
    */
   function govern(stepId: string, tool: string, content: string, opts: GovernOptions): unknown {
     const tokens = estimateTokens(content)
-    if (!shouldOffload(tokens, cfg.offloadThreshold)) {
+    const threshold = offloadThresholdFor(cfg, opts.contentType)
+    if (!shouldOffload(tokens, threshold)) {
       store.appendTrajectory({ tool, step_id: stepId, event: "result", offloaded: false, tokens })
       return content
     }
@@ -140,7 +259,7 @@ export function buildPipelines(deps: TmDeps) {
         warning:
           `结果治理（黑板卸载）失败，已降级为截断返回：${shorten((err as Error)?.message ?? err, 120)}。` +
           `治理故障不使任务失败；需要全文请重跑原工具或缩小查询范围。`,
-        content: content.slice(0, Math.max(0, cfg.offloadThreshold) * 4),
+        content: content.slice(0, Math.max(0, threshold) * 4),
         tokens_estimate: tokens,
       }
     }
@@ -164,6 +283,13 @@ export function buildPipelines(deps: TmDeps) {
         store.trajectoryRoot,
       ])
       if (!scope.ok) return tmError(tool, "permission", scope.message)
+      // m2 (fix batch): a DIRECTORY path reaches the host client as a raw
+      // 500 ("Unexpected server error. Check server logs") — pre-flight the
+      // stat so the agent gets a structured, actionable error instead.
+      const dirStat = await statOrNull(scope.abs)
+      if (dirStat?.isDirectory()) {
+        return tmError(tool, "execute", `路径是一个目录，不可读取: ${shorten(scope.abs, 200)}`)
+      }
       const client = deps.client as { file?: { read?: (req: unknown) => unknown } } | null | undefined
       if (!client || typeof client.file?.read !== "function") {
         return tmError(tool, "client", "宿主 client 不可用（client.file.read 缺失）")
@@ -207,6 +333,13 @@ export function buildPipelines(deps: TmDeps) {
           store.trajectoryRoot,
         ])
         if (!scope.ok) return tmError(tool, "permission", scope.message)
+        // m2 (fix batch, defensive): a FILE as the grep scope hits the host
+        // client as a raw 500 — reject with a clear structured error before
+        // the client call.
+        const scopeStat = await statOrNull(scope.abs)
+        if (scopeStat?.isFile()) {
+          return tmError(tool, "execute", `路径不是一个目录，不可作为 grep 范围: ${shorten(scope.abs, 200)}`)
+        }
         scopeDir = scope.abs
       }
       const client = deps.client as { find?: { text?: (req: unknown) => unknown } } | null | undefined
@@ -253,10 +386,15 @@ export function buildPipelines(deps: TmDeps) {
       }
       const stepId = nextStepId()
       store.appendTrajectory({ tool, step_id: stepId, event: "call" })
-      const output = await runShellCommand(deps.$, command)
+      // T3 (fix batch): pin the command to the workspace root — the spawn
+      // fallback inherits the HOST process cwd without it (user HOME on
+      // the desktop sidecar), so relative paths resolved outside the
+      // workspace all session.
+      const cwd = ctxDir(ctx)
+      const output = await runShellCommand(deps.$, command, cwd)
       return govern(stepId, tool, output, {
         contentType: detectContentType(output),
-        clue: `cmd=${shorten(command, 60)}, dir=${shorten(ctxDir(ctx), 80)}`,
+        clue: `cmd=${shorten(command, 60)}, dir=${shorten(cwd, 80)}`,
       })
     } catch (err) {
       const info = cleanShellError(err)
@@ -303,6 +441,32 @@ export function buildPipelines(deps: TmDeps) {
       const loaded = store.readStepFile(parsed.stepId)
       if (!loaded) {
         return tmError(tool, "store", `找不到载荷文件。${HANDLE_INVALID_MESSAGE}`)
+      }
+      // T4 json field projection — `fields: "<dot-path>"` on a json handle
+      // returns ONLY the projected values.  A non-json handle IGNORES the
+      // arg (normal paged/structure serving); a json-indexed body that no
+      // longer parses (e.g. byte-capped truncation) likewise falls through.
+      const fields = strArg(args.fields).trim()
+      const isJsonHandle = entry ? entry.content_type === "json" : true
+      if (fields && isJsonHandle) {
+        const proj = projectJsonFields(loaded.content, fields, cfg.fetchMaxLines)
+        if (proj) {
+          store.appendTrajectory({ tool, step_id: parsed.stepId, event: "fetch", ref, mode: "fields", fields })
+          // rendered as a plain string: result.ts has no "fields" branch
+          // (out of this package's scope) and JSON.stringify would escape
+          // the projected lines into one unreadable blob.
+          const head = [
+            `ref: ${ref}`,
+            `mode: fields | fields: ${fields} | matched: ${proj.matched}${
+              proj.truncated ? ` | 仅前 ${cfg.fetchMaxLines} 个值（已截断）` : ""
+            }`,
+            proj.matched === 0
+              ? `投影无匹配值（路径不存在或全为 undefined）——先 mode:"structure" 看键树。`
+              : `只回投影结果；取原始行用 mode:"lines"。`,
+            "--- 投影 ---",
+          ].join("\n")
+          return proj.values.length ? `${head}\n${proj.values.join("\n")}` : head
+        }
       }
       const lines = loaded.content.split(/\r?\n/)
       const mode = strArg(args.mode).trim() === "structure" ? "structure" : "lines"

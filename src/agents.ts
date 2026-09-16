@@ -86,8 +86,11 @@ const NEVER_ALLOWED = [
   "question",
 ] as const
 
-/** Built-ins granted per agent; every one NOT granted is denied.  todowrite
- *  and question are LEAD-ONLY grants (see the whitelist call below): the
+/** Built-ins granted per agent; every one NOT granted is denied.  task,
+ *  todowrite and question are LEAD-ONLY grants (see the whitelist calls
+ *  below): only the lead dispatches — specialists spawning sub-agents is
+ *  the nesting the T3 task-reclaim closed (architect and reviewer lost
+ *  "task"; the matrix deny is zero-bypass, live-verified T0.4③).  The
  *  lead's prompt MANDATES a todo list ("your state memory is the todo
  *  list") and batched blocking questions — denying those tools to the lead
  *  made the prompt unfulfillable; specialists answer through the lead
@@ -190,12 +193,14 @@ const architect: AgentConfig = {
     "module breakdown before implementation.",
   prompt: ARCHITECT_PROMPT,
   color: "#38BDF8", // sky blue
-  // Whitelist: tm_* x4 + task dispatch; tm_webfetch DENIED (not a network
-  // role).  Fully read-only by design (T2.1): output lives in the reply; if
-  // a board artifact is ever dispatched, the BLACKBOARD WRITE FAILED
-  // fallback hands the content to the lead inline (see Blackboard rules).
+  // Whitelist: tm_* x4 only (T3 task-reclaim: "task" DROPPED — no
+  // sub-agents for sub-agents, the lead is the only dispatcher);
+  // tm_webfetch DENIED (not a network role).  Fully read-only by design
+  // (T2.1): output lives in the reply; if a board artifact is ever
+  // dispatched, the BLACKBOARD WRITE FAILED fallback hands the content to
+  // the lead inline (see Blackboard rules).
   // No bash — unchanged from the pre-T2.1 architect bash:deny posture.
-  permission: whitelist("task"),
+  permission: whitelist(),
   temperature: 0.2,
 }
 
@@ -224,12 +229,13 @@ const reviewer: AgentConfig = {
     "any non-trivial change.",
   prompt: REVIEWER_PROMPT,
   color: "#FB923C", // orange
-  // Whitelist: tm_* x4 + task dispatch + bash; tm_webfetch DENIED (not a
-  // network role).  No edit/write (T2.1): findings travel in the reply
-  // skeleton; a dispatched board artifact rides the BLACKBOARD WRITE FAILED
+  // Whitelist: tm_* x4 + bash; tm_webfetch DENIED (not a network role).
+  // T3 task-reclaim: "task" DROPPED (only the lead dispatches).  No
+  // edit/write (T2.1): findings travel in the reply skeleton; a dispatched
+  // board artifact rides the BLACKBOARD WRITE FAILED
   // inline fallback (see Blackboard rules).  bash backs the evidence
   // standard — the reviewer must be able to run npm test / tsc itself.
-  permission: whitelist("task", "bash"),
+  permission: whitelist("bash"),
   temperature: 0.2,
 }
 

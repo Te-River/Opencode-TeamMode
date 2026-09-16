@@ -35,6 +35,9 @@ const ENV_KEYS = [
   "TM_ENV_PROTECT", "TM_ENV_PROTECT_EXTRA_DENY",
   "TM_PTC_MAX_PROGRAM_CHARS", "TM_PTC_MAX_CALLS", "TM_PTC_MAX_ERRORS",
   "TM_PTC_TIMEOUT_MS", "TM_PTC_ENGINE", "TM_WEBFETCH_ALLOWED_DOMAINS", "TM_MEMORY_GLOBAL_DIR",
+  // T4 tiering + search knobs — must be cleared so the ambient shell can
+  // never flip the DEFAULTS these tests pin (4000 text / 2000 data / auto).
+  "TM_SEARCH_DEFAULT_ENGINE", "TM_OFFLOAD_THRESHOLD_TEXT", "TM_OFFLOAD_THRESHOLD_DATA",
 ]
 const savedEnv = Object.fromEntries(ENV_KEYS.map((k) => [k, process.env[k]]))
 const clearTmEnv = () => { for (const k of ENV_KEYS) delete process.env[k] }
@@ -84,6 +87,27 @@ try {
     assert.equal(custom.offloadThreshold, 500, "threshold override")
     assert.equal(custom.blackboardDir, "D:/data/.bb", "absolute blackboard dir override")
     assert.deepEqual(custom.bashReadonlyAllowed, ["ls", "python", "rg"], "allowlist override")
+    // Wave B M1 — threshold TIER INHERITANCE from the global.  The global
+    // TM_OFFLOAD_THRESHOLD must reach prose/data too when a tier env is not
+    // explicitly set (the old bug: a user who raised the global to 8000 to
+    // save tokens still got 4000 text / 2000 json — the global was ignored
+    // for every KNOWN class).  An explicit tier env always wins.
+    assert.equal(tm.resolveTmConfig({}).offloadThresholdText, 4000, "no env: text tier = 4000 default")
+    assert.equal(tm.resolveTmConfig({}).offloadThresholdData, 2000, "no env: data tier = 2000 default")
+    const inh = tm.resolveTmConfig({ TM_OFFLOAD_THRESHOLD: "8000" })
+    assert.equal(inh.offloadThreshold, 8000, "global set: global honored")
+    assert.equal(inh.offloadThresholdText, 8000, "global set: prose tier INHERITS the global")
+    assert.equal(inh.offloadThresholdData, 8000, "global set: data tier INHERITS the global")
+    const mix = tm.resolveTmConfig({ TM_OFFLOAD_THRESHOLD: "8000", TM_OFFLOAD_THRESHOLD_TEXT: "4000" })
+    assert.equal(mix.offloadThresholdText, 4000, "explicit text tier WINS over the global")
+    assert.equal(mix.offloadThresholdData, 8000, "unset data tier still INHERITS the global")
+    const onlyData = tm.resolveTmConfig({ TM_OFFLOAD_THRESHOLD: "8000", TM_OFFLOAD_THRESHOLD_DATA: "1000" })
+    assert.equal(onlyData.offloadThresholdText, 8000, "only data set: text inherits global")
+    assert.equal(onlyData.offloadThresholdData, 1000, "only data set: explicit data wins")
+    const textNoGlobal = tm.resolveTmConfig({ TM_OFFLOAD_THRESHOLD_TEXT: "6000" })
+    assert.equal(textNoGlobal.offloadThreshold, 2000, "global unset: global = default 2000")
+    assert.equal(textNoGlobal.offloadThresholdText, 6000, "global unset + text set: text honored")
+    assert.equal(textNoGlobal.offloadThresholdData, 2000, "global unset: data keeps 2000 default (no phantom inherit)")
     // webfetch allowlist: seeded hosts (engines + data sources), env
     // override, explicit empty
     assert.deepEqual(
@@ -524,6 +548,10 @@ try {
   const jsonBig = JSON.stringify({
     user: "u".repeat(6000), items: Array.from({ length: 1000 }, (_, i) => i), total: 7,
   }) // ≈10k chars ≈ 2.5k tokens -> offloads
+  // T4 tiering: this runtime pins the TEXT class to the historical 2000
+  // baseline so the boundary matrix below keeps its ==threshold meaning;
+  // the 4000/2000 SPLIT itself is a separate §6m-t assertion set.
+  process.env.TM_OFFLOAD_THRESHOLD_TEXT = "2000"
   const runtime = await tm.createTmTools({
     directory: root6,
     client: fakeClient({
@@ -537,6 +565,7 @@ try {
     }),
     $: fake$Ok(bigPayload),
   })
+  delete process.env.TM_OFFLOAD_THRESHOLD_TEXT
   const ctx = { directory: root6 }
   const readTool = runtime.tools.tm_read
   const grepTool = runtime.tools.tm_grep
@@ -917,16 +946,187 @@ try {
   }
   console.log("6m. tm_webfetch: OK (allowlist matrix, scheme/env-file red lines, HTML strip, redirect re-check, threshold offload, structured errors, SERP auto-extraction)")
 
-  // 6m-s. tm_search — the governed search FRONT: engine table (all hosts on
-  // the seed allowlist, CN-reachable, no API keys), HTML SERP → extracted
-  // title+URL hit list, npm/github JSON → structured render, engine arg
-  // validation, empty-result → alternative engines, registration.
+  // 6m-t. T4 threshold tiering + json field projection (pipelines.ts) +
+  // T4 seed-domain merge (webfetch.ts).  The §6a runtime pinned the text
+  // class back to 2000; here the DEFAULTS are on: TEXT=4000, DATA=2000.
   {
+    const wfMod = await import("./dist/tm/webfetch.js")
+
+    // (a) content-class thresholds: 3000-token text INLINE (old code would
+    //     have offloaded), 4000-token text offloads (== boundary), and the
+    //     ~2.5k-token json STILL offloads on the data tier.
+    // P2 fail-closed: read targets must EXIST on disk (the fake client
+    // supplies the body) — drop empty stubs in root6 first.
+    for (const name of ["t3000.txt", "t4000.txt", "j2500.json"]) {
+      fs.writeFileSync(path.join(root6, name), "")
+    }
+    const runtimeT = await tm.createTmTools({
+      directory: root6,
+      client: fakeClient({
+        "t3000.txt": "a".repeat(12000), // 3000 tokens, TEXT tier 4000 -> inline
+        "t4000.txt": "a".repeat(16000), // 4000 tokens == TEXT tier -> offload
+        "j2500.json": jsonBig,          // ~2.5k tokens >= DATA tier 2000 -> offload
+      }),
+      $: fake$Ok(""),
+    })
+    const inline3 = (await runtimeT.tools.tm_read.execute({ path: "t3000.txt" }, ctx)).output
+    assert.ok(inline3.startsWith("aaaa") && !inline3.includes("已卸载"), "TEXT tier: 3000 tokens rides inline (4000 boundary)")
+    const off4 = (await runtimeT.tools.tm_read.execute({ path: "t4000.txt" }, ctx)).output
+    assert.ok(off4.includes("已卸载") && off4.includes("tokens: 4000"), "TEXT tier: == 4000 offloads (conservative boundary)")
+    const jsonOff = (await runtimeT.tools.tm_read.execute({ path: "j2500.json" }, ctx)).output
+    assert.ok(jsonOff.includes("已卸载") && jsonOff.includes("content_type: json"), "DATA tier: json >= 2000 still offloads")
+
+    // (b) fields projection on the json handle
+    const jRef = refOf(jsonOff)
+    const jTok = tokOf(jsonOff)
+    const projItems = (await runtimeT.tools.tm_fetch.execute({ ref: jRef, access_token: jTok, fields: "items[]" }, ctx)).output
+    assert.ok(projItems.includes("mode: fields") && projItems.includes("fields: items[]"), "fields mode reported")
+    assert.ok(projItems.includes("matched: 1000"), "items[] projects all 1000 array values")
+    assert.ok(/--- 投影 ---\n0\n1\n2\n/.test(projItems), "projected values in order, one per line")
+    const projUser = (await runtimeT.tools.tm_fetch.execute({ ref: jRef, access_token: jTok, fields: "user" }, ctx)).output
+    assert.ok(projUser.includes("matched: 1") && projUser.includes("uuuu"), "scalar path projects one value")
+    const projMiss = (await runtimeT.tools.tm_fetch.execute({ ref: jRef, access_token: jTok, fields: "items[].name" }, ctx)).output
+    assert.ok(projMiss.includes("matched: 0") && projMiss.includes("无匹配值"), "path with no matches -> matched 0 + structure hint (not an error)")
+    const projBad = (await runtimeT.tools.tm_fetch.execute({ ref: jRef, access_token: jTok, fields: "items[]]x" }, ctx)).output
+    assert.ok(projBad.includes("mode: fields") && projBad.includes("matched: 0"), "malformed path -> empty projection, no crash")
+    // projection REPLACES paging — only the projected values come back
+    assert.ok(!projItems.includes("uuuu"), "raw json body stays behind the handle (projection only)")
+
+    // (c) non-json handle: fields IGNORED, classic paged mode serves
+    const textOff = (await runtimeT.tools.tm_read.execute({ path: "t4000.txt" }, ctx)).output
+    const tRef = refOf(textOff)
+    const tTok = tokOf(textOff)
+    const stillLines = (await runtimeT.tools.tm_fetch.execute({ ref: tRef, access_token: tTok, fields: "items[]" }, ctx)).output
+    assert.ok(stillLines.includes("aaaa") && stillLines.includes("--- 内容 ---"), "text handle + fields -> classic lines mode (arg ignored)")
+    assert.ok(!stillLines.includes("mode: fields"), "no projection shape on a non-json handle")
+
+    // (d) T4 seed domains: merged into the DEFAULT list, never into a
+    //     user-narrowed one (config.ts itself stays the single source).
+    assert.deepEqual(wfMod.T4_SEEDED_DOMAINS.slice().sort(), ["api.stackexchange.com", "hn.algolia.com"], "T4 seeds = SO api + HN algolia")
+    const merged = wfMod.seedWebfetchDomains(tm.DEFAULT_WEBFETCH_DOMAINS)
+    assert.ok(merged.includes("api.stackexchange.com") && merged.includes("hn.algolia.com"), "default seed list gains both hosts")
+    assert.equal(tm.checkWebUrl("https://api.stackexchange.com/2.3/search/advanced?q=x", merged).ok, true, "SO api passes checkWebUrl on merged seeds")
+    assert.equal(tm.checkWebUrl("https://hn.algolia.com/api/v1/search?query=x", merged).ok, true, "HN api passes checkWebUrl on merged seeds")
+    const narrowed = wfMod.seedWebfetchDomains(["cn.bing.com"])
+    assert.deepEqual(narrowed, ["cn.bing.com"], "a narrowed allowlist is NEVER widened by the seed merge")
+    assert.equal(tm.checkWebUrl("https://api.stackexchange.com/x", ["cn.bing.com"]).askable, true, "narrowed list -> SO api routes to the dialog (askable)")
+
+    // (e) Wave B M2 — tm_webfetch HONORS `fields` on a JSON body (the PTC
+    //     bridge advertises tm.webfetch({url, fields?}); projection used to
+    //     live only in the tm_fetch handle path).  Reuses projectJsonFields.
+    {
+      const fetchJson = async () => ({
+        status: 200,
+        headers: { get: (n) => (String(n).toLowerCase() === "content-type" ? "application/json; charset=utf-8" : null) },
+        text: async () => jsonBig,
+      })
+      const fetchHtml = async () => ({
+        status: 200,
+        headers: { get: (n) => (String(n).toLowerCase() === "content-type" ? "text/html; charset=utf-8" : null) },
+        text: async () => "<html><body><p>plain prose page body for the ignore test</p></body></html>",
+      })
+      const wfJsonTool = wfMod.buildTmWebfetchTool({
+        pipelines: runtimeT.pipelines, cfg: runtimeT.config, fetchImpl: fetchJson,
+      })
+      const wfUrl = "https://registry.npmjs.org/left-pad/latest"
+      const projScalar = (await wfJsonTool.execute({ url: wfUrl, fields: "user" }, ctx)).output
+      assert.ok(projScalar.includes("webfetch fields") && projScalar.includes("matched: 1") && projScalar.includes("uuuu"), "webfetch fields: scalar path projects one value")
+      assert.ok(!projScalar.includes("--- 内容 ---"), "webfetch fields: projection REPLACES the raw JSON body")
+      const projArr = (await wfJsonTool.execute({ url: wfUrl, fields: "items[]" }, ctx)).output
+      assert.ok(projArr.includes("fields: items[]") && projArr.includes("matched: 1000"), "webfetch fields: array path projects every element")
+      const projEmpty = (await wfJsonTool.execute({ url: wfUrl, fields: "no.such.path" }, ctx)).output
+      assert.ok(projEmpty.includes("matched: 0"), "webfetch fields: missing path -> matched 0, not an error")
+      // non-JSON body: fields IGNORED, the stripped text path serves normally
+      const wfHtmlTool = wfMod.buildTmWebfetchTool({
+        pipelines: runtimeT.pipelines, cfg: runtimeT.config, fetchImpl: fetchHtml,
+      })
+      const htmlWithFields = (await wfHtmlTool.execute({ url: wfUrl, fields: "items[]" }, ctx)).output
+      assert.ok(htmlWithFields.includes("plain prose page body"), "webfetch fields: non-JSON ignores fields, serves page text")
+      assert.ok(!htmlWithFields.includes("webfetch fields"), "webfetch fields: no projection shape on a non-JSON body")
+    }
+    assert.ok(merged.length === tm.DEFAULT_WEBFETCH_DOMAINS.length + 2, "merge adds exactly two hosts")
+  }
+  console.log("6m-t. T4 tiering + projection: OK (4000/2000 split boundaries, json fields projection incl. miss/malformed, non-json ignores fields, tm_webfetch honors fields on a JSON body + ignores it on non-JSON, seed merge default-only)")
+
+  // 6m-s. tm_search — the governed search FRONT (T4 upgrade): the engine
+  // roster is bing + stackoverflow + hn + github + npm + moegirl + bilibili
+  // (dead CN SERPs sogou/so/baidu/bing-int REMOVED, not even manually
+  // selectable), engine:"auto" (the new default) classifies + fans out +
+  // RRF-fuses, hits keep engine-provided snippets (never fabricated), CJK
+  // multi-word queries get phrase protection, github qualifiers pass
+  // through whitelisted, every engine host rides the merged seed allowlist.
+  {
+    const sm = await import("./dist/tm/search.js")
+    const searchModResetQuota = sm.resetSoQuota
+    searchModResetQuota() // quota state must not leak from earlier blocks
     const reg = runtime.tools.tm_search
     assert.ok(reg && typeof reg.execute === "function", "tm_search registered on the runtime tool surface")
 
-    // engine table sanity: every buildUrl host is allowlisted by the seeds
-    const seeds = tm.DEFAULT_WEBFETCH_DOMAINS
+    // unit: classification + routes + guards (no network)
+    assert.deepEqual(
+      sm.SEARCH_ENGINE_NAMES.slice().sort(),
+      ["bilibili", "bing", "github", "hn", "moegirl", "npm", "stackoverflow"],
+      "engine roster = 7 (dead engines removed, SO + HN added)",
+    )
+    for (const dead of ["sogou", "so", "baidu", "bing-int"]) {
+      assert.equal(sm.SEARCH_ENGINES[dead], undefined, `dead engine ${dead} fully removed (not manually selectable)`)
+    }
+    assert.equal(sm.SEARCH_ENGINES["auto"], undefined, "auto is a routing selector, not a table entry")
+    // Wave B M1 anti-drift: the MODEL-VISIBLE tm_search args schema (built in
+    // args-schema.ts, injected as deps.args so search.ts's fallback never
+    // fires in production) must name EXACTLY the live engine table — a
+    // hand-written copy once went stale (kept dead bing-int/sogou/so/baidu,
+    // dropped stackoverflow/hn/auto, lied "default bing").
+    {
+      const asMod = await import("./dist/tm/args-schema.js")
+      const sArgs = await asMod.buildSearchArgsSchema()
+      const engDesc = sArgs.engine?.description ?? sArgs.engine?.descriptor ?? ""
+      for (const live of [...sm.SEARCH_ENGINE_NAMES, "auto"]) {
+        assert.ok(
+          new RegExp(`(^|[|(,\\s])${live}([|,\\s)]|$)`).test(engDesc),
+          `args descriptor names the live engine "${live}"`,
+        )
+      }
+      for (const dead of ["bing-int", "sogou", "baidu"]) {
+        assert.ok(!engDesc.toLowerCase().includes(dead.toLowerCase()), `args descriptor no longer names dead engine "${dead}"`)
+      }
+      assert.match(engDesc, /default auto/, "args descriptor states the real default (auto)")
+    }
+    assert.equal(sm.classifyQuery("ERR_MODULE_NOT_FOUND 加载失败"), "error-code", "ERR_ token -> error-code (wins over CJK)")
+    assert.equal(sm.classifyQuery("useEffect cleanup runs twice"), "error-code", "camelCase API name -> error-code")
+    assert.equal(sm.classifyQuery("new framework release notes"), "dev-ecosystem", "ecosystem vocab -> dev-ecosystem")
+    assert.equal(sm.classifyQuery("初音未来演唱会"), "cjk", "CJK natural language -> cjk")
+    assert.equal(sm.classifyQuery("best coffee in Paris"), "general", "plain query -> general")
+    assert.deepEqual(
+      sm.resolveAutoRoutes("new framework release"),
+      { routes: ["hn", "github", "npm"], queryClass: "dev-ecosystem", notes: [] },
+      "dev-ecosystem fan-out set",
+    )
+    assert.deepEqual(sm.resolveAutoRoutes("初音未来").routes, ["bing"], "cjk routes to bing alone")
+    // CJK phrase protection: core = the most-CJK token, quoted; passthrough
+    // cases stay byte-exact (single word / already quoted / <2 CJK chars).
+    assert.equal(sm.protectCjkPhrase("开源 大模型 推理框架"), '开源 大模型 "推理框架"', "core CJK phrase auto-quoted")
+    assert.equal(sm.protectCjkPhrase("大模型"), "大模型", "single token untouched")
+    assert.equal(sm.protectCjkPhrase('已加 "引号" 的查询'), '已加 "引号" 的查询', "user quoting respected")
+    assert.equal(sm.protectCjkPhrase("a 大 b"), "a 大 b", "1-char CJK token not phrase-able")
+    // github qualifier folding: whitelisted qualifiers move into q= after the
+    // free text; non-whitelisted (owner:) stays plain free text.
+    const folded = sm.foldGithubQualifiers("stars:>1 v org:x db language:go owner:me")
+    assert.deepEqual(folded.qualifiers, ["stars:>1", "org:x", "language:go"], "whitelisted qualifiers extracted")
+    assert.equal(folded.q, "v db owner:me stars:>1 org:x language:go", "free text first, qualifiers folded")
+    assert.equal(sm.dedupeKey("https://WWW.Example.com/a/b/?x=1#frag"), "example.com/a/b", "dedupe key = host+path, query/frag/www/slash stripped")
+    const fusedUnit = sm.fuseRrf([
+      { engine: "bing", hits: [{ title: "A", url: "https://example.com/a" }, { title: "B", url: "https://example.com/b" }] },
+      { engine: "stackoverflow", hits: [{ title: "C", url: "https://example.com/c" }, { title: "A dup", url: "https://www.example.com/a/" }] },
+    ])
+    assert.deepEqual(fusedUnit.map((h) => h.title), ["A", "C", "B"], "weighted RRF: deduped A (bing r0 + SO r1) tops, then SO r0 C, then bing r1 B")
+    assert.equal(fusedUnit[0].source, "bing+stackoverflow", "deduped hit carries merged sources")
+    assert.deepEqual(fusedUnit.map((h) => h.rank), [1, 2, 3], "fused ranks are 1-based")
+
+    // engine table sanity: every buildUrl host is allowlisted by the
+    // T4-MERGED seeds (api.stackexchange.com + hn.algolia.com included)
+    const wfSeeds = (await import("./dist/tm/webfetch.js")).seedWebfetchDomains(tm.DEFAULT_WEBFETCH_DOMAINS)
+    const seeds = wfSeeds
     for (const key of tm.SEARCH_ENGINE_NAMES) {
       const eng = tm.SEARCH_ENGINES[key]
       assert.ok(eng && typeof eng.buildUrl === "function", `engine ${key} defined`)
@@ -935,12 +1135,13 @@ try {
       assert.ok(tm.checkWebUrl(u.toString(), seeds).ok, `engine ${key} url passes checkWebUrl`)
     }
     assert.deepEqual(
-      tm.SEARCH_ENGINE_NAMES.sort(),
-      ["baidu", "bilibili", "bing", "bing-int", "github", "moegirl", "npm", "so", "sogou"],
-      "engine roster = 9 CN-reachable sources",
+      tm.SEARCH_ENGINE_NAMES.slice().sort(),
+      ["bilibili", "bing", "github", "hn", "moegirl", "npm", "stackoverflow"],
+      "engine roster via the index re-export",
     )
 
-    // HTML SERP extraction through the registered tool (bing b_algo shape)
+    // HTML SERP extraction through the registered tool (bing b_algo shape;
+    // the THIRD hit carries a b_caption -> snippet, the first two do NOT)
     const realFetch = globalThis.fetch
     const res200 = (body, ctype = "text/html; charset=utf-8") => {
       const enc = new TextEncoder().encode(body)
@@ -962,6 +1163,7 @@ try {
       <li class="b_algo"><h2><a href="https://example.org/great-result">Great result about 测试</a></h2><p>snippet one</p></li>
       <li class="b_algo"><h2><a href="https://cn.bing.com/ck/a?u=aHR0">tracked ad</a></h2><p>ad</p></li>
       <li class="b_algo"><h2><a href="https://example.net/second">Second hit</a></h2><p>snippet two</p></li>
+      <li class="b_algo"><h2><a href="https://example.org/captioned">Captioned hit 测试</a></h2><div class="b_caption"><p class="b_lineclamp2">This caption rides along &amp; decodes</p></div></li>
       <a href="https://cn.bing.com/search?q=x&amp;first=2">下一页</a>
       <a href="/images">Images</a>
     </body></html>`
@@ -985,44 +1187,130 @@ try {
         ],
       },
     })
+    // stackoverflow api.search/advanced shape — the FIRST item deliberately
+    // collides with bing's great-result URL (fusion dedupe pin); quota
+    // fields ride every response.
+    const soHealthy = JSON.stringify({
+      items: [
+        { title: "SO great question 测试", link: "https://example.org/great-result", score: 42, answer_count: 3, is_answered: true, tags: ["javascript", "react", "hooks", "extra"] },
+        { title: "SO only question", link: "https://example.io/so-only", score: 1, answer_count: 0, is_answered: false, tags: ["css"] },
+      ],
+      total: 2,
+      quota_remaining: 298,
+      quota_max: 300,
+    })
+    let soBody = soHealthy
+    const soZero = JSON.stringify({
+      items: [{ title: "SO listing after exhaustion", link: "https://example.io/so-zero", score: 0, answer_count: 0, is_answered: false, tags: [] }],
+      total: 1,
+      quota_remaining: 0,
+      quota_max: 300,
+    })
+    const hnJson = JSON.stringify({
+      hits: [
+        { title: "Show HN: Vector db in Rust", url: "https://example.org/hn-post", points: 120, num_comments: 45, objectID: "41", created_at: "2026-01-02T03:04:05Z" },
+        { title: "Ask HN: Hiring thread", url: null, points: 30, num_comments: 20, objectID: "42", created_at: "2026-02-01T00:00:00Z" },
+      ],
+      nbHits: 2,
+    })
+    const reqUrls = []
     globalThis.fetch = async (input) => {
       const url = String(input)
+      reqUrls.push(url)
       if (url.includes("bing.com/search")) return res200(bingSerp)
       if (url.includes("registry.npmjs.org/-/v1/search")) return res200(npmJson, "application/json")
       if (url.includes("api.github.com/search")) return res200(ghJson, "application/json")
       if (url.includes("mobile.moegirl.org.cn/api.php")) return res200(mwJson, "application/json")
-      if (url.includes("sogou.com")) return res200("<html><body></body></html>")
+      if (url.includes("api.stackexchange.com")) return res200(soBody, "application/json")
+      if (url.includes("hn.algolia.com")) return res200(hnJson, "application/json")
       return res200("<html></html>")
     }
     try {
-      const bing = await reg.execute({ query: "测试 q" }, ctx)
+      // engine:"auto" is the DEFAULT (cfg.searchDefaultEngine="auto"):
+      // a CJK query routes to bing alone, hits carry source tags.
+      const autoCjk = await reg.execute({ query: "测试 q" }, ctx)
+      assert.ok(autoCjk.output.includes('auto→bing × "测试 q"'), "auto default: CJK query -> bing-only route, header names it")
+      assert.ok(autoCjk.output.includes("[bing] Great result about 测试"), "auto hits are source-tagged")
+
+      // explicit bing — plain title+URL list (no auto labeling)
+      const bing = await reg.execute({ query: "测试 q", engine: "bing" }, ctx)
       assert.ok(bing.output.includes("[search] bing × \"测试 q\""), "search header carries engine + raw query")
       assert.ok(bing.output.includes("Great result about 测试") && bing.output.includes("https://example.org/great-result"), "hit title+url extracted")
       assert.ok(!bing.output.includes("cn.bing.com/ck"), "click-tracker anchor excluded")
       assert.ok(!bing.output.includes("下一页") && !bing.output.includes("/images"), "engine chrome anchors excluded")
       assert.ok(bing.output.includes("2. Second hit"), "hits are numbered")
-      assert.ok(!bing.output.includes("snippet one"), "raw SERP snippets NOT inlined (hit list, not page dump)")
+      assert.ok(!bing.output.includes("snippet one"), "plain <p> chrome NOT fabricated as a snippet")
+      assert.ok(bing.output.includes("3. Captioned hit 测试") && bing.output.includes("This caption rides along & decodes"), "bing b_caption kept as the hit snippet (entities decoded)")
+
+      // CJK phrase protection on the wire: the core phrase reaches bing quoted
+      reqUrls.length = 0
+      await reg.execute({ query: "开源 大模型 推理框架", engine: "bing" }, ctx)
+      const cjkQ = new URL(reqUrls.find((u) => u.includes("bing.com/search"))).searchParams.get("q")
+      assert.equal(cjkQ, '开源 大模型 "推理框架"', "multi-word CJK query hits bing with its core phrase quoted")
+
+      // github qualifier pass-through on the wire (whitelisted only, reordered
+      // after the free text which stays free text)
+      reqUrls.length = 0
+      const gh = await reg.execute({ query: "repo stars:>500 language:rust org:redis", engine: "github" }, ctx)
+      const ghQ = new URL(reqUrls.find((u) => u.includes("api.github.com/search"))).searchParams.get("q")
+      assert.equal(ghQ, "repo stars:>500 language:rust org:redis", "github q= = free text + folded qualifiers")
+      assert.ok(gh.output.includes("owner/repo ★4321 — A repo"), "github JSON → owner/repo ★stars — desc")
+      assert.ok(gh.output.includes("https://github.com/owner/repo"), "github hit links to the repo page")
 
       const npm = await reg.execute({ query: "left pad", engine: "npm" }, ctx)
       assert.ok(npm.output.includes("left-pad@1.3.0 — String left pad"), "npm JSON → name@version + description")
       assert.ok(npm.output.includes("https://registry.npmjs.org/left-pad/latest"), "npm hit links to the registry metadata URL")
-
-      const gh = await reg.execute({ query: "repo", engine: "github" }, ctx)
-      assert.ok(gh.output.includes("owner/repo ★4321 — A repo"), "github JSON → owner/repo ★stars — desc")
-      assert.ok(gh.output.includes("https://github.com/owner/repo"), "github hit links to the repo page")
 
       const mw = await reg.execute({ query: "初音", engine: "moegirl" }, ctx)
       assert.ok(mw.output.includes('[search] moegirl × "初音" → 42 条词条'), "moegirl MediaWiki API → header with totalhits")
       assert.ok(mw.output.includes("1. 初音未来 — 虚拟歌手 Hatsune Miku"), "moegirl hit: title + tag-stripped snippet")
       assert.ok(mw.output.includes(`https://mobile.moegirl.org.cn/${encodeURIComponent("初音未来")}`), "moegirl hit links to the article URL")
 
+      // stackoverflow explicit: metadata composite snippet + quota tracking
+      const so = await reg.execute({ query: "react hook cleanup", engine: "stackoverflow" }, ctx)
+      assert.ok(so.output.includes('[search] stackoverflow × "react hook cleanup"'), "SO header with raw query")
+      assert.ok(so.output.includes("score 42 · 3 回答 · 已采纳 · tags: javascript, react, hooks"), "SO snippet synthesized from score/answers/tags (engine metadata)")
+      assert.ok(so.output.includes("298/300"), "SO quota footer reflects quota_remaining")
+      assert.equal(sm.SO_QUOTA.remaining, 298, "quota tracked from the response")
+      assert.equal(sm.SO_QUOTA.exhausted, false, "remaining>0 keeps SO routable")
+
+      // HN explicit: points/comments snippet, URL-less story falls to the
+      // item page (engine-provided objectID, not fabricated)
+      const hn = await reg.execute({ query: "vector db", engine: "hn" }, ctx)
+      assert.ok(hn.output.includes("1. Show HN: Vector db in Rust — 120 分 · 45 评论 · 2026-01-02"), "HN metadata snippet from engine fields")
+      assert.ok(hn.output.includes("https://example.org/hn-post"), "HN hit keeps the story URL")
+      assert.ok(hn.output.includes("https://news.ycombinator.com/item?id=42"), "Ask HN (null url) links to its comment page via objectID")
+
+      // SO quota exhaustion -> auto degrades the SO leg to bing
+      soBody = soZero
+      const so0 = await reg.execute({ query: "boom", engine: "stackoverflow" }, ctx)
+      assert.ok(so0.output.includes("已耗尽"), "quota_remaining=0 surfaces the exhausted notice (explicit call still served)")
+      assert.equal(sm.SO_QUOTA.exhausted, true, "exhaustion latched")
+      soBody = JSON.stringify({ items: [], total: 0 }) // SO 空转，降级路径不再取它
+      const autoErr = await reg.execute({ query: "ERR_CONNECTION_REFUSED 连接失败" }, ctx)
+      assert.ok(autoErr.output.includes("配额耗尽"), "auto notes the stackoverflow→bing degrade")
+      assert.ok(!autoErr.output.includes("[stackoverflow]"), "degraded auto carries no SO hits")
+      assert.ok(autoErr.output.includes("[bing]"), "auto degrade still lands bing hits")
+      searchModResetQuota()
+      soBody = soHealthy
+
+      // auto RRF fusion e2e: error-code query -> SO+github+bing fan-out,
+      // the SO/bing URL collision dedupes to ONE merged-source hit on top.
+      const fused = await reg.execute({ query: "TypeError fetch failed ERR_TYPE", engine: "auto" }, ctx)
+      assert.ok(fused.output.includes("RRF 融合"), "multi-route fusion header")
+      assert.ok(fused.output.includes("路由 stackoverflow+github+bing"), "routes named in the header")
+      assert.equal((fused.output.match(/example\.org\/great-result/g) || []).length, 1, "host+path collision deduped across engines")
+      assert.ok(fused.output.includes("[stackoverflow+bing]"), "deduped hit tags BOTH contributing sources")
+      assert.ok(fused.output.indexOf("stackoverflow+bing") < fused.output.indexOf("[stackoverflow]"), "merged top hit outranks single-source hits")
+      assert.ok(fused.output.includes("[github] owner/repo"), "github leg fused in with its source tag")
+
       const unknown = await reg.execute({ query: "x", engine: "yahoo" }, ctx)
-      assert.ok(unknown.output.includes("phase=args") && unknown.output.includes("未知引擎") && unknown.output.includes("bing"), "unknown engine → args error with roster")
+      assert.ok(unknown.output.includes("phase=args") && unknown.output.includes("未知引擎") && unknown.output.includes("auto") && unknown.output.includes("bing"), "unknown engine → args error naming auto + roster")
       const noq = await reg.execute({}, ctx)
       assert.ok(noq.output.includes("phase=args") && noq.output.includes("缺少 query"), "missing query → args error")
-      const empty = await reg.execute({ query: "whatever", engine: "sogou" }, ctx)
+      const empty = await reg.execute({ query: "whatever", engine: "bilibili" }, ctx)
       assert.ok(
-        empty.output.includes("没有返回可提取的结果") && empty.output.includes("bing / so / baidu"),
+        empty.output.includes("没有返回可提取的结果") && empty.output.includes("bing"),
         "thin SERP → switch-engine hint with alternatives",
       )
     } finally {
@@ -1087,7 +1375,7 @@ try {
     const unit = tm.extractSearchHits(`<a href='https://example.com/a&amp;b'>A &amp; B research</a>`)
     assert.ok(unit.length === 1 && unit[0].url === "https://example.com/a&b" && unit[0].title === "A & B research", "extractor: single-quote href + entity decode")
   }
-  console.log("6m-s. tm_search: OK (9-engine table allowlisted, SERP → hit list, trackers/chrome + hit-domain blacklist (maimai.cn, so.com/link?, ai.so.com, env-extensible), npm/github/moegirl structured, switch-engine hint, args-phase validation)")
+  console.log("6m-s. tm_search: OK (T4 roster: dead engines gone, SO+HN in, auto default w/ RRF fusion + dedupe + SO-quota degrade, args-schema descriptor derived from the live engine table (anti-drift), snippets engine-kept never fabricated, CJK phrase guard, github qualifier pass-through, trackers/chrome + hit-domain blacklist (maimai.cn, so.com/link?, ai.so.com, env-extensible), npm/github/moegirl structured, switch-engine hint, args-phase validation)")
 
   // 6p. PARALLEL SAFETY — the host may Promise.all a batch of tool calls;
   // tm_search / tm_webfetch / tm_fetch executes must never cross-
@@ -1121,13 +1409,41 @@ try {
       const m = /tag-([a-z0-9-]+)/.exec(url)
       const tag = m ? m[1] : "untagged"
       if (url.includes("moegirl.org.cn")) return encRes(`<html><body>${bigTag(tag)}</body></html>`)
+      if (url.includes("api.stackexchange.com")) {
+        return encRes(
+          JSON.stringify({
+            items: [
+              { title: `First hit for ${tag}`, link: `https://example.org/${tag}-r1`, score: 5, answer_count: 2, is_answered: true, tags: ["js"] },
+              { title: `Second hit for ${tag}`, link: `https://example.net/${tag}-r2`, score: 1, answer_count: 0, is_answered: false, tags: [] },
+            ],
+            total: 2,
+            quota_remaining: 250,
+            quota_max: 300,
+          }),
+          "application/json",
+        )
+      }
+      if (url.includes("hn.algolia.com")) {
+        return encRes(
+          JSON.stringify({
+            hits: [
+              { title: `First hit for ${tag}`, url: `https://example.org/${tag}-r1`, points: 9, num_comments: 2, objectID: "1", created_at: "2026-03-04T00:00:00Z" },
+              { title: `Second hit for ${tag}`, url: `https://example.net/${tag}-r2`, points: 1, num_comments: 0, objectID: "2", created_at: "2026-03-05T00:00:00Z" },
+            ],
+            nbHits: 2,
+          }),
+          "application/json",
+        )
+      }
       return encRes(
         `<html><body><li><h2><a href="https://example.org/${tag}-r1">First hit for ${tag}</a></h2></li>` +
           `<li><h2><a href="https://example.net/${tag}-r2">Second hit for ${tag}</a></h2></li></body></html>`,
       )
     }
     try {
-      const engines = ["bing", "bing-int", "sogou", "so"]
+      // T4 roster: bing + bilibili (html) and stackoverflow + hn (json) —
+      // the parallel-safety proof survives the engine-table rework.
+      const engines = ["bing", "bilibili", "stackoverflow", "hn"]
       const calls = [
         ...engines.map((e) => runtime.tools.tm_search.execute({ query: `probe tag-${e}`, engine: e }, ctx)),
         runtime.tools.tm_webfetch.execute({ url: "https://mobile.moegirl.org.cn/tag-wf-a?tag=wf-a" }, ctx),
@@ -1573,14 +1889,46 @@ try {
     const defLabel = tm.parsePtcArgs({ program: "return 1" }, cfg)
     assert.equal(defLabel.ok, true, "valid program")
     assert.equal(defLabel.args.label, "ptc-run", "default label")
-    console.log("9c. arg schema: OK (length cap, blank reject, label trunc/default)")
+    // Wave B Minor② — budgets REJECT unknown keys (loud validation). A typo
+    // like max_call (missing the s) used to slip past the type + per-field
+    // checks and silently resolve to the ceiling default; now it is a hard
+    // args error that NAMES the offending key and the legal set.
+    const typoBudgets = tm.parsePtcArgs({ program: "return 1", budgets: { max_call: 3 } }, cfg)
+    assert.equal(typoBudgets.ok, false, "budgets unknown key (max_call) is REJECTED, not silently defaulted")
+    assert.equal(typoBudgets.error.error.phase, "args", "unknown budget key -> args-phase error")
+    assert.ok(typoBudgets.error.error.message.includes("max_call"), "the unknown key is NAMED in the error")
+    assert.ok(typoBudgets.error.error.message.includes("max_calls") && typoBudgets.error.error.message.includes("timeout_ms"), "the legal key set is named")
+    const okBudgets = tm.parsePtcArgs({ program: "return 1", budgets: { max_calls: 3, max_errors: 1, timeout_ms: 8000 } }, cfg)
+    assert.equal(okBudgets.ok, true, "all-legal budgets keys still pass")
+    assert.deepEqual(okBudgets.args.budgets.setByUser, ["max_calls", "max_errors", "timeout_ms"], "legal keys resolve + tracked")
+    console.log("9c. arg schema: OK (length cap, blank reject, label trunc/default, budgets reject unknown key w/ legal-set hint)")
 
     // static pre-scan (the FIRST gate — wired into runPtc + the tool since M2)
     assert.equal(tm.staticPscan("const x=await tm.read({})").rejected, false, "clean program passes pscan")
     assert.equal(tm.staticPscan("require('fs')").rejected, true, "require caught by pscan")
     assert.equal(tm.staticPscan("process.exit(1)").rejected, true, "process caught by pscan")
     assert.ok(tm.staticPscan("globalThis.x").tokens.includes("globalThis"), "globalThis token reported")
-    console.log("9d. staticPscan: OK (writes + detects banned tokens; run path unaffected in M1)")
+    // T6/C1: the pre-scan strips string / comment / regex-literal / template-
+    // TEXT bodies first, so a grep pattern (or comment) that merely MENTIONS a
+    // banned word is DATA, not an executable escape.  But a template's ${...}
+    // INTERPOLATION is executed, so it is RETAINED and scanned (the old stripper
+    // deleted the whole template and missed `x ${require(...)} y`).
+    // executable tokens (outside any literal) are still caught.
+    assert.equal(tm.stripNonExecutable('tm.grep({ pattern: "require|process" })'), 'tm.grep({ pattern:   })', "strip replaces the string body with a single space")
+    assert.equal(tm.staticPscan('return await tm.grep({ pattern: "require|process|globalThis|fs" })').rejected, false, "banned words INSIDE a search-pattern string do not reject")
+    assert.equal(tm.staticPscan('`see the require docs for process`').rejected, false, "banned words in template TEXT do not reject")
+    assert.equal(tm.staticPscan('const msg = `x ${ process.exit(1) } y`').rejected, true, "C1: a banned call inside a ${...} INTERPOLATION is now scanned (old stripper deleted it)")
+    assert.ok(tm.staticPscan('`${ require("fs") }`').tokens.includes("require"), "require inside an interpolation is reported")
+    assert.equal(tm.staticPscan('const o = { pattern: /\\brequire\\b/ }; return o').rejected, false, "C1: a regex LITERAL naming a banned word is data, not an escape (false-positive fixed)")
+    assert.ok(tm.staticPscan('return tm.read.constructor("x")').tokens.includes("constructor("), "constructor( escape call-site token")
+    assert.ok(tm.staticPscan('return eval("1")').tokens.includes("eval("), "eval( escape call-site token")
+    assert.ok(tm.staticPscan('return Function("x")()').tokens.includes("Function("), "Function( escape call-site token")
+    assert.equal(tm.staticPscan("// use require() or process.exit here\nreturn 1").rejected, false, "banned words in a line comment do not reject")
+    assert.equal(tm.staticPscan("/* require, process, globalThis */ return 1").rejected, false, "banned words in a block comment do not reject")
+    assert.equal(tm.staticPscan("/* unterminated require").rejected, true, "unterminated comment tail still scanned (fail-closed)")
+    assert.equal(tm.staticPscan('const s = "a \\" require b"; return s').rejected, false, "escaped quote inside a string does not end it early")
+    assert.equal(tm.staticPscan('require(process.argv)').rejected, true, "real executable require+process still rejected")
+    console.log("9d. staticPscan: OK (executable-only scan strips string/template/comment; real tokens still caught)")
 
     // run helper (mock bridge — never touches a real client)
     const engine = () => new tm.InlineSequentialEngine()
@@ -1637,13 +1985,28 @@ try {
         assert.equal(to.okCount, 2, "produced steps before the timeout are retained")
       }
 
-      // engine-error: the program throws (not a budget stop, not a sandbox fault)
+      // engine-error: the program throws on the M1 legacy MAIN-thread engine
+      // (which does not tag program faults — the driver sees a raw reject).
       {
         const ee = await runWith('throw new Error("boom")', { call: async () => ({ ok: true, data: "x" }) }, MAX)
-        assert.equal(ee.status, "engine-error", "program throw -> engine-error")
+        assert.equal(ee.status, "engine-error", "legacy inline engine: throw -> engine-error")
         assert.equal(ee.returned, false, "no return value captured")
         assert.ok(ee.engineError && /boom/.test(ee.engineError.message), "engine error message kept")
         assert.equal(ee.engineError.phase, "execute", "engine error phase tagged execute")
+      }
+
+      // SIXTH status — program-error: on a SANDBOXED engine (InlineVmEngine) a
+      // program throw is tagged PtcProgramError by the engine -> "program-error"
+      // (NOT engine-error), and auto mode must NOT re-run it.
+      {
+        const pe = await tm.runPtc({
+          program: 'throw new Error("boom-prog")', label: "t", budgets: MAX,
+          parentStepId: "s0007", cfg, engine: new tm.InlineVmEngine(5000),
+          bridge: { call: async () => ({ ok: true, data: "x" }) },
+        })
+        assert.equal(pe.status, "program-error", "sandboxed engine: program throw -> program-error (sixth status)")
+        assert.equal(pe.degraded, false, "program-error never auto-degrades")
+        assert.ok(pe.engineError && /boom-prog/.test(pe.engineError.message), "program-error keeps the message")
       }
 
       // retry <=1 on an idempotent phase, then success; retries counted, no err row
@@ -1688,7 +2051,7 @@ try {
         assert.equal(dr.errCount, 1, "the error step is recorded")
       }
     }
-    console.log("9e. five statuses: OK (ok, stopped-call-budget, stopped-error-budget, timeout, engine-error) + retry-once")
+    console.log("9e. six statuses: OK (ok, stopped-call-budget, stopped-error-budget, timeout, engine-error [legacy inline], program-error [sandboxed]) + retry-once")
 
     // 9f. composite step number survives REF_PATTERN + STEP_FILE, handle parses
     {
@@ -1762,12 +2125,27 @@ try {
       assert.equal(tm.PTC_ERR_SECTION, "-- 错误分部（全量错误已落 run store）", "err section const verbatim")
       assert.equal(tm.PTC_ERR_HEADER, " #  tool      phase      line  retry  message(截断)", "err header const verbatim")
       assert.match(L[1], /^steps=1 ok=1 err=0 retries=0 ms=\d+ {2}engine=inline$/, "metrics line verbatim (two spaces before engine)")
-      assert.equal(L[2], tm.PTC_OK_SECTION, "ok section present at line2")
-      assert.equal(L[3], tm.PTC_OK_HEADER, "ok header at line3")
-      assert.match(L[4], /^ 1 {2}tm_read.*inline$/, "success row: seq + tool + inline dest")
+      // T6: the budgets echo line (T1 fix) now sits between the metrics line
+      // and the ok section, so the "line2" pin is WRONG — locate by content.
+      assert.match(L[2], /^budgets: calls≤10 err≤3 to=60000ms \(defaults\)$/, "budgets echo line (all defaults) sits at line2")
+      const okSec = L.indexOf(tm.PTC_OK_SECTION)
+      assert.ok(okSec >= 0, "ok section present")
+      assert.equal(L[okSec + 1], tm.PTC_OK_HEADER, "ok header right after the section")
+      assert.match(L[okSec + 2], /^ 1 {2}tm_read.*inline$/, "success row: seq + tool + inline dest after header")
       assert.ok(text.includes(tm.PTC_ERR_SECTION), "err section present even with no errors")
       assert.ok(text.includes(tm.PTC_ERR_HEADER), "err header present")
       assert.ok(text.includes(tm.PTC_RETURN_PREFIX + "1"), "return value line")
+      // T6 budgets provenance echo: an over-ceiling call is shown CLAMPED (the
+      // operator sees the squeeze, not just the final number), and a tightened
+      // one is shown as custom with the field named.
+      const clampedRun = await runWith(
+        'return 1', { call: async () => ({ ok: true, data: "x" }) },
+        { ...tm.resolvePtcBudgetsDetailed(cfg, { max_calls: 9999, max_errors: 1 }).budgets, setByUser: ["max_calls", "max_errors"], clamped: ["max_calls"] },
+      )
+      const clampedText = tm.renderPtcSummary(clampedRun).split("\n").find((l) => l.startsWith("budgets:"))
+      assert.ok(clampedText.includes("CLAMPED: max_calls"), "over-ceiling field flagged CLAMPED")
+      assert.ok(clampedText.includes("custom: max_calls, max_errors"), "user-set fields named")
+      assert.ok(!clampedText.includes("CLAMPED: max_errors"), "non-clamped set field not flagged")
       // an offloaded success row shows the ref short code
       const oc2 = await runWith(
         'await tm.bash({ command: "ls" }); return 1',
@@ -1789,6 +2167,17 @@ try {
       const eeText = tm.renderPtcSummary(ee)
       assert.ok(/status=engine-error$/.test(eeText.split("\n")[0]), "engine-error status in header")
       assert.ok(eeText.includes("tm_ptc_run") && eeText.includes("kaboom"), "engine-error row lists program + message")
+      assert.ok(eeText.includes("引擎错误"), "engine fault renders the 引擎错误 label")
+      // program-error row renders the DISTINCT 程序错误 label (T6 six-state)
+      const peRun = await tm.runPtc({
+        program: 'throw new Error("prog-oom")', label: "t", budgets: MAX,
+        parentStepId: "s0007", cfg, engine: new tm.InlineVmEngine(5000),
+        bridge: { call: async () => ({ ok: true, data: "x" }) },
+      })
+      const peText = tm.renderPtcSummary(peRun)
+      assert.ok(/status=program-error$/.test(peText.split("\n")[0]), "program-error status in header")
+      assert.ok(peText.includes("程序错误") && !peText.includes("引擎错误"), "program fault renders the 程序错误 label (distinct)")
+      assert.ok(peText.includes("prog-oom"), "program-error row keeps the message")
       console.log("9h. summary shape pin: OK (verbatim headers, metrics format, inline/ref/err rows, return line)")
     }
 
@@ -1844,14 +2233,17 @@ try {
       assert.equal(okRun.returnValue, "ran:tm_read+ran:tm_grep", "worker: bridged calls round-trip over RPC")
       assert.equal(okRun.okCount, 2, "worker: both bridged calls in the summary")
 
-      // WorkerEngine: program throw -> engine-error carrying the message
+      // WorkerEngine: program throw -> program-error (T6: tagged kind:"program"
+      // by the bootstrap, mapped by the driver; NOT engine-error, no degrade).
       const throwRun = await tm.runPtc(runOpts(
         'throw new Error("worker-boom")',
         new tm.WorkerEngine(),
         { maxCalls: 5, maxErrors: 2, timeoutMs: 30000 },
       ))
-      assert.equal(throwRun.status, "engine-error", "worker: program throw -> engine-error")
+      assert.equal(throwRun.status, "program-error", "worker: program throw -> program-error")
+      assert.equal(throwRun.degraded, false, "worker: program-error never triggers the inline auto-degrade")
       assert.ok(throwRun.engineError && throwRun.engineError.message.includes("worker-boom"), "worker: error message crosses the worker boundary")
+      assert.equal(throwRun.engineError.phase, "execute", "worker: program-error phase is execute")
 
       // WorkerEngine: hard wall-clock timeout -> terminate() -> status timeout
       const t0 = Date.now()
@@ -1864,34 +2256,238 @@ try {
       assert.ok(Date.now() - t0 < 10000, "worker: terminate is prompt")
       assert.equal(timeoutRun.okCount, 0, "worker: timeout run has no ok steps")
 
-      // WorkerEngine env:{} isolation: the parent's env is invisible to the
-      // program (direct engine.run — pscan would ban `process` in runPtc).
-      const envKeys = await new tm.WorkerEngine().run(
-        "return Object.keys(process.env).length",
+      // WorkerEngine sandbox surface (T6): the program runs in a null-prototype
+      // node:vm context — require/process are ABSENT (stronger than the old
+      // env:{} "empty process.env" isolation: process is undefined outright, so
+      // Object.keys(process.env) can never even start), while the whitelisted
+      // setTimeout + a real console survive.  Direct engine.run (bypasses
+      // runPtc, whose pscan would ban the `process` word in the program text).
+      const sandboxSurface = await new tm.WorkerEngine().run(
+        'return [typeof require, typeof process, typeof setTimeout, typeof console].join(",")',
         fakeBridge,
         new AbortController().signal,
       )
-      assert.equal(envKeys, 0, "worker env:{} — parent environment not inherited")
+      assert.equal(sandboxSurface, "undefined,undefined,function,object", "worker sandbox: require/process absent, setTimeout/console present")
+      // the container object itself has NO .constructor prototype rung (T6 harden)
+      const ctorLeak = await new tm.WorkerEngine().run(
+        'return typeof ({}).constructor',
+        fakeBridge,
+        new AbortController().signal,
+      )
+      // the vm's OWN intrinsics are intact (fresh realm) — only the host-realm
+      // Object.prototype chain the sandbox container carried is cut.
+      assert.equal(ctorLeak, "function", "vm realm still has its own Object/Function intrinsics")
 
       // WorkerEngine body runs in strict mode (parity with the inline
-      // engines): an undeclared assignment must throw inside the worker.
+      // engines): an undeclared assignment throws inside the vm → program-error.
       const strictRun = await tm.runPtc(runOpts(
         'undeclaredGlobal = 1; return "sloppy-ok"',
         new tm.WorkerEngine(),
         { maxCalls: 5, maxErrors: 2, timeoutMs: 30000 },
       ))
-      assert.equal(strictRun.status, "engine-error", "worker: program body is strict-mode")
+      assert.equal(strictRun.status, "program-error", "worker: program body is strict-mode (throw -> program-error)")
 
       // InlineVmEngine: synchronous busy-loop killed by the (injectable)
-      // compile timeout — the fallback's documented kill path.
+      // compile timeout — an ENGINE-side kill, so engine-error (NOT program:
+      // the program never ran to a throw; the vm refused to finish).
       const vmRun = await tm.runPtc(runOpts(
         "while (true) {}",
         new tm.InlineVmEngine(200),
         { maxCalls: 5, maxErrors: 2, timeoutMs: 30000 },
       ))
-      assert.equal(vmRun.status, "engine-error", "inline-vm: sync busy-loop killed by compile timeout")
+      assert.equal(vmRun.status, "engine-error", "inline-vm: sync busy-loop -> engine-error (compile-timeout kill)")
     }
-    console.log("9j. real engines: OK (WorkerEngine RPC/throw/terminate/env-isolation/strict, InlineVmEngine compile-timeout kill)")
+    console.log("9j. real engines: OK (WorkerEngine RPC/program-error/terminate/sandbox, strict-mode, InlineVmEngine compile-timeout->engine-error)")
+
+    // 9k. T6/C2 PTC <-> web bridge: the six-way allow set, the bridge's
+    //     {ok,data}/{ok:false,error} normalization over a web tool's REAL
+    //     rendered ToolResult, the TM_PTC_WEB_BRIDGE=off rejection, and the C2
+    //     ROLE GATE: the bridge actively ctx.ask's the CALLER's ruleset BEFORE
+    //     the web tool's execute, so a non-web role is denied (permission
+    //     phase) and execute is NEVER reached.  The unwrap format is pinned
+    //     against a REAL result.ts render, so a header drift (tool.ts:57 mirrors
+    //     result.ts:47 by hand) can no longer turn a denied call into a silent
+    //     ok:true of error text.
+    {
+      // the bridge allow set is now six, and the web pair is tagged separately
+      assert.deepEqual(
+        [...tm.BRIDGE_ALLOW].sort(),
+        ["tm_bash", "tm_fetch", "tm_grep", "tm_read", "tm_search", "tm_webfetch"],
+        "BRIDGE_ALLOW carries all six bridged tools",
+      )
+      assert.deepEqual([...tm.WEB_BRIDGE_TOOLS].sort(), ["tm_search", "tm_webfetch"], "web bridge subset is the two network tools")
+      const fakePipelines = {
+        tmRead: async () => "R",
+        tmGrep: async () => "G",
+        tmBash: async () => "B",
+        tmFetch: async () => "F",
+      }
+      // a caller ctx whose ruleset ALLOWS the web tool (ask resolves silently)
+      const allowCtx = (extra) => ({ sessionID: "web-role", ask: async () => {}, ...extra })
+      // a caller ctx whose ruleset DENIES it (a deny rule makes ctx.ask throw)
+      const denyCtx = (extra) => ({ sessionID: "no-web-role", ask: async () => { throw new Error("denied by ruleset") }, ...extra })
+      // render a REAL governed error exactly the way result.ts does (pins the format)
+      const realErr = (tool, phase, msg, line) => tm.toToolResult(line == null ? tm.tmError(tool, phase, msg) : tm.tmError(tool, phase, msg, line)).output
+
+      // ok result: the web tool returns a rendered hit list -> {ok:true,data}
+      const okHandle = { execute: async () => ({ output: "hit list\n1. Foo https://x" }) }
+      const bo = await tm.pipelineBridge(fakePipelines, allowCtx(), { tm_search: okHandle, tm_webfetch: okHandle }).call("tm_search", { query: "foo" })
+      assert.equal(bo.ok, true, "search ok -> ok:true")
+      assert.ok(bo.data.includes("hit list"), "inline search text is the data")
+      // format-drift pin: a REAL result.ts permission error renders with the
+      // `[<tool> 失败 · phase=…]` header the bridge unwraps back to ok:false.
+      const searchErrHandle = { execute: async () => ({ output: realErr("tm_search", "permission", "role gate denied") }) }
+      const bd = await tm.pipelineBridge(fakePipelines, allowCtx(), { tm_search: searchErrHandle, tm_webfetch: searchErrHandle }).call("tm_search", { query: "x" })
+      assert.equal(bd.ok, false, "a real rendered web error unwraps to ok:false")
+      assert.equal(bd.error.phase, "permission", "phase parsed from the REAL result.ts header")
+      assert.equal(bd.error.tool, "tm_search", "tool name parsed from the REAL header")
+      assert.ok(bd.error.message.includes("role gate denied"), "message body recovered")
+      // line-bearing REAL header parses the line number too
+      const lineErrHandle = { execute: async () => ({ output: realErr("tm_webfetch", "execute", "boom", 7) }) }
+      const bl = await tm.pipelineBridge(fakePipelines, allowCtx(), { tm_search: lineErrHandle, tm_webfetch: lineErrHandle }).call("tm_webfetch", { url: "https://x" })
+      assert.equal(bl.error.line, 7, "error line parsed from the REAL rendered header")
+      // web bridge OFF (no handles wired) -> explicit args error, NOT a crash
+      const off = await tm.pipelineBridge(fakePipelines, allowCtx()).call("tm_search", { query: "x" })
+      assert.equal(off.ok, false, "web-off search errors")
+      assert.match(off.error.message, /TM_PTC_WEB_BRIDGE/, "web-off names the toggle")
+      // non-web pipelines still pass straight through the four (NO ask needed)
+      const rd = await tm.pipelineBridge(fakePipelines, { sessionID: "x" }).call("tm_read", { path: "a" })
+      assert.deepEqual(rd, { ok: true, data: "R" }, "read passthrough unchanged")
+      // C2 ROLE GATE — REAL DENIAL: a non-web role's bridged tm.search is
+      // refused by the BRIDGE's own ctx.ask; the web tool execute must NOT run.
+      let webExecuted = false
+      const spyHandle = { execute: async () => { webExecuted = true; return { output: "MUST NOT RUN" } } }
+      const denyCall = await tm.pipelineBridge(fakePipelines, denyCtx(), { tm_search: spyHandle, tm_webfetch: spyHandle }).call("tm_search", { query: "x" })
+      assert.equal(denyCall.ok, false, "non-web role bridged search is denied")
+      assert.equal(denyCall.error.phase, "permission", "the denial is a permission error")
+      assert.equal(denyCall.error.tool, "tm_search", "the denial names the tool")
+      assert.equal(webExecuted, false, "the denied call NEVER reaches the web tool execute")
+      // the gate ASKS under the web permission name with the target host/engine
+      let asked = null
+      const spyAsk = { sessionID: "r", ask: async (req) => { asked = req } }
+      await tm.pipelineBridge(fakePipelines, spyAsk, { tm_search: okHandle, tm_webfetch: okHandle }).call("tm_search", { query: "x", engine: "bing" })
+      assert.equal(asked.permission, "tm_search", "gate asks under the tm_search permission name")
+      assert.ok(asked.patterns.some((pat) => /bing/.test(pat)), "search gate patterns carry the engine")
+      await tm.pipelineBridge(fakePipelines, spyAsk, { tm_search: okHandle, tm_webfetch: okHandle }).call("tm_webfetch", { url: "https://api.example.com/x" })
+      assert.equal(asked.permission, "tm_webfetch", "gate asks under the tm_webfetch permission name")
+      assert.ok(asked.patterns.some((pat) => /api\.example\.com/.test(pat)), "webfetch gate patterns carry the host")
+      // fail-CLOSED: no ask bridge on ctx -> bridged web is refused, not allowed
+      const noAsk = await tm.pipelineBridge(fakePipelines, { sessionID: "x" }, { tm_search: okHandle, tm_webfetch: okHandle }).call("tm_search", { query: "x" })
+      assert.equal(noAsk.ok, false, "a ctx without ask is fail-closed for bridged web")
+      assert.equal(noAsk.error.phase, "permission", "unverifiable web grant is denied")
+      // an offload handle block (multi-line, no leading error marker) stays ok
+      const handleText = "payload too large (about 9000 tokens), offloaded to the run store.\nref: tm://runs/r/steps/s0009.k01/result\naccess_token: t"
+      const offH = { execute: async () => ({ output: handleText }) }
+      const oh = await tm.pipelineBridge(fakePipelines, allowCtx(), { tm_search: offH, tm_webfetch: offH }).call("tm_search", { query: "x" })
+      assert.equal(oh.ok, true, "an offload handle from the web tool is an ok data result")
+      assert.ok(oh.data.includes("ref: tm://"), "the handle ref is preserved for tm.fetch follow-up")
+      // the tool description now documents the web bridges
+      const tool = tm.buildPtcRunTool({
+        cfg, store: new tm.RunStore({ projectRoot: mktmp("ptc-k"), blackboardDir: ".bb", trajectoryDir: ".tj", runId: "r-k", ttlDays: 7 }),
+        nextStepId: () => "s0001", ctx: { directory: process.cwd() }, accessToken: "a".repeat(64),
+        bridge: { call: async () => ({ ok: true, data: "hi" }) },
+      })
+      assert.ok(tool.description.includes("tm.search") && tool.description.includes("tm.webfetch"), "description documents the web bridges")
+      assert.ok(/TM_PTC_WEB_BRIDGE/.test(tool.description), "description names the web toggle")
+      // END-TO-END (C2): a non-web role's PTC run that calls tm.search records a
+      // permission ERROR STEP and the web tool execute is never reached.
+      let e2eExecuted = false
+      const e2eBridge = tm.pipelineBridge(fakePipelines, denyCtx(), {
+        tm_search: { execute: async () => { e2eExecuted = true; return { output: "MUST NOT RUN" } } },
+        tm_webfetch: { execute: async () => ({ output: "unused" }) },
+      })
+      const runDeny = await tm.runPtc({
+        program: 'const r = await tm.search({ query: "x" }); return r.ok ? 0 : r.error.phase',
+        label: "deny", budgets: { maxCalls: 5, maxErrors: 2, timeoutMs: 30000 },
+        parentStepId: "s0010", cfg, engine: new tm.InlineSequentialEngine(), bridge: e2eBridge,
+      })
+      assert.equal(runDeny.status, "ok", "a role-denied web call is a normal error step, run completes")
+      assert.equal(runDeny.errCount, 1, "the permission denial is recorded as one error step")
+      assert.equal(runDeny.steps[0].phase, "permission", "step carries the permission phase")
+      assert.equal(runDeny.returnValue, "permission", "program observed the error phase through the bridge")
+      assert.equal(e2eExecuted, false, "end-to-end: a denied role never reaches the web execute")
+      // END-TO-END allow: a web role's PTC run reaches the web execute + data.
+      let allowExecuted = false
+      const allowBridge = tm.pipelineBridge(fakePipelines, allowCtx(), {
+        tm_search: { execute: async () => { allowExecuted = true; return { output: "hit list ok" } } },
+        tm_webfetch: { execute: async () => ({ output: "unused" }) },
+      })
+      const runAllow = await tm.runPtc({
+        program: 'const r = await tm.search({ query: "x" }); return r.ok ? "ran" : r.error.phase',
+        label: "allow", budgets: { maxCalls: 5, maxErrors: 2, timeoutMs: 30000 },
+        parentStepId: "s0011", cfg, engine: new tm.InlineSequentialEngine(), bridge: allowBridge,
+      })
+      assert.equal(allowExecuted, true, "end-to-end: a web role DOES reach the web execute")
+      assert.equal(runAllow.returnValue, "ran", "the web role's bridged search returned data")
+    }
+    console.log("9k. PTC<->web bridge (C2): OK (six-way allow, REAL result.ts header unwrap incl. line, active ctx.ask role gate denies non-web WITHOUT execute + fail-closed no-ask, host/engine patterns, TM_PTC_WEB_BRIDGE=off reject, non-web calls skip the ask, offload passthrough, end-to-end deny step + allow run)")
+
+    // 9l. C1 sandbox-escape red lines + the "never replay a started program"
+    //     rule.  Every escape vector is run DIRECTLY on a real engine (bypassing
+    //     runPtc, whose pscan now bans constructor(/eval(/Function() so the
+    //     program text itself could never reach the sandbox) — the point is to
+    //     prove the vm.wrap + codeGeneration containment holds even when pscan
+    //     is skipped.  Each must THROW or return a THREW marker, never ESCAPED.
+    {
+      const fakeBridge = { call: async (tool) => ({ ok: true, data: { output: "ran:" + tool } }) }
+      const sig = new AbortController().signal
+      const runEsc = async (eng, prog) => {
+        try { return { r: await eng.run(prog, fakeBridge, sig) } }
+        catch (e) { return { err: String((e && e.message) || e) } }
+      }
+      const vectors = [
+        ["ctor", 'try { return "ESCAPED:" + tm.read.constructor("return process")() } catch (e) { return "THREW:" + e.message }'],
+        ["chain", 'try { return "ESCAPED:" + ({}).constructor.constructor("return process")() } catch (e) { return "THREW:" + e.message }'],
+        ["eval", 'try { return "ESCAPED:" + eval("1+1") } catch (e) { return "THREW:" + e.message }'],
+        ["newfunc", 'try { return "ESCAPED:" + new Function("return 1")() } catch (e) { return "THREW:" + e.message }'],
+        ["dataobj", 'const r = await tm.read({}); try { return "ESCAPED:" + r.constructor("return process")() } catch (e) { return "THREW:" + e.message }'],
+        ["imp", 'try { return "ESCAPED:" + await import("node:fs") } catch (e) { return "THREW:" + e.message }'],
+      ]
+      for (const [name, prog] of vectors) {
+        const w = await runEsc(new tm.WorkerEngine(), prog)
+        const out = w.r == null ? "THREW:" + w.err : String(w.r)
+        assert.ok(!out.startsWith("ESCAPED"), `worker: ${name} escape must not succeed (${out})`)
+        assert.ok(/THREW|disallowed|not a function|not specified/.test(out), `worker: ${name} escape blocked (${out})`)
+        const iv = await runEsc(new tm.InlineVmEngine(8000), prog)
+        const iout = iv.r == null ? "THREW:" + iv.err : String(iv.r)
+        assert.ok(!iout.startsWith("ESCAPED"), `inline: ${name} escape must not succeed (${iout})`)
+        assert.ok(/THREW|disallowed|not a function|not specified/.test(iout), `inline: ${name} escape blocked (${iout})`)
+      }
+      // the facade reaches the governed bridge normally (containment != breakage).
+      const norm = await new tm.WorkerEngine().run(
+        'const r = await tm.read({ path: "a" }); return r.ok ? r.data.output : "notok"',
+        fakeBridge, new AbortController().signal,
+      )
+      assert.equal(norm, "ran:tm_read", "C1 hardening keeps a normal bridged call working")
+
+      // NO-REPLAY: a worker that STARTED (dispatched >=1 call) then crashed as an
+      // engine fault is NOT re-run on the more-privileged inline realm.
+      const crasher = { name: "worker", async run(program, bridge) { await bridge.call("tm_read", {}); throw new Error("worker crashed mid-run") } }
+      const noReplay = await tm.runPtc({
+        program: 'const a = await tm.read({}); return a.ok', label: "crash",
+        budgets: { maxCalls: 5, maxErrors: 2, timeoutMs: 30000 },
+        parentStepId: "s0920", cfg, engine: crasher,
+        bridge: { call: async () => ({ ok: true, data: "x" }) },
+      })
+      assert.equal(noReplay.status, "engine-error", "post-start worker crash surfaces as engine-error")
+      assert.equal(noReplay.calls, 1, "the crash happened after the program started (1 bridged call)")
+      assert.equal(noReplay.degraded, false, "C1: a started-then-crashed program is NOT replayed on inline")
+      assert.equal(noReplay.engine, "worker", "still attributed to the worker engine (no inline fallback ran)")
+
+      // INIT failure (worker could not start, ZERO calls) -> degrade IS allowed.
+      const initFail = { name: "worker", async run() { throw new Error("node:worker_threads unavailable") } }
+      const degradedRun = await tm.runPtc({
+        program: 'return "ran-on-inline"', label: "initfail",
+        budgets: { maxCalls: 5, maxErrors: 2, timeoutMs: 30000 },
+        parentStepId: "s0921", cfg, engine: initFail,
+        bridge: { call: async () => ({ ok: true, data: "x" }) },
+      })
+      assert.equal(degradedRun.status, "ok", "engine-init fault degrades to inline and RUNS the program")
+      assert.equal(degradedRun.degraded, true, "engine-init fault marks the run degraded")
+      assert.equal(degradedRun.engine, "inline", "the fallback executed on the inline engine")
+      assert.equal(degradedRun.returnValue, "ran-on-inline", "the program executed once on the inline engine")
+    }
+    console.log("9l. C1 escape containment: OK (constructor/chain/eval/new Function/data-object/dynamic-import escapes throw in BOTH real engines, a normal bridged call still works, started-then-crashed worker NOT replayed on inline, engine-init fault still degrades)")
   }
 } finally {
   restoreEnv()

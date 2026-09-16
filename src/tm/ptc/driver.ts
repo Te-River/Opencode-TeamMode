@@ -9,7 +9,7 @@ import * as crypto from "node:crypto"
 import type { TmConfig } from "../config.js"
 import type { RunStore } from "../store.js"
 import type { PtcBridge, PtcEngine, PtcRunOutcome, PtcStatus } from "./contract.js"
-import { PtcStopSignal } from "./contract.js"
+import { PtcProgramError, PtcStopSignal } from "./contract.js"
 import type { GateState } from "./gate.js"
 import { createGateBridge } from "./gate.js"
 import { InlineVmEngine, WorkerEngine } from "./engines.js"
@@ -29,8 +29,11 @@ export interface EngineSelection {
  *  - "worker": WorkerEngine only (throws on failure → engine-error status).
  *  - "inline": InlineVmEngine only (script timeout for pre-await busy-loops).
  *  - "auto" (default): worker-first — the REAL auto-degrade happens in
- *    runPtc, which re-runs the whole program on InlineVmEngine when a worker
- *    run returns engine-error.
+ *    runPtc, which re-runs the whole program on InlineVmEngine ONLY when a
+ *    worker run returns engine-error having made ZERO bridged calls (the
+ *    worker could not start).  A worker that started and then crashed is
+ *    reported program-error / engine-error-with-calls and is NEVER replayed
+ *    on the inline realm (C1: never re-run a started program).
  */
 export function selectEngine(mode: "auto" | "worker" | "inline", bridge: PtcBridge): EngineSelection {
   void bridge
@@ -92,15 +95,19 @@ export async function runPtc(o: RunPtcOptions): Promise<PtcRunOutcome> {
         phase: "args",
         message: `程序包含禁止标识符（${pscan.tokens.join(", ")}），已拒绝执行。`,
       },
+      budgets: o.budgets,
       parentStepId: o.parentStepId,
     }
   }
 
-  // Auto-degrade: if the selected engine throws (not a PtcStopSignal),
-  // and we're in auto mode with no explicit override, retry with InlineVmEngine.
-  const tryRun = async (eng: PtcEngine): Promise<PtcRunOutcome> => {
+  // Auto-degrade: if the selected engine reports an ENGINE fault (not a
+  // budget stop, not a program fault), and we're in auto mode, retry with
+  // InlineVmEngine.  A program fault is tagged PtcProgramError by the
+  // engines and mapped to "program-error" below — it never re-runs (the
+  // same program would just throw again).
+  const tryRun = async (eng: PtcEngine, parentId: string = o.parentStepId): Promise<PtcRunOutcome> => {
     const state: GateState = { calls: 0, errors: 0, retries: 0, steps: [] }
-    const gate = createGateBridge(o.bridge, o.parentStepId, o.budgets, state, {
+    const gate = createGateBridge(o.bridge, parentId, o.budgets, state, {
       now,
       deadlineAt,
       store: o.store,
@@ -109,7 +116,7 @@ export async function runPtc(o: RunPtcOptions): Promise<PtcRunOutcome> {
     // parent call event (design §6)
     o.store?.appendTrajectory({
       tool: "tm_ptc_run",
-      step_id: o.parentStepId,
+      step_id: parentId,
       event: "call",
       label: o.label,
       program_sha256: crypto.createHash("sha256").update(o.program).digest("hex"),
@@ -125,12 +132,25 @@ export async function runPtc(o: RunPtcOptions): Promise<PtcRunOutcome> {
     let returned = false
     let engineError: PtcRunOutcome["engineError"]
     try {
-      returnValue = await eng.run(o.program, gate, ac.signal)
+      returnValue = await eng.run(o.program, gate, ac.signal, {
+        startDeadlineMs: deadlineAt,
+        timeoutMs: o.budgets.timeoutMs,
+      })
       returned = true
       status = state.stopReason ? mapStop(state.stopReason) : "ok"
     } catch (err) {
       if (err instanceof PtcStopSignal) {
         status = mapStop(err.reason)
+      } else if (err instanceof PtcProgramError) {
+        // T5: the PROGRAM threw — distinct status, NO auto-degrade re-run.
+        status = "program-error"
+        const line = extractLine(err)
+        engineError = {
+          tool: "tm_ptc_run",
+          phase: "execute",
+          message: err.message,
+          ...(line != null ? { line } : {}),
+        }
       } else {
         status = "engine-error"
         const line = extractLine(err)
@@ -160,11 +180,12 @@ export async function runPtc(o: RunPtcOptions): Promise<PtcRunOutcome> {
       returnValue,
       returned,
       ...(engineError ? { engineError } : {}),
-      parentStepId: o.parentStepId,
+      budgets: o.budgets,
+      parentStepId: parentId,
     }
     o.store?.appendTrajectory({
       tool: "tm_ptc_run",
-      step_id: o.parentStepId,
+      step_id: parentId,
       event: "finish",
       status: outcome.status,
       calls: outcome.calls,
@@ -175,15 +196,25 @@ export async function runPtc(o: RunPtcOptions): Promise<PtcRunOutcome> {
     return outcome
   }
 
-  // Auto mode: try worker first; on engine-error → degrade to inline.
-  if (!o.engine && o.cfg.ptcEngine === "auto" && engine.name === "worker") {
+  // Auto mode: try worker first.  C1 (never replay a started program): degrade
+  // to the inline-vm engine ONLY when the worker could not START at all — an
+  // ENGINE fault with ZERO bridged calls dispatched (the program never ran).
+  // A worker that started and THEN crashed surfaces as `program-error` (the
+  // engines tag any post-online crash a program fault) or as an `engine-error`
+  // with calls > 0; in BOTH such cases we return as-is and do NOT re-run the
+  // program on the more-privileged inline/ESM realm — re-running a program
+  // that already executed is exactly the sandbox-escape amplification the
+  // reviewer's PoC turned on.  An INJECTED engine participates too (tests
+  // inject crashers); the fallback is always the real InlineVmEngine.
+  if (o.cfg.ptcEngine === "auto" && engine.name === "worker") {
     const result = await tryRun(engine)
-    if (result.status === "engine-error") {
+    if (result.status === "engine-error" && result.calls === 0) {
       // Degrade to inline-vm and re-run.
       const inlineEngine = new InlineVmEngine()
-      const fallback = await tryRun(inlineEngine)
+      const fallback = await tryRun(inlineEngine, `${o.parentStepId}.r2`)
       fallback.degraded = true
       fallback.engine = "inline"
+      fallback.parentStepId = o.parentStepId
       return fallback
     }
     return result

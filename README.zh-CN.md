@@ -43,7 +43,7 @@ TeamMode 对每一个的回应：
 
 | 痛点 | TeamMode 的回答 |
 |---|---|
-| 🔥 **上下文爆炸** | 所有受治理工具的输出超过 2000 token 就卸载到本地 run 存储，换成 80 token 的预览 + HMAC 句柄。agent 需要什么再分页取什么——窗口永远淹不了。 |
+| 🔥 **上下文爆炸** | 所有受治理工具的输出超过内容分档阈值（散文 4000 / 数据 2000 token，CJK 感知）就卸载到本地 run 存储，换成 80 token 的预览 + HMAC 句柄。agent 需要什么再分页取什么——窗口永远淹不了。 |
 | 🐌 **回合开销** | `tm_ptc_run`：agent 写**一个程序**，单回合内发起 N 次受治理调用。运行期间零 LLM 回合。 |
 | 🕳️ **静默副作用** | R6/R2 审批门禁：环境变量读取和危险操作走 OpenCode 官方确认弹窗，10 分钟没人理自动拒绝。插件从不代替你批准——它只会拒绝。 |
 | 🌫️ **幻觉式调研** | 联网是双角色的授权 + 白名单受治理工具链。抓不到的事实就报告为缺口——绝不编造。 |
@@ -196,18 +196,21 @@ team   完成。rateLimit.ts (new) · app.ts (+3) · 14 测试全绿
 
 ## 🧰 受治理的工具与安全
 
-TeamMode 加的每个工具都跑在**同一条治理管线**下：超过 `TM_OFFLOAD_THRESHOLD`
-token 的输出永不进入上下文窗口——卸载到 run 存储，换成内容感知预览 +
+TeamMode 加的每个工具都跑在**同一条治理管线**下：超过卸载阈值的输出永不
+进入上下文窗口——阈值按内容分档：散文（text/log/markdown）走
+`TM_OFFLOAD_THRESHOLD_TEXT`（4000），结构化数据（json/csv/code/binary）走
+`TM_OFFLOAD_THRESHOLD_DATA`（2000），内容类别未知时回退全局
+`TM_OFFLOAD_THRESHOLD`。超限输出卸载到 run 存储，换成内容感知预览 +
 HMAC 句柄，agent 真需要 payload 时用 `tm_fetch` 分页取。
 
 | 工具 | 功能 | 角色 |
 |---|---|---|
-| `tm_read` / `tm_grep` / `tm_bash` / `tm_fetch` | 受治理的文件读 / 正则搜索 / 只读 shell（白名单）/ 句柄分页 | 全部六个 agent |
-| `tm_memory` | 项目 + 全局记忆库（Markdown + frontmatter）：add / search / list / forget | 全部六个 agent |
-| `tm_ptc_run` | 批量编排：一个程序、N 次受治理调用、零 LLM 回合 | 全部六个 agent |
-| `tm_search` | 多引擎网络搜索，返回提取去重后的命中列表 | Lead + Researcher |
+| `tm_read` / `tm_grep` / `tm_bash` / `tm_fetch` | 受治理的文件读 / 正则搜索 / 只读 shell（白名单）/ 句柄分页（JSON 句柄支持 `fields` 点路径投影——刻意小的 jq 子集，如 `items[].name`） | 全部六个 agent |
+| `tm_memory` | 会话 + 项目 + 全局三层记忆库（Markdown + frontmatter）：add / search / list / forget / compact | 全部六个 agent |
+| `tm_ptc_run` | 批量编排：一个程序、N 次受治理调用、零 LLM 回合；联网角色还能在程序里调 `tm.search` / `tm.webfetch` | 全部六个 agent |
+| `tm_search` | 多引擎网络搜索，返回提取、去重、RRF 融合后的命中列表 | Lead + Researcher |
 | `tm_webfetch` | 白名单页面的单次受治理 GET（搜索页自动提取） | Lead + Researcher |
-| `tm_browser` | 交互式浏览器会话（CDP，**驱动你的默认浏览器**）：open / navigate / read / screenshot / close | Lead + Researcher + Tester（仅 UI 验证） |
+| `tm_browser` | 交互式浏览器会话（**驱动你的默认浏览器**）：16 个 Playwright 动词（快照优先：`take_snapshot` → 按 uid 寻址的 `click`/`fill`/`drag`…）+ 5 个旧版兼容动词（open/navigate/read/screenshot/close）；Playwright 引擎需 Node ≥ 20，不满足或导入失败时自动降级到旧版 CDP 引擎 | Lead + Researcher + Tester（仅 UI 验证） |
 
 > **固定工具优先级阶梯（每个任务都适用）：① TeamMode 受治理工具（`tm_*`）
 > → ② 用户 MCP/插件工具 → ③ 模型自己的推理。** 它同时是回退链：某个受治理
@@ -221,25 +224,37 @@ HMAC 句柄，agent 真需要 payload 时用 `tm_fetch` 分页取。
 ### 上下文治理：卸载、句柄、预览
 
 大的工具输出是上下文成本的主要来源——每一步都要重发整个窗口。所以超过
-`TM_OFFLOAD_THRESHOLD` 的结果写进本地 run 存储（`<repo>/.git/opencode-team/`，
-永不污染工作树），换成带内容感知预览的句柄：JSON 键 / CSV 表头+形状 /
-日志 ERROR×N 统计 / 代码签名 / 二进制元数据，硬顶 80 token。agent 真需要
-payload 时用 `tm_fetch`（HMAC 签名、run 域、带过期）分页读。`tm_bash`
-只放行只读命令（白名单），失败以结构化错误返回，不糊原始转储。
+内容分档阈值的（散文 → `TM_OFFLOAD_THRESHOLD_TEXT`，结构化数据 →
+`TM_OFFLOAD_THRESHOLD_DATA`，未知类别 → 全局 `TM_OFFLOAD_THRESHOLD`）
+结果写进本地 run 存储（`<repo>/.git/opencode-team/`，永不污染工作树），
+换成带内容感知预览的句柄：JSON 键 / CSV 表头+形状 / 日志 ERROR×N 统计 /
+代码签名 / 二进制元数据，硬顶 80 token。agent 真需要 payload 时用
+`tm_fetch`（HMAC 签名、run 域、带过期）分页读；JSON 句柄还可以直接要
+`fields` 点路径投影（刻意小的 jq 子集：`items[].name`、
+`[].stargazers_count`），大 API 转储只留需要的字段、原文从不进窗口。
+`tm_bash` 只放行只读命令（白名单），失败以结构化错误返回，不糊原始转储。
 
-### 项目 + 全局记忆（tm_memory）
+### 会话 + 项目 + 全局三层记忆（tm_memory）
 
 耐久的事实——构建命令、环境怪癖、架构决策、你的约定——以人可编辑的
-Markdown + frontmatter 存放：
+Markdown + frontmatter 存放，共三层：
 
+- **`session`**：仅本次会话的瞬时事实——进程内、按 TTL 清扫（`TM_MEMORY_SESSION_TTL_MIN`，默认 240 分钟），对其他会话不可见；除非 `TM_MEMORY_SESSION_PERSIST=1` 才落盘到 `memories/sessions/<sid>/`。
 - **`project`**（默认）：`<repo>/.git/opencode-team/memories/…` —— 每 checkout 一份，贴近 git。存放本仓库的事实：构建命令、环境怪癖、架构决策。
 - **`global`**：`~/.opencode-team/memories/global/`（可用 `TM_MEMORY_GLOBAL_DIR` 覆盖）——**跟着你走遍所有项目**。存放用户级约定：偏好的包管理器、提交风格、工具习惯。
 
-动作：`add` / `search`（确定性关键词打分）/ `list` / `forget`；每条记忆
-上限 4000 字符。`search` 同时走两层，**项目层优先于全局层**：项目条目
-获得 +2 的近似同分加权，同名全局条目会被项目层遮蔽（永不浮出）。
-agent 被要求先搜记忆再做项目假设，也把来之不易的事实存下来留给下个
-会话。
+动作：`add` / `search`（确定性关键词打分）/ `list` / `forget` / `compact`；
+每条记忆上限 4000 字符。`search` 走全部三层，**会话 > 项目 > 全局**优先：
+项目条目获得 +2 的近似同分加权，同名上层条目遮蔽下层（永不浮出）。
+近重复从不堆积：`add` 命中同层同分类的既有条目（去重键，或
+title+keywords 的 Jaccard ≥ 0.6）时**并入既有条目**——新内容胜出、
+keywords 取并集、旧 slug 进 `supersedes:`、答复标注"已合并"（这是正常
+现象，别再换个变体标题重复添加）。某层到达 `TM_MEMORY_MAX_ENTRIES`
+（每作用域 200）时 add 故意失败：先跑 `compact`——默认 dry-run 只报合并
+计划，带 `apply:true` 重跑才执行，执行前所有原件先复制进带时间戳的
+`.compact-backup` 树（回滚路径）。超过 `TM_MEMORY_STALE_DAYS`（30 天）的
+条目在搜索结果里标 `[stale Nd]`。agent 被要求先搜记忆再做项目假设，
+也把来之不易的事实存下来留给下个会话。
 
 ### 🌐 真正好用的网络搜索（中国可用）
 
@@ -249,17 +264,20 @@ agent 永远看不到原始搜索页的噪音。
 
 | 引擎 | 说明 |
 |---|---|
-| `bing`（默认） | cn.bing.com；`bing-int` 强制国际版结果（`ensearch=1`） |
-| `sogou` / `so`（360） | 国产引擎，CJK 内容友好 |
-| `baidu` | 反爬最凶，但有时是唯一的中文特化索引；失败时会点名替代引擎 |
+| `auto`（默认） | 给查询分类，**并行**扇出 2–3 个引擎，按 host+path 去重后做加权 RRF 融合（stackoverflow/bing 0.4，其余 0.2），产出标有来源引擎的 top-10 列表。路由：报错/camelCase API → `stackoverflow`+`github`+`bing`；开发生态（发布、框架、开源）→ `hn`+`github`+`npm`；中文/通用 → `bing`。用 `TM_SEARCH_DEFAULT_ENGINE` 钉别的默认 |
+| `bing` | cn.bing.com——唯一活着的中文 HTML SERP；多词 CJK 查询自动保护短语边界（加引号），markup 洗牌拆不散结果列表 |
+| `stackoverflow` | api.stackexchange.com 问题搜索（免 Key，300 次/天/IP）→ 带复合摘要的编号问题列表；`auto` 跟踪配额，耗尽自动换 `bing` 顶上 |
+| `hn` | Hacker News（Algolia API，免 Key）→ 帖子标题 + 摘要与原文链接 |
 | `bilibili` | 视频搜索 |
 | `moegirl` | MediaWiki 搜索 API——词条标题 + 摘要，结构化 |
 | `npm` | registry 搜索 → name@version + 描述，结构化 |
-| `github` | 仓库搜索 API → star 数 + 描述，结构化 |
+| `github` | 仓库搜索 API → star 数 + 描述，结构化；`org:` / `user:` / `stars:` / `language:` 限定符透传折进查询（如 `vector db stars:>500 language:rust`） |
 
-九个引擎在中国大陆**全部免 Key 可达**，且全部在种子域名白名单内。空结果
-（反爬拦截页）时错误信息会点名替代引擎，不让 agent 卡死。另两条通道补全
-能力面：
+七个引擎在中国大陆**全部免 Key 可达**，且全部在种子域名白名单内。旧的
+中文 HTML SERP（`sogou` / `so` / `baidu` / `bing-int`）已被**移除**——
+实测定标（2026-09-14）显示它们只返回反爬壳或 100% 空结果，连手动选择
+都不再提供。空结果时错误信息会点名替代引擎，不让 agent 卡死。另两条
+通道补全能力面：
 
 - `tm_webfetch` —— 已知 URL，单次受治理 GET。它抓到的搜索引擎页面同样
   自动提取为命中列表。`registry.npmjs.org/<pkg>/latest` 这类 JSON 端点
@@ -267,9 +285,23 @@ agent 永远看不到原始搜索页的噪音。
 - `tm_browser` —— JS 渲染页：**驱动你的默认浏览器**（Windows 读注册表 /
   Linux 读 xdg-settings；仅限 Chromium 系——默认是 Firefox 时回退到
   Edge/Chrome 探测顺序，因为 CDP 是 Chromium 专有协议；`TM_BROWSER_PATH`
-  可强制指定），CDP pipe headful 运行，隔离临时 profile，**域名白名单在
-  网络层逐请求强制**（`Fetch.requestPaused` → 非白名单主机直接
-  `BlockedByClient`）。
+  可强制指定），默认有头运行，隔离临时 profile，**域名白名单在网络层
+  逐请求、逐重定向跳强制**。动作面与 chrome-devtools-mcp 对齐：**16 个
+  Playwright 动词**（`navigate_page` · `take_snapshot` · `click` · `fill` ·
+  `hover` · `drag` · `press_key` · `select_page` · `upload_file` · `wait_for`
+  · `evaluate_script` · `list_console_messages` · `list_network_requests` ·
+  `list_pages` · `take_screenshot` · `handle_dialog`）+ 5 个旧版兼容动词
+  （`open` / `navigate` / `read` / `screenshot` / `close`）。快照优先：
+  `take_snapshot` 返回注入了 `[uid=eN]` 标记的 aria 快照，后续动作按 uid
+  寻址节点而不是猜定位器；快照受
+  `TM_BROWSER_SNAPSHOT_MAX_TOKENS`（默认 1200）硬顶。
+  **引擎分工：** 主引擎是 `playwright-core`（optionalDependencies——
+  需 **Node ≥ 20**；旧版 Node 或导入失败时，整个插件实例自动降级到零依赖
+  `cdp-legacy` 引擎，只保留核心动词；可用 `TM_BROWSER_ENGINE=playwright|cdp-legacy`
+  钉死）。从不下载浏览器——Playwright 按路径启动**你自己装的**浏览器，
+  `npx playwright install` 不属于用户流程（依赖本体在 npm
+  install/发布时解析）。默认隔离临时 profile：登录态想跨会话保留，只有
+  显式设置 `TM_BROWSER_USER_DATA_DIR` 这一条路。
 
 **伪装浏览器请求头后仍收到 403** 时，错误信息是一条指令：该站点的门槛是
 JS 挑战 / TLS 指纹级别，只有真实浏览器能过——会直接让 agent 调 `tm_browser`
@@ -278,15 +310,17 @@ JS 挑战 / TLS 指纹级别，只有真实浏览器能过——会直接让 age
 （`maimai.cn` 脉脉 ≠ maimai DX 游戏）不会混入命中列表——用
 `TM_HIT_BLACKLIST` 可扩展命中黑名单。
 
-种子白名单（两个工具共用，21 个主机；baidu/moegirl/bilibili 用的是父域，
+种子白名单（三个联网工具共用，23 个主机；baidu/moegirl/bilibili 用的是父域，
 所有兄弟子域——baike.baidu.com、mzh.moegirl.org.cn、space.bilibili.com——
 一并覆盖）：`baidu.com`、`moegirl.org.cn`、`bilibili.com`、`www.sogou.com`、
 `www.so.com`、`cn.bing.com`、`www.bing.com`、`zhihu.com`、`juejin.cn`、
 `csdn.net`、`cnblogs.com`、`gitee.com`、`github.com`、`api.github.com`、
 `raw.githubusercontent.com`、`gist.githubusercontent.com`、`ghproxy.net`
-（github raw 的大陆镜像）、`stackoverflow.com`、`npmjs.org`、`pypi.org`、
+（github raw 的大陆镜像）、`stackoverflow.com`、`api.stackexchange.com`
++ `hn.algolia.com`（两个 JSON 搜索引擎）、`npmjs.org`、`pypi.org`、
 `learn.microsoft.com`——用
-`TM_WEBFETCH_ALLOWED_DOMAINS` 扩展（`"*"` 放开全部主机）。architect /
+`TM_WEBFETCH_ALLOWED_DOMAINS` 扩展（`"*"` 放开全部主机；自定义列表是
+**替换**种子，保留引擎主机否则 `tm_search` 没了目标）。architect /
 implementer / reviewer **没有**联网授权——网络问题会报告为缺口，绝不编造。
 tester 仅持有 `tm_browser`，用于本项目的治理化 UI 验证（本地开发服务器、
 预览路由）；开放网络抓取仍归两个联网角色。
@@ -305,7 +339,11 @@ env 文件 URL 和非 http(s) 协议保持硬拦截、无弹窗——R6 红线�
 10 分钟）后**自动拒绝**。通配符表达不了的 env 读取（命令内嵌 `$VAR` /
 `${VAR}` / `$env:`、命令替换）和 `tm_*` 包装通道保持**硬拦截**——没有弹窗
 可钻。审计日志只记录工具名 + 模式类别 + 裁决——绝不记录命令文本、路径、
-变量名或值。
+变量名或值。裁决现在还解释"弹窗已无法应答"的情形：应答打到**已关闭**的
+弹窗（宿主 404——计时器早已自动拒绝）记为 `already-closed`、不触发降级；
+插件侧应答形状错误记为 `rejected-shape-bug`；用户在自动拒绝**之后**才到的
+回复记为 `late-<verdict>`（仅可观测——拒绝已成事实，插件依旧绝不代你批准）。
+自动拒绝的 3 分钟地板（补偿宿主事件滞后）可用 `TM_ASK_TIMEOUT_FLOOR_MIN` 调节。
 
 **R2 危险操作（同一个弹窗）。** 删除、git 发布、网络抓取、包安装/发布、
 进程/系统、提权——统统不允许静默放行。日常验证栈（`npm test`、`tsc`、
@@ -365,24 +403,36 @@ Team Lead 自己从不删黑板，你可以随时审计任何一次运行。
 | 环境变量 | 默认 | 用途 |
 |---|---|---|
 | `TM_ENV_PROTECT` | `strict` | R6 模式：`strict` / `standard` / `off`（off 同时解除审批计时器） |
-| `TM_ASK_TIMEOUT_MIN` | `10` | 无人应答弹窗自动拒绝前等待的分钟数（硬下限 3——宿主的应答事件到插件晚约 120 秒） |
+| `TM_ASK_TIMEOUT_MIN` | `10` | 无人应答弹窗自动拒绝前等待的分钟数（有地板——宿主的应答事件到插件晚约 120 秒） |
+| `TM_ASK_TIMEOUT_FLOOR_MIN` | `3` | 上述自动拒绝的强制最小时长 |
 | `TM_ENV_PROTECT_EXTRA_DENY` | — | 额外拦截模式（正则；永远硬拦截，不走弹窗） |
-| `TM_OFFLOAD_THRESHOLD` | `2000` | 卸载阈值（token，CJK 感知估算） |
+| `TM_OFFLOAD_THRESHOLD` | `2000` | 全局卸载兜底阈值（token，CJK 感知估算）——内容类别未知时使用 |
+| `TM_OFFLOAD_THRESHOLD_TEXT` | `4000` | 散文类（text / log / markdown）卸载阈值 |
+| `TM_OFFLOAD_THRESHOLD_DATA` | `2000` | 结构化载荷（json / csv / code / binary）卸载阈值 |
 | `TM_PREVIEW_MAX_TOKENS` | `80` | 预览硬顶 |
 | `TM_FETCH_MAX_LINES` | `2000` | tm_fetch 单页行数上限 |
 | `TM_BLACKBOARD_DIR` / `TM_TRAJECTORY_DIR` | `<repo>/.git/opencode-team/…` | 卸载存储 / 轨迹账本（tmpdir 回退；显式值 = 绝对或项目相对） |
 | `TM_BLACKBOARD_TTL` | `7` | 存储保留天数 |
 | `TM_BASH_READONLY_ALLOWED` | 内置表 | tm_bash 白名单 |
-| `TM_WEBFETCH_ALLOWED_DOMAINS` | 21 个种子主机 | tm_webfetch / tm_search / tm_browser 白名单（`"*"` 全开；空 = 全拒） |
+| `TM_SEARCH_DEFAULT_ENGINE` | `auto` | tm_search 未显式给 `engine` 时的默认引擎（`auto` = 分类 + 并行扇出 + RRF 融合；也可钉表中任一引擎） |
+| `TM_WEBFETCH_ALLOWED_DOMAINS` | 23 个种子主机 | tm_webfetch / tm_search / tm_browser 白名单（`"*"` 全开；空 = 全拒；自定义值**替换**种子——保留引擎主机） |
 | `TM_BROWSER_PATH` | 自动探测 | tm_browser 可执行文件覆盖（默认用你的默认浏览器——Chromium 系时；否则回退 Edge/Chrome 探测） |
 | `TM_BROWSER_HEADLESS` | `auto` | `1` 无头（CI）/ `0` 有头 / `auto`（仅无显示的 Linux 用无头） |
-| `TM_MEMORY_GLOBAL_DIR` | `~/.opencode-team/memories/global/` | tm_memory GLOBAL 作用域存储 |
+| `TM_BROWSER_ENGINE` | `playwright` | `playwright`（需 Node ≥ 20；导入失败自动降级）/ `cdp-legacy`（零依赖 CDP pipe，仅核心动词） |
+| `TM_BROWSER_SNAPSHOT_MAX_TOKENS` | `1200` | `take_snapshot` 载荷硬顶 |
+| `TM_BROWSER_USER_DATA_DIR` | —（隔离临时 profile） | 显式持久 profile 目录——登录态跨会话保留的唯一途径 |
+| `TM_MEMORY_GLOBAL_DIR` | `~/.opencode-team/memories/global/` | tm_memory GLOBAL 层存储 |
+| `TM_MEMORY_SESSION_TTL_MIN` | `240` | session 层条目 TTL（惰性 + 启动清扫） |
+| `TM_MEMORY_MAX_ENTRIES` | `200` | 每作用域条目上限；超限 add 故意失败——先跑 `compact` |
+| `TM_MEMORY_STALE_DAYS` | `30` | 超过此天数的条目在搜索结果标 `[stale Nd]`（`0` 关闭） |
+| `TM_MEMORY_SESSION_PERSIST` | —（瞬态） | `1` 时 session 条目同时落盘 `memories/sessions/<sid>/` |
 | `TM_HIT_BLACKLIST` | `maimai.cn` | 永不进入搜索命中列表的额外域名（逗号/分号分隔；过滤同名不同站噪音） |
 | `TM_PTC_MAX_PROGRAM_CHARS` | `4000` | PTC 程序源码上限 |
 | `TM_PTC_MAX_CALLS` | `20` | PTC 单次运行桥接调用预算（1–200） |
 | `TM_PTC_MAX_ERRORS` | `3` | PTC 单次运行错误预算（1–50） |
 | `TM_PTC_TIMEOUT_MS` | `60000` | PTC 单次运行墙钟超时（5s–10min） |
 | `TM_PTC_ENGINE` | `auto` | `auto`（worker→inline 降级）/ `worker` / `inline` |
+| `TM_PTC_WEB_BRIDGE` | `on` | 向 PTC 程序暴露 `tm.search` / `tm.webfetch`（`off` 从桥接集移除） |
 
 ---
 
@@ -400,6 +450,9 @@ Team Lead 自己从不删黑板，你可以随时审计任何一次运行。
   路由低于 3 次派工就是路由 bug。
 - **审批门禁（计数式）：** ≥2 次派工 → 计划（≤30 行）→ **等你批准** → 执行。
   阻塞性问题立刻批量问，不猜、不挤牙膏。
+- **并发派工：** 互相独立的派工批进**同一轮**并行执行（多 implementer 各带
+  文件所有权 + 原文数据契约、三维度评审、分包 tester 同时跑）；派工权 Team
+  Lead 独有——专家角色已收回 `task`，子代理不再生子代理。
 - **自适应评审：** 默认一名评审；高风险画像（鉴权/安全面、跨模块契约、
   公共 API）才三维度并行。
 - **静态验证：** 构建 / 类型检查 / lint / 测试。禁止临时起意的浏览器自动化；

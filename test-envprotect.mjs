@@ -383,6 +383,14 @@ console.log("6. loader integration: OK (hook installed, env wiring, off passthro
   assert.equal(resolveAskTimeoutMs({ TM_ASK_TIMEOUT_MIN: "1" }), 180000, "1min clamps UP to the 3-min floor (no D4 double-reject race)")
   assert.equal(resolveAskTimeoutMs({ TM_ASK_TIMEOUT_MIN: "2" }), 180000, "2min clamps to the floor")
   assert.equal(resolveAskTimeoutMs({ TM_ASK_TIMEOUT_MIN: " 3 " }), 180000, "floor honoured + trimmed")
+  // P0 floor knob (TM_ASK_TIMEOUT_FLOOR_MIN, resolveTmConfig().askTimeoutFloorMin):
+  // the clamp floor is now read from config, not hardcoded.  Defaults to 3 so
+  // the D4 race stays guarded; a probe-approved lowering is a CONFIG change.
+  assert.equal(resolveAskTimeoutMs({ TM_ASK_TIMEOUT_MIN: "1", TM_ASK_TIMEOUT_FLOOR_MIN: "5" }), 300000, "floor knob: 1min clamps to a configured 5-min floor")
+  assert.equal(resolveAskTimeoutMs({ TM_ASK_TIMEOUT_MIN: "10", TM_ASK_TIMEOUT_FLOOR_MIN: "5" }), 600000, "floor knob: a value above the floor is honoured unchanged")
+  assert.equal(resolveAskTimeoutMs({ TM_ASK_TIMEOUT_MIN: "1", TM_ASK_TIMEOUT_FLOOR_MIN: "1" }), 60000, "floor knob lowered to 1 -> 1min is now legal (probe gate is a config change, not source)")
+  assert.equal(resolveAskTimeoutMs({ TM_ASK_TIMEOUT_MIN: "1", TM_ASK_TIMEOUT_FLOOR_MIN: "0" }), 180000, "invalid floor (0<1) falls back to the default 3")
+  assert.equal(resolveAskTimeoutMs({ TM_ASK_TIMEOUT_MIN: "2", TM_ASK_TIMEOUT_FLOOR_MIN: "abc" }), 180000, "non-numeric floor falls back to the default 3")
   assert.equal(resolveAskTimeoutMs({ TM_ASK_TIMEOUT_MIN: "10" }), 600000, "10min honoured unchanged")
   assert.equal(resolveAskTimeoutMs({ TM_ASK_TIMEOUT_MIN: "1440" }), 86400000, "24h boundary honoured")
   for (const bad of ["0", "-5", "99999", "abc", "1.5x", ""]) {
@@ -678,16 +686,34 @@ console.log("6. loader integration: OK (hook installed, env wiring, off passthro
     assert.equal(gate.canDefer("ses_team"), false, "disposed gate defers nothing")
   }
 
-  // 7g. SDK reply FAILURE -> degraded -> fail-closed (no more timers armed).
-  // Round-fix M2: the v1 client defaults to throwOnError:false — HTTP/4xx
-  // REPLY CALLS RESOLVE with an { error } envelope (sdk.gen contract).  The
-  // old Promise.reject-only mock had no teeth: real-host dead ids resolved
-  // happily and the degraded flip never fired.  Pin BOTH failure shapes.
-  for (const shape of ["envelope", "rejection"]) {
+  // 7g. SDK reply FAILURE is CLASSIFIED, not a blanket degraded flip.
+  // Round-fix M2 kept: the v1 client defaults to throwOnError:false — an HTTP
+  // failure RESOLVES with an envelope.  The REAL contract (now pinned) is
+  // `{ error: { name, data:{message} }, response: { status } }` — the old mock
+  // faked a top-level `{error:{name,status}}` shape the host never sends.  A
+  // 404/NotFound means the dialog was ALREADY closed (the D4 late-reply race):
+  // BENIGN — do NOT degrade.  A 400/BadRequest is a reply-shape bug and a real
+  // Error / 5xx / empty body is transport — both still fail closed.  Pin the
+  // classifier, the per-class gate behaviour, and never-self-allow intact.
+  {
+    // 7g-0. classifyReplyFailure (unit) on the real envelope shapes.
+    assert.equal(ag.classifyReplyFailure(Object.assign(new Error("x"), { status: 404 })), "benign-closed", "404 -> benign-closed")
+    assert.equal(ag.classifyReplyFailure({ name: "PermissionNotFound" }), "benign-closed", "PermissionNotFound name -> benign-closed")
+    assert.equal(ag.classifyReplyFailure({ _tag: "NotFoundError" }), "benign-closed", "_tag NotFound -> benign-closed")
+    assert.equal(ag.classifyReplyFailure({ name: "BadRequest", status: 400 }), "param-shape", "400/BadRequest -> param-shape")
+    assert.equal(ag.classifyReplyFailure({ name: "InvalidRequest", data: { message: "bad" } }), "param-shape", "InvalidRequest name -> param-shape")
+    assert.equal(ag.classifyReplyFailure(new Error("host down")), "transport", "real Error -> transport")
+    assert.equal(ag.classifyReplyFailure({ name: "InternalServerError", status: 500 }), "transport", "5xx -> transport")
+    assert.equal(ag.classifyReplyFailure(undefined), "transport", "empty/undefined -> transport")
+  }
+
+  // Arm one bash-env dialog, fire the timeout auto-reject against a reply
+  // endpoint whose shape is `shape`, return { gate, logs, replies }.
+  async function driveFailedReply(shape) {
     const logs = []
-    // this-bound host mocks (same anti-unbind teeth as 7f) — an unbound
-    // reply call would throw BEFORE the failure shapes below are even
-    // reached, and the degraded assertions then fail
+    const replies = []
+    // this-bound host mocks (same anti-unbind teeth as 7f) — an unbound reply
+    // call would throw BEFORE the failure shapes below are even reached.
     const appOwner = {
       log(req) {
         if (this !== appOwner) throw new TypeError("SDK app.log called unbound (this lost)")
@@ -696,11 +722,21 @@ console.log("6. loader integration: OK (hook installed, env wiring, off passthro
     }
     const client = {
       app: appOwner,
-      postSessionIdPermissionsPermissionId() {
+      postSessionIdPermissionsPermissionId(o) {
         if (this !== client) throw new TypeError("SDK reply endpoint called unbound (this lost)")
-        return shape === "envelope"
-          ? Promise.resolve({ error: { name: "NotFoundError", status: 404 }, data: undefined })
-          : Promise.reject(new Error("host down at /api/secret-path"))
+        replies.push(o)
+        // REAL v1 envelope contract: { error: {...}, response: { status } }.
+        if (shape === "rejection") return Promise.reject(new Error("host down at /api/secret-path"))
+        if (shape === "closedTag") return Promise.resolve({ error: { _tag: "PermissionNotFound" }, response: {} })
+        if (shape === "empty") return Promise.resolve({ error: { name: "Error" }, response: undefined })
+        const meta =
+          shape === "closed404" ? { status: 404, name: "NotFoundError" }
+          : shape === "shape400" ? { status: 400, name: "BadRequest" }
+          : { status: 500, name: "InternalServerError" }
+        return Promise.resolve({
+          error: { name: meta.name, data: { message: "detail at /api/secret-path" } },
+          response: { status: meta.status },
+        })
       },
     }
     const made = []
@@ -712,20 +748,113 @@ console.log("6. loader integration: OK (hook installed, env wiring, off passthro
     assert.equal(gate.canDefer("s"), true, `${shape}: registered while healthy`)
     made[0].cb()
     await flush()
-    assert.equal(gate.pendingSize(), 0, `${shape}: entry dropped even on failure`)
-    assert.equal(gate.isArmed(), false, `${shape}: a failed auto-reject degrades the gate (fail-closed)`)
-    assert.equal(gate.canDefer("s"), false, `${shape}: degraded gate defers NOTHING even for registered sessions`)
+    return { gate, logs, replies }
+  }
+
+  // benign-closed (404 real envelope): NO degraded flip, already-closed audit.
+  {
+    const { gate, logs, replies } = await driveFailedReply("closed404")
+    assert.equal(gate.pendingSize(), 0, "closed404: entry dropped even though already closed")
+    assert.equal(gate.isArmed(), true, "closed404: a benign 'already closed' does NOT degrade the gate")
+    assert.equal(gate.canDefer("s"), true, "closed404: a healthy gate still defers for the session")
+    assert.ok(replies.every((r) => r.body.response === "reject"), "closed404: the plugin STILL only rejects (never self-allows)")
+    const line = logs.find((l) => /:: already-closed/.test(l))
+    assert.ok(line, "closed404: 'already-closed' verdict audited")
+    assert.ok(/err=NotFoundError status=404$/.test(line), "closed404: non-privacy status diagnostic preserved via the envelope")
+    assert.ok(!logs.some((l) => /degraded/.test(l)), "closed404: never audited degraded")
+    assert.ok(!/secret-path|FOO|detail/.test(line), "closed404: error message / params never audited")
+  }
+  // benign-closed via _tag with NO numeric status: still benign (no flip).
+  {
+    const { gate, logs } = await driveFailedReply("closedTag")
+    assert.equal(gate.isArmed(), true, "closedTag: a _tag NotFound (no status) is benign too")
+    assert.ok(logs.some((l) => /:: already-closed/.test(l)), "closedTag: already-closed audited")
+  }
+  // param-shape (400): STILL fails closed, rejected-shape-bug audit.
+  {
+    const { gate, logs } = await driveFailedReply("shape400")
+    assert.equal(gate.isArmed(), false, "shape400: a reply-shape bug fails closed (degrades)")
+    assert.equal(gate.canDefer("s"), false, "shape400: degraded gate defers nothing")
+    const line = logs.find((l) => /:: rejected-shape-bug/.test(l))
+    assert.ok(line, "shape400: 'rejected-shape-bug' verdict audited")
+    assert.ok(/err=BadRequest status=400$/.test(line), "shape400: status diagnostic on the bug audit")
+    assert.ok(!/secret-path|detail|FOO/.test(line), "shape400: message never audited")
+  }
+  // transport (real Error rejection): STILL fails closed — the historic path.
+  {
+    const { gate, logs, replies } = await driveFailedReply("rejection")
+    assert.equal(gate.isArmed(), false, "rejection: a transport failure fails closed")
+    assert.equal(gate.canDefer("s"), false, "rejection: degraded gate defers nothing")
+    assert.ok(replies.every((r) => r.body.response === "reject"), "rejection: only a reject was ever sent")
+    const line = logs.find((l) => /:: degraded/.test(l))
+    assert.ok(line, "rejection: degraded verdict audited")
+    assert.ok(/err=Error$/.test(line), "rejection: error class recorded, no status")
+    assert.ok(!/host down|secret-path|FOO/.test(line), "rejection: message/params never audited")
     gate.handleEvent({ type: "permission.asked", properties: { id: "y", sessionID: "s", permission: "bash", patterns: ["env"], metadata: { command: "env" } } })
-    assert.equal(gate.pendingSize(), 0, `${shape}: degraded gate stops opening new timers`)
-    // degraded audit carries a NON-PRIVACY diagnostic: error class + host
-    // status only (live-host debuggability), never message text or paths
-    const diag = logs.find((l) => /:: degraded/.test(l))
-    assert.ok(diag, `${shape}: degraded verdict audited`)
-    assert.ok(
-      shape === "envelope" ? /err=NotFoundError status=404$/.test(diag) : /err=Error$/.test(diag),
-      `${shape}: degraded audit records err.name${shape === "envelope" ? " + status" : ""}`,
-    )
-    assert.ok(!/host down|secret-path|FOO/.test(diag), `${shape}: error message/params never audited`)
+    assert.equal(gate.pendingSize(), 0, "rejection: a degraded gate stops opening new timers")
+  }
+  // transport (5xx envelope): fails closed.
+  {
+    const { gate, logs } = await driveFailedReply("fiveHundred")
+    assert.equal(gate.isArmed(), false, "fiveHundred: a 5xx envelope is transport -> degrade")
+    assert.ok(logs.some((l) => /:: degraded/.test(l)), "fiveHundred: degraded audited")
+  }
+  // transport (status-less error body): fails closed.
+  {
+    const { gate, logs } = await driveFailedReply("empty")
+    assert.equal(gate.isArmed(), false, "empty: a status-less error body is transport -> degrade")
+    assert.ok(logs.some((l) => /:: degraded/.test(l)), "empty: degraded audited")
+  }
+
+  // 7g-2. R1#8 LATE VERDICT: the timer auto-rejected (the reject landed), THEN
+  // the human's real reply reached the plugin late.  A `late-<verdict>` audit
+  // is recorded for observability ONLY — it never re-arms, never revives the
+  // command, and sends no second SDK reply (the plugin still only rejects).
+  {
+    const logs = []
+    const replies = []
+    const appOwner = {
+      log(req) {
+        if (this !== appOwner) throw new TypeError("SDK app.log called unbound (this lost)")
+        logs.push(String(req?.body?.message ?? ""))
+      },
+    }
+    const client = {
+      app: appOwner,
+      postSessionIdPermissionsPermissionId(o) {
+        if (this !== client) throw new TypeError("SDK reply endpoint called unbound (this lost)")
+        replies.push(o)
+        return Promise.resolve({ data: true })
+      },
+    }
+    const made = []
+    const fake = { setTimeoutFn: (cb) => { const t = { cb, cleared: false }; made.push(t); return t }, clearTimeoutFn: (h) => { if (h) h.cleared = true } }
+    const gate = createApprovalGate({ client, timeoutMs: 1000, timers: fake })
+    gate.handleEvent({ type: "permission.asked", properties: { id: "per_late", sessionID: "ses_l", permission: "bash", patterns: ["printenv PATH"], metadata: { command: "printenv PATH" } } })
+    made[0].cb() // the timer fires first -> the auto-reject lands
+    await flush()
+    assert.ok(logs.some((l) => l.endsWith(":: bash :: env :: timeout-rejected")), "late-1: the timeout auto-reject was audited")
+    const repliesAfterTimeout = replies.length
+    // the human's genuine "once" now arrives LATE (past the timer) on a real reply word:
+    gate.handleEvent({ type: "permission.replied", properties: { sessionID: "ses_l", requestID: "per_late", reply: "once" } })
+    assert.ok(logs.some((l) => l.endsWith(":: bash :: env :: late-allowed-once")), "late-2: the real verdict is recorded as late-<verdict>")
+    assert.equal(replies.length, repliesAfterTimeout, "late-3: NO second SDK reply is sent on a late verdict (never revive, never self-allow)")
+    assert.equal(gate.pendingSize(), 0, "late-4: the late reply re-arms nothing")
+    gate.handleEvent({ type: "permission.asked", properties: { id: "per_late", sessionID: "ses_l", permission: "bash", patterns: ["printenv PATH"], metadata: { command: "printenv PATH" } } })
+    assert.equal(gate.pendingSize(), 0, "late-5: the closed id stays tombstoned after the late verdict (ghost still suppressed)")
+    // an out-of-vocabulary late word must NOT fabricate a verdict / late-degraded
+    const lateBefore = logs.filter((l) => /late-/.test(l)).length
+    assert.ok(lateBefore >= 1, "late-pre: the per_late 'once' reply already produced a late-allowed-once")
+    gate.handleEvent({ type: "permission.asked", properties: { id: "per_l2", sessionID: "ses_l2", permission: "bash", patterns: ["printenv"], metadata: { command: "printenv" } } })
+    made[made.length - 1].cb()
+    await flush()
+    gate.handleEvent({ type: "permission.replied", properties: { sessionID: "ses_l2", requestID: "per_l2", reply: "lgtm" } })
+    assert.equal(logs.filter((l) => /late-/.test(l)).length, lateBefore, "late-6: an unknown late word never becomes a late-<verdict>")
+    assert.ok(!logs.some((l) => /late-degraded/.test(l)), "late-6b: no fabricated late-degraded for an out-of-vocab word")
+    // a reply for an id we NEVER saw must NOT self-trigger a late audit (the
+    // wasClosed guard reads closed.has() BEFORE this reply tombstones it).
+    gate.handleEvent({ type: "permission.replied", properties: { sessionID: "ses_unknown", requestID: "per_unknown", reply: "once" } })
+    assert.equal(logs.filter((l) => /late-/.test(l)).length, lateBefore, "late-7: an unknown-id reply does not fabricate a late verdict")
   }
 
   // 7h. hook-level deferral wiring — now SESSION-SCOPED (round-fix C1): the

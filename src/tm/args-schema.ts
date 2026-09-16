@@ -9,6 +9,8 @@
  * times), even though flat args reached execute fine.
  */
 
+import { resolveTmConfig } from "./config.js"
+
 /**
  * Load zod when the host environment provides it (opencode ships it as a
  * peer); fall back to plain arg descriptors so the plugin never hard-depends
@@ -48,24 +50,27 @@ async function buildArgsSchemas(): Promise<Record<string, Record<string, unknown
       tm_read: describe(null, null, "path: string (required)"),
       tm_grep: describe(null, null, "pattern: string (required), path: string (optional)"),
       tm_bash: describe(null, null, "command: string (required, read-only allowlisted)"),
-      tm_fetch: describe(null, null, "ref: string (required), access_token: string, offset: int, limit: int, mode: lines|structure"),
+      tm_fetch: describe(null, null, "ref: string (required), access_token: string, offset: int, limit: int, mode: lines|structure, fields: dot-path (json handle projection)"),
     }
   }
   interface ZodChainable {
     describe: (d: string) => ZodChainable
-    optional: () => unknown
+    optional: () => { describe: (d: string) => unknown }
   }
   interface ZodNumberLike {
     int: () => ZodNumberLike
     min: (n: number) => ZodNumberLike
     describe: (d: string) => ZodNumberLike
-    optional: () => unknown
+    optional: () => { describe: (d: string) => unknown }
   }
   const zz = z as unknown as {
     string: () => ZodChainable
     number: () => ZodNumberLike
     object: (shape: Record<string, unknown>) => unknown
-    enum: (values: string[]) => ZodChainable
+    enum: (values: string[]) => {
+      describe: (d: string) => unknown
+      optional: () => { describe: (d: string) => unknown }
+    }
   }
   // RAW SHAPES — no zz.object() wrapper (BUG#3).
   return {
@@ -78,10 +83,13 @@ async function buildArgsSchemas(): Promise<Record<string, Record<string, unknown
     },
     tm_grep: {
       pattern: zz.string().describe("Regex to search (ripgrep syntax)."),
+      // describe-LAST on every optional chain — zod v4 drops a description
+      // applied before .optional() when the shape is serialized (see
+      // buildMemoryArgsSchema); a required field's describe stays first.
       path: zz
         .string()
-        .describe("Optional directory scope, relative to the project root.")
-        .optional(),
+        .optional()
+        .describe("Optional directory scope, relative to the project root."),
     },
     tm_bash: {
       command: zz
@@ -96,24 +104,30 @@ async function buildArgsSchemas(): Promise<Record<string, Record<string, unknown
         .describe("Offload handle ref: tm://runs/{run_id}/steps/{step_id}/result"),
       access_token: zz
         .string()
-        .describe("HMAC token from the offload handle (may also ride the ref fragment).")
-        .optional(),
+        .optional()
+        .describe("HMAC token from the offload handle (may also ride the ref fragment)."),
       offset: zz
         .number()
         .int()
         .min(0)
-        .describe("0-based line offset of the first line to return.")
-        .optional(),
+        .optional()
+        .describe("0-based line offset of the first line to return."),
       limit: zz
         .number()
         .int()
         .min(1)
-        .describe("Max lines per fetch, capped at TM_FETCH_MAX_LINES (default 2000).")
-        .optional(),
+        .optional()
+        .describe("Max lines per fetch, capped at TM_FETCH_MAX_LINES (default 2000)."),
       mode: zz
         .enum(["lines", "structure"])
-        .describe("structure = ~100-token TOC / key tree / error-line map; try it first.")
-        .optional(),
+        .optional()
+        .describe("structure = ~100-token TOC / key tree / error-line map; try it first."),
+      fields: zz
+        .string()
+        .optional()
+        .describe(
+          "Dot-path projection over a JSON handle (T4): e.g. items[].name or user.email; returns ONLY the matched values. Ignored on a non-JSON handle.",
+        ),
     },
   }
 }
@@ -132,15 +146,29 @@ export async function buildPtcArgsSchema(): Promise<Record<string, unknown>> {
     return {
       program: { descriptor: "program: string (required, async fn body, ≤TM_PTC_MAX_PROGRAM_CHARS)" },
       label: { descriptor: "label: string (optional, ≤80 chars)" },
-      budgets: { descriptor: "budgets: { max_calls?, max_errors?, timeout_ms? } (optional, tighten-only)" },
+      budgets: { descriptor: "budgets: { max_calls?, max_errors?, timeout_ms? } (optional, tighten-only; any other key is rejected)" },
     }
   }
   const zz = z as unknown as {
     string: () => {
-      describe: (d: string) => { optional: () => unknown }
+      optional: () => { describe: (d: string) => unknown }
+      describe: (d: string) => unknown
     }
-    any: () => {
-      describe: (d: string) => { optional: () => unknown }
+    number: () => {
+      int: () => {
+        min: (n: number) => {
+          optional: () => { describe: (d: string) => unknown }
+          describe: (d: string) => unknown
+        }
+      }
+    }
+    object: (shape: Record<string, unknown>) => {
+      strict: () => {
+        optional: () => { describe: (d: string) => unknown }
+        describe: (d: string) => unknown
+      }
+      optional: () => { describe: (d: string) => unknown }
+      describe: (d: string) => unknown
     }
   }
   return {
@@ -149,13 +177,27 @@ export async function buildPtcArgsSchema(): Promise<Record<string, unknown>> {
       .describe(
         "Async function body. Available: tm.read(args), tm.grep(args), tm.bash(args), tm.fetch(args) — each returns {ok:true, data} or {ok:false, error:{tool,phase,line?,message}}. `return` a value for the aggregation summary.",
       ),
-    label: zz.string().describe("Optional run label (≤80 chars).").optional(),
+    // Wave B Minor③: zod v4 DROPS a description set before .optional() when
+    // the shape is serialized, so every optional chain here is describe-LAST
+    // (matches buildMemoryArgsSchema / buildBrowserArgsSchema).
+    label: zz.string().optional().describe("Optional run label (≤80 chars)."),
+    // Fix batch T1: an EXPLICIT zod object — z.any() let host-side arg
+    // handling mangle the budgets value so parsePtcArgs never saw it and
+    // the caller's budgets silently fell back to the defaults.
+    // Wave B Minor②: .strict() rejects unknown budget keys (a typo like
+    // max_call silently read as an omitted default before — now it fails
+    // loudly).  parsePtcArgs enforces the same at the runtime layer.
     budgets: zz
-      .any()
+      .object({
+        max_calls: zz.number().int().min(1).optional().describe("Max bridged tm_* calls (tighten-only)."),
+        max_errors: zz.number().int().min(1).optional().describe("Max failed bridged calls (tighten-only)."),
+        timeout_ms: zz.number().int().min(1).optional().describe("Wall-clock budget in ms (floor 5000, tighten-only)."),
+      })
+      .strict()
+      .optional()
       .describe(
-        "Optional budgets object { max_calls?, max_errors?, timeout_ms? } — tighten-only, clamped to the TM_PTC_* ceilings.",
-      )
-      .optional(),
+        "Optional budgets object { max_calls?, max_errors?, timeout_ms? } — tighten-only, clamped to the TM_PTC_* ceilings. Unknown keys are rejected.",
+      ),
   }
 }
 
@@ -169,16 +211,28 @@ export async function buildWebfetchArgsSchema(): Promise<Record<string, unknown>
   if (!z) {
     return {
       url: { descriptor: "url: string (required, absolute https URL on an allowlisted host, query URL-encoded)" },
+      fields: { descriptor: "fields: string (optional, dot-path projection over a JSON response, e.g. items[].name; ignored on non-JSON)" },
     }
   }
+  // describe-LAST on the optional `fields` chain (zod v4 drops a
+  // description set before .optional(); see buildMemoryArgsSchema).
   const zz = z as unknown as {
-    string: () => { describe: (d: string) => unknown }
+    string: () => {
+      describe: (d: string) => unknown
+      optional: () => { describe: (d: string) => unknown }
+    }
   }
   return {
     url: zz
       .string()
       .describe(
-        "Absolute https URL on an allowlisted host (seeded: mobile.moegirl.org.cn, search.bilibili.com, cn.bing.com, www.baidu.com, www.sogou.com, www.so.com, registry.npmjs.org, api.github.com). URL-encode the query (CJK terms too).",
+        "Absolute https URL on an allowlisted host (seeded: mobile.moegirl.org.cn, search.bilibili.com, cn.bing.com, www.baidu.com, www.sogou.com, www.so.com, registry.npmjs.org, api.github.com, api.stackexchange.com, hn.algolia.com). URL-encode the query (CJK terms too).",
+      ),
+    fields: zz
+      .string()
+      .optional()
+      .describe(
+        "Dot-path projection over a JSON response body (Wave B M2): e.g. items[].name or user.email — returns ONLY the matched values, mirroring tm_fetch's `fields`. Ignored when the response is not JSON.",
       ),
   }
 }
@@ -187,26 +241,47 @@ export async function buildWebfetchArgsSchema(): Promise<Record<string, unknown>
  * tm_search args — same ZodRawShape treatment (BUG#3 class); descriptor
  * fallback when zod is absent.  tm/index awaits this and passes the result
  * into buildTmSearchTool as `deps.args`.
+ *
+ * Wave B M1 — the engine list is DERIVED from search.ts's live
+ * `SEARCH_ENGINE_NAMES` + `AUTO_ENGINE_KEY`, never hand-written: a static
+ * copy here once drifted to a dead roster (bing-int/sogou/so/baidu kept,
+ * stackoverflow/hn/auto missing, default lied "bing").  Because
+ * buildTmSearchTool uses `deps.args ?? fallback`, this schema IS the
+ * model-visible surface in production (the search.ts fallback never fires),
+ * so it must not go stale.  `defaultEngine` falls back to
+ * resolveTmConfig().searchDefaultEngine so the descriptor states the real
+ * default (auto) — callers may pass cfg.searchDefaultEngine explicitly.
+ * The §6m-s anti-drift test asserts the descriptor names every
+ * SEARCH_ENGINE_NAMES entry and none of the removed engines.
  */
-export async function buildSearchArgsSchema(): Promise<Record<string, unknown>> {
+export async function buildSearchArgsSchema(
+  defaultEngine?: string,
+): Promise<Record<string, unknown>> {
+  const { AUTO_ENGINE_KEY, SEARCH_ENGINE_NAMES } = await import("./search.js")
+  const defEngine =
+    (defaultEngine && defaultEngine.trim()) || resolveTmConfig().searchDefaultEngine || AUTO_ENGINE_KEY
+  const engineList = `${AUTO_ENGINE_KEY}|${SEARCH_ENGINE_NAMES.join("|")}`
+  const engineDesc =
+    `engine: ${engineList} (optional, default ${defEngine}). ` +
+    `"${AUTO_ENGINE_KEY}" classifies the query and fans the matching engines out in parallel ` +
+    `(weighted-RRF fused top-10); an explicit name runs that single engine ` +
+    `(bing = the live CN HTML SERP; stackoverflow/hn/npm/github/moegirl/bilibili = structured JSON).`
   const z = await loadZod()
   if (!z) {
     return {
       query: { descriptor: "query: string (required, raw text — CJK fine, encoded here)" },
-      engine: { descriptor: "engine: bing|bing-int|sogou|so|baidu|bilibili|npm|github (optional, default bing)" },
+      engine: { descriptor: engineDesc },
     }
   }
   const zz = z as unknown as {
-    string: () => { describe: (d: string) => { optional: () => unknown } }
+    string: () => {
+      describe: (d: string) => unknown
+      optional: () => { describe: (d: string) => unknown }
+    }
   }
   return {
     query: zz.string().describe("Raw search query — pass text as-is; the tool URL-encodes it (CJK included)."),
-    engine: zz
-      .string()
-      .describe(
-        "bing (default) | bing-int (international results) | sogou | so (360) | baidu | bilibili | moegirl (wiki search API, structured) | npm (registry search, structured) | github (repo search API, structured).",
-      )
-      .optional(),
+    engine: zz.string().optional().describe(engineDesc),
   }
 }
 
@@ -218,51 +293,130 @@ export async function buildMemoryArgsSchema(): Promise<Record<string, unknown>> 
   const z = await loadZod()
   if (!z) {
     return {
-      action: { descriptor: "action: add|search|list|forget (required)" },
+      action: { descriptor: "action: add|search|list|forget|compact (required)" },
       title: { descriptor: "title: string (add/forget)" },
       content: { descriptor: "content: string (add, ≤4000 chars)" },
       category: { descriptor: "category: string (add, optional)" },
       keywords: { descriptor: "keywords: string[] or comma string (add, optional)" },
       usage_scenario: { descriptor: "usage_scenario: string[] or comma string (add, optional)" },
       query: { descriptor: "query: string (search)" },
-      scope: { descriptor: "scope: project|global (optional, default project)" },
+      scope: { descriptor: 'scope: project|global|session (optional, default project; compact also accepts "all")' },
+      apply: { descriptor: "apply: boolean (compact only; absent = dry-run, true performs the merges)" },
     }
   }
+  // `.optional().describe(...)` — the description MUST be applied to the
+  // FINAL wrapper: zod (v4 confirmed) drops a description set before
+  // .optional() when the host serializes the shape, so describe-first would
+  // leave the model blind to the very text this descriptor exists to carry.
   const zz = z as unknown as {
-    string: () => { describe: (d: string) => { optional: () => unknown } }
+    string: () => {
+      describe: (d: string) => unknown
+      optional: () => { describe: (d: string) => unknown }
+    }
+    boolean: () => { optional: () => { describe: (d: string) => unknown } }
   }
   return {
-    action: zz.string().describe("add | search | list | forget."),
-    title: zz.string().describe("Memory title (add/forget).").optional(),
-    content: zz.string().describe("One condensed fact, ≤4000 chars (add).").optional(),
-    category: zz.string().describe("Category slug, e.g. project_tech_stack (add, optional).").optional(),
-    keywords: zz.string().describe("Comma-separated keywords (add, optional).").optional(),
-    usage_scenario: zz.string().describe("Comma-separated when-to-use scenarios (add, optional).").optional(),
-    query: zz.string().describe("Search query (search).").optional(),
-    scope: zz.string().describe("project (default) | global.").optional(),
+    action: zz.string().describe("add | search | list | forget | compact."),
+    title: zz.string().optional().describe("Memory title (add/forget)."),
+    content: zz.string().optional().describe("One condensed fact, ≤4000 chars (add)."),
+    category: zz.string().optional().describe("Category slug, e.g. project_tech_stack (add, optional)."),
+    keywords: zz.string().optional().describe("Comma-separated keywords (add, optional)."),
+    usage_scenario: zz.string().optional().describe("Comma-separated when-to-use scenarios (add, optional)."),
+    query: zz.string().optional().describe("Search query (search)."),
+    scope: zz
+      .string()
+      .optional()
+      .describe('project (default) | global | session (transient, this conversation only); compact also accepts "all".'),
+    // memory.ts execute() reads args.apply (truthy gate on compact); the raw
+    // shape IS the model-visible param surface (the host serializes it into
+    // the LLM parameter spec), so an undeclared key is unreachable — declare
+    // it here or the model can never request a real compaction.
+    apply: zz
+      .boolean()
+      .optional()
+      .describe("compact only: absent = dry-run (report planned merges), true = perform them (originals backed up under memories/.compact-backup/)."),
   }
 }
 
 /**
  * tm_browser args — same ZodRawShape treatment (BUG#3 class); descriptor
  * fallback when zod is absent.
+ *
+ * STRIP BEHAVIOR / WHY EVERY FIELD IS DECLARED: this is a RAW shape, never
+ * wrapped in z.object() (BUG#3), so no zod-level .strip()/.passthrough()
+ * applies and execute() reads rawArgs verbatim.  But the host serializes
+ * exactly these keys into the LLM parameter spec — an undeclared field is
+ * invisible to the model and never reaches browser.ts, i.e. the shape is a
+ * CLOSED param surface in effect.  T5's 16 playwright verbs
+ * (BROWSER_PLAYWRIGHT_ACTIONS, browser.ts:505) + the 5 compat verbs consume
+ * 19 fields across execute/act (args.uid/selector/targetUid/targetSelector/
+ * text/key/function/expression/filePath/files/index/timeoutMs/dialogAction/
+ * promptText/clear/fullPage, browser.ts:956-1100, :1130-1170) — every one
+ * is declared below, or the corresponding verb silently loses its input.
  */
 export async function buildBrowserArgsSchema(): Promise<Record<string, unknown>> {
   const z = await loadZod()
+  const ACTION_LIST =
+    "navigate_page | take_snapshot | click | fill | hover | drag | press_key | select_page | upload_file | wait_for | evaluate_script | list_console_messages | list_network_requests | list_pages | take_screenshot | handle_dialog (16 playwright verbs) | open | navigate | read | screenshot | close (compat verbs)."
   if (!z) {
     return {
-      action: { descriptor: 'action: open|navigate|read|screenshot|close (required)' },
-      url: { descriptor: 'url: string (open/navigate, allowlisted https)' },
-      headless: { descriptor: 'headless: boolean (open, optional — default auto)' },
+      action: { descriptor: `action: ${ACTION_LIST} (required)` },
+      url: { descriptor: "url: string (open/navigate/navigate_page, allowlisted https)" },
+      headless: { descriptor: "headless: boolean (open, optional — default auto)" },
+      uid: { descriptor: "uid: snapshot [uid=eN] token (click/fill/hover/drag/upload_file/wait_for)" },
+      selector: { descriptor: "selector: CSS/text locator escape hatch (only when a snapshot cannot express the node)" },
+      targetUid: { descriptor: "targetUid: drag destination uid" },
+      targetSelector: { descriptor: "targetSelector: drag destination selector" },
+      text: { descriptor: "text: fill value / wait_for visible text" },
+      key: { descriptor: "key: press_key chord, e.g. Enter|Control+A" },
+      function: { descriptor: "function: JS function source for evaluate_script" },
+      expression: { descriptor: "expression: alias of function (evaluate_script)" },
+      filePath: { descriptor: "filePath: local file path for upload_file" },
+      files: { descriptor: "files: alias of filePath — single path or array of paths" },
+      index: { descriptor: "index: select_page target tab index from list_pages" },
+      timeoutMs: { descriptor: "timeoutMs: wait_for budget in ms (default 3000, clamped 100..30000)" },
+      dialogAction: { descriptor: "dialogAction: accept|dismiss for handle_dialog (default accept)" },
+      promptText: { descriptor: "promptText: prompt-dialog reply text for handle_dialog accept" },
+      clear: { descriptor: "clear: drain the console buffer after list_console_messages" },
+      fullPage: { descriptor: "fullPage: take_screenshot captures the full page (default viewport only)" },
     }
   }
+  // describe-LAST on every optional chain — zod v4 drops a description set
+  // before .optional() when the shape is serialized (see buildMemoryArgsSchema).
   const zz = z as unknown as {
-    string: () => { describe: (d: string) => { optional: () => unknown } }
-    boolean: () => { describe: (d: string) => { optional: () => unknown } }
+    string: () => {
+      describe: (d: string) => unknown
+      optional: () => { describe: (d: string) => unknown }
+    }
+    boolean: () => { optional: () => { describe: (d: string) => unknown } }
+    number: () => {
+      int: () => { min: (n: number) => { optional: () => { describe: (d: string) => unknown } } }
+    }
+    // upload_file accepts a single path OR an array — any() keeps the host
+    // spec from narrowing (and rejecting) the array shape.
+    any: () => { optional: () => { describe: (d: string) => unknown } }
   }
+  const str = (d: string) => zz.string().optional().describe(d)
+  const bool = (d: string) => zz.boolean().optional().describe(d)
   return {
-    action: zz.string().describe('open | navigate | read | screenshot | close.'),
-    url: zz.string().describe('Absolute https URL on an allowlisted host (open/navigate). URL-encode the query (CJK terms too).').optional(),
-    headless: zz.boolean().describe('Force headless/headful on open (optional — default auto by display availability).').optional(),
+    action: zz.string().describe(ACTION_LIST),
+    url: str("Absolute https URL on an allowlisted host (open/navigate/navigate_page). URL-encode the query (CJK terms too)."),
+    headless: bool("Force headless/headful on open (optional — default auto by display availability)."),
+    uid: str("Snapshot [uid=eN] token from the LATEST take_snapshot (click/fill/hover/drag source/upload_file/wait_for)."),
+    selector: str("CSS/text locator escape hatch — only for a node the snapshot cannot express; never guess locators."),
+    targetUid: str("drag destination uid from the latest take_snapshot."),
+    targetSelector: str("drag destination selector escape hatch."),
+    text: str("fill value, or the visible text to wait for with wait_for (uid or text — one of them)."),
+    key: str('press_key chord, e.g. "Enter" or "Control+A".'),
+    function: str("JS function/expression source for evaluate_script (returns the JSON-serialized value)."),
+    expression: str("Alias of function for evaluate_script."),
+    filePath: str("Local file path for upload_file (must exist on disk)."),
+    files: zz.any().optional().describe("Alias of filePath for upload_file — a single path or an array of paths."),
+    index: zz.number().int().min(0).optional().describe("select_page target tab index (0-based, from list_pages)."),
+    timeoutMs: zz.number().int().min(100).optional().describe("wait_for visibility budget in ms (engine default 3000, clamped to 30000)."),
+    dialogAction: str("handle_dialog verdict: accept (default) | dismiss."),
+    promptText: str("Reply text when handle_dialog accepts a prompt()-type dialog."),
+    clear: bool("Drain the buffered console messages after list_console_messages."),
+    fullPage: bool("take_screenshot captures the full page (default: viewport only)."),
   }
 }

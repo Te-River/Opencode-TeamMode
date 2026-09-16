@@ -7,9 +7,107 @@ registry saw 1.5.0 as the install-script fix release).
 
 ## [Unreleased]
 
+### Added
+- **tm_memory three tiers + self-maintenance (T1)**: a SESSION tier
+  (in-process, keyed by session, TTL-swept via `TM_MEMORY_SESSION_TTL_MIN`
+  default 240 min, ephemeral unless `TM_MEMORY_SESSION_PERSIST=1` mirrors to
+  `memories/sessions/<sid>/`); near-duplicate merge on add (dedupKey in the
+  same tier+category or title∪keywords Jaccard ≥ 0.6 folds into the existing
+  entry -- content wins, keywords union, old slug moves to `supersedes:`,
+  "已合并" answer, no second file); per-scope entry cap
+  `TM_MEMORY_MAX_ENTRIES` (200) -- add fails on purpose over it, pointing at
+  compact/forget; `[stale Nd]` tagging past `TM_MEMORY_STALE_DAYS` (30,
+  `0` off); new `compact` action -- dry-run by DEFAULT, `apply:true`
+  performs it after copying every original into a timestamped
+  `.compact-backup/` tree (rollback path).
+- **tm_search becomes a multi-engine front (T4)**: `stackoverflow`
+  (api.stackexchange.com 2.3 keyless JSON; 300/day/IP quota tracked
+  per-process -- `auto` swaps in bing on exhaustion) and `hn` (hn.algolia.com
+  story JSON) engines; new `auto` DEFAULT engine
+  (`TM_SEARCH_DEFAULT_ENGINE`): query classification (error-code /
+  dev-ecosystem / cjk / general), parallel fan-out, host+path dedup,
+  weighted-RRF fusion (stackoverflow/bing 0.4, others 0.2) into a top-10
+  list tagged with source engine(s); `protectCjkPhrase` guards multi-word
+  CJK queries on bing against markup-shuffle splitting; github engine folds
+  whitelisted `org:/user:/stars:/language:` qualifiers; SO/HN/npm/github
+  renders now carry per-hit snippets. `api.stackexchange.com` +
+  `hn.algolia.com` join the seeded domain allowlist (21 -> 23 hosts, only
+  while the default seed is in play).
+- **tm_fetch `fields` projection**: `fields: "<dot-path>"` serves JSON
+  handles through a deliberately small jq subset (`items[].name`,
+  `[].stargazers_count`) -- the raw body never pages into context.
+- **Content-class offload thresholds (T4)**: prose (text/log) ->
+  `TM_OFFLOAD_THRESHOLD_TEXT` (4000), json/csv/code/binary ->
+  `TM_OFFLOAD_THRESHOLD_DATA` (2000); an unknown/absent class falls back to
+  the global `TM_OFFLOAD_THRESHOLD` (2000) -- unset env knobs are fully
+  backward-compatible.
+- **tm_browser gains the playwright engine (T5)**: dynamic-imported
+  `playwright-core`, chrome-devtools-mcp-aligned 16 verbs (navigate_page,
+  take_snapshot, click, fill, hover, drag, press_key, select_page,
+  upload_file, wait_for, evaluate_script, list_console_messages,
+  list_network_requests, list_pages, take_screenshot, handle_dialog) + the 5
+  compat verbs; snapshot-first -- `take_snapshot` injects `[uid=eN]` tokens
+  into the ariaSnapshot YAML and follow-up actions address nodes by uid
+  instead of guessed locators; snapshots hard-capped by
+  `TM_BROWSER_SNAPSHOT_MAX_TOKENS` (1200); `TM_BROWSER_ENGINE` pins
+  `playwright|cdp-legacy`; any import failure or Node < 20 auto-degrades the
+  instance to the unchanged zero-dep cdp-legacy transport (core verbs);
+  persistent login ONLY via explicit `TM_BROWSER_USER_DATA_DIR`.
+- **tm_ptc_run web bridge (T6)**: `tm.search` / `tm.webfetch` facades inside
+  PTC programs (`TM_PTC_WEB_BRIDGE=on|off`), with per-call ctx rebind so the
+  host evaluates every bridge call against the CALLING agent's ruleset --
+  non-web roles are auto-denied, no new gating mechanism; GET idempotency
+  makes the client/execute/store phases retryable.
+- **Approval-gate reply-failure taxonomy (T2)**: `classifyReplyFailure`
+  splits a failed dialog reply -- host 404/NotFound = the dialog was
+  already closed (`already-closed` verdict, NO degraded flip), 400 /
+  BadRequest = our reply shape is wrong (`rejected-shape-bug`, flips),
+  transport/5xx/empty body = degraded as before; a closed-request tombstone
+  map lets a user reply landing AFTER the auto-reject audit as
+  `late-<verdict>` (observability only -- the reject stands, nothing is
+  re-run, the plugin still never self-allows); the auto-reject floor becomes
+  a knob `TM_ASK_TIMEOUT_FLOOR_MIN` (default 3; the 10-minute default stands
+  until the real-host latency probe passes).
+- **Lead `## Dispatch concurrency` prompt section (T3)**: independent
+  dispatches batch into ONE round (parallel implementers with per-file
+  ownership + verbatim contracts, 3-dimension reviews, split test suites);
+  serial only where scopes overlap; anti-patterns named (gate-splitting,
+  two implementers on one file). Pinned by test-blackboard.
+- PTC sandbox hardening: `staticPscan` strips template/string/comment
+  literals before scanning (a grep string naming `require`/`process` no
+  longer kills the whole program); the worker sandbox object is
+  null-prototype (the constructor -> outer `Function` leak is closed).
+- New suites `test-memory.mjs` (three tiers / merge / caps / compaction /
+  stale) and `test-browser.mjs` (engine selection + auto-degrade + the
+  16-verb mapping against a MOCK playwright module; the real smoke SKIPS
+  while the optional dep is absent); the `npm test` chain runs both.
+
 ### Changed
 - tm_memory search now enforces project > global precedence: same-title global entries are shadowed by project entries, project entries get a +2 near-tie weight; tool description and agent prompts document the project/global layer split.
 - tm_ptc_run intent: the PTC batching rule is now a plan-time trigger ("plan lists ≥3 probes → FIRST move is ONE tm_ptc_run"); researcher prompt gains a PTC-first recon section.
+- **Architect and reviewer lost `task` (T3 task-reclaim)**: `task` /
+  `todowrite` / `question` are LEAD-only grants now -- only the Team Lead
+  dispatches, no sub-agent spawns a sub-agent (the whitelist deny is
+  zero-bypass, live-verified).
+- **`playwright-core` moved from `dependencies` to `optionalDependencies`**:
+  the lockfile was out of sync (CI `npm ci` failed), and with
+  `engines: node>=18` vs playwright's own `node>=20`, Node 18/19 hosts died
+  on `npm install --engine-strict` before the auto-degrade could even run --
+  plus a hard dep taxed every install with ~9 MB. Now npm skips the optional
+  on old/unreachable hosts and the tested cdp-legacy fallback drives the
+  browser regardless. No browser binaries are ever downloaded: playwright
+  launches the user's own discovered Chromium-family browser by path, so
+  `npx playwright install` stays a publisher-side action and never enters
+  the user flow.
+
+### Removed
+- Dead CN HTML SERPs `sogou` / `so` (360) / `baidu` / `bing-int` are gone
+  from the tm_search engine table (2026-09-14 live benchmark: anti-bot
+  shells / 100% empty results) -- not even manually selectable; their
+  webfetch seed DOMAINS stay on the allowlist for page fetches.
+- The in-repo `test/` exam build and the `ptc-test.js` scratch harness were
+  cleaned out of the repository; the governed `test-*.mjs` suites at the
+  root are the only test surface.
 
 ## [1.5.11] - 2026-09-13
 

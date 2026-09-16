@@ -106,6 +106,59 @@ export interface TmConfig {
   ptcTimeoutMs: number
   /** Engine selection: auto (worker→inline fallback) | worker | inline. */
   ptcEngine: "auto" | "worker" | "inline"
+
+  // ---- TeamMode upgrade P0 knobs (design 20260915 §② contract) ----
+  // Declared HERE, consumed by their owning packages downstream (T1-T6);
+  // P0 is the single landing point so parallel packages never edit this file.
+  /** tm_memory session-scope entry TTL in minutes (lazy + boot sweep).
+   *  Consumed by memory.ts (T1). */
+  memorySessionTtlMin: number
+  /** tm_memory max entries per scope (project / global); over the cap,
+   *  add fails with a compact/forget hint.  Consumed by memory.ts (T1). */
+  memoryMaxEntries: number
+  /** tm_memory staleness marker age in days; 0 disables `[stale Nd]`
+   *  tagging on search hits.  Consumed by memory.ts (T1). */
+  memoryStaleDays: number
+  /** tm_memory session persistence: "" (default) = ephemeral in-process
+   *  Map only; "1" = also write under <storeBase>/memories/sessions/<sid>/.
+   *  Consumed by memory.ts (T1). */
+  memorySessionPersist: string
+  /** tm_search default engine when no explicit `engine` arg is given
+   *  ("auto" = current first-engine behavior).  Consumed by search.ts (T4). */
+  searchDefaultEngine: string
+  /** Offload boundary (estimated tokens) for the markdown/text/log prose
+   *  class.  Defaults to 4000 when NOTHING is set; but if the user only set
+   *  the global `TM_OFFLOAD_THRESHOLD` (no `TM_OFFLOAD_THRESHOLD_TEXT`),
+   *  this tier INHERITS the global so a prose-heavy session that raised the
+   *  boundary is not silently capped back to 4000.  An explicit
+   *  `TM_OFFLOAD_THRESHOLD_TEXT` always wins.  Consumed by pipelines.ts
+   *  `offloadThresholdFor` (T4 tiering — now live). */
+  offloadThresholdText: number
+  /** Offload boundary for the json/csv/code/binary data class.  Defaults to
+   *  2000 (= the historical global baseline) when NOTHING is set; inherits
+   *  an explicitly-set `TM_OFFLOAD_THRESHOLD` exactly like the text tier; an
+   *  explicit `TM_OFFLOAD_THRESHOLD_DATA` always wins.  Consumed by
+   *  pipelines.ts `offloadThresholdFor` (T4 tiering — now live). */
+  offloadThresholdData: number
+  /** tm_browser engine: "playwright" (default; a failed playwright-core
+   *  import degrades to legacy CDP at runtime) | "cdp-legacy".
+   *  Consumed by browser.ts (T5). */
+  browserEngine: "playwright" | "cdp-legacy"
+  /** Hard cap (estimated tokens) for tm_browser snapshot payloads.
+   *  Consumed by browser.ts (T5). */
+  browserSnapshotMaxTokens: number
+  /** tm_ptc_run web bridge: "on" (default) exposes tm.search/tm.webfetch
+   *  facades to PTC programs; "off" removes them from the bridge set.
+   *  Consumed by ptc/* (T6). */
+  ptcWebBridge: "on" | "off"
+  /** Floor (minutes) for the approval-gate ask timeout.  LIVE (Wave A/T2):
+   *  approval-gate.ts `resolveAskTimeoutMs` clamps the reply with
+   *  `Math.max(min, resolveTmConfig(env).askTimeoutFloorMin)` — this knob
+   *  drives the floor, replacing the old hardcoded MIN_ASK_TIMEOUT_MIN=3.
+   *  The timeout DEFAULT stays 10 min (DEFAULT_ASK_TIMEOUT_MIN); per the
+   *  design ② decision tree it is only lowered after the real-host latency
+   *  probe — the floor knob itself is already honored. */
+  askTimeoutFloorMin: number
 }
 
 export const TM_CONFIG_DEFAULTS = {
@@ -127,6 +180,23 @@ export const TM_CONFIG_DEFAULTS = {
   ptcMaxErrors: 3,
   ptcTimeoutMs: 60000,
   ptcEngine: "auto",
+  // ---- P0 upgrade knobs (see TmConfig doc comments for ownership) ----
+  memorySessionTtlMin: 240,
+  memoryMaxEntries: 200,
+  memoryStaleDays: 30,
+  memorySessionPersist: "",
+  searchDefaultEngine: "auto",
+  // Literal fallbacks used ONLY when the global TM_OFFLOAD_THRESHOLD is
+  // unset.  When the global IS set and a tier env is not, resolveTmConfig
+  // derives that tier from the global (inherit — Wave B M1) instead of
+  // applying these.
+  offloadThresholdText: 4000,
+  offloadThresholdData: 2000,
+  browserEngine: "playwright",
+  browserSnapshotMaxTokens: 1200,
+  ptcWebBridge: "on",
+  // Consumed by approval-gate.ts resolveAskTimeoutMs (Math.max floor, Wave A).
+  askTimeoutFloorMin: 3,
 } as const
 
 /** Inclusive ceilings/floors for the PTC budgets (design §4.3). */
@@ -173,8 +243,19 @@ export const parseWebfetchAllowlistEnv = parseAllowlistEnv
 /** Resolve the full tm-tools config from an env-like record (default: process.env). */
 export function resolveTmConfig(env: EnvLike = process.env): TmConfig {
   const allowlist = parseAllowlistEnv(env.TM_BASH_READONLY_ALLOWED)
+  const globalOffload = envInt(env, "TM_OFFLOAD_THRESHOLD", TM_CONFIG_DEFAULTS.offloadThreshold, 0, 10_000_000)
+  // Wave B M1 fix — TIER INHERITANCE.  The TEXT/DATA classes inherit the
+  // global boundary when the user set TM_OFFLOAD_THRESHOLD but left a tier
+  // env UNSET: a user who raised the global to 8000 to save tokens must not
+  // have prose silently capped back to 4000 (and json to 2000).  With the
+  // global ALSO unset the documented per-class defaults stand (4000 text /
+  // 2000 data — data equals the old baseline so the no-env behavior is the
+  // T4 tiering the §6m-t tests pin).  An explicit tier env always wins.
+  const globalOffloadSet = typeof env.TM_OFFLOAD_THRESHOLD === "string" && env.TM_OFFLOAD_THRESHOLD.trim() !== ""
+  const textTierDefault = globalOffloadSet ? globalOffload : TM_CONFIG_DEFAULTS.offloadThresholdText
+  const dataTierDefault = globalOffloadSet ? globalOffload : TM_CONFIG_DEFAULTS.offloadThresholdData
   return {
-    offloadThreshold: envInt(env, "TM_OFFLOAD_THRESHOLD", TM_CONFIG_DEFAULTS.offloadThreshold, 0, 10_000_000),
+    offloadThreshold: globalOffload,
     previewLines: envInt(env, "TM_PREVIEW_LINES", TM_CONFIG_DEFAULTS.previewLines, 1, 1000),
     previewMaxTokens: envInt(env, "TM_PREVIEW_MAX_TOKENS", TM_CONFIG_DEFAULTS.previewMaxTokens, 10, 100_000),
     fetchMaxLines: envInt(env, "TM_FETCH_MAX_LINES", TM_CONFIG_DEFAULTS.fetchMaxLines, 1, 1_000_000),
@@ -190,12 +271,39 @@ export function resolveTmConfig(env: EnvLike = process.env): TmConfig {
     ptcMaxErrors: envInt(env, "TM_PTC_MAX_ERRORS", TM_CONFIG_DEFAULTS.ptcMaxErrors, PTC_BUDGET_BOUNDS.maxErrors.min, PTC_BUDGET_BOUNDS.maxErrors.max),
     ptcTimeoutMs: envInt(env, "TM_PTC_TIMEOUT_MS", TM_CONFIG_DEFAULTS.ptcTimeoutMs, PTC_BUDGET_BOUNDS.timeoutMs.min, PTC_BUDGET_BOUNDS.timeoutMs.max),
     ptcEngine: resolveEngine(env.TM_PTC_ENGINE),
+    // ---- P0 upgrade knobs (fail-soft like the rest: invalid -> default) ----
+    memorySessionTtlMin: envInt(env, "TM_MEMORY_SESSION_TTL_MIN", TM_CONFIG_DEFAULTS.memorySessionTtlMin, 1, 100_000),
+    memoryMaxEntries: envInt(env, "TM_MEMORY_MAX_ENTRIES", TM_CONFIG_DEFAULTS.memoryMaxEntries, 1, 100_000),
+    memoryStaleDays: envInt(env, "TM_MEMORY_STALE_DAYS", TM_CONFIG_DEFAULTS.memoryStaleDays, 0, 3650),
+    memorySessionPersist: envStr(env, "TM_MEMORY_SESSION_PERSIST", TM_CONFIG_DEFAULTS.memorySessionPersist),
+    searchDefaultEngine: envStr(env, "TM_SEARCH_DEFAULT_ENGINE", TM_CONFIG_DEFAULTS.searchDefaultEngine),
+    offloadThresholdText: envInt(env, "TM_OFFLOAD_THRESHOLD_TEXT", textTierDefault, 0, 10_000_000),
+    offloadThresholdData: envInt(env, "TM_OFFLOAD_THRESHOLD_DATA", dataTierDefault, 0, 10_000_000),
+    browserEngine: resolveBrowserEngine(env.TM_BROWSER_ENGINE),
+    browserSnapshotMaxTokens: envInt(env, "TM_BROWSER_SNAPSHOT_MAX_TOKENS", TM_CONFIG_DEFAULTS.browserSnapshotMaxTokens, 10, 100_000),
+    ptcWebBridge: resolveOnOff(env.TM_PTC_WEB_BRIDGE),
+    askTimeoutFloorMin: envInt(env, "TM_ASK_TIMEOUT_FLOOR_MIN", TM_CONFIG_DEFAULTS.askTimeoutFloorMin, 1, 1440),
   }
 }
 
 function resolveEngine(raw: unknown): "auto" | "worker" | "inline" {
   const v = typeof raw === "string" ? raw.trim().toLowerCase() : ""
   return v === "worker" || v === "inline" ? v : "auto"
+}
+
+/** TM_BROWSER_ENGINE — anything not exactly "cdp-legacy" resolves to the
+ *  playwright default (runtime import failure degrades to legacy inside
+ *  browser.ts, T5 — the config layer only parses the preference). */
+function resolveBrowserEngine(raw: unknown): "playwright" | "cdp-legacy" {
+  const v = typeof raw === "string" ? raw.trim().toLowerCase() : ""
+  return v === "cdp-legacy" ? v : "playwright"
+}
+
+/** TM_PTC_WEB_BRIDGE — off only on an explicit off-ish value; unset or
+ *  invalid keeps the bridge on (fail-soft toward the newer default). */
+function resolveOnOff(raw: unknown): "on" | "off" {
+  const v = typeof raw === "string" ? raw.trim().toLowerCase() : ""
+  return v === "off" || v === "0" || v === "false" ? "off" : "on"
 }
 /** Token cost of ONE code point — CJK-range ≈ 1 token (kana / Hangul /
  *  fullwidth / CJK punctuation all sit above U+2E80), everything else ≈ 0.25
