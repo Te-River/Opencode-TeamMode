@@ -155,9 +155,10 @@ export interface TmConfig {
    *  approval-gate.ts `resolveAskTimeoutMs` clamps the reply with
    *  `Math.max(min, resolveTmConfig(env).askTimeoutFloorMin)` — this knob
    *  drives the floor, replacing the old hardcoded MIN_ASK_TIMEOUT_MIN=3.
-   *  The timeout DEFAULT stays 10 min (DEFAULT_ASK_TIMEOUT_MIN); per the
-   *  design ② decision tree it is only lowered after the real-host latency
-   *  probe — the floor knob itself is already honored. */
+   *  DEFAULTED TO 1 (user directive): a reject that lands on an already-
+   *  closed request is classified benign `already-closed` by T2's
+   *  classifyReplyFailure, so the ~120s replied-event bus lag no longer
+   *  forces a 3-min floor — an unanswered dialog auto-rejects after 1 min. */
   askTimeoutFloorMin: number
 }
 
@@ -196,7 +197,8 @@ export const TM_CONFIG_DEFAULTS = {
   browserSnapshotMaxTokens: 1200,
   ptcWebBridge: "on",
   // Consumed by approval-gate.ts resolveAskTimeoutMs (Math.max floor, Wave A).
-  askTimeoutFloorMin: 3,
+  // 1 min since the T2 benign already-closed split (user directive).
+  askTimeoutFloorMin: 1,
 } as const
 
 /** Inclusive ceilings/floors for the PTC budgets (design §4.3). */

@@ -357,7 +357,7 @@ open web fetching stays with the two network roles.
 **Out-of-allowlist targets are a gate, not a wall.** When a fetch / search /
 browser-open points at a host outside the allowlist, the tool hands the URL
 to OpenCode's **official confirmation dialog** — you decide, once per
-target (an unanswered dialog is auto-rejected on the usual 10-minute timer,
+target (an unanswered dialog is auto-rejected on the usual 1-minute timer,
 and the plugin still never self-allows). Every dialog also fires a
 **system toast notification**, so you know something is waiting even when
 you're not staring at the screen. Env-file URLs and non-http(s) schemes
@@ -369,7 +369,7 @@ remain hard-rejected with no dialog — R6 red lines are never consentable.
 environment variables silently. Env reads (`printenv`, `env`, `Get-ChildItem
 env:`, …) and env files (`.env`, shell rc) route through OpenCode's official
 confirmation dialog; unanswered prompts are **auto-rejected after
-`TM_ASK_TIMEOUT_MIN` (default 10 min)**. Env reads no wildcard can express
+`TM_ASK_TIMEOUT_MIN` (default 1 min)**. Env reads no wildcard can express
 (embedded `$VAR` / `${VAR}` / `$env:` inside another command, command
 substitution) and the `tm_*` wrapper channel stay a **hard block** — no dialog
 to slip through. The audit log records only tool name + pattern category +
@@ -379,8 +379,11 @@ also explain a dialog that cannot be answered anymore: a reply that hits an
 as `already-closed` without degrading the gate, a plugin-side bad reply shape
 audits as `rejected-shape-bug`, and a user reply that arrives *after* the
 auto-reject is recorded as `late-<verdict>` for observability only (the
-rejection stands — the plugin still never self-allows). The 3-minute auto-reject
-floor above the host's event lag is tunable via `TM_ASK_TIMEOUT_FLOOR_MIN`.
+rejection stands — the plugin still never self-allows). The 1-minute auto-reject
+floor is tunable via `TM_ASK_TIMEOUT_FLOOR_MIN`; the short default is safe
+because a reply that races the timer audits as benign `already-closed` (host
+404 on a closed dialog — no gate degrade), and the observed ~120 s is the
+host-to-plugin event-bus *delivery* lag, not click-resolution latency.
 
 **R2 dangerous operations (same dialog).** Delete, git publish, network
 fetch, package install/publish, process/system, privilege changes — none are
@@ -447,8 +450,8 @@ for overrides, extra agents and disabling roles.
 | Env var | Default | Purpose |
 |---|---|---|
 | `TM_ENV_PROTECT` | `strict` | R6 mode: `strict` / `standard` / `off` (off also disarms the approval timer) |
-| `TM_ASK_TIMEOUT_MIN` | `10` | minutes before an unanswered dialog is auto-rejected (floored — the host's reply event reaches the plugin ~120 s late) |
-| `TM_ASK_TIMEOUT_FLOOR_MIN` | `3` | minimum enforced for the ask timeout above |
+| `TM_ASK_TIMEOUT_MIN` | `1` | minutes before an unanswered dialog is auto-rejected (floored at 1 min — safe: a racing reply audits as benign `already-closed`; the host's reply event reaching the plugin ~120 s late is event-bus delivery lag, not a click delay) |
+| `TM_ASK_TIMEOUT_FLOOR_MIN` | `1` | minimum enforced for the ask timeout above |
 | `TM_ENV_PROTECT_EXTRA_DENY` | — | extra block patterns (regex; always hard block, never dialog-governed) |
 | `TM_OFFLOAD_THRESHOLD` | `2000` | global offload fallback (tokens, CJK-aware estimate) — used when the content class is unknown |
 | `TM_OFFLOAD_THRESHOLD_TEXT` | `4000` | offload boundary for prose (text / log / markdown) |
@@ -579,7 +582,7 @@ the whole workflow are host-agnostic. On display-less Linux, `tm_browser`
 runs headless automatically.
 
 **What happens if I don't answer a confirmation dialog?**
-It auto-rejects after `TM_ASK_TIMEOUT_MIN` (default 10). The plugin never
+It auto-rejects after `TM_ASK_TIMEOUT_MIN` (default 1). The plugin never
 self-approves — the only side it can take is yours or nobody's.
 
 ---

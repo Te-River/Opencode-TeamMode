@@ -374,27 +374,29 @@ console.log("6. loader integration: OK (hook installed, env wiring, off passthro
   } = ag
   const flush = async () => { for (let i = 0; i < 12; i++) await new Promise((r) => setImmediate(r)) }
 
-  // 7a. TM_ASK_TIMEOUT_MIN parsing (default 10; valid-but-short CLAMPS UP to
-  // the 3-min floor — the host delivers permission.replied ~120s late, so a
-  // 1-min timer would auto-reject an already-approved dialog on a dead id;
-  // anything silly -> default)
-  assert.equal(ag.MIN_ASK_TIMEOUT_MIN, 3, "bus-lag floor is 3 minutes")
-  assert.equal(resolveAskTimeoutMs({}), DEFAULT_ASK_TIMEOUT_MIN * 60000, "default 10min")
-  assert.equal(resolveAskTimeoutMs({ TM_ASK_TIMEOUT_MIN: "1" }), 180000, "1min clamps UP to the 3-min floor (no D4 double-reject race)")
-  assert.equal(resolveAskTimeoutMs({ TM_ASK_TIMEOUT_MIN: "2" }), 180000, "2min clamps to the floor")
-  assert.equal(resolveAskTimeoutMs({ TM_ASK_TIMEOUT_MIN: " 3 " }), 180000, "floor honoured + trimmed")
+  // 7a. TM_ASK_TIMEOUT_MIN parsing (default 1; valid-but-short CLAMPS UP to
+  // the 1-min floor — a late auto-reject on an already-approved dialog hits
+  // an already-closed id, and classifyReplyFailure records that as benign
+  // already-closed WITHOUT flipping degraded (T2), so short timers no
+  // longer need the historic 3-min bus-lag floor; anything silly -> default)
+  assert.equal(ag.MIN_ASK_TIMEOUT_MIN, 1, "floor is 1 minute (benign already-closed makes the bus lag harmless)")
+  assert.equal(resolveAskTimeoutMs({}), DEFAULT_ASK_TIMEOUT_MIN * 60000, "default 1min")
+  assert.equal(resolveAskTimeoutMs({}), 60000, "default timeout resolves to 60000ms")
+  assert.equal(resolveAskTimeoutMs({ TM_ASK_TIMEOUT_MIN: "1" }), 60000, "1min is legal at the new 1-min floor (no clamp)")
+  assert.equal(resolveAskTimeoutMs({ TM_ASK_TIMEOUT_MIN: "2" }), 120000, "2min honoured (above the floor)")
+  assert.equal(resolveAskTimeoutMs({ TM_ASK_TIMEOUT_MIN: " 3 " }), 180000, "trimmed + honoured above the floor")
   // P0 floor knob (TM_ASK_TIMEOUT_FLOOR_MIN, resolveTmConfig().askTimeoutFloorMin):
-  // the clamp floor is now read from config, not hardcoded.  Defaults to 3 so
-  // the D4 race stays guarded; a probe-approved lowering is a CONFIG change.
+  // the clamp floor is read from config, not hardcoded.  Defaults to 1 now;
+  // a stricter posture can still raise it via CONFIG alone.
   assert.equal(resolveAskTimeoutMs({ TM_ASK_TIMEOUT_MIN: "1", TM_ASK_TIMEOUT_FLOOR_MIN: "5" }), 300000, "floor knob: 1min clamps to a configured 5-min floor")
   assert.equal(resolveAskTimeoutMs({ TM_ASK_TIMEOUT_MIN: "10", TM_ASK_TIMEOUT_FLOOR_MIN: "5" }), 600000, "floor knob: a value above the floor is honoured unchanged")
-  assert.equal(resolveAskTimeoutMs({ TM_ASK_TIMEOUT_MIN: "1", TM_ASK_TIMEOUT_FLOOR_MIN: "1" }), 60000, "floor knob lowered to 1 -> 1min is now legal (probe gate is a config change, not source)")
-  assert.equal(resolveAskTimeoutMs({ TM_ASK_TIMEOUT_MIN: "1", TM_ASK_TIMEOUT_FLOOR_MIN: "0" }), 180000, "invalid floor (0<1) falls back to the default 3")
-  assert.equal(resolveAskTimeoutMs({ TM_ASK_TIMEOUT_MIN: "2", TM_ASK_TIMEOUT_FLOOR_MIN: "abc" }), 180000, "non-numeric floor falls back to the default 3")
+  assert.equal(resolveAskTimeoutMs({ TM_ASK_TIMEOUT_MIN: "1", TM_ASK_TIMEOUT_FLOOR_MIN: "1" }), 60000, "floor knob at its default 1 -> 1min honoured")
+  assert.equal(resolveAskTimeoutMs({ TM_ASK_TIMEOUT_MIN: "1", TM_ASK_TIMEOUT_FLOOR_MIN: "0" }), 60000, "invalid floor (0<1) falls back to the default 1")
+  assert.equal(resolveAskTimeoutMs({ TM_ASK_TIMEOUT_MIN: "2", TM_ASK_TIMEOUT_FLOOR_MIN: "abc" }), 120000, "non-numeric floor falls back to the default 1 (2min > 1min honoured)")
   assert.equal(resolveAskTimeoutMs({ TM_ASK_TIMEOUT_MIN: "10" }), 600000, "10min honoured unchanged")
   assert.equal(resolveAskTimeoutMs({ TM_ASK_TIMEOUT_MIN: "1440" }), 86400000, "24h boundary honoured")
   for (const bad of ["0", "-5", "99999", "abc", "1.5x", ""]) {
-    assert.equal(resolveAskTimeoutMs({ TM_ASK_TIMEOUT_MIN: bad }), 600000, `invalid -> default: "${bad}"`)
+    assert.equal(resolveAskTimeoutMs({ TM_ASK_TIMEOUT_MIN: bad }), 60000, `invalid -> default 1min: "${bad}"`)
   }
 
   // 7b. ask-pattern builder — mode-sensitive, default stays allow

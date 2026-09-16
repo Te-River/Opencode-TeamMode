@@ -66,8 +66,13 @@ registry saw 1.5.0 as the install-script fix release).
   map lets a user reply landing AFTER the auto-reject audit as
   `late-<verdict>` (observability only -- the reject stands, nothing is
   re-run, the plugin still never self-allows); the auto-reject floor becomes
-  a knob `TM_ASK_TIMEOUT_FLOOR_MIN` (default 3; the 10-minute default stands
-  until the real-host latency probe passes).
+  a knob `TM_ASK_TIMEOUT_FLOOR_MIN` (default 1) and the default ask timeout
+  drops from 10 min to **1 min** -- the benign `already-closed` reply
+  classification makes short timeouts safe (a reply racing the timer hits a
+  closed request = host 404, no degrade flip; the observed ~120 s is the
+  host->plugin event-bus delivery lag, not click-resolution latency). A
+  real-host probe is still recommended to confirm the closed-request 404
+  stays identifiable.
 - **Lead `## Dispatch concurrency` prompt section (T3)**: independent
   dispatches batch into ONE round (parallel implementers with per-file
   ownership + verbatim contracts, 3-dimension reviews, split test suites);

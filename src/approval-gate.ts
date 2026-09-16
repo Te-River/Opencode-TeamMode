@@ -67,26 +67,34 @@ import type { PermissionEvent } from "./types.js"
 import { ENV_PROTECT_SERVICE, categorizePermission } from "./envprotect.js"
 import { resolveTmConfig } from "./tm/config.js"
 
-/** Default timeout, in minutes, before an unanswered dialog is auto-rejected. */
-export const DEFAULT_ASK_TIMEOUT_MIN = 10
+/** Default timeout, in minutes, before an unanswered dialog is auto-rejected.
+ *  1 min (user directive) — an unanswered dialog no longer hangs for 10.
+ *  A short timer is safe because a reject that lands on an already-closed
+ *  request is benign; see `MIN_ASK_TIMEOUT_MIN` for the full rationale. */
+export const DEFAULT_ASK_TIMEOUT_MIN = 1
 
 /**
- * Hard floor (minutes) for the auto-reject timeout.  Measured live on the
- * OpenCode Desktop: a `permission.replied` (human answered "once") reaches
- * the plugin through the host event bus ~120s LATE — a 1-minute timer
- * therefore fires BEFORE the cancel arrives and auto-rejects the just-
- * approved request on a dead id (4xx → permanent degraded, the D4
- * double-reject race).  3 min = observed ~120s lag + margin; in-range
- * values below the floor clamp UP to it (a longer timeout is always the
- * safe direction — the dialog just stays open a bit longer).
+ * Hard floor (minutes) for the auto-reject timeout.  The HISTORIC 3-min
+ * floor existed to dodge the measured ~120s `permission.replied` bus lag:
+ * a shorter timer would fire before the cancel arrives and auto-reject a
+ * just-approved request.  That lag, though, is the HOST DELIVERING the
+ * replied event to the plugin over the bus — NOT the host resolving the
+ * user's click: an approval takes effect instantly host-side, so the
+ * plugin's late reject simply targets an already-closed request id → 404.
+ * T2's `classifyReplyFailure` maps that outcome to the benign
+ * `already-closed` verdict (it never flips the gate to `degraded`, and the
+ * approved command runs either way); `onReplied` records a reply landing
+ * after the auto-reject as `late-<verdict>` for observability.  With that
+ * classification in place a short timeout no longer disables the gate, so
+ * the floor drops to 1 minute (user directive).  Trade-off: an UNANSWERED
+ * dialog auto-rejects after 1 min — a user who stepped away re-triggers
+ * the command.  In-range values below the floor still clamp UP to it.
  *
- * This is the FALLBACK default of the floor.  The live floor now comes from
- * the P0 config knob `TM_ASK_TIMEOUT_FLOOR_MIN`
- * (`resolveTmConfig().askTimeoutFloorMin`, itself defaulted to 3), so
- * lowering the timeout toward 1 min is a config change pending the real-host
- * latency probe (design §② decision tree) rather than a source edit.
+ * This is the FALLBACK default of the floor.  The live floor comes from the
+ * P0 config knob `TM_ASK_TIMEOUT_FLOOR_MIN`
+ * (`resolveTmConfig().askTimeoutFloorMin`, itself defaulted to 1).
  */
-export const MIN_ASK_TIMEOUT_MIN = 3
+export const MIN_ASK_TIMEOUT_MIN = 1
 
 /** Poll cadence (ms) that re-scans pending permissions in case an event was
  *  missed — only meaningful when the client exposes a list capability. */
@@ -122,11 +130,13 @@ export type ApprovalVerdict =
 
 /**
  * Resolve `TM_ASK_TIMEOUT_MIN`.  Unset / blank / non-numeric / <1 / >1440
- * (24h) fall back to the 10-minute default — a mistyped value can never
- * disable the timeout or make it absurdly long.  Valid values below the bus-
- * lag floor clamp UP to it — the floor is the P0 config knob
- * `TM_ASK_TIMEOUT_FLOOR_MIN` (`resolveTmConfig().askTimeoutFloorMin`, default
- * 3, from the measured ~120s replied-event lag; see `MIN_ASK_TIMEOUT_MIN`).
+ * (24h) fall back to the 1-minute default — a mistyped value can never
+ * disable the timeout or make it absurdly long.  Valid values below the
+ * floor clamp UP to it — the floor is the P0 config knob
+ * `TM_ASK_TIMEOUT_FLOOR_MIN` (`resolveTmConfig().askTimeoutFloorMin`,
+ * default 1).  The historic ~120s bus-lag reason for a 3-min floor is
+ * obsolete: a late reject on an already-closed id is benign
+ * `already-closed`, not a degraded flip (see `MIN_ASK_TIMEOUT_MIN`).
  */
 export function resolveAskTimeoutMs(env: Record<string, string | undefined> = process.env): number {
   const raw = env.TM_ASK_TIMEOUT_MIN
@@ -136,7 +146,7 @@ export function resolveAskTimeoutMs(env: Record<string, string | undefined> = pr
   const min = Math.trunc(n)
   if (min < 1 || min > 1440) return DEFAULT_ASK_TIMEOUT_MIN * 60 * 1000
   // Floor read from the config knob (bounded to [1,1440] by envInt) so a
-  // future probe can lower it WITHOUT a source change; default stays 3.
+  // stricter posture can raise it WITHOUT a source change; default is 1.
   const floorMin = resolveTmConfig(env).askTimeoutFloorMin
   return Math.max(min, floorMin) * 60 * 1000
 }
