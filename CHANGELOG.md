@@ -5,7 +5,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 versioning is semver (the 1.4.x train shipped under working labels; the
 registry saw 1.5.0 as the install-script fix release).
 
-## [Unreleased]
+## [1.5.12] - 2026-09-16
 
 ### Added
 - **tm_memory three tiers + self-maintenance (T1)**: a SESSION tier
