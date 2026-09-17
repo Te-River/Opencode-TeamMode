@@ -126,8 +126,10 @@ OpenCode 下次启动时装好。
 
   | 系统 | 缓存位置 |
   |---|---|
-  | macOS / Linux | `rm -rf ~/.cache/opencode/packages/@te_river+opencode-team-mode@latest` |
-  | Windows | `Remove-Item -Recurse -Force "$env:LOCALAPPDATA\opencode\cache\packages\@te_river+opencode-team-mode@latest"` |
+  | macOS / Linux | `find ~/.cache/opencode/packages -type d -name '*opencode-team-mode*' -prune -exec rm -rf {} +` |
+  | Windows (PowerShell) | `foreach ($r in "$HOME\.cache\opencode\packages", "$env:LOCALAPPDATA\opencode\cache\packages") { if (Test-Path $r) { Get-ChildItem $r -Directory -Recurse -Filter '*opencode-team-mode*' -EA SilentlyContinue | Sort-Object { $_.FullName.Length } | Remove-Item -Recurse -Force -EA SilentlyContinue } }` |
+
+  ⚠️ OpenCode 是从 `~/.cache/opencode/packages/` 加载插件的（可能嵌套在 `@te-river/` 作用域目录里），**不是** `~/.config/opencode/node_modules`——所以删除必须递归：只删顶层会静默漏掉作用域式的缓存副本。
 
   如果插件还被 npm 装进了 `~/.config/opencode`，package-lock 会钉住版本——在那里再跑一次 `npm install @te-river/opencode-team-mode@latest`。完整配方（含 agent 更新提示词）见[安装指南·更新](./docs/installation.md)。
 - **前置条件：** [OpenCode](https://opencode.ai)（桌面版或 CLI）+ Node ≥ 18。

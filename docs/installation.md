@@ -47,8 +47,10 @@ unreachable from mainland-China networks. If fetching it fails, retry with
 the mirror prefix — `https://ghproxy.net/` + the same full URL. Both hosts
 are on TeamMode's seeded `tm_webfetch` allowlist, so the governed fetch tool
 can read either. After the plugin is installed and OpenCode restarted, the
-same guide also ships inside the package at
-`<opencode-cache>/packages/@te_river+opencode-team-mode@<version>/docs/installation.md`.
+same guide also ships inside the package, under whichever cache layout this
+machine uses: scoped
+`<opencode-cache>/packages/@te-river/opencode-team-mode@<version>/docs/installation.md`
+or flat `<opencode-cache>/packages/@te_river+opencode-team-mode@<version>/docs/installation.md`.
 
 ### Step 4 — Verify
 
@@ -56,16 +58,27 @@ After restart, verify in this order:
 
 1. The agent picker (`@` mentions) lists: **team, architect, implementer, reviewer, tester, researcher**.
 2. Slash commands `/team-plan`, `/team-implement`, `/team-review`, `/team-test`, `/team-research`, `/team-run` autocomplete.
-3. Optional deeper check: `npm view @te-river/opencode-team-mode version` shows the latest published version; ask the user to start a chat and confirm the **team** agent responds.
+3. Optional deeper check: `npm view @te-river/opencode-team-mode version` shows the latest **published** version — but it queries the npm registry, **not** what OpenCode actually loads, so it misleads after an update. To confirm the **running** version, either read the `version` field of the cached `package.json` (`~/.cache/opencode/packages/@te-river/opencode-team-mode@latest/package.json` in the scoped layout, or `.../packages/@te_river+opencode-team-mode@latest/package.json` flat), or probe a feature that exists only in the new version (e.g. ask an agent to run `tm_memory` with `action: compact` — old builds reject it). Finally, ask the user to start a chat and confirm the **team** agent responds.
 
 Report which checks passed. If verification fails, see Troubleshooting.
 
 ### Updating
 
+> ⚠️ **OpenCode loads the plugin from this spec-string cache under
+> `~/.cache/opencode/packages/` — NOT from the `~/.config/opencode/node_modules`
+> copy.** The cache dir has two layouts: **scoped**
+> (`packages/@te-river/opencode-team-mode@latest/`, observed on real machines)
+> and **flat** (`packages/@te_river+opencode-team-mode@latest/`). A purge that
+> only globs the *top level* of `packages/` never sees the scoped copy nested
+> inside `@te-river/` — the upgrade then **silently fails** and OpenCode keeps
+> loading the old version after restart. **The purge must RECURSE down to the
+> `@te-river` scope layer** (both installers now do).
+
 > The installer is idempotent: **re-running it IS the update.** It re-patches
-> the config (no-op when present), purges the stale plugin cache, and
-> re-resolves any npm-installed copy. This exists because OpenCode caches
-> plugins by spec string (`~/.cache/opencode/packages/<name>@latest`) and
+> the config (no-op when present), recursively purges the stale plugin cache
+> (both layouts), and re-resolves any npm-installed copy. This exists because
+> OpenCode caches plugins by spec string
+> (`~/.cache/opencode/packages/<scope>/<name>@latest`) and
 > does not re-resolve `@latest` when a new version publishes (upstream
 > limitation).
 
@@ -93,9 +106,101 @@ https://raw.githubusercontent.com/Te-River/Opencode-TeamMode/main/docs/installat
 
 **Path 3 — manual** (what the scripts automate):
 
-1. Delete the cached package directory: `rm -rf ~/.cache/opencode/packages/@te_river+opencode-team-mode@latest` (Windows PowerShell: `Remove-Item -Recurse -Force "$env:LOCALAPPDATA\opencode\cache\packages\@te_river+opencode-team-mode@latest"` — also check `~/.cache/opencode/packages/` under the user profile; remove any directory matching `*opencode-team-mode*`).
+1. Delete the cached package directory — **recursively**, covering BOTH layouts:
+   scoped `~/.cache/opencode/packages/@te-river/opencode-team-mode@latest` and
+   flat `~/.cache/opencode/packages/@te_river+opencode-team-mode@latest` (the
+   scoped one is what a top-level glob misses):
+
+   ```bash
+   # macOS / Linux — GNU/BSD-safe POSIX form (`xargs -r` is GNU-only and fails
+   # on macOS). -prune lists each match without descending into it, so a
+   # bundled node_modules/@te-river/opencode-team-mode never appears (its
+   # parent rm already took it)
+   find ~/.cache/opencode/packages -type d -name '*opencode-team-mode*' -prune -exec rm -rf {} +
+   ```
+
+   ```powershell
+   # Windows PowerShell — run for BOTH roots; Test-Path guards each, because
+   # the second root often does not exist (avoids red error noise).
+   # Sort by path length = parents first; vanished children absorbed by SilentlyContinue.
+   foreach ($root in "$HOME\.cache\opencode\packages", "$env:LOCALAPPDATA\opencode\cache\packages") {
+     if (Test-Path $root) {
+       Get-ChildItem -Path $root -Directory -Recurse -Filter '*opencode-team-mode*' -ErrorAction SilentlyContinue |
+         Sort-Object { $_.FullName.Length } |
+         Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
+     }
+   }
+   ```
+
+   Both commands delete the `@latest` dirs in either layout and leave the
+   `@te-river` scope directory itself in place.
 2. If the plugin was also npm-installed into `~/.config/opencode` (check its `package.json` / `package-lock.json`), run `npm install @te-river/opencode-team-mode@latest` there.
-3. Restart OpenCode and re-verify.
+3. Restart OpenCode and re-verify — see **Verifying the update actually took
+   effect** below.
+
+#### Verifying the update actually took effect
+
+1. Fully quit and restart OpenCode (the plugin loads once at startup).
+2. **Do not trust `npm view @te-river/opencode-team-mode version`** — it
+   queries the npm registry and reports the latest *published* version even
+   when OpenCode is still loading the stale cache. Confirm the **running**
+   version instead:
+   - Read the `version` field of the cache directory's `package.json` after
+     the restart re-resolves it —
+     `~/.cache/opencode/packages/@te-river/opencode-team-mode@latest/package.json`
+     (scoped) or
+     `~/.cache/opencode/packages/@te_river+opencode-team-mode@latest/package.json`
+     (flat). That file is what OpenCode just loaded; compare it with `npm view`.
+   - Or probe a feature that only exists in the new version — e.g. have an
+     agent call `tm_memory` with `action: compact`: builds without the memory
+     compaction release reject the unknown action.
+3. Still the old version? Re-run the recursive delete from step 1 — a
+   non-recursive glob that misses the `@te-river` scope layer is the usual
+   culprit — then restart again.
+
+### Manual, script-free procedure (fallback if the installer is unavailable or misbehaves)
+
+The one-line installer only automates the steps below — you can do all of them
+by hand. Run the full sequence for a fresh install; for an update, **step 2
+(recursive cache purge) is the part that matters** (a stale `@latest` cache is
+never re-resolved on its own).
+
+1. **Point the config at the plugin.** Ensure `~/.config/opencode/opencode.jsonc`
+   exists (if only `opencode.json` is present, copy it to `.jsonc` first — the
+   `.jsonc` wins) and that its `"plugin"` array contains the entry. Merge, don't
+   clobber unrelated keys:
+   ```jsonc
+   { "$schema": "https://opencode.ai/config.json",
+     "plugin": ["@te-river/opencode-team-mode@latest"] }
+   ```
+2. **Purge any stale cache — recursively, both layouts.** OpenCode loads from
+   `~/.cache/opencode/packages/` and caches by spec string, so a previously
+   cached `@latest` is NOT refreshed on its own. A top-level glob misses the
+   scoped copy nested under `@te-river/` — recurse:
+   - macOS / Linux (GNU/BSD-safe; `-prune` lists each match without descending):
+     ```bash
+     find ~/.cache/opencode/packages -type d -name '*opencode-team-mode*' -prune -exec rm -rf {} +
+     ```
+   - Windows PowerShell (run for BOTH roots; `Test-Path` guards the often-missing
+     second; parents deleted before their nested matches):
+     ```powershell
+     foreach ($root in "$HOME\.cache\opencode\packages", "$env:LOCALAPPDATA\opencode\cache\packages") {
+       if (Test-Path $root) {
+         Get-ChildItem $root -Directory -Recurse -Filter '*opencode-team-mode*' -ErrorAction SilentlyContinue |
+           Sort-Object { $_.FullName.Length } |
+           Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
+       }
+     }
+     ```
+3. **Resolve it with npm** (also fixes a `package-lock.json` pin in the config
+   dir): `cd ~/.config/opencode && npm install @te-river/opencode-team-mode@latest`.
+   If that dir has no `package.json`, OpenCode resolves `@latest` from the config
+   entry on next start — this step is then optional but harmless.
+4. **Fully quit and restart OpenCode** (tray/menu quit, not just closing the
+   window) — the plugin loads once at startup.
+5. **Verify the RUNNING version** — read the cached `package.json`'s `version`,
+   or probe a new-version-only feature (`tm_memory action: compact`). Do **not**
+   trust `npm view` alone (it reports the registry, not what OpenCode loaded).
 
 ### Uninstalling
 
@@ -108,7 +213,8 @@ https://raw.githubusercontent.com/Te-River/Opencode-TeamMode/main/docs/installat
 | Symptom | Cause | Fix |
 |---|---|---|
 | Agents don't appear | OpenCode not restarted, or config file is the wrong one | Fully restart; confirm the file you edited is the one OpenCode loads |
-| Version is old despite `@latest` | Plugin cache never invalidates | See Updating — delete the cache dir |
+| Version is old despite `@latest` | Plugin cache never invalidates | See Updating — delete the cache dir (recursively; both layouts) |
+| Still the old version after bumping the version or re-running the installer | The scoped cache `packages/@te-river/opencode-team-mode@latest` is nested below the top-level `packages/*opencode-team-mode*` glob, so the stale copy was never purged | Recursively delete that cache dir (`Get-ChildItem -Recurse -Filter '*opencode-team-mode*'` / `find -type d -name '*opencode-team-mode*' -prune`), then restart — the current installers already recurse |
 | Node version error on startup | npm needs Node ≥ 18 | Upgrade Node |
 | Env-var commands suddenly prompt for confirmation | That's the plugin's R6 protection working as designed | Approve once per operation, or set `TM_ENV_PROTECT=off` (not recommended) |
 | A user-defined agent named `team`/`architect`/… got shadowed | Plugin injects defaults; your own definitions always win | The plugin never clobbers user agents — check for typos in your agent names |
@@ -153,8 +259,9 @@ https://raw.githubusercontent.com/Te-River/Opencode-TeamMode/main/docs/installat
 本指南托管在 `raw.githubusercontent.com`，中国大陆网络经常无法直达。抓取
 失败时改用镜像前缀重试——`https://ghproxy.net/` + 同样的完整 URL。两个主机
 都在 TeamMode 的 `tm_webfetch` 种子白名单内，受治理的抓取工具可以直读。
-插件装好、OpenCode 重启之后，同一份指南也在包内：
-`<opencode-cache>/packages/@te_river+opencode-team-mode@<版本>/docs/installation.md`。
+插件装好、OpenCode 重启之后，同一份指南也在包内，路径取决于本机缓存布局——
+作用域式：`<opencode-cache>/packages/@te-river/opencode-team-mode@<版本>/docs/installation.md`；
+扁平式：`<opencode-cache>/packages/@te_river+opencode-team-mode@<版本>/docs/installation.md`。
 
 ### 第 4 步 — 验证
 
@@ -162,15 +269,25 @@ https://raw.githubusercontent.com/Te-River/Opencode-TeamMode/main/docs/installat
 
 1. Agent 选择器（`@` 提及）里出现：**team、architect、implementer、reviewer、tester、researcher**。
 2. 斜杠命令 `/team-plan`、`/team-implement`、`/team-review`、`/team-test`、`/team-research`、`/team-run` 可以自动补全。
-3. 可选的深度检查：`npm view @te-river/opencode-team-mode version` 显示最新发布版本；请用户开一个会话确认 **team** agent 能正常响应。
+3. 可选的深度检查：`npm view @te-river/opencode-team-mode version` 显示**已发布**的最新版本——但它查的是 npm registry，**不是** OpenCode 实际加载的东西，升级后会造成误判。要确认**运行版本**：读缓存目录里 `package.json` 的 `version`（作用域式 `~/.cache/opencode/packages/@te-river/opencode-team-mode@latest/package.json`，扁平式 `.../packages/@te_river+opencode-team-mode@latest/package.json`），或用只存在于新版的特性做探针（例：让 agent 调用 `tm_memory` 的 `action: compact`——旧版没有该 action 会报错）。最后请用户开一个会话确认 **team** agent 能正常响应。
 
 报告哪些检查通过。验证失败时看"故障排查"。
 
 ### 更新
 
+> ⚠️ **OpenCode 加载插件用的是这份按 spec 字符串缓存的副本——
+> `~/.cache/opencode/packages/` 下的目录，不是 `~/.config/opencode/node_modules`
+> 里的那份。** 缓存目录有两种布局：**作用域式**
+> （`packages/@te-river/opencode-team-mode@latest/`，本机实测就是这种）和
+> **扁平式**（`packages/@te_river+opencode-team-mode@latest/`）。只匹配
+> `packages/` **顶层**的清理逻辑扫不到嵌在 `@te-river/` 作用域层里的缓存——
+> 升级会**静默失效**，重启后仍从旧版缓存加载。**purge 必须递归到
+> `@te-river` 作用域层**（两个安装器现已改为递归清理）。
+
 > 安装器是幂等的：**重跑安装器就是更新。** 它会补齐配置（已存在则跳过）、
-> 清掉过期插件缓存、并重解析 npm 安装的副本。之所以需要这一步：OpenCode
-> 按 spec 字符串缓存插件（`~/.cache/opencode/packages/<name>@latest`），
+> **递归**清掉过期插件缓存（两种布局都清）、并重解析 npm 安装的副本。
+> 之所以需要这一步：OpenCode 按 spec 字符串缓存插件
+> （`~/.cache/opencode/packages/<scope>/<name>@latest`），
 > 新版本发布后不会重新解析 `@latest`（上游已知问题）。
 
 **路径一 —— 重跑一行安装器：**
@@ -197,9 +314,90 @@ https://raw.githubusercontent.com/Te-River/Opencode-TeamMode/main/docs/installat
 
 **路径三 —— 手动**（脚本自动化的内容）：
 
-1. 删除缓存的包目录：`rm -rf ~/.cache/opencode/packages/@te_river+opencode-team-mode@latest`（Windows PowerShell：`Remove-Item -Recurse -Force "$env:LOCALAPPDATA\opencode\cache\packages\@te_river+opencode-team-mode@latest"`——用户目录下的 `~/.cache/opencode/packages/` 也要检查；删除所有匹配 `*opencode-team-mode*` 的目录）。
+1. **递归**删除缓存的包目录，两种布局都要覆盖：作用域式
+   `~/.cache/opencode/packages/@te-river/opencode-team-mode@latest` 与扁平式
+   `~/.cache/opencode/packages/@te_river+opencode-team-mode@latest`
+   （作用域式正是顶层通配符漏掉的那种）：
+
+   ```bash
+   # macOS / Linux —— GNU/BSD 双安全的 POSIX 写法（`xargs -r` 是 GNU 专有，macOS 会报错）
+   # find -prune 命中即停、不再下钻，
+   # 因此包内自带的 node_modules/@te-river/opencode-team-mode 不会被列出
+   # （随父目录一起被删）
+   find ~/.cache/opencode/packages -type d -name '*opencode-team-mode*' -prune -exec rm -rf {} +
+   ```
+
+   ```powershell
+   # Windows PowerShell —— 两个根都要跑，并用 Test-Path 逐个包住：
+   # 第二个 root 常常不存在，避免红字噪音。
+   # 按路径长度排序 = 父目录先删；已随父消失的子项由 SilentlyContinue 兜住。
+   foreach ($root in "$HOME\.cache\opencode\packages", "$env:LOCALAPPDATA\opencode\cache\packages") {
+     if (Test-Path $root) {
+       Get-ChildItem -Path $root -Directory -Recurse -Filter '*opencode-team-mode*' -ErrorAction SilentlyContinue |
+         Sort-Object { $_.FullName.Length } |
+         Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
+     }
+   }
+   ```
+
+   两条命令都会删掉两种布局的 `@latest` 目录，且不动 `@te-river` 作用域目录本身。
 2. 如果插件还被 npm 装进了 `~/.config/opencode`（检查它的 `package.json` / `package-lock.json`），在那里执行 `npm install @te-river/opencode-team-mode@latest`。
-3. 重启 OpenCode 并重新验证。
+3. 重启 OpenCode 并重新验证——见下方**验证升级真的生效**。
+
+#### 验证升级真的生效
+
+1. 完全退出并重启 OpenCode（插件只在启动时加载一次）。
+2. **别只看 `npm view @te-river/opencode-team-mode version`**——它查的是
+   npm registry，OpenCode 明明还在加载旧缓存时它照样报最新版，会误导你。
+   要确认的是**运行版本**：
+   - 重启重新拉取后，读缓存目录里的 `package.json` 的 `version`——
+     `~/.cache/opencode/packages/@te-river/opencode-team-mode@latest/package.json`
+     （作用域式）或
+     `~/.cache/opencode/packages/@te_river+opencode-team-mode@latest/package.json`
+     （扁平式）。那里才是 OpenCode 刚加载的版本，再与 `npm view` 对比。
+   - 或用只存在于新版的特性做探针——例：让 agent 调用 `tm_memory` 的
+     `action: compact`，没有该 action 的旧版会直接报错。
+3. 仍是旧版？把第 1 步的递归删除再跑一遍（非递归 glob 漏掉 `@te-river`
+   作用域层是最常见原因），然后再重启。
+
+### 纯手动流程（安装脚本不可用或出错时的回退方案）
+
+一行安装器只是把下面这些步骤自动化了——你完全可以手动执行。全新安装跑完整序列；**升级时第 2 步（递归清缓存）是关键**（旧的 `@latest` 缓存不会自行刷新）。
+
+1. **让配置指向插件。** 确认 `~/.config/opencode/opencode.jsonc` 存在（若只有
+   `opencode.json`，先复制成 `.jsonc`——`.jsonc` 优先），且其 `"plugin"` 数组含该
+   条目。合并，别覆盖无关的键：
+   ```jsonc
+   { "$schema": "https://opencode.ai/config.json",
+     "plugin": ["@te-river/opencode-team-mode@latest"] }
+   ```
+2. **递归清理过期缓存——两种布局都覆盖。** OpenCode 从
+   `~/.cache/opencode/packages/` 加载、按 spec 字符串缓存，旧的 `@latest` 不会自行
+   刷新。顶层通配符扫不到嵌在 `@te-river/` 下的作用域副本——必须递归：
+   - macOS / Linux（GNU/BSD 双安全；`-prune` 命中即停、不下钻）：
+     ```bash
+     find ~/.cache/opencode/packages -type d -name '*opencode-team-mode*' -prune -exec rm -rf {} +
+     ```
+   - Windows PowerShell（两个根都跑；`Test-Path` 包住常缺失的第二个；父目录先于其
+     嵌套匹配删除）：
+     ```powershell
+     foreach ($root in "$HOME\.cache\opencode\packages", "$env:LOCALAPPDATA\opencode\cache\packages") {
+       if (Test-Path $root) {
+         Get-ChildItem $root -Directory -Recurse -Filter '*opencode-team-mode*' -ErrorAction SilentlyContinue |
+           Sort-Object { $_.FullName.Length } |
+           Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
+       }
+     }
+     ```
+3. **用 npm 解析**（同时修掉 config 目录里的 `package-lock.json` 锁版本）：
+   `cd ~/.config/opencode && npm install @te-river/opencode-team-mode@latest`。
+   若该目录没有 `package.json`，OpenCode 会在下次启动按配置里的 `@latest` 解析——
+   此步可跳过但无害。
+4. **完全退出并重启 OpenCode**（从托盘/菜单退出，不是只关窗口）——插件只在启动时
+   加载一次。
+5. **验证运行版本**——读缓存目录里 `package.json` 的 `version`，或用只存在于新版的
+   特性探针（`tm_memory action: compact`）。**别只信 `npm view`**（它查 registry，
+   不是 OpenCode 实际加载的东西）。
 
 ### 卸载
 
@@ -212,7 +410,8 @@ https://raw.githubusercontent.com/Te-River/Opencode-TeamMode/main/docs/installat
 | 症状 | 原因 | 修复 |
 |---|---|---|
 | Agents 没出现 | OpenCode 没重启，或改错了配置文件 | 完全重启；确认改的文件就是 OpenCode 加载的那个 |
-| 用着 `@latest` 版本还是旧的 | 插件缓存永不失效 | 见"更新"——删除缓存目录 |
+| 用着 `@latest` 版本还是旧的 | 插件缓存永不失效 | 见"更新"——递归删除缓存目录（两种布局） |
+| 改了版本/重跑安装器后仍是旧版 | 作用域缓存 `packages/@te-river/opencode-team-mode@latest` 嵌在顶层 `packages/*opencode-team-mode*` 通配符扫不到的下一层，旧副本根本没被清掉 | 递归删除该缓存目录（`Get-ChildItem -Recurse -Filter '*opencode-team-mode*'` / `find -type d -name '*opencode-team-mode*' -prune`）后重启——当前安装器已改为递归清理 |
 | 启动报 Node 版本错误 | npm 需要 Node ≥ 18 | 升级 Node |
 | 环境变量命令突然弹确认框 | 这是插件的 R6 保护在正常工作 | 每个操作选"一次"，或设 `TM_ENV_PROTECT=off`（不推荐） |
 | 用户自定义的 `team`/`architect` 等 agent 被遮蔽 | 插件注入默认值；你的定义永远优先 | 插件从不覆盖用户 agent——检查你的 agent 名字有没有拼错 |

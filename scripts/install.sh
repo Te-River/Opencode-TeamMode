@@ -9,7 +9,11 @@
 #   1. Adds @te-river/opencode-team-mode@latest to ~/.config/opencode/opencode.jsonc
 #      (falls back to opencode.json when only that one exists).
 #   2. Purges the stale plugin cache — OpenCode caches plugins by spec string
-#      and NEVER re-resolves @latest on its own, so a re-run is the update.
+#      under packages/ in the cache dir, possibly NESTED inside a @te-river/
+#      scope directory (scoped layout: packages/@te-river/opencode-team-mode@latest)
+#      or flattened (packages/@te_river+opencode-team-mode@latest), so the purge
+#      RECURSES to catch both layouts. OpenCode NEVER re-resolves @latest on its
+#      own, so a re-run is the update.
 #   3. Re-resolves an npm-installed copy inside the config dir (package-lock
 #      pins would otherwise keep the old version).
 #   Restart OpenCode afterwards.
@@ -109,13 +113,36 @@ NODEJS
 fi
 
 # ── update: purge the stale plugin cache (OpenCode never re-resolves @latest) ──
+# OpenCode loads the plugin from THIS cache, NOT from ~/.config/opencode/node_modules.
+# Two cache layouts exist under packages/ — scoped:
+# packages/@te-river/opencode-team-mode@latest, and flat:
+# packages/@te_river+opencode-team-mode@latest. A top-level glob never sees the
+# scoped copy nested below @te-river/ → the upgrade silently keeps loading the old
+# cached version. Recurse so BOTH layouts match; the @te-river/ scope dir itself
+# is left in place.
 CACHE_ROOT="${HOME}/.cache/opencode/packages"
 if [ -d "$CACHE_ROOT" ]; then
-  STALE=$(ls -d "${CACHE_ROOT}"/*opencode-team-mode* 2>/dev/null || true)
+  # -prune stops find descending into a match, so an inner
+  # node_modules/@te-river/opencode-team-mode is never listed — the parent rm
+  # already removed it. `|| true` absorbs find ERROR codes (e.g. permission
+  # denied) under set -e; a no-match find already exits 0 on its own.
+  STALE=$(find "$CACHE_ROOT" -type d -name '*opencode-team-mode*' -prune 2>/dev/null || true)
   if [ -n "$STALE" ]; then
-    # shellcheck disable=SC2086
-    rm -rf $STALE
-    echo "✔  Purged stale plugin cache (re-resolves @latest on restart)"
+    while IFS= read -r stale_dir; do
+      [ -d "$stale_dir" ] || continue
+      rm -rf "$stale_dir"
+    done <<< "$STALE"
+  fi
+  # Re-enumerate AFTER deleting (symmetric with install.ps1): a survivor means
+  # the rm genuinely failed -> warn, never false-green. Captured via `|| true`
+  # rather than `find | grep -q`, whose early-exit + pipefail could flip the
+  # check's exit status on a real leftover.
+  LEFT=$(find "$CACHE_ROOT" -type d -name '*opencode-team-mode*' -prune 2>/dev/null || true)
+  if [ -n "$LEFT" ]; then
+    echo "!  Could not fully purge (quit OpenCode and re-run):"
+    echo "$LEFT"
+  else
+    echo "✔  Purged stale plugin cache"
   fi
 fi
 

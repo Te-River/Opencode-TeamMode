@@ -5,6 +5,20 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 versioning is semver (the 1.4.x train shipped under working labels; the
 registry saw 1.5.0 as the install-script fix release).
 
+## [Unreleased]
+
+### Fixed
+- **Installer cache purge now recurses**, so the scoped copy
+  `@te-river/opencode-team-mode@latest` nested under `packages/@te-river/` is
+  deleted too (the old top-level-only glob missed it) — re-running the
+  installer is now a reliable update on both platforms; the purge also
+  re-enumerates after deleting and warns instead of printing a false-green
+  ✔ when a removal fails (locked by a running OpenCode). `docs/installation.md`
+  and both READMEs carry the corrected manual recipe (POSIX
+  `find … -prune -exec rm -rf {} +` — the previous `xargs -r` form is GNU-only
+  and broke on macOS; Test-Path-guarded PowerShell snippet) plus the
+  "verify the running version" step.
+
 ## [1.5.12] - 2026-09-16
 
 ### Added

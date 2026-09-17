@@ -127,10 +127,12 @@ OpenCode installs the plugin on next startup.
 - **Restart to activate.** After touching `opencode.json`, fully quit and restart OpenCode (Desktop: quit from tray, not just the window).
 - **Plugin updates: re-run the installer.** It is idempotent — a re-run re-patches the config (no-op when present), purges the stale plugin cache, and re-resolves any npm-installed copy. This exists because OpenCode caches plugins by spec string and does NOT re-resolve `@latest` when a new version publishes (upstream limitation). Manual recipe, if you prefer:
 
-  | OS | Cache location |
+  | OS | Purge command — recursive, covers BOTH cache layouts |
   |---|---|
-  | macOS / Linux | `rm -rf ~/.cache/opencode/packages/@te_river+opencode-team-mode@latest` |
-  | Windows | `Remove-Item -Recurse -Force "$env:LOCALAPPDATA\opencode\cache\packages\@te_river+opencode-team-mode@latest"` |
+  | macOS / Linux | `find ~/.cache/opencode/packages -type d -name '*opencode-team-mode*' -prune -exec rm -rf {} +` |
+  | Windows (PowerShell) | `foreach ($r in "$HOME\.cache\opencode\packages", "$env:LOCALAPPDATA\opencode\cache\packages") { if (Test-Path $r) { Get-ChildItem $r -Directory -Recurse -Filter '*opencode-team-mode*' -EA SilentlyContinue | Sort-Object { $_.FullName.Length } | Remove-Item -Recurse -Force -EA SilentlyContinue } }` |
+
+  ⚠️ OpenCode loads the plugin from `~/.cache/opencode/packages/` — possibly nested inside the scoped `@te-river/` directory — **not** from `~/.config/opencode/node_modules`, which is why the delete must recurse (a top-level-only `rm -rf` silently misses the scoped copy).
 
   If you also npm-installed the plugin into `~/.config/opencode`, its package-lock pins the version — run `npm install @te-river/opencode-team-mode@latest` there too. Full recipe (including an agent-driven update prompt): [installation guide, Updating](./docs/installation.md).
 - **Prerequisites:** [OpenCode](https://opencode.ai) (Desktop or CLI) and Node ≥ 18.

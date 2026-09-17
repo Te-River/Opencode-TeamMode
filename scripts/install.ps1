@@ -8,7 +8,11 @@
 #   1. Adds @te-river/opencode-team-mode@latest to ~/.config/opencode/opencode.jsonc
 #      (falls back to opencode.json when only that one exists).
 #   2. Purges the stale plugin cache — OpenCode caches plugins by spec string
-#      and NEVER re-resolves @latest on its own, so a re-run is the update.
+#      under packages/ in the cache dir, possibly NESTED inside a @te-river/
+#      scope directory (scoped layout: packages\@te-river\opencode-team-mode@latest)
+#      or flattened (packages\@te_river+opencode-team-mode@latest), so the purge
+#      RECURSES to catch both layouts. OpenCode NEVER re-resolves @latest on its
+#      own, so a re-run is the update.
 #   3. Re-resolves an npm-installed copy inside the config dir (package-lock
 #      pins would otherwise keep the old version).
 #   Restart OpenCode afterwards.
@@ -129,16 +133,36 @@ console.log('OK  Plugin added');
 }
 
 # ── update: purge the stale plugin cache (OpenCode never re-resolves @latest) ──
+# OpenCode loads the plugin from THIS cache, NOT from ~/.config/opencode/node_modules.
+# Two cache layouts exist under packages/ — scoped:
+# packages\@te-river\opencode-team-mode@latest, and flat:
+# packages\@te_river+opencode-team-mode@latest. A top-level glob never sees the
+# scoped copy nested below @te-river\ (the top item is "@te-river", which does
+# not contain "opencode-team-mode") → the upgrade silently keeps loading the old
+# cached version. Recurse so BOTH layouts match; the @te-river\ scope dir itself
+# is left in place.
 $cacheRoots = @(
     (Join-Path $env:USERPROFILE ".cache\opencode\packages"),
     (Join-Path $env:LOCALAPPDATA "opencode\cache\packages")
 )
 foreach ($root in $cacheRoots) {
     if (Test-Path $root) {
-        $stale = Get-ChildItem -Path $root -Directory -Filter "*opencode-team-mode*" -ErrorAction SilentlyContinue
-        foreach ($d in $stale) {
+        $stale = Get-ChildItem -Path $root -Directory -Recurse -Filter "*opencode-team-mode*" -ErrorAction SilentlyContinue
+        # Parents before their nested matches (Sort by path length): a bundled
+        # node_modules\@te-river\opencode-team-mode inside a matched dir vanishes
+        # with its parent — SilentlyContinue absorbs the vanished child.
+        foreach ($d in ($stale | Sort-Object { $_.FullName.Length })) {
             Remove-Item -Recurse -Force $d.FullName -ErrorAction SilentlyContinue
-            Write-Host "✔  Purged stale plugin cache: $($d.Name)" -ForegroundColor Green
+        }
+        # Re-enumerate AFTER deleting: a survivor means the delete genuinely
+        # failed (e.g. file lock while OpenCode runs) -> warn, never false-green.
+        # Children that vanished with their parent are simply absent from this
+        # listing, so there is no duplicate or spurious report either.
+        $left = Get-ChildItem -Path $root -Directory -Recurse -Filter "*opencode-team-mode*" -ErrorAction SilentlyContinue
+        if ($left) {
+            Write-Host "!  Could not fully purge (quit OpenCode, then re-run): $($left.FullName -join ', ')" -ForegroundColor Yellow
+        } else {
+            Write-Host "✔  Purged stale plugin cache" -ForegroundColor Green
         }
     }
 }
