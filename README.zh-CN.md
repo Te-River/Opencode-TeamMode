@@ -47,6 +47,7 @@ TeamMode 对每一个的回应：
 | 🐌 **回合开销** | `tm_ptc_run`：agent 写**一个程序**，单回合内发起 N 次受治理调用。运行期间零 LLM 回合。 |
 | 🕳️ **静默副作用** | R6/R2 审批门禁：环境变量读取和危险操作走 OpenCode 官方确认弹窗，1 分钟没人理自动拒绝。插件从不代替你批准——它只会拒绝。 |
 | 🌫️ **幻觉式调研** | 联网是双角色的授权 + 白名单受治理工具链。抓不到的事实就报告为缺口——绝不编造。 |
+| 🧭 **纯文本墙** | 回复被引导成宿主渲染得最快的形状：逐文件 / 逐用例 / 逐条发现用 markdown 表格，diff 和配置用围栏代码块，浏览器截图只在你明确要求时才内联附上。宿主不画 mermaid，所以没有 agent 会假装它在画。 |
 
 底下还有流程纪律：确定性路由表、≥2 次派工先出 ≤30 行计划等你批、agent
 之间用 `STATUS/CHANGES/FINDINGS/EVIDENCE/HANDOFF` 结构化交接、以及静态
@@ -212,7 +213,9 @@ HMAC 句柄，agent 真需要 payload 时用 `tm_fetch` 分页取。
 | `tm_ptc_run` | 批量编排：一个程序、N 次受治理调用、零 LLM 回合；联网角色还能在程序里调 `tm.search` / `tm.webfetch` | 全部六个 agent |
 | `tm_search` | 多引擎网络搜索，返回提取、去重、RRF 融合后的命中列表 | Lead + Researcher |
 | `tm_webfetch` | 白名单页面的单次受治理 GET（搜索页自动提取） | Lead + Researcher |
-| `tm_browser` | 交互式浏览器会话（**驱动你的默认浏览器**）：16 个 Playwright 动词（快照优先：`take_snapshot` → 按 uid 寻址的 `click`/`fill`/`drag`…）+ 5 个旧版兼容动词（open/navigate/read/screenshot/close）；Playwright 引擎需 Node ≥ 20，不满足或导入失败时自动降级到旧版 CDP 引擎 | Lead + Researcher + Tester（仅 UI 验证） |
+| `tm_dispatch` / `tm_join` | **异步子代理派发**：`tm_dispatch` 在独立子会话里启动某个专员并立刻返回其 id（内置 `task` 会把你阻塞到子代理结束），`tm_join` 负责回收——不带参数=状态快照，`waitMs`=有界等待，`cancel:true` 取消跑飞的子任务；回收到的回复同样走卸载管线，五份长报告变成句柄+预览而不是压垮你的上下文 | 仅 Lead（子代理不得再派发） |
+| `tm_pty` | 在宿主自己的终端会话上**非阻塞执行命令**（`start`/`status`/`list`/`kill`）：独立的构建与测试各自一个会话并行跑，不再串成一条 120 秒的 bash 调用。它不抓输出（命令自己 tee 日志，用 `tm_read` 读），且每次启动都先过 R6 分类器、R2 危险面 glob，再走官方确认窗，才真的建进程 | 仅 Lead |
+| `tm_browser` | 交互式浏览器会话（**驱动你的默认浏览器**）：16 个 Playwright 动词（快照优先：`take_snapshot` → 按 uid 寻址的 `click`/`fill`/`drag`…）+ 5 个旧版兼容动词（open/navigate/read/screenshot/close）；Playwright 引擎需 Node ≥ 20，不满足或导入失败时自动降级到旧版 CDP 引擎。它开的是**你自己的默认浏览器渠道**（默认装 Edge Beta 就开 Beta），除操作者设 `TM_BROWSER_HEADLESS` 外保持有头；页面自家图片/CSS/JS 靠 `same-site` 子资源策略正常加载；`take_screenshot { image:true }` 会附一张 JPEG，让模型真能看见画面 | Lead + Researcher + Tester（仅 UI 验证） |
 
 > **固定工具优先级阶梯（每个任务都适用）：① TeamMode 受治理工具（`tm_*`）
 > → ② 用户 MCP/插件工具 → ③ 模型自己的推理。** 它同时是回退链：某个受治理

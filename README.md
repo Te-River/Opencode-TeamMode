@@ -46,8 +46,9 @@ TeamMode's answer to each:
 |---|---|
 | 🔥 **Context flooding** | Every governed tool output over its content-class offload threshold (prose 4000 / data 2000 tokens, CJK-aware) is offloaded to a local run store and replaced by an 80-token preview + an HMAC handle. The agent pages through what it needs — the window never drowns. |
 | 🐌 **Round-trip overhead** | `tm_ptc_run`: the agent writes ONE program that makes N governed calls in a single turn. Zero LLM round-trips during the run. |
-| 🕳️ **Silent side effects** | R6/R2 approval gate: env-var reads and dangerous ops route through OpenCode's official confirmation dialog, auto-rejected after 10 unanswered minutes. The plugin never approves on its own — it only ever rejects. |
+| 🕳️ **Silent side effects** | R6/R2 approval gate: env-var reads and dangerous ops route through OpenCode's official confirmation dialog, auto-rejected after 1 unanswered minute (default). The plugin never approves on its own — it only ever rejects. |
 | 🌫️ **Hallucinated research** | Web access is a two-role grant with an allowlisted, governed tool chain. A fact that couldn't be fetched is reported as a gap — never fabricated. |
+| 🧭 **Walls of text** | Replies are steered into the shape the host renders fastest: a markdown table for per-file / per-case / per-finding results, fenced code for diffs and configs, a browser screenshot attached as an inline image only when you ask for one. The host does not draw mermaid, so no agent pretends it does. |
 
 And the workflow discipline underneath: deterministic routing, a ≤30-line plan
 you approve before ≥2 dispatches execute, structured `STATUS/CHANGES/FINDINGS/
@@ -218,7 +219,9 @@ through with `tm_fetch` when it genuinely needs the payload.
 | `tm_ptc_run` | Batch orchestration: one program, N governed calls, zero LLM round-trips; web roles also get `tm.search` / `tm.webfetch` inside the program | all six agents |
 | `tm_search` | Multi-engine web search with extracted, deduplicated, RRF-fused hit lists | Lead + Researcher |
 | `tm_webfetch` | Single governed GET of an allowlisted page (search pages auto-extracted) | Lead + Researcher |
-| `tm_browser` | Interactive browser session (**your default browser**): 16 Playwright verbs (snapshot-first `take_snapshot` → uid-addressed `click`/`fill`/`drag`/…) + 5 legacy compat verbs (open/navigate/read/screenshot/close); Playwright engine needs Node ≥ 20, below that (or on any import failure) it auto-degrades to the legacy CDP engine | Lead + Researcher + Tester (UI verification) |
+| `tm_dispatch` / `tm_join` | **Async sub-agent dispatch**: `tm_dispatch` starts a specialist in its own child session and returns the id immediately (the built-in `task` tool blocks you until it finishes), `tm_join` collects — status snapshot, bounded `waitMs`, `cancel:true` to abort a runaway child; collected replies ride the offload pipeline, so five fat reports arrive as handles + previews instead of multiplying your context. Lead-only, and a child never dispatches | Lead only |
+| `tm_pty` | **Non-blocking command execution** on the host's own terminal sessions (`start`/`status`/`list`/`kill`) — independent builds and test suites overlap instead of queueing behind one 120 s bash call. Captures no output (the command tees its own log; read it with `tm_read`), and every start passes the R6 classifier, the R2 danger-face globs **and** the official confirmation dialog before a process exists | Lead only |
+| `tm_browser` | Interactive browser session (**your default browser**): 16 Playwright verbs (snapshot-first `take_snapshot` → uid-addressed `click`/`fill`/`drag`/…) + 5 legacy compat verbs (open/navigate/read/screenshot/close); Playwright engine needs Node ≥ 20, below that (or on any import failure) it auto-degrades to the legacy CDP engine. It drives YOUR default browser channel (an Edge Beta default opens Edge Beta), stays headful unless the operator sets `TM_BROWSER_HEADLESS`, loads a page's own images/CSS/JS via the `same-site` subresource policy, and `take_screenshot { image:true }` attaches a JPEG so the model can actually see the screen | Lead + Researcher + Tester (UI verification) |
 
 > **Fixed tool priority ladder (every task): ① TeamMode governed tools
 > (`tm_*`) → ② user MCP/plugin tools → ③ the model's own reasoning.**
