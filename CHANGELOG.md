@@ -5,7 +5,10 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 versioning is semver (the 1.4.x train shipped under working labels; the
 registry saw 1.5.0 as the install-script fix release).
 
-## [Unreleased]
+## [1.5.13] - 2026-09-19
+
+> Patch train by choice: this release carries new tools, but `1.6.0` is held
+> back for the next architectural change.
 
 ### Added
 - **tm_dispatch / tm_join — real lead/sub-agent parallelism.** The host's
