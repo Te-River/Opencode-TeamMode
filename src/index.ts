@@ -50,6 +50,14 @@ import {
 } from "./approval-gate.js"
 import { createTmTools } from "./tm/index.js"
 import { createBashTimeoutHook } from "./tm/bash-timeout.js"
+import {
+  applyToolDefinition,
+  applyChatParams,
+  applySessionCompacting,
+  applyCompactionAutoContinue,
+  applyShellEnv,
+  hookSwitches,
+} from "./host-hooks.js"
 
 /** Runtime addendum to the team prompt: concrete board + TTL (hybrid mode). */
 function blackboardNote(root: string, ttlDays: number): string {
@@ -173,6 +181,9 @@ const plugin: OpenCodePlugin = {
       },
     })
 
+    // ---------- host-hook switches (TM_TOOL_HINTS / TM_COMPACTION_*) ------
+    const hostSwitches = hookSwitches(process.env)
+
     // ---------- bash timeout clamp (issue #6, see tm/bash-timeout.ts) ------
     const bashTimeoutHook = createBashTimeoutHook({
       probeMs: tmRuntime.config.bashTimeoutProbeMs,
@@ -245,6 +256,27 @@ const plugin: OpenCodePlugin = {
       "tool.execute.before": async (input: unknown, output: unknown) => {
         bashTimeoutHook(input, output)
         await envProtectHook(input, output)
+      },
+
+      // ---------- host-hook leverage beyond the tool surface (audit #2) ----
+      // Every one of these rides a published hook and mutates ONLY the
+      // fields whose shape is verified; each is independently switchable,
+      // because this host's d.ts has shipped surfaces the runtime never
+      // fires (permission.ask), so adapters must fail soft, not assume.
+      "tool.definition": (input: unknown, output: unknown) => {
+        applyToolDefinition(input, output, hostSwitches.toolHints)
+      },
+      "chat.params": (input: unknown, output: unknown) => {
+        applyChatParams(input, output, process.env)
+      },
+      "experimental.session.compacting": (input: unknown, output: unknown) => {
+        applySessionCompacting(output, hostSwitches.compactionContext)
+      },
+      "experimental.compaction.autocontinue": (input: unknown, output: unknown) => {
+        applyCompactionAutoContinue(output, process.env)
+      },
+      "shell.env": (input: unknown, output: unknown) => {
+        applyShellEnv(output, process.env)
       },
 
       // ---------- unified approval gate: watch the host permission dialog ---

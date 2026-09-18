@@ -2353,9 +2353,9 @@ try {
         Object.keys(hooks.tool).sort(),
         [
           "tm_bash", "tm_browser", "tm_dispatch", "tm_fetch", "tm_grep", "tm_join",
-          "tm_memory", "tm_ptc_run", "tm_read", "tm_search", "tm_webfetch",
+          "tm_memory", "tm_ptc_run", "tm_pty", "tm_read", "tm_search", "tm_webfetch",
         ],
-        "registered tm_* set includes the async dispatcher (tm_dispatch + tm_join) alongside the ten governed tools",
+        "registered tm_* set includes the async dispatcher (tm_dispatch + tm_join) and tm_pty alongside the governed tools",
       )
       // program over the cap is rejected through the tool as an args error
       const big = await tool.execute({ program: "x".repeat(4001) }, { directory: process.cwd() })

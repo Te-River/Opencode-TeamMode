@@ -134,15 +134,21 @@ const whitelist = (
   // sub-agents, which is exactly the nesting T3 closed.
   permission["tm_dispatch"] = "deny"
   permission["tm_join"] = "deny"
+  // tm_pty starts a real process, so it must pop the OFFICIAL dialog on
+  // every use: the WEB_ASK_MAP shape is what makes PermissionV2's findLast
+  // resolve to `ask` instead of swallowing the ask under the tm_* allow.
+  // Default deny; the lead gets the ask-map (applyDispatcherPermission).
+  permission["tm_pty"] = "deny"
   return permission
 }
 
-/** Grant the async dispatcher to the lead only (issue #7).  A child cannot
- *  dispatch: tm_dispatch additionally self-gates on ctx.agent at runtime, so
- *  this matrix entry and the tool check are two independent locks. */
+/** Grant the async levers to the lead only (issue #6 + #7).  A child cannot
+ *  dispatch or spawn processes: these matrix entries and the tools' own
+ *  runtime `ctx.agent` checks are two independent locks. */
 export function applyDispatcherPermission(permission: AgentPermission, isTeamLead: boolean): void {
   permission["tm_dispatch"] = isTeamLead ? "allow" : "deny"
   permission["tm_join"] = isTeamLead ? "allow" : "deny"
+  permission["tm_pty"] = isTeamLead ? { ...WEB_ASK_MAP } : "deny"
 }
 
 /** Apply the tm_ptc_run grant to an agent's permission block.  All six

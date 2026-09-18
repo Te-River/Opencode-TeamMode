@@ -204,8 +204,12 @@ console.log("1. default_agent promotion matrix: OK (opt-out default; custom/plan
     // nesting T3 closed — so both keys are explicit denies for the five.
     expected["tm_dispatch"] = name === "team" ? "allow" : "deny"
     expected["tm_join"] = name === "team" ? "allow" : "deny"
+    // tm_pty starts a real process: the lead carries the ASK-MAP (so every
+    // start opens the official dialog instead of resolving silently under
+    // the tm_* allow); the five specialists are denied outright.
+    expected["tm_pty"] = name === "team" ? { ...webAsk } : "deny"
     const allowCount =
-      granted.length + tmTools.length + 2 + (name === "team" ? 2 : 0) // + wildcard + ptc (+ dispatch/join)
+      granted.length + tmTools.length + 2 + (name === "team" ? 3 : 0) // + wildcard + ptc (+ dispatch/join/pty)
     assert.deepStrictEqual(
       perm, expected,
       name + ": whitelist content exact (" + allowCount + " allow entries / " +

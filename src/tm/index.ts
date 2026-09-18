@@ -65,6 +65,9 @@ export {
 import { buildTmMemoryTool } from "./memory.js"
 import { buildTmBrowserTool } from "./browser.js"
 import { buildDispatchTools } from "./dispatch.js"
+import { buildTmPtyTool } from "./pty.js"
+export { ptyCommandLine, ptyCommandBlocked, ptyVerdictLine } from "./pty.js"
+export type { PtyRecord, PtyDeps } from "./pty.js"
 export {
   buildDispatchTools,
   DISPATCH_TARGETS,
@@ -286,6 +289,11 @@ export async function createTmTools(
   })
   tools.tm_dispatch = dispatch.tm_dispatch
   tools.tm_join = dispatch.tm_join
+  // tm_pty — non-blocking command execution on the host's own terminal
+  // sessions (issue #6: three serial 120 s test suites are minutes of dead
+  // air inside one bash call).  Every start passes the R6 classifier AND the
+  // official dialog, so this is an async lever, not a bypass channel.
+  tools.tm_pty = buildTmPtyTool({ client: input?.client, pipelines, mode, max: cfg.ptyMax })
   return {
     runId,
     config: cfg,

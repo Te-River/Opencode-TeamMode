@@ -185,6 +185,11 @@ export interface TmConfig {
    *  it is still on screen" class.  0 disables the reaper.  Consumed by
    *  browser.ts. */
   browserIdleCloseMs: number
+  /** Ceiling on concurrent tm_pty sessions this plugin started (issue #6's
+   *  async shell): each one is a real process the user approved, so the
+   *  count is bounded rather than left to the model's enthusiasm.
+   *  Consumed by pty.ts. */
+  ptyMax: number
   /** tm_ptc_run web bridge: "on" (default) exposes tm.search/tm.webfetch
    *  facades to PTC programs; "off" removes them from the bridge set.
    *  Consumed by ptc/* (T6). */
@@ -253,6 +258,7 @@ export const TM_CONFIG_DEFAULTS = {
   browserSubresource: "same-site",
   browserImageMaxBytes: 400_000,
   browserIdleCloseMs: 180_000,
+  ptyMax: 4,
   ptcWebBridge: "on",
   // Consumed by approval-gate.ts resolveAskTimeoutMs (Math.max floor, Wave A).
   // 1 min since the T2 benign already-closed split (user directive).
@@ -386,6 +392,7 @@ export function resolveTmConfig(env: EnvLike = process.env): TmConfig {
     browserSubresource: resolveSubresourcePolicy(env.TM_BROWSER_SUBRESOURCE),
     browserImageMaxBytes: envInt(env, "TM_BROWSER_IMAGE_MAX_BYTES", TM_CONFIG_DEFAULTS.browserImageMaxBytes, 10_000, 5_000_000),
     browserIdleCloseMs: envInt(env, "TM_BROWSER_IDLE_MS", TM_CONFIG_DEFAULTS.browserIdleCloseMs, 0, 3_600_000),
+    ptyMax: envInt(env, "TM_PTY_MAX", TM_CONFIG_DEFAULTS.ptyMax, 1, 16),
     ptcWebBridge: resolveOnOff(env.TM_PTC_WEB_BRIDGE),
     askTimeoutFloorMin: envInt(env, "TM_ASK_TIMEOUT_FLOOR_MIN", TM_CONFIG_DEFAULTS.askTimeoutFloorMin, 1, 1440),
     bashTimeoutMaxMs: envInt(env, "TM_BASH_TIMEOUT_MAX_MS", TM_CONFIG_DEFAULTS.bashTimeoutMaxMs, 0, 3_600_000),

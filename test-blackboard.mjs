@@ -279,6 +279,14 @@ assert.ok(leadPrompt.includes("never let two agents edit one file"), "lead: chil
 assert.ok(leadPrompt.includes("Reuse before you build"), "lead: existing dependencies are checked before designing a new module")
 assert.ok(leadPrompt.includes("already available,"), "lead: 'already available, use it' is stated as the better outcome")
 assert.ok(leadPrompt.includes("The team exists to be FASTER"), "lead: throughput is the justification for the team")
+assert.ok(leadPrompt.includes("Slow shell work is parallel too"), "lead: slow independent shell steps go to tm_pty, not one chained bash call")
+assert.ok(cfg2.agent["implementer"].prompt.includes("Presentation (the host renders Markdown"), "implementer: presentation-shape section present")
+assert.ok(cfg2.agent["implementer"].prompt.includes("Mermaid is NOT drawn by this host"), "implementer: told a mermaid block is not a picture here")
+assert.ok(cfg2.agent["implementer"].prompt.includes("markdown\n  TABLE with stable\n  columns") || /TABLE with stable/.test(cfg2.agent["implementer"].prompt), "implementer: findings/reports use a table shape")
+assert.ok(cfg2.agent["implementer"].prompt.includes("tm_pty"), "implementer: tm_pty mentioned in the time budget")
+assert.ok(cfg2.agent["reviewer"].prompt.includes("KaTeX"), "reviewer: math renders, so use it")
+assert.ok(leadPrompt.includes("## Output shape (the host renders Markdown"), "lead: presentation discipline present")
+assert.ok(leadPrompt.includes("Mermaid is\nNOT drawn by this host"), "lead: told a mermaid block is not a picture")
 assert.ok(leadPrompt.includes("Pre-commit hygiene"), "lead: hygiene check before ANY commit")
 
 /* v1.4.7: approval gate + uncertainty policy + no-ceremony fast path */
