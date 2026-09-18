@@ -7,7 +7,113 @@ registry saw 1.5.0 as the install-script fix release).
 
 ## [Unreleased]
 
+### Added
+- **tm_dispatch / tm_join — real lead/sub-agent parallelism.** The host's
+  built-in `task` tool blocks the calling session until the child finishes,
+  so a batch of three dispatches cost the sum of the three and every full
+  reply landed in the lead's context.  The two new governed tools ride the
+  official plugin client (`client.session.create` with `parentID` +
+  `promptAsync`, which returns immediately): the lead fires a self-contained
+  brief, keeps working the same round, and collects with `tm_join`
+  (status snapshot, bounded `waitMs`, `cancel:true` to abort a runaway
+  child).  Collected replies go through the SAME offload pipeline as every
+  other tm_* tool, so a fat sub-agent report arrives as a handle +
+  ≤80-token preview.  Lead-only: the five specialists carry an explicit
+  `deny` (the `tm_*` wildcard would otherwise re-open the nesting T3
+  closed), and the tool re-checks `ctx.agent` at runtime.  A host without
+  the async session API degrades with an explicit "use `task`" directive.
+- **tm_browser can show the model the page.** `take_screenshot { image:true }`
+  now attaches a quality-70 JPEG of the view to the tool result via the
+  official `attachments` contract (`{type:"file", mime, url}`), while the
+  PNG stays in the run store as the evidence artifact.  Opt-in by design —
+  pixels are the one thing this plugin's token economy cannot give away —
+  and capped by `TM_BROWSER_IMAGE_MAX_BYTES` (default 400 000).
+- **New knobs:** `TM_BROWSER_SUBRESOURCE` (`same-site` default | `passive` |
+  `off`), `TM_BROWSER_IDLE_MS` (default 180 000; 0 disables the reaper),
+  `TM_BROWSER_IMAGE_MAX_BYTES`, `TM_SEARCH_WEIGHTS="bing=0.3,…"`,
+  `TM_SEARCH_MAX_HITS`, `TM_SEARCH_DISABLED_ENGINES`,
+  `TM_SEARCH_RELEVANCE_FLOOR`, `TM_BASH_TIMEOUT_PROBE_MS` (default 60 000),
+  `TM_BASH_TIMEOUT_MAX_MS` (default 0 = off).
+
 ### Fixed
+- **tm_browser rendered pages WITHOUT images, CSS or JS.** The network gate
+  ran `checkWebUrl` over *every* request, and the 21-host content allowlist
+  contains no CDN at all, so each `<img>`/font/stylesheet was silently
+  `route.abort()`ed (both engines).  Subresources now follow
+  `TM_BROWSER_SUBRESOURCE`: passive types (image/media/font/stylesheet)
+  load, an executable type (script/xhr/fetch/document) loads when it
+  belongs to a site the session actually navigated to, and anything else is
+  still gated — with the R6/scheme red lines hard under every policy.  When
+  the gate does trim a page, the next snapshot says so
+  ("N 个子资源请求被拦截" + hosts), so an agent reports the gate instead of
+  concluding "this site has no pictures".
+- **Headless could no longer be triggered by the model.** `headless` was a
+  model-facing arg and `Boolean("false")` is `true`, so one sloppy call
+  pinned the whole plugin process to a headless browser — which every
+  anti-bot gate in the run then rejected.  The parameter is gone (mode is
+  `TM_BROWSER_HEADLESS` only), the sticky reused session now reports the
+  mode the running instance is ACTUALLY in, and `open` names the engine +
+  executable it launched.
+- **A browser window could stay open while the agent claimed it closed.**
+  `close` swallowed engine errors and returned "已关闭" unconditionally;
+  `dispose` was fire-and-forget behind a synchronous hook chain; and there
+  was no cleanup path at all besides the agent remembering.  `close` now
+  verifies (pages released, browser disconnected, child exited) and answers
+  either "已确认关闭" or "警告：关闭未完全成功" with what is left; `dispose`
+  awaits; and an untouched session reaps itself after `TM_BROWSER_IDLE_MS`
+  with a toast so the user learns why a window went away.
+- **The default browser was detected, then ignored — and only stable Edge
+  was findable.** Discovery read the `http` UserChoice from HKCU only, so a
+  machine-wide Edge Beta install (HKLM\SOFTWARE\Classes, association on
+  `https`) resolved to null and fell through to the stable candidate list;
+  then `channel:"msedge"` made playwright resolve the STABLE install and
+  discard the path we discovered anyway.  Both are fixed (http+https,
+  HKCU+HKLM, ProgId→channel dirs, and `executablePath` is now the primary
+  launch with the channel only as a fallback for a stable-shaped install):
+  an Edge Beta default now opens `Microsoft\Edge Beta\Application\msedge.exe`
+  (verified on the reporting Windows 11 host).
+- **Search quality: `auto` was a bing mirror.** The `cjk` and `general`
+  routes went to bing ALONE (no consensus leg, no fusion), and with bing at
+  weight 0.4 vs 0.2 the arithmetic guaranteed bing's WORST hit (0.4/70 =
+  0.0057) outranked every other engine's BEST (0.2/61 = 0.0033) — bing owned
+  ranks 1-10 regardless of relevance.  Every route now has ≥2 legs, bing
+  dropped to the default weight, and each hit's contribution is scaled by
+  real query-token overlap (floor `TM_SEARCH_RELEVANCE_FLOOR`, default 0.35)
+  with ties broken by agreement, not route order.  Bing is still in the
+  table (it remains the only live CN HTML SERP) — it now has to earn rank.
+- **SERP chrome and lost snippets.** bing's own pages (`/images`, `/dict`,
+  `/news`, …) and sponsored slots are filtered out of the hit list, and the
+  caption window now ends at the next organic result instead of at a nested
+  `<a>` inside the caption — which had been cutting CN snippets off before
+  the text started, leaving agents with 10 bare titles.
+- **Bash timeouts: the 120 s the user waited for.** The host's shell tool
+  defaults to `bashDefaultTimeoutMs ?? 2 * 60 * 1e3`, and models routinely
+  passed 120 000+ for `Get-ChildItem` — three serialised probes in one
+  PowerShell script then cost six minutes of dead air.  The plugin now
+  clamps `args.timeout` through the official `tool.execute.before` hook for
+  commands the P3 read-only allowlist already accepts (`TM_BASH_TIMEOUT_PROBE_MS`,
+  60 s by default), leaves a real build alone, and offers
+  `TM_BASH_TIMEOUT_MAX_MS` for a global ceiling.  It never INVENTS a timeout
+  the model did not supply, and never widens what may run.
+- **Prompt anchors that were actively harmful:** the researcher was told
+  tm_search is "ONE call" with dead engines (bing-int / sogou / so / baidu)
+  and no `auto`; `shared.ts` told agents to fold probes into one
+  `a; b; c` serial command (now cheap-probe-only, slow independent steps get
+  their own call); the built-in `bash` guidance contradicted the architect /
+  researcher tool matrix.
+
+### Changed
+- **Lead prompts rewritten for the async model:** concurrency (you and the
+  team run at the same time, `task` is the serial path), self-contained
+  dispatch briefs with an expected thoroughness level, division of labour
+  (bulk search / aggregation / long logs go to the child, routing and the
+  final merge stay with you), a "collect before you close" rule, a
+  **Command time budget** section shared by every specialist, and
+  todo-list rules that license out-of-order execution, several
+  `in_progress` items, file-ownership partitioning before parallel work, and
+  "reuse before you build" (check the dependency set before designing a new
+  module).  The evidence rule now demands a failure in the first lines
+  rather than a narrative that hides it.
 - **Installer cache purge now recurses**, so the scoped copy
   `@te-river/opencode-team-mode@latest` nested under `packages/@te-river/` is
   deleted too (the old top-level-only glob missed it) — re-running the

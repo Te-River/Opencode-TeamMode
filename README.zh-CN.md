@@ -266,7 +266,7 @@ agent 永远看不到原始搜索页的噪音。
 
 | 引擎 | 说明 |
 |---|---|
-| `auto`（默认） | 给查询分类，**并行**扇出 2–3 个引擎，按 host+path 去重后做加权 RRF 融合（stackoverflow/bing 0.4，其余 0.2），产出标有来源引擎的 top-10 列表。路由：报错/camelCase API → `stackoverflow`+`github`+`bing`；开发生态（发布、框架、开源）→ `hn`+`github`+`npm`；中文/通用 → `bing`。用 `TM_SEARCH_DEFAULT_ENGINE` 钉别的默认 |
+| `auto`（默认） | 给查询分类，**并行**扇出匹配的引擎（每条路由至少 2 条腿），按 host+path 去重后做加权 RRF 融合，产出标有来源引擎的 top-10 列表。排序按命中与查询词的真实重叠度打折（地板 `TM_SEARCH_RELEVANCE_FLOOR`），高权重引擎的无关结果不再压过别的引擎最好的一条。路由：报错/camelCase API → `stackoverflow`+`github`+`bing`；开发生态（发布、框架、开源）→ `hn`+`github`+`npm`；中文 → `bing`+`moegirl`+`stackoverflow`+`hn`；其它 → `bing`+`stackoverflow`+`hn`+`github`。用 `TM_SEARCH_DEFAULT_ENGINE` 钉别的默认 |
 | `bing` | cn.bing.com——唯一活着的中文 HTML SERP；多词 CJK 查询自动保护短语边界（加引号），markup 洗牌拆不散结果列表 |
 | `stackoverflow` | api.stackexchange.com 问题搜索（免 Key，300 次/天/IP）→ 带复合摘要的编号问题列表；`auto` 跟踪配额，耗尽自动换 `bing` 顶上 |
 | `hn` | Hacker News（Algolia API，免 Key）→ 帖子标题 + 摘要与原文链接 |
@@ -420,6 +420,15 @@ Team Lead 自己从不删黑板，你可以随时审计任何一次运行。
 | `TM_BLACKBOARD_TTL` | `7` | 存储保留天数 |
 | `TM_BASH_READONLY_ALLOWED` | 内置表 | tm_bash 白名单 |
 | `TM_SEARCH_DEFAULT_ENGINE` | `auto` | tm_search 未显式给 `engine` 时的默认引擎（`auto` = 分类 + 并行扇出 + RRF 融合；也可钉表中任一引擎） |
+| `TM_SEARCH_WEIGHTS` | 未设 | 按引擎覆盖融合权重，如 `bing=0.3,hn=0.25`；未列出的沿用内置表 |
+| `TM_SEARCH_RELEVANCE_FLOOR` | `0.35` | 与查询词零重叠的命中只保留该比例的权重（压垃圾，不删引擎） |
+| `TM_SEARCH_MAX_HITS` | `10` | 每引擎腿与融合列表保留的命中数 |
+| `TM_SEARCH_DISABLED_ENGINES` | 未设 | 从引擎表与所有 `auto` 路由中移除的引擎（`sogou,baidu` 写法） |
+| `TM_BROWSER_SUBRESOURCE` | `same-site` | 顶层导航过白名单后，页面子资源的策略：`same-site` = 图/媒体/字体/样式表一律放行，脚本/XHR 仅当属于本次会话真正打开过的站点；`passive` = 只放被动资源；`off` = 旧行为（逐请求过白名单）。被拦掉的请求会在下一次快照以"N 个子资源请求被拦截"告知 |
+| `TM_BROWSER_IDLE_MS` | `180000` | 无人触碰的浏览器会话超过该毫秒数自动关闭并提示用户（0 关闭该回收）——没人负责的窗口是打扰用户的 bug |
+| `TM_BROWSER_IMAGE_MAX_BYTES` | `400000` | `take_screenshot { image:true }` 内联给模型的 JPEG 上限；超过则只回路径并说明原因 |
+| `TM_BASH_TIMEOUT_PROBE_MS` | `60000` | 对只读探针命令（P3 白名单内）强制夹顶模型自设的 `timeout`（0 关闭） |
+| `TM_BASH_TIMEOUT_MAX_MS` | `0` | 其它 bash 命令的可选全局上限——默认关闭，真实构建保留它要的超时 |
 | `TM_WEBFETCH_ALLOWED_DOMAINS` | 23 个种子主机 | tm_webfetch / tm_search / tm_browser 白名单（`"*"` 全开；空 = 全拒；自定义值**替换**种子——保留引擎主机） |
 | `TM_BROWSER_PATH` | 自动探测 | tm_browser 可执行文件覆盖（默认用你的默认浏览器——Chromium 系时；否则回退 Edge/Chrome 探测） |
 | `TM_BROWSER_HEADLESS` | `auto` | `1` 无头（CI）/ `0` 有头 / `auto`（仅无显示的 Linux 用无头） |

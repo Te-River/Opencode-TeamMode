@@ -285,7 +285,7 @@ sees raw SERP chrome.
 
 | Engine | Notes |
 |---|---|
-| `auto` (default) | Classifies the query, fans out to 2–3 engines **in parallel**, dedupes by host+path and fuses with weighted RRF (stackoverflow/bing 0.4, others 0.2) into a top-10 list tagged with each hit's source engine(s). Routing: errors / camelCase APIs → `stackoverflow`+`github`+`bing`; dev-ecosystem (releases, frameworks, open source) → `hn`+`github`+`npm`; Chinese / general → `bing`. Pin another default via `TM_SEARCH_DEFAULT_ENGINE` |
+| `auto` (default) | Classifies the query, fans the matching engines out **in parallel** (every route has ≥2 legs), dedupes by host+path and fuses them with weighted RRF into a top-10 list tagged with each hit's source engine(s).  Ranking is scaled by real query-token overlap (floor `TM_SEARCH_RELEVANCE_FLOOR`), so a trusted engine's off-topic junk no longer outranks another engine's best hit. Routing: errors / camelCase APIs → `stackoverflow`+`github`+`bing`; dev-ecosystem (releases, frameworks, open source) → `hn`+`github`+`npm`; Chinese → `bing`+`moegirl`+`stackoverflow`+`hn`; other → `bing`+`stackoverflow`+`hn`+`github`. Pin another default via `TM_SEARCH_DEFAULT_ENGINE` |
 | `bing` | cn.bing.com — the only live CN HTML SERP; multi-word CJK queries get their phrase boundary protected (quoted) so markup shuffle can't split the result list |
 | `stackoverflow` | api.stackexchange.com question search (no key, 300/day/IP) → numbered questions with composite snippets; `auto` tracks the quota and swaps in `bing` once spent |
 | `hn` | Hacker News via Algolia API (no key) → story titles + snippets with direct article URLs |
@@ -469,6 +469,15 @@ for overrides, extra agents and disabling roles.
 | `TM_BROWSER_HEADLESS` | `auto` | `1` headless (CI) / `0` headful / `auto` (headless only on display-less Linux) |
 | `TM_BROWSER_ENGINE` | `playwright` | `playwright` (needs Node ≥ 20; any import failure auto-degrades) / `cdp-legacy` (zero-dep CDP pipe, core verbs only) |
 | `TM_BROWSER_SNAPSHOT_MAX_TOKENS` | `1200` | hard cap on `take_snapshot` payloads |
+| `TM_BROWSER_SUBRESOURCE` | `same-site` | what a page may load after its navigation was allowed: `same-site` = images/media/fonts/stylesheets always, scripts/XHR only for a site this session actually opened; `passive` = only the passive types; `off` = the legacy every-request gate. Blocked requests surface as a "N 个子资源请求被拦截" note on the next snapshot |
+| `TM_BROWSER_IDLE_MS` | `180000` | an untouched browser session closes itself after this many ms (0 disables) and tells the user — a window nobody owns is a user-facing bug |
+| `TM_BROWSER_IMAGE_MAX_BYTES` | `400000` | ceiling on the JPEG `take_screenshot { image:true }` inlines into the model's context (above it the reply stays path-only and says why) |
+| `TM_SEARCH_WEIGHTS` | unset | per-engine fusion weight overrides, e.g. `bing=0.3,hn=0.25`; anything unset keeps the built-in table |
+| `TM_SEARCH_RELEVANCE_FLOOR` | `0.35` | weight fraction kept by a hit that shares no query token with its title/snippet/host (demotes junk without deleting an engine) |
+| `TM_SEARCH_MAX_HITS` | `10` | hits kept per engine leg and in the fused list |
+| `TM_SEARCH_DISABLED_ENGINES` | unset | engines removed from the roster AND from every `auto` route (`sogou,baidu` style) |
+| `TM_BASH_TIMEOUT_PROBE_MS` | `60000` | ceiling forced onto a `timeout` the model set for a read-only probe command (0 disables) |
+| `TM_BASH_TIMEOUT_MAX_MS` | `0` | optional global ceiling for every other bash command — off by default so a real build keeps the timeout it asked for |
 | `TM_BROWSER_USER_DATA_DIR` | — (isolated temp profile) | explicit persistent profile dir — the ONLY way logins survive between sessions |
 | `TM_MEMORY_GLOBAL_DIR` | `~/.opencode-team/memories/global/` | tm_memory GLOBAL tier store |
 | `TM_MEMORY_SESSION_TTL_MIN` | `240` | session-tier entry TTL (lazy + boot sweep) |
