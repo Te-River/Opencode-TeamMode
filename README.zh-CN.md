@@ -429,6 +429,13 @@ Team Lead 自己从不删黑板，你可以随时审计任何一次运行。
 | `TM_BROWSER_IMAGE_MAX_BYTES` | `400000` | `take_screenshot { image:true }` 内联给模型的 JPEG 上限；超过则只回路径并说明原因 |
 | `TM_BASH_TIMEOUT_PROBE_MS` | `60000` | 对只读探针命令（P3 白名单内）强制夹顶模型自设的 `timeout`（0 关闭） |
 | `TM_BASH_TIMEOUT_MAX_MS` | `0` | 其它 bash 命令的可选全局上限——默认关闭，真实构建保留它要的超时 |
+| `TM_PTY_MAX` | `4` | 本插件同时最多保持多少个 `tm_pty` 终端会话 |
+| `TM_TOOL_HINTS` | `on` | 通过 `tool.definition` 把本插件的调用点纪律追加到内置 `bash` / `task` 的**描述**后面（只追加、幂等，绝不替换宿主原文） |
+| `TM_AGENT_TEMPERATURE` | `off` | `on` 时按角色分档采样（architect 0.35 / researcher 0.3 / reviewer 0.1 / 其余 0.2）经 `chat.params` 生效；也可写 `reviewer=0.05;team=0.4`。默认关闭＝守住"所有 agent 0.2"这条既定原则 |
+| `TM_COMPACTION_CONTEXT` | `on` | 在宿主压缩前追加"必须存活清单"（回复骨架、offload 句柄、未回收的子会话 id、出处、板上路径）。只做追加——宿主自己的压缩提示词不被替换 |
+| `TM_COMPACTION_AUTOCONTINUE` | `on` | 设 `off` 则压缩后不让宿主静默续跑，先由人复核状态 |
+| `TM_SHELL_NO_COLOR` | `on` | 经 `shell.env` 给每个子 shell 注入 `NO_COLOR`/`TERM=dumb`（ANSI 进度条纯属上下文税）。绝不覆盖宿主已设的值 |
+| `TM_SHELL_ENV` | — | 显式 `KEY=VALUE;KEY2=VALUE2` 透传进子 shell——刻意用白名单，避免这个钩子变成父环境泄露通道 |
 | `TM_WEBFETCH_ALLOWED_DOMAINS` | 23 个种子主机 | tm_webfetch / tm_search / tm_browser 白名单（`"*"` 全开；空 = 全拒；自定义值**替换**种子——保留引擎主机） |
 | `TM_BROWSER_PATH` | 自动探测 | tm_browser 可执行文件覆盖（默认用你的默认浏览器——Chromium 系时；否则回退 Edge/Chrome 探测） |
 | `TM_BROWSER_HEADLESS` | `auto` | `1` 无头（CI）/ `0` 有头 / `auto`（仅无显示的 Linux 用无头） |

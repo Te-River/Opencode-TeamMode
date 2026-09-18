@@ -478,6 +478,13 @@ for overrides, extra agents and disabling roles.
 | `TM_SEARCH_DISABLED_ENGINES` | unset | engines removed from the roster AND from every `auto` route (`sogou,baidu` style) |
 | `TM_BASH_TIMEOUT_PROBE_MS` | `60000` | ceiling forced onto a `timeout` the model set for a read-only probe command (0 disables) |
 | `TM_BASH_TIMEOUT_MAX_MS` | `0` | optional global ceiling for every other bash command — off by default so a real build keeps the timeout it asked for |
+| `TM_PTY_MAX` | `4` | concurrent `tm_pty` terminal sessions this plugin may keep running at once |
+| `TM_TOOL_HINTS` | `on` | append TeamMode's call-site discipline to the built-in `bash` / `task` tool DESCRIPTIONS via `tool.definition` (append-only, idempotent — the host text is never replaced) |
+| `TM_AGENT_TEMPERATURE` | `off` | `on` applies a per-role sampling table (architect 0.35 / researcher 0.3 / reviewer 0.1 / rest 0.2) via `chat.params`; or give it `reviewer=0.05;team=0.4`. Off = the documented "all agents at 0.2" invariant stands |
+| `TM_COMPACTION_CONTEXT` | `on` | on the host's pre-compaction hook, add the must-survive list (reply skeleton, offload handles, dispatched child session ids, provenance, board paths). Additive — the host's own summarizer prompt is never replaced |
+| `TM_COMPACTION_AUTOCONTINUE` | `on` | `off` stops the host from silently resuming the turn after a compaction, so a human re-reads state first |
+| `TM_SHELL_NO_COLOR` | `on` | inject `NO_COLOR`/`TERM=dumb` into every child shell via `shell.env` (ANSI progress bars are pure context tax). Never overwrites a value the host already set |
+| `TM_SHELL_ENV` | — | explicit `KEY=VALUE;KEY2=VALUE2` passthrough into child shells — deliberately allowlisted, so this hook can't become a side channel for the parent environment |
 | `TM_BROWSER_USER_DATA_DIR` | — (isolated temp profile) | explicit persistent profile dir — the ONLY way logins survive between sessions |
 | `TM_MEMORY_GLOBAL_DIR` | `~/.opencode-team/memories/global/` | tm_memory GLOBAL tier store |
 | `TM_MEMORY_SESSION_TTL_MIN` | `240` | session-tier entry TTL (lazy + boot sweep) |
