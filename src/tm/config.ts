@@ -126,6 +126,22 @@ export interface TmConfig {
   /** tm_search default engine when no explicit `engine` arg is given
    *  ("auto" = current first-engine behavior).  Consumed by search.ts (T4). */
   searchDefaultEngine: string
+  /** Hits kept per engine leg AND in the final fused list.  Consumed by
+   *  search.ts. */
+  searchMaxHits: number
+  /** Per-engine fusion weight overrides (`bing=0.2,hn=0.3`).  Anything not
+   *  listed keeps the built-in table.  Consumed by search.ts. */
+  searchWeights: Record<string, number>
+  /** Engines removed from the roster AND from every auto route
+   *  (comma/semicolon separated).  Consumed by search.ts. */
+  searchDisabledEngines: string[]
+  /** Weight multiplier applied to a ZERO-overlap hit (no query token in the
+   *  title/snippet/host).  bing used to own ranks 1-10 purely on its 0.4
+   *  trust weight, so its junk outranked every engine's best hit; the floor
+   *  keeps such a hit in play at a fraction of the weight instead of
+   *  deleting an engine the user cannot afford to lose.  Consumed by
+   *  search.ts. */
+  searchRelevanceFloor: number
   /** Offload boundary (estimated tokens) for the markdown/text/log prose
    *  class.  Defaults to 4000 when NOTHING is set; but if the user only set
    *  the global `TM_OFFLOAD_THRESHOLD` (no `TM_OFFLOAD_THRESHOLD_TEXT`),
@@ -147,6 +163,28 @@ export interface TmConfig {
   /** Hard cap (estimated tokens) for tm_browser snapshot payloads.
    *  Consumed by browser.ts (T5). */
   browserSnapshotMaxTokens: number
+  /** tm_browser SUBRESOURCE policy — what the in-page network gate does with
+   *  everything a page pulls AFTER the navigation itself was allowed.
+   *  Gating subresources by the CONTENT allowlist (the pre-v1.5.13 behavior)
+   *  silently aborts every img/css/js the site serves from its own CDN, so
+   *  pages render picture-less and the agent reports "no images".
+   *    same-site (default) — passive types (image/media/font/stylesheet)
+   *      always pass; an EXECUTABLE resource (script/xhr/fetch/document/…)
+   *      passes only when its registrable site is one this session actually
+   *      navigated to;
+   *    passive — passive types pass, everything else stays on the allowlist;
+   *    off   — the legacy verbatim behavior (every request re-checked).
+   *  Consumed by browser.ts. */
+  browserSubresource: "same-site" | "passive" | "off"
+  /** Ceiling on PNG bytes tm_browser will base64-inline as a tool-result
+   *  attachment (an oversized screenshot stays path-only + says why).
+   *  Consumed by browser.ts. */
+  browserImageMaxBytes: number
+  /** Idle wall-clock after which tm_browser closes an untouched session on
+   *  its own — the safety net for the "agent claims it closed the window but
+   *  it is still on screen" class.  0 disables the reaper.  Consumed by
+   *  browser.ts. */
+  browserIdleCloseMs: number
   /** tm_ptc_run web bridge: "on" (default) exposes tm.search/tm.webfetch
    *  facades to PTC programs; "off" removes them from the bridge set.
    *  Consumed by ptc/* (T6). */
@@ -160,6 +198,17 @@ export interface TmConfig {
    *  classifyReplyFailure, so the ~120s replied-event bus lag no longer
    *  forces a 3-min floor — an unanswered dialog auto-rejects after 1 min. */
   askTimeoutFloorMin: number
+  /** Ceiling (ms) forced onto the built-in bash tool's `timeout` ARG through
+   *  the official `tool.execute.before` hook.  0 (default) = no cap: a build
+   *  or test run stays whatever the model asked for.  Consumed by
+   *  bash-timeout.ts. */
+  bashTimeoutMaxMs: number
+  /** Ceiling (ms) for a bash command that the P3 read-only allowlist already
+   *  classifies as a pure probe (ls/grep/rg/cat/Get-ChildItem …).  Those
+   *  never legitimately need the host's 120 s default, and models routinely
+   *  set 120000+ on them, so this one ships ENABLED.  0 disables.
+   *  Consumed by bash-timeout.ts. */
+  bashTimeoutProbeMs: number
 }
 
 export const TM_CONFIG_DEFAULTS = {
@@ -187,6 +236,12 @@ export const TM_CONFIG_DEFAULTS = {
   memoryStaleDays: 30,
   memorySessionPersist: "",
   searchDefaultEngine: "auto",
+  searchMaxHits: 10,
+  searchWeights: {},
+  searchDisabledEngines: [],
+  // 0.35: a hit with zero query overlap keeps just over a third of its
+  // engine weight — demoted, never deleted (see TmConfig.searchRelevanceFloor).
+  searchRelevanceFloor: 0.35,
   // Literal fallbacks used ONLY when the global TM_OFFLOAD_THRESHOLD is
   // unset.  When the global IS set and a tier env is not, resolveTmConfig
   // derives that tier from the global (inherit — Wave B M1) instead of
@@ -195,10 +250,18 @@ export const TM_CONFIG_DEFAULTS = {
   offloadThresholdData: 2000,
   browserEngine: "playwright",
   browserSnapshotMaxTokens: 1200,
+  browserSubresource: "same-site",
+  browserImageMaxBytes: 400_000,
+  browserIdleCloseMs: 180_000,
   ptcWebBridge: "on",
   // Consumed by approval-gate.ts resolveAskTimeoutMs (Math.max floor, Wave A).
   // 1 min since the T2 benign already-closed split (user directive).
   askTimeoutFloorMin: 1,
+  // The GENERAL bash cap stays off by default (a real build may legitimately
+  // need minutes); the probe cap ships on because a read-only probe never
+  // needs the host's 120 s default.  Both are ms; 0 = off.
+  bashTimeoutMaxMs: 0,
+  bashTimeoutProbeMs: 60_000,
 } as const
 
 /** Inclusive ceilings/floors for the PTC budgets (design §4.3). */
@@ -226,6 +289,39 @@ function envStr(env: EnvLike, key: string, def: string): string {
   if (typeof raw !== "string") return def
   const v = raw.trim()
   return v === "" ? def : v
+}
+
+/** Float sibling of envInt (fraction knobs like the relevance floor). */
+function envNum(env: EnvLike, key: string, def: number, min: number, max: number): number {
+  const raw = env[key]
+  if (typeof raw !== "string" || raw.trim() === "") return def
+  const n = Number(raw.trim())
+  if (!Number.isFinite(n) || n < min || n > max) return def
+  return n
+}
+
+/** TM_BROWSER_SUBRESOURCE — anything unrecognized keeps the same-site
+ *  default (fail-soft toward the newer, working behavior). */
+function resolveSubresourcePolicy(raw: unknown): "same-site" | "passive" | "off" {
+  const v = typeof raw === "string" ? raw.trim().toLowerCase() : ""
+  if (v === "off" || v === "strict" || v === "legacy") return "off"
+  if (v === "passive") return "passive"
+  return "same-site"
+}
+
+/** TM_SEARCH_WEIGHTS — `bing=0.2,hn=0.3` into a partial weight table.  A
+ *  malformed pair is dropped (not the whole var), so one typo cannot silently
+ *  flatten every custom weight back to the built-in table. */
+export function parseWeightsEnv(raw: unknown): Record<string, number> {
+  const out: Record<string, number> = {}
+  if (typeof raw !== "string") return out
+  for (const part of raw.split(/[,;]/)) {
+    const m = /^\s*([A-Za-z0-9_-]{1,30})\s*=\s*(\d+(?:\.\d+)?)\s*$/.exec(part)
+    if (!m) continue
+    const w = Number(m[2])
+    if (Number.isFinite(w) && w > 0 && w <= 10) out[m[1].toLowerCase()] = w
+  }
+  return out
 }
 
 /**
@@ -279,12 +375,21 @@ export function resolveTmConfig(env: EnvLike = process.env): TmConfig {
     memoryStaleDays: envInt(env, "TM_MEMORY_STALE_DAYS", TM_CONFIG_DEFAULTS.memoryStaleDays, 0, 3650),
     memorySessionPersist: envStr(env, "TM_MEMORY_SESSION_PERSIST", TM_CONFIG_DEFAULTS.memorySessionPersist),
     searchDefaultEngine: envStr(env, "TM_SEARCH_DEFAULT_ENGINE", TM_CONFIG_DEFAULTS.searchDefaultEngine),
+    searchMaxHits: envInt(env, "TM_SEARCH_MAX_HITS", TM_CONFIG_DEFAULTS.searchMaxHits, 3, 30),
+    searchWeights: parseWeightsEnv(env.TM_SEARCH_WEIGHTS),
+    searchDisabledEngines: parseAllowlistEnv(env.TM_SEARCH_DISABLED_ENGINES) ?? [],
+    searchRelevanceFloor: envNum(env, "TM_SEARCH_RELEVANCE_FLOOR", TM_CONFIG_DEFAULTS.searchRelevanceFloor, 0, 1),
     offloadThresholdText: envInt(env, "TM_OFFLOAD_THRESHOLD_TEXT", textTierDefault, 0, 10_000_000),
     offloadThresholdData: envInt(env, "TM_OFFLOAD_THRESHOLD_DATA", dataTierDefault, 0, 10_000_000),
     browserEngine: resolveBrowserEngine(env.TM_BROWSER_ENGINE),
     browserSnapshotMaxTokens: envInt(env, "TM_BROWSER_SNAPSHOT_MAX_TOKENS", TM_CONFIG_DEFAULTS.browserSnapshotMaxTokens, 10, 100_000),
+    browserSubresource: resolveSubresourcePolicy(env.TM_BROWSER_SUBRESOURCE),
+    browserImageMaxBytes: envInt(env, "TM_BROWSER_IMAGE_MAX_BYTES", TM_CONFIG_DEFAULTS.browserImageMaxBytes, 10_000, 5_000_000),
+    browserIdleCloseMs: envInt(env, "TM_BROWSER_IDLE_MS", TM_CONFIG_DEFAULTS.browserIdleCloseMs, 0, 3_600_000),
     ptcWebBridge: resolveOnOff(env.TM_PTC_WEB_BRIDGE),
     askTimeoutFloorMin: envInt(env, "TM_ASK_TIMEOUT_FLOOR_MIN", TM_CONFIG_DEFAULTS.askTimeoutFloorMin, 1, 1440),
+    bashTimeoutMaxMs: envInt(env, "TM_BASH_TIMEOUT_MAX_MS", TM_CONFIG_DEFAULTS.bashTimeoutMaxMs, 0, 3_600_000),
+    bashTimeoutProbeMs: envInt(env, "TM_BASH_TIMEOUT_PROBE_MS", TM_CONFIG_DEFAULTS.bashTimeoutProbeMs, 0, 600_000),
   }
 }
 

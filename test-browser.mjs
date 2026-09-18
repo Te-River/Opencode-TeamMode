@@ -55,15 +55,27 @@ function makeTool(over = {}) {
   const cfg = {
     browserEngine: over.browserEngine ?? "playwright",
     browserSnapshotMaxTokens: over.snapshotMaxTokens ?? 1200,
+    browserSubresource: over.subresource,
+    browserImageMaxBytes: over.imageMaxBytes,
+    browserIdleCloseMs: over.idleMs,
     webfetchAllowedDomains: over.cfgDomains ?? ["cn.bing.com", "bing.com", "example.com"],
   }
-  const env = { TM_BROWSER_PATH: over.executablePath ?? fakeExe, TM_BROWSER_HEADLESS: "1", ...over.env }
+  // `discovered: true` feeds the exe through the discovery SEAM instead of
+  // TM_BROWSER_PATH — an explicit override must never be substituted by a
+  // playwright channel, so the channel-fallback path is only reachable from
+  // a discovered candidate.
+  const env =
+    over.discovered || over.realDiscovery
+      ? { TM_BROWSER_HEADLESS: "1", ...over.env }
+      : { TM_BROWSER_PATH: over.executablePath ?? fakeExe, TM_BROWSER_HEADLESS: "1", ...over.env }
   const tool = br.buildTmBrowserTool({
     pipelines,
     cfg,
     env,
     importPlaywright: over.importPlaywright,
     nodeMajor: over.nodeMajor,
+    findExecutable: over.discovered ? () => over.executablePath : undefined,
+    notify: over.notify,
   })
   return { tool, events, stepsRoot }
 }
@@ -157,7 +169,14 @@ function makeFakePw(opts = {}) {
       },
       pages: () => context._pages,
       newPage: async () => page0,
-      close: async () => (context._closed = true),
+      // a faithful close: the real context drops its pages AND reports
+      // disconnected — tm_browser's verified close verdict reads that state
+      close: async () => {
+        context._closed = true
+        context._pages = []
+        if (context._browser) context._browser._closed = true
+        return true
+      },
     }
     ctxRef = context
     return context
@@ -166,18 +185,24 @@ function makeFakePw(opts = {}) {
     chromium: {
       async launch(launchOpts) {
         calls.launch.push(launchOpts)
-        if (opts.channelThrows && launchOpts.channel && calls.launch.length === 1) {
-          throw new Error("channel launch unsupported (fake)")
+        // executablePath is the PRIMARY launch now; this seam simulates a
+        // host where that exec refuses to start, so the channel fallback
+        // leg gets exercised.
+        if (opts.execPathThrows && !launchOpts.channel && calls.launch.length === 1) {
+          throw new Error("executablePath launch refused (fake)")
         }
         const browser = {
           async newContext(contextOpts) {
             calls.contextOpts.push(contextOpts)
             browser._context = mkContext()
+            browser._context._browser = browser
             return browser._context
           },
           async close() {
             browser._closed = true
+            if (browser._context) browser._context._pages = []
           },
+          isConnected: () => !browser._closed,
         }
         calls.launchBrowser = browser
         return browser
@@ -394,7 +419,8 @@ async function main() {
     assert.ok(o(open).includes("浏览器已启动") && o(open).includes("已导航"), "playwright open keeps the §6o launch+nav wording")
     assert.equal(mk.tool.engineInfo().kind, "playwright", "engineInfo = playwright")
     assert.equal(fx.calls.launch.length, 1, "one launch attempt")
-    assert.equal(fx.calls.launch[0].channel, "msedge", "msedge.exe -> channel smoke attempt first")
+    assert.equal(fx.calls.launch[0].executablePath, fakeExe, "the DISCOVERED executable is what launches")
+    assert.equal(fx.calls.launch[0].channel, undefined, "no channel on an explicit TM_BROWSER_PATH — channel would relaunch a different install")
     assert.equal(fx.calls.launch[0].headless, true, "TM_BROWSER_HEADLESS=1 honored through playwright opts")
     assert.ok(fx.calls.launch[0].args.includes("--mute-audio"), "hardened launch flags carried")
     const ctxOpts = fx.calls.contextOpts[0]
@@ -410,11 +436,78 @@ async function main() {
       continue: async () => decisions.push("continue"),
       abort: async () => decisions.push("abort"),
     })
-    await handler(route(), { url: () => "https://cn.bing.com/search?q=x", method: () => "GET" })
-    await handler(route(), { url: () => "https://evil.test/steal", method: () => "GET" })
+    await handler(route(), { url: () => "https://cn.bing.com/search?q=x", method: () => "GET", resourceType: () => "document" })
+    await handler(route(), { url: () => "https://evil.test/steal", method: () => "GET", resourceType: () => "document" })
     await handler(route(), { url: () => "data:image/png;base64,AAAA" })
     assert.deepEqual(decisions, ["continue", "abort", "continue"], "route(): allowlisted continue / off-list abort / data: passthrough")
-    assert.ok(mk.events.some((e) => e.event === "blocked" && String(e.url).includes("evil.test")), "blocked hop trajectory-audited (per-hop)")
+
+    // ---- SUBRESOURCE policy (the "pages render without images" fix) ----
+    // cfgDomains = the exact host only, so an asset host on the SAME SITE is
+    // a genuine same-site case rather than an allowlist hit.
+    {
+      const fxS = makeFakePw()
+      const mkS = makeTool({ importPlaywright: async () => fxS.pw, nodeMajor: 22, cfgDomains: ["cn.bing.com"] })
+      await mkS.tool.execute({ action: "open", url: "https://cn.bing.com" }, ctxNoAsk)
+      const h = fxS.calls.route[0].handler
+      const dec = []
+      const r = () => ({ continue: async () => dec.push("continue"), abort: async () => dec.push("abort") })
+      const req = (url, resourceType) => ({ url: () => url, method: () => "GET", resourceType: () => resourceType })
+      // navigating to cn.bing.com registered the site "bing.com"
+      await h(r(), req("https://assets.bing.com/app.js", "script"))
+      await h(r(), req("https://assets.bing.com/logo.png", "image"))
+      await h(r(), req("https://evil.test/track.js", "script"))
+      await h(r(), req("https://evil.test/banner.jpg", "image"))
+      await h(r(), req("https://evil.test/steal", "document"))
+      // R6 red line on the remote face: an ALLOWLISTED host asking for a .env
+      // is still refused, even as a "harmless" image.
+      await h(r(), req("https://cn.bing.com/.env", "image"))
+      assert.deepEqual(
+        dec,
+        ["continue", "continue", "abort", "continue", "abort", "abort"],
+        "same-site script + passive images pass; off-site script/document blocked; a remote .env stays a hard red line under every policy",
+      )
+      const snap = await mkS.tool.execute({ action: "take_snapshot" }, ctxNoAsk)
+      assert.ok(o(snap).includes("个子资源请求被治理白名单拦截"), "the next observation TELLS the agent the gate trimmed the page")
+      assert.ok(o(snap).includes("evil.test"), "the note names the blocked hosts")
+      assert.ok(
+        mkS.events.some((e) => e.event === "blocked" && String(e.hosts ?? "").includes("evil.test") && Number(e.count) === 2),
+        "blocked requests aggregate into ONE trajectory line (count + hosts), never one per request",
+      )
+      assert.ok(
+        !String(mkS.events.find((e) => e.event === "blocked")?.hosts ?? "").includes("cn.bing.com"),
+        "a hard red-line refusal is not counted as a policy trim (it is not page content the gate hid)",
+      )
+      const snap2 = await mkS.tool.execute({ action: "take_snapshot" }, ctxNoAsk)
+      assert.ok(!o(snap2).includes("个子资源请求被治理白名单拦截"), "the note drains — it is not repeated forever")
+      await h(r(), req("https://evil.test/again.js", "script"))
+      const snap3 = await mkS.tool.execute({ action: "take_snapshot" }, ctxNoAsk)
+      assert.ok(o(snap3).includes("个子资源请求被治理白名单拦截"), "a SECOND round of blocks still reports (the counter resets in place, it is not swapped out)")
+      // policy=off restores the legacy verbatim gate
+      const fxO = makeFakePw()
+      const mkO = makeTool({ importPlaywright: async () => fxO.pw, nodeMajor: 22, cfgDomains: ["cn.bing.com"], subresource: "off" })
+      await mkO.tool.execute({ action: "open", url: "https://cn.bing.com" }, ctxNoAsk)
+      const decO = []
+      const rO = () => ({ continue: async () => decO.push("continue"), abort: async () => decO.push("abort") })
+      await fxO.calls.route[0].handler(rO(), req("https://assets.bing.com/logo.png", "image"))
+      assert.deepEqual(decO, ["abort"], "TM_BROWSER_SUBRESOURCE=off restores the strict every-request allowlist")
+      // policy=passive: images pass, same-site scripts do NOT
+      const fxP = makeFakePw()
+      const mkP = makeTool({ importPlaywright: async () => fxP.pw, nodeMajor: 22, cfgDomains: ["cn.bing.com"], subresource: "passive" })
+      await mkP.tool.execute({ action: "open", url: "https://cn.bing.com" }, ctxNoAsk)
+      const decP = []
+      const rP = () => ({ continue: async () => decP.push("continue"), abort: async () => decP.push("abort") })
+      await fxP.calls.route[0].handler(rP(), req("https://assets.bing.com/app.js", "script"))
+      await fxP.calls.route[0].handler(rP(), req("https://assets.bing.com/app.css", "stylesheet"))
+      assert.deepEqual(decP, ["abort", "continue"], "passive tier: stylesheet loads, same-site script still gated")
+      // a missing resourceType is treated as EXECUTABLE (the strict side)
+      const decU = []
+      const rU = () => ({ continue: async () => decU.push("continue"), abort: async () => decU.push("abort") })
+      await fxS.calls.route[0].handler(rU(), { url: () => "https://assets.bing.com/x" })
+      assert.deepEqual(decU, ["continue"], "untyped same-site request still covered by same-site")
+      await fxS.calls.route[0].handler(rU(), { url: () => "https://evil.test/x" })
+      assert.deepEqual(decU, ["continue", "abort"], "untyped off-site request is NOT treated as passive")
+      void mkO; void mkP
+    }
 
     // ---- take_snapshot -> ariaSnapshot + uid addressing ----
     const snap = await mk.tool.execute({ action: "take_snapshot" }, ctxNoAsk)
@@ -504,36 +597,112 @@ async function main() {
 
     // ---- screenshots keep the §6o contract on BOTH engines ----
     const shot = await mk2.tool.execute({ action: "take_screenshot" }, ctxNoAsk)
-    const m = /截图已保存（(\d+) bytes）：(.+)$/m.exec(o(shot))
+    const m = /截图已保存（PNG (\d+) bytes）：(.+)$/m.exec(o(shot))
     assert.ok(m && fs.existsSync(m[2].trim()) && Number(m[1]) === 8, "take_screenshot writes the PNG to the run store, §6o output shape")
+    const shotImg = await mk2.tool.execute({ action: "take_screenshot", image: true }, ctxNoAsk)
+    assert.equal(shotImg.attachments?.[0]?.mime, "image/jpeg", "image:true attaches a JPEG, not the (much larger) PNG")
+    assert.ok(String(shotImg.attachments?.[0]?.url ?? "").startsWith("data:image/jpeg;base64,"), "attachment ships as a data URL")
+    assert.equal(fx2.__ctxPage._shotOpts?.type, "jpeg", "the attached capture is requested from the engine as jpeg")
+    assert.equal(fx2.__ctxPage._shotOpts?.quality, 70, "quality 70 — small enough to inline, good enough to read")
     const legacyNamed = await mk2.tool.execute({ action: "screenshot" }, ctxNoAsk)
     assert.ok(o(legacyNamed).includes("截图已保存"), "compat `screenshot` verb maps to take_screenshot")
     const read = await mk2.tool.execute({ action: "read" }, ctxNoAsk)
     assert.ok(o(read).startsWith("页面文本（"), "compat `read` keeps the page-text header")
 
-    // ---- close ----
+    // ---- close: a VERIFIED verdict, quoted verbatim by the agent ----
     const closed = await mk2.tool.execute({ action: "close" }, ctxNoAsk)
-    assert.ok(o(closed).includes("已关闭"), "playwright close keeps the 已关闭 wording")
+    assert.ok(o(closed).includes("已确认关闭"), "playwright close reports the verified success verdict")
+    assert.ok(o(closed).includes("playwright/"), "the close line names the engine+exe it closed (the agent can point at a window)")
     assert.ok(o(await mk2.tool.execute({ action: "close" }, ctxNoAsk)).includes("没有打开的浏览器会话"), "double close stays honest")
+    // a close that could NOT release the pages must warn, never claim
+    {
+      const fxL = makeFakePw()
+      const mkL = makeTool({ importPlaywright: async () => fxL.pw, nodeMajor: 22 })
+      await mkL.tool.execute({ action: "open", url: "https://cn.bing.com" }, ctxNoAsk)
+      const ctxLive = fxL.__ctx
+      const brLive = fxL.calls.launchBrowser
+      ctxLive.close = async () => {
+        throw new Error("context busy (fake)")
+      }
+      brLive.close = async () => {}
+      brLive.isConnected = () => true // claims a browser that is still up
+      const stuck = await mkL.tool.execute({ action: "close" }, ctxNoAsk)
+      assert.ok(o(stuck).includes("警告：关闭未完全成功"), "a half-closed session warns instead of claiming success")
+      assert.ok(o(stuck).includes("残留标签页 2 个"), "the warning counts what is still open")
+      assert.ok(o(stuck).includes("context busy"), "the underlying engine error is surfaced, not swallowed")
+    }
     log("playwright engine (mocked): launch opts / route allowlist / snapshot+uid / all 16 verbs / buffers / dialogs / shots")
   }
 
-  // ---------- 6b. channel -> executablePath fallback (R2: channel is smoke-only) ----------
+  // ---------- 6b. launch target: the DISCOVERED exe wins, channel is fallback ----------
   {
-    const fx = makeFakePw({ channelThrows: true })
-    const mk = makeTool({ importPlaywright: async () => fx.pw, nodeMajor: 22 })
+    // The regression this pins: channel:"msedge" makes playwright resolve the
+    // STABLE install itself and DISCARD our path, so an Edge-Beta default
+    // opened stable Edge.  Channel is now only correct for a stable-shaped
+    // install dir, and only as a fallback.
+    assert.equal(br.playwrightLaunchTarget("C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe").channel, "msedge", "stable Edge dir -> channel msedge available")
+    assert.equal(br.playwrightLaunchTarget("C:\\Program Files (x86)\\Microsoft\\EdgeBeta\\Application\\msedge.exe").channel, undefined, "Edge BETA dir -> no channel (channel would silently relaunch stable)")
+    assert.equal(br.playwrightLaunchTarget("C:\\Program Files\\Microsoft\\EdgeDev\\Application\\msedge.exe").channel, undefined, "Edge DEV dir -> no channel")
+    assert.equal(br.playwrightLaunchTarget("C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe").channel, "chrome", "stable Chrome dir -> channel chrome available")
+    assert.equal(br.playwrightLaunchTarget("/snap/bin/chromium").channel, undefined, "chromium -> no channel at all")
+    assert.equal(
+      br.playwrightLaunchTarget("C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe", { explicitOverride: true }).channel,
+      undefined,
+      "an explicit TM_BROWSER_PATH is honoured verbatim — never substituted by a channel",
+    )
+    assert.equal(br.playwrightLaunchTarget("C:\\x\\msedge.exe").executablePath, "C:\\x\\msedge.exe", "executablePath always carries the discovered path")
+    assert.equal(br.playwrightLaunchTarget("C:/x/msedge.exe").executablePath, "C:/x/msedge.exe", "forward-slash paths pass through unchanged")
+
+    // executablePath refuses -> the channel leg is what saves the session
+    const stable = path.join(root, "Microsoft", "Edge", "Application", "msedge.exe")
+    fs.mkdirSync(path.dirname(stable), { recursive: true })
+    fs.writeFileSync(stable, "MZ")
+    const fx = makeFakePw({ execPathThrows: true })
+    const mk = makeTool({ importPlaywright: async () => fx.pw, nodeMajor: 22, executablePath: stable, discovered: true })
     const open = await mk.tool.execute({ action: "open", url: "https://cn.bing.com" }, ctxNoAsk)
-    assert.ok(o(open).includes("已导航"), "channel failure falls back to executablePath and still opens")
-    assert.equal(fx.calls.launch[0].channel, "msedge", "attempt 1 = channel")
-    assert.equal(fx.calls.launch[1]?.executablePath, fakeExe, "attempt 2 = our discovered executablePath")
-    // chrome.exe discovered name -> channel chrome
-    const chromeExe = path.join(root, "chrome.exe")
-    fs.writeFileSync(chromeExe, "MZ")
-    const fx2 = makeFakePw()
-    const mk2 = makeTool({ importPlaywright: async () => fx2.pw, nodeMajor: 22, executablePath: chromeExe })
-    await mk2.tool.execute({ action: "open", url: "https://cn.bing.com" }, ctxNoAsk)
-    assert.equal(fx2.calls.launch[0].channel, "chrome", "chrome.exe -> channel(chrome) smoke attempt")
-    log("channel launches are smoke-attempt-only with executablePath fallback (official cross-version warning)")
+    assert.ok(o(open).includes("已导航"), "a refused executablePath still opens via the channel fallback")
+    assert.equal(fx.calls.launch[0].executablePath, stable, "attempt 1 = the discovered path")
+    assert.equal(fx.calls.launch[0].channel, undefined, "attempt 1 sends no channel")
+    assert.equal(fx.calls.launch[1]?.channel, "msedge", "attempt 2 = channel (stable-shaped install only)")
+    assert.ok(o(open).includes("channel(msedge)"), "the open line reports which launch path actually won")
+
+    // the Beta case end-to-end: a beta-shaped discovered path NEVER sends a
+    // channel, so a refusal is a real error instead of a silent downgrade to
+    // stable Edge.
+    const beta = path.join(root, "Microsoft", "EdgeBeta", "Application", "msedge.exe")
+    fs.mkdirSync(path.dirname(beta), { recursive: true })
+    fs.writeFileSync(beta, "MZ")
+    const fxB = makeFakePw({ execPathThrows: true })
+    const mkB = makeTool({ importPlaywright: async () => fxB.pw, nodeMajor: 22, executablePath: beta, discovered: true })
+    const failB = await mkB.tool.execute({ action: "open", url: "https://cn.bing.com" }, ctxNoAsk)
+    assert.ok(o(failB).includes("phase=execute"), "a Beta install that refuses to launch fails honestly")
+    assert.equal(fxB.calls.launch.length, 1, "no channel fallback exists for a non-stable install (would open the WRONG browser)")
+    const okB = await mkB.tool.execute({ action: "open", url: "https://cn.bing.com" }, ctxNoAsk)
+    assert.ok(o(okB).includes("已导航") && fxB.calls.launch[1].executablePath === beta, "retry launches the discovered Beta path itself")
+    log("launch target: discovered executablePath primary, channel only for a stable-shaped install, never over an explicit override")
+  }
+
+  // ---------- 6b2. site math + resource-type normalisation (pure) ----------
+  {
+    assert.equal(br.siteOf("assets.bing.com"), "bing.com", "subdomain collapses to the registrable site")
+    assert.equal(br.siteOf("www.something.com.cn"), "something.com.cn", "a two-level CN suffix keeps three labels")
+    assert.equal(br.siteOf("moe.example.co.uk"), "example.co.uk", "co.uk handled without a PSL dependency")
+    assert.equal(br.siteOf("a.b.c.d.example.org"), "example.org", "deep subdomains collapse to the site")
+    assert.equal(br.siteOf("10.0.0.8"), "10.0.0.8", "a bare IP stays itself (no site inference on literals)")
+    assert.equal(br.siteOf("HTTP.EXAMPLE.COM."), "example.com", "case + trailing dot normalised")
+    assert.equal(br.normalizeResourceType("Stylesheet"), "stylesheet", "CDP spelling maps onto playwright's")
+    assert.equal(br.normalizeResourceType(undefined), "other", "an untyped request defaults to the EXECUTABLE side")
+    assert.ok(br.isPassiveResource("Image") && br.isPassiveResource("font"), "image/font/… are passive")
+    assert.ok(!br.isPassiveResource("script") && !br.isPassiveResource("document"), "script/document are never passive")
+    const pass = (o2) => br.subresourcePass({ allowlistHit: false, approvedHost: false, allowedSites: new Set(["bing.com"]), policy: "same-site", ...o2 })
+    assert.equal(pass({ url: "https://x.bing.com/a.js", resourceType: "script" }).pass, true, "same-site script passes")
+    assert.equal(pass({ url: "https://cdn.other.com/a.js", resourceType: "script" }).pass, false, "off-site script blocked")
+    assert.equal(pass({ url: "https://cdn.other.com/a.png", resourceType: "image" }).pass, true, "off-site image passes (passive)")
+    assert.equal(pass({ url: "https://cn.bing.com/x", resourceType: "document" }).via, "same-site:document", "navigation to an already-visited site is same-site")
+    assert.equal(br.subresourcePass({ url: "https://cdn.other.com/a.js", resourceType: "script", policy: "off", allowlistHit: false, approvedHost: false, allowedSites: new Set(["other.com"]) }).pass, false, "policy=off ignores same-site entirely")
+    assert.equal(br.subresourcePass({ url: "https://x.bing.com/a.js", resourceType: "script", policy: "passive", allowlistHit: false, approvedHost: false, allowedSites: new Set(["bing.com"]) }).pass, false, "policy=passive blocks even same-site scripts")
+    assert.equal(br.subresourcePass({ url: "https://x.bing.com/a.js", resourceType: "script", policy: "same-site", allowlistHit: true, approvedHost: false, allowedSites: new Set() }).via, "allowlist", "an allowlist hit short-circuits before the policy")
+    assert.equal(br.subresourcePass({ url: "https://x.bing.com/a.js", resourceType: "script", policy: "same-site", allowlistHit: false, approvedHost: true, allowedSites: new Set() }).via, "approved", "a dialog-approved host passes the network layer")
   }
 
   // ---------- 6c. ariaSnapshot absence -> honest directive ----------
@@ -714,10 +883,14 @@ async function main() {
     } else if (!br.findBrowserExecutable()) {
       console.log("  SKIP: real playwright-core smoke — no browser executable on this host")
     } else {
-      const mk = makeTool({})
+      // REAL discovery (registry default browser on Windows) — no
+      // TM_BROWSER_PATH, no seam: this is the path issue #5 (Edge Beta)
+      // actually took, and it must not be propped up by a channel fallback.
+      const mk = makeTool({ realDiscovery: true })
       try {
         const open = await mk.tool.execute({ action: "open", url: "https://cn.bing.com" }, ctxNoAsk)
-        assert.ok(o(open).includes("浏览器已启动"), "real playwright open")
+        assert.ok(o(open).includes("浏览器已启动"), `real playwright open — got: ${o(open).slice(0, 160)}`)
+        console.log(`  (real smoke launched: ${/· (playwright\/[^）]*)/.exec(o(open))?.[1] ?? "n/a"})`)
         if (mk.tool.engineInfo().kind === "playwright") {
           const snap = await mk.tool.execute({ action: "take_snapshot" }, ctxNoAsk)
           assert.ok(/\[uid=e\d+\]/.test(o(snap)), "real ariaSnapshot + uid registry round-trip")
@@ -726,7 +899,7 @@ async function main() {
         }
       } finally {
         await mk.tool.execute({ action: "close" }, ctxNoAsk)
-        mk.tool.dispose()
+        await mk.tool.dispose()
       }
       console.log("  real playwright-core smoke: OK")
     }
@@ -742,13 +915,18 @@ async function main() {
     // into the model's parameter spec — an undeclared field never reaches
     // execute().  Every field browser.ts reads must be declared here.
     const CONSUMED = [
-      "action", "url", "headless", "uid", "selector", "targetUid", "targetSelector",
+      "action", "url", "image", "uid", "selector", "targetUid", "targetSelector",
       "text", "key", "function", "expression", "filePath", "files", "index",
       "timeoutMs", "dialogAction", "promptText", "clear", "fullPage",
     ]
     for (const k of CONSUMED) assert.ok(k in shape, `browser args shape declares ${k}`)
+    // 2026-09-18: `headless` is DELIBERATELY absent — as a model arg it was
+    // the string-trap (`Boolean("false")` === true) that pinned a desktop
+    // session to headless and got every later page anti-bot blocked.
+    assert.ok(!("headless" in shape), "browser args shape does NOT expose headless (operator env only)")
     // drift guard: every STATIC `args.x` read in the built module is covered
     const src = fs.readFileSync(new URL("./dist/tm/browser.js", import.meta.url), "utf8")
+    assert.ok(!/\bargs\.headless\b/.test(src), "browser.ts never reads args.headless either")
     const seen = new Set([...src.matchAll(/\bargs\.([A-Za-z_$][\w$]*)/g)].map((m) => m[1]))
     for (const k of seen) assert.ok(k in shape, `execute() reads args.${k} but the shape does not declare it`)
     // selector/targetUid/targetSelector are dynamic-bracket reads (targetOf) —

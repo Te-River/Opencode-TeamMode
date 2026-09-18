@@ -30,16 +30,21 @@
  * Hardening (unchanged from the CDP era, ported to both engines):
  *   - isolated temp profile (never the user's real browser profile);
  *     persistent login is ONLY via an explicit TM_BROWSER_USER_DATA_DIR;
- *   - domain allowlist enforced at the NETWORK layer: playwright
- *     context.route() abort / CDP Fetch.requestPaused fail — every request
- *     and every redirect hop re-checked (per-hop analog);
+ *   - domain allowlist enforced at the NETWORK layer on the NAVIGATION
+ *     (playwright context.route / CDP Fetch interception), re-checked on
+ *     every redirect hop; SUBRESOURCES then follow TM_BROWSER_SUBRESOURCE
+ *     (default same-site: passive types load, an executable resource loads
+ *     when it belongs to a site this session opened).  Gating every request
+ *     by the content allowlist is what made pages render picture-less — the
+ *     21 seeded hosts contain no CDN, so img/css/js died silently;
  *   - out-of-allowlist open/navigate routes through the OFFICIAL dialog
  *     BEFORE any spawn; approved hosts also pass the network layer;
  *   - hardened context: real-Chrome UA + zh-CN Accept-Language,
  *     no-first-run / no-extensions / mute launch flags, 3 s default action
  *     timeout (the prompt's "3000 ms budget" is the tool's default, not an
  *     aspiration), no networkidle waits anywhere;
- *   - dispose kills the child / closes the browser.
+ *   - dispose AWAITS the close, and an idle session reaps itself
+ *     (TM_BROWSER_IDLE_MS) — an orphaned visible window is a user-facing bug.
  *
  * Environment adaptivity (different OpenCode hosts):
  *   - headful by default (Plan C); display-less Linux (no DISPLAY/
@@ -65,30 +70,49 @@ import { checkWebUrl, seedWebfetchDomains } from "./webfetch.js"
 import { askUserForTarget } from "./perm-ask.js"
 import { assertReadablePath } from "./guard.js"
 import { isEnvFilePath } from "../envprotect.js"
-import type { ToolResult } from "../types.js"
+import type { ToolAttachment, ToolResult } from "../types.js"
 import { tmError, toToolResult } from "./result.js"
 import type { TmConfig } from "./config.js"
 import { estimateTokens } from "./config.js"
 import type { TmPipelines } from "./pipelines.js"
 import { rmForceSafe } from "../fs-safe.js"
 
-/** Per-OS browser candidates, in preference order (first hit wins). */
+/** Per-OS browser candidates, in preference order (first hit wins).  ONLY a
+ *  fallback: on Windows the registry probe below is what actually honours the
+ *  user's chosen channel.  Edge/Chrome ship each channel in its OWN install
+ *  directory (`Microsoft\EdgeBeta`, `EdgeDev`, `EdgeCanary`), so the stable
+ *  path alone let a Beta-default host fall back to stable Edge (observed on
+ *  Windows 11, 2026-09-18). */
 const BROWSER_CANDIDATES: Record<string, string[]> = {
   win32: [
     "C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe",
     "C:\\Program Files\\Microsoft\\Edge\\Application\\msedge.exe",
+    "C:\\Program Files (x86)\\Microsoft\\Edge Beta\\Application\\msedge.exe",
+    "C:\\Program Files\\Microsoft\\Edge Beta\\Application\\msedge.exe",
+    "C:\\Program Files (x86)\\Microsoft\\Edge Dev\\Application\\msedge.exe",
+    "C:\\Program Files\\Microsoft\\Edge Dev\\Application\\msedge.exe",
+    "C:\\Program Files (x86)\\Microsoft\\Edge Canary\\Application\\msedge.exe",
+    "C:\\Program Files\\Microsoft\\Edge Canary\\Application\\msedge.exe",
     "%LOCALAPPDATA%\\Google\\Chrome\\Application\\chrome.exe",
     "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",
     "C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe",
+    "%LOCALAPPDATA%\\Google\\Chrome Beta\\Application\\chrome.exe",
+    "%LOCALAPPDATA%\\Google\\Chrome Dev\\Application\\chrome.exe",
+    "%LOCALAPPDATA%\\Google\\Chrome SxS\\Application\\chrome.exe",
   ],
   darwin: [
     "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
     "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
+    "/Applications/Microsoft Edge Beta.app/Contents/MacOS/Microsoft Edge Beta",
+    "/Applications/Microsoft Edge Dev.app/Contents/MacOS/Microsoft Edge Dev",
+    "/Applications/Microsoft Edge Canary.app/Contents/MacOS/Microsoft Edge Canary",
     "/Applications/Chromium.app/Contents/MacOS/Chromium",
   ],
   linux: [
     "/usr/bin/google-chrome",
     "/usr/bin/google-chrome-stable",
+    "/usr/bin/google-chrome-beta",
+    "/usr/bin/google-chrome-unstable",
     "/usr/bin/chromium-browser",
     "/usr/bin/chromium",
     "/snap/bin/chromium",
@@ -131,6 +155,47 @@ export function parseDesktopExec(text: string): string | null {
   return m ? (m[1] ?? m[2]) : null
 }
 
+/** Registry roots that can carry a ProgId's `shell\open\command`.  Edge is
+ *  installed machine-wide (HKLM\SOFTWARE\Classes) while a per-user Chrome
+ *  install registers HKCU\Software\Classes — probing HKCU only is what made
+ *  a Beta-default host come back empty and fall through to the stable
+ *  candidate path. */
+const REG_CLASSES_ROOTS = ["HKCU\\Software\\Classes", "HKLM\\SOFTWARE\\Classes"]
+
+/** Both URL schemes the shell association is recorded under.  A user can
+ *  set the two differently, so `http` alone is not "the default browser". */
+const REG_URL_SCHEMES = ["http", "https"]
+
+/** Channel install dirs keyed off the ProgId name (`MSEdgeBetaHTM`,
+ *  `ChromeHTML`, …) — the last-resort probe when the launch command itself is
+ *  unreadable but the ProgId still names the channel.  NOTE the real Windows
+ *  Edge dirs carry a SPACE ("Microsoft\Edge Beta"), which is what an
+ *  `EdgeBeta` guess silently misses; and Chrome installs per-user under
+ *  %LOCALAPPDATA% with a different exe name. */
+const CHANNEL_INSTALL_BY_PROGID: ReadonlyArray<readonly [RegExp, string, string]> = [
+  [/edgebeta/i, "C:\\Program Files (x86)\\Microsoft\\Edge Beta\\Application\\msedge.exe", "C:\\Program Files\\Microsoft\\Edge Beta\\Application\\msedge.exe"],
+  [/edgedev/i, "C:\\Program Files (x86)\\Microsoft\\Edge Dev\\Application\\msedge.exe", "C:\\Program Files\\Microsoft\\Edge Dev\\Application\\msedge.exe"],
+  [/edgecanary|edgeappcanary/i, "C:\\Program Files (x86)\\Microsoft\\Edge Canary\\Application\\msedge.exe", "C:\\Program Files\\Microsoft\\Edge Canary\\Application\\msedge.exe"],
+  [/msedge|edgehtm/i, "C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe", "C:\\Program Files\\Microsoft\\Edge\\Application\\msedge.exe"],
+  [/chromebeta/i, "%LOCALAPPDATA%\\Google\\Chrome Beta\\Application\\chrome.exe", "C:\\Program Files\\Google\\Chrome Beta\\Application\\chrome.exe"],
+  [/chromedev|chromejsx/i, "%LOCALAPPDATA%\\Google\\Chrome Dev\\Application\\chrome.exe", "C:\\Program Files\\Google\\Chrome Dev\\Application\\chrome.exe"],
+  [/chromehtml|chromechtml/i, "%LOCALAPPDATA%\\Google\\Chrome\\Application\\chrome.exe", "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe"],
+]
+
+/** Resolve a ProgId to its executable via every classes root.  `reg query`
+ *  exits non-zero (throws) for a missing key, so each probe is wrapped. */
+function progIdToExecutable(progId: string, run: CommandRunner): string | null {
+  for (const root of REG_CLASSES_ROOTS) {
+    try {
+      const exe = parseRegCommand(run("reg", ["query", `${root}\\${progId}\\shell\\open\\command`, "/ve"]))
+      if (exe) return exe
+    } catch {
+      /* next root */
+    }
+  }
+  return null
+}
+
 /** The user's DEFAULT browser, when it is Chromium-family and present.
  *  null → the caller falls back to the per-OS probe list (detection is
  *  best-effort and must never throw into tool discovery). */
@@ -140,17 +205,37 @@ export function defaultBrowserExecutable(
 ): string | null {
   try {
     if (process.platform === "win32") {
-      const choice = run("reg", [
-        "query",
-        "HKCU\\Software\\Microsoft\\Windows\\Shell\\Associations\\UrlAssociations\\http\\UserChoice",
-        "/v",
-        "ProgId",
-      ])
-      const progId = parseProgId(choice)
-      if (!progId) return null
-      const cmd = run("reg", ["query", `HKCU\\Software\\Classes\\${progId}\\shell\\open\\command`, "/ve"])
-      const exe = parseRegCommand(cmd)
-      return exe && isChromiumFamily(exe) && fs.existsSync(exe) ? exe : null
+      const accept = (exe: string | null): string | null =>
+        exe && isChromiumFamily(exe) && fs.existsSync(exe) ? exe : null
+      for (const scheme of REG_URL_SCHEMES) {
+        let progId: string | null = null
+        try {
+          progId = parseProgId(
+            run("reg", [
+              "query",
+              `HKCU\\Software\\Microsoft\\Windows\\Shell\\Associations\\UrlAssociations\\${scheme}\\UserChoice`,
+              "/v",
+              "ProgId",
+            ]),
+          )
+        } catch {
+          progId = null
+        }
+        if (!progId) continue
+        const direct = accept(progIdToExecutable(progId, run))
+        if (direct) return direct
+        // launch command unreadable (or points at a Firefox shim) — the
+        // ProgId itself still names the channel, so probe that channel's
+        // standard install dir before giving up on the user's default.
+        for (const [re, ...cands] of CHANNEL_INSTALL_BY_PROGID) {
+          if (!re.test(progId)) continue
+          for (const cand of cands) {
+            const hit = accept(cand.replace(/%LOCALAPPDATA%/gi, String(env.LOCALAPPDATA ?? "").trim()))
+            if (hit) return hit
+          }
+        }
+      }
+      return null
     }
     if (process.platform === "linux") {
       const desk = run("xdg-settings", ["get", "default-web-browser"]).trim()
@@ -172,6 +257,25 @@ export function defaultBrowserExecutable(
     /* best-effort — the probe list takes over */
   }
   return null
+}
+
+/** Playwright's `channel` launch IGNORES the executable we discovered —
+ *  `channel:"msedge"` resolves whatever playwright thinks the stable Edge is,
+ *  so a correct Edge-Beta discovery still opened stable (the decisive half of
+ *  the 2026-09-18 report).  The channel spelling is therefore only correct
+ *  for the exact stable-channel install dir; everything else (Beta/Dev/
+ *  Canary, portable, an explicit TM_BROWSER_PATH) rides on executablePath. */
+export function playwrightLaunchTarget(
+  executable: string,
+  opts: { explicitOverride?: boolean } = {},
+): { executablePath: string; channel?: string } {
+  const exe = String(executable ?? "")
+  const p = exe.replace(/\//g, "\\").toLowerCase()
+  if (!opts.explicitOverride) {
+    if (/\\microsoft\\edge\\application\\msedge\.exe$/.test(p)) return { executablePath: exe, channel: "msedge" }
+    if (/\\google\\chrome\\application\\chrome\.exe$/.test(p)) return { executablePath: exe, channel: "chrome" }
+  }
+  return { executablePath: exe }
 }
 
 /** Resolve the browser executable: TM_BROWSER_PATH override → the user's
@@ -210,6 +314,87 @@ export function resolveHeadless(env: Record<string, string | undefined> = proces
   if (["0", "false", "never", "no"].includes(raw)) return false
   if (process.platform === "linux") return !env.DISPLAY && !env.WAYLAND_DISPLAY
   return false
+}
+
+// ---------- subresource gate (the "pages render without images" fix) --------
+
+/** A resource the page cannot execute code with — it can only paint. */
+const PASSIVE_RESOURCE_TYPES: ReadonlySet<string> = new Set(["image", "media", "font", "stylesheet"])
+
+/** Public suffixes that make the last TWO labels insufficient for a site
+ *  comparison.  Deliberately a small spelled-out list (no PSL dependency):
+ *  an unlisted multi-label suffix yields a LONGER site key, which auto-passes
+ *  FEWER hosts — the conservative direction for a network gate. */
+const TWO_LABEL_SUFFIXES: ReadonlySet<string> = new Set([
+  "com.cn", "net.cn", "org.cn", "gov.cn", "edu.cn", "ac.cn", "co.cn", "com.hk", "org.hk", "co.jp", "ne.jp",
+  "co.kr", "co.uk", "org.uk", "ac.uk", "com.au", "net.au", "org.au", "co.in", "com.br", "com.mx", "com.tr",
+  "com.ua", "com.sg", "com.my", "com.tw", "co.za", "com.pl", "com.ru", "com.vn", "com.id", "com.ar", "com.co",
+])
+
+/** Approximate registrable site (eTLD+1) of a hostname. */
+export function siteOf(host: string): string {
+  const h = String(host ?? "").toLowerCase().replace(/\.$/, "")
+  if (!h || /^\d{1,3}(?:\.\d{1,3}){3}$/.test(h)) return h
+  const labels = h.split(".").filter(Boolean)
+  if (labels.length <= 2) return labels.join(".")
+  const lastTwo = labels.slice(-2).join(".")
+  if (TWO_LABEL_SUFFIXES.has(lastTwo)) return labels.slice(-3).join(".")
+  return lastTwo
+}
+
+/** playwright and CDP spell resource types differently (`Image` vs `image`,
+ *  `Stylesheet` vs `stylesheet`) — one normalizer keeps both engines on the
+ *  same verdict table. */
+export function normalizeResourceType(raw: unknown): string {
+  const t = String(raw ?? "").trim().toLowerCase()
+  return t === "" ? "other" : t
+}
+
+export function isPassiveResource(raw: unknown): boolean {
+  return PASSIVE_RESOURCE_TYPES.has(normalizeResourceType(raw))
+}
+
+/**
+ * One subresource verdict, shared VERBATIM by both engines so playwright and
+ * cdp-legacy can never drift.  `allowedSites` holds the registrable sites of
+ * every host this session actually navigated to (allowlist hit or dialog
+ * approval), which is what makes a page's own JS/CSS work without opening
+ * the whole internet: the governance boundary moves from "21 content domains"
+ * to "the site you approved", and an off-site SCRIPT still needs a dialog.
+ */
+export function subresourcePass(opts: {
+  url: string
+  resourceType: unknown
+  policy: "same-site" | "passive" | "off"
+  allowlistHit: boolean
+  approvedHost: boolean
+  allowedSites: ReadonlySet<string>
+}): { pass: boolean; via: string } {
+  if (opts.allowlistHit) return { pass: true, via: "allowlist" }
+  if (opts.approvedHost) return { pass: true, via: "approved" }
+  if (opts.policy === "off") return { pass: false, via: "blocked" }
+  let host: string
+  try {
+    host = new URL(opts.url).hostname
+  } catch {
+    return { pass: false, via: "blocked" }
+  }
+  const type = normalizeResourceType(opts.resourceType)
+  if (PASSIVE_RESOURCE_TYPES.has(type)) return { pass: true, via: `passive:${type}` }
+  if (opts.policy === "passive") return { pass: false, via: `blocked:${type}` }
+  return opts.allowedSites.has(siteOf(host)) ? { pass: true, via: `same-site:${type}` } : { pass: false, via: `blocked:${type}` }
+}
+
+/** A navigation (or a host the dialog approved) widens the subresource
+ *  footprint to its own site.  Called for EVERY top-level/document request
+ *  that passed the allowlist side. */
+export function rememberSite(allowedSites: Set<string>, url: string): void {
+  try {
+    const host = new URL(url).hostname
+    if (host) allowedSites.add(siteOf(host))
+  } catch {
+    /* unparseable — nothing to remember */
+  }
 }
 
 // ---------- pipe CDP client (JSON + NUL framing over fds 3/4) ----------------
@@ -405,6 +590,10 @@ export interface PwRoute {
 export interface PwRequestInfo {
   url(): string
   method?(): string
+  /** playwright resource type ("document"|"script"|"image"|…).  Optional on
+   *  the seam so a stale mock cannot break the gate — an absent type is
+   *  treated as EXECUTABLE (the strict side of the subresource policy). */
+  resourceType?(): string
 }
 export interface PwConsoleMessage {
   type(): string
@@ -556,10 +745,27 @@ const NAVIGATE_EVENT_TIMEOUT_MS = 15_000
 interface ActiveSession {
   kind: BrowserEngineKind
   currentUrl: string
+  /** The mode the session was ACTUALLY launched in.  Reported back to the
+   *  agent from here — never from the caller's request — so a reused
+   *  (sticky) session cannot be described as something it is not. */
+  headless: boolean
+  /** Engine/profile identity for the open + close lines the agent quotes. */
+  label: string
+  /** Screenshot pixels the model asked for, drained by execute() into the
+   *  ToolResult's `attachments`.  act() pushes; nothing else reads it. */
+  attachments: ToolAttachment[]
+  /** Subresource verdicts since the last observation, for the "page looks
+   *  empty" note (count + distinct blocked hosts). */
+  blocked: { count: number; hosts: Set<string> }
+  /** Registrable sites this session navigated to (same-site subresources). */
+  allowedSites: Set<string>
   /** Engine action dispatch; throws Error with an agent-actionable message
    *  (the execute() catch renders it as phase=execute). */
   act(action: string, args: Record<string, unknown>, stepId: string): Promise<string>
-  close(): Promise<string>
+  /** Closes the session and reports VERBATIM what it managed to close — a
+   *  close that failed must not read like a success (issue #3 of 2026-09-18:
+   *  an agent told the user the window was gone while it was still up). */
+  close(): Promise<{ text: string; closed: boolean }>
 }
 
 export function buildTmBrowserTool(deps: {
@@ -571,15 +777,26 @@ export function buildTmBrowserTool(deps: {
   importPlaywright?: () => Promise<unknown>
   /** Test seam: pretend node major version for the engine gate. */
   nodeMajor?: number
+  /** Best-effort user notification (host toast) — used by the idle reaper,
+   *  which closes a window the agent forgot and must say so out loud. */
+  notify?: (message: string) => void
+  /** Test seam for the DISCOVERY result (not the TM_BROWSER_PATH override —
+   *  the override is read from env so the channel-substitution rule stays
+   *  honest in tests too). */
+  findExecutable?: (env: Record<string, string | undefined>) => string | null
 }): {
   description: string
   args: Record<string, unknown>
   execute: (rawArgs: Record<string, unknown>, ctx: unknown) => Promise<ToolResult>
-  dispose: () => void
+  /** Async on purpose: the host's `dispose` hook is `() => Promise<void>`,
+   *  and a fire-and-forget close could exit before the browser child was
+   *  killed (leaving a visible orphan window). */
+  dispose: () => Promise<void>
   engineInfo: () => { kind: BrowserEngineKind | null; reason: string | null }
 } {
   const { pipelines } = deps
   const env = deps.env ?? process.env
+  const notify = typeof deps.notify === "function" ? deps.notify : undefined
   const tool = "tm_browser"
   const traj = (e: Record<string, unknown>) => pipelines.store.appendTrajectory({ tool, ...e })
   let session: ActiveSession | null = null
@@ -594,6 +811,10 @@ export function buildTmBrowserTool(deps: {
   // network layer (both engines) consults this in addition to the static allowlist
   const approvedHosts = new Set<string>()
   const snapshotBudget = Math.max(10, Number(deps.cfg?.browserSnapshotMaxTokens) || 1200)
+  const subPolicy = deps.cfg?.browserSubresource ?? "same-site"
+  const discover = deps.findExecutable ?? findBrowserExecutable
+  const imageMaxBytes = Math.max(1000, Number(deps.cfg?.browserImageMaxBytes) || 400_000)
+  const idleCloseMs = Number(deps.cfg?.browserIdleCloseMs ?? 180_000)
 
   // ---------- engine selection (cached per plugin instance) ----------
   let selPromise: Promise<EngineSelection> | null = null
@@ -638,8 +859,76 @@ export function buildTmBrowserTool(deps: {
     return { file, png }
   }
 
-  function shotOutput(file: string, bytes: number): string {
-    return `截图已保存（${bytes} bytes）：${file}\n（PNG 已落 run store；上下文只携带路径，不携带像素。）`
+  /** LLM args are booleans most of the time, but `"false"` / `"0"` strings
+   *  are common — a bare `Boolean()` read both as TRUE, which is exactly how
+   *  a model used to force tm_browser into headless (and get anti-bot
+   *  blocked) on a desktop that defaults to headful. */
+  function isTrueArg(raw: unknown): boolean {
+    if (raw === true) return true
+    if (typeof raw === "number") return raw === 1
+    if (typeof raw === "string") return /^(1|true|yes|on)$/i.test(raw.trim())
+    return false
+  }
+
+  /** Screenshot line + the OPT-IN pixels.
+   *  The PNG always lands in the run store (it is the evidence artifact);
+   *  what rides back to the MODEL is a quality-70 JPEG — a real page with
+   *  images loaded is ~1.5 MB as PNG, which no token budget should ever
+   *  inline, and ~150-300 KB as JPEG.  Pixels stay opt-in so a UI sweep
+   *  cannot spend context the agent never asked for. */
+  async function shotOutput(
+    sess: ActiveSession,
+    file: string,
+    png: Buffer,
+    args: Record<string, unknown>,
+    captureJpeg?: () => Promise<Buffer | null>,
+  ): Promise<string> {
+    const head = `截图已保存（PNG ${png.length} bytes）：${file}`
+    if (!isTrueArg(args.image)) {
+      return `${head}\n（上下文只携带路径，不携带像素——需要真正看到画面时带 image:true 再截一次。）`
+    }
+    let img: Buffer | null = null
+    if (captureJpeg) {
+      try {
+        img = await captureJpeg()
+      } catch {
+        img = null
+      }
+    }
+    let kind = "jpeg"
+    if (!img) {
+      img = png
+      kind = "png"
+    }
+    if (img.length > imageMaxBytes) {
+      return `${head}\n（未附带像素：${kind.toUpperCase()} ${img.length} bytes 超过 TM_BROWSER_IMAGE_MAX_BYTES=${imageMaxBytes}。改用视口截图（去掉 fullPage）或提高该上限。）`
+    }
+    sess.attachments.push({
+      type: "file",
+      mime: `image/${kind}`,
+      url: `data:image/${kind};base64,${img.toString("base64")}`,
+      filename: path.basename(file).replace(/\.png$/, `.${kind === "jpeg" ? "jpg" : "png"}`),
+    })
+    return `${head}\n（像素以 ${kind.toUpperCase()} ${img.length} bytes 随本条结果附带。）`
+  }
+
+  /** One line telling the agent that the page is NOT actually empty — the
+   *  subresource gate dropped N requests.  Without this the model reads a
+   *  blank-looking page and reports "该网站没有图片". */
+  function blockedNote(sess: ActiveSession): string {
+    if (!sess.blocked.count) return ""
+    const n = sess.blocked.count
+    const hosts = [...sess.blocked.hosts]
+    // RESET IN PLACE — the engine's route handler holds this very object, so
+    // swapping in a new one would silently stop counting after the first
+    // drain (and the note would never appear again for the session).
+    sess.blocked.count = 0
+    sess.blocked.hosts.clear()
+    traj({ step_id: "browser", event: "blocked", count: n, hosts: hosts.slice(0, 20).join(",") })
+    return (
+      `\n注意：本页有 ${n} 个子资源请求被治理白名单拦截（${hosts.slice(0, 6).join(", ")}${hosts.length > 6 ? ` …+${hosts.length - 6}` : ""}）——不是站点没有内容。` +
+      `当前策略 TM_BROWSER_SUBRESOURCE=${subPolicy}；同域资源已自动放行，跨域脚本仍需白名单或弹窗批准。`
+    )
   }
 
   function pageTextOutput(url: string, text: string): string {
@@ -682,8 +971,52 @@ export function buildTmBrowserTool(deps: {
 
   // ================= cdp-legacy engine (原手写 CDP 管道，保留不删) =============
 
+  /**
+   * Shared network verdict for BOTH engines — one implementation, so the
+   * playwright and cdp-legacy legs can never disagree about what passes.
+   * The hard red lines (non-http scheme, remote env-file spelling) stay hard
+   * under EVERY subresource policy: they are not consentable, so a passive
+   * image or a same-site script can never relax them.
+   */
+  function gateDecide(
+    st: { allowedSites: Set<string>; blocked: { count: number; hosts: Set<string> } },
+    url: string,
+    resourceType: unknown,
+  ): { pass: boolean; via: string } {
+    const verdict = checkWebUrl(url, allowlist as readonly string[])
+    if (!verdict.ok && !verdict.askable) return { pass: false, via: "red-line" }
+    let approved = false
+    try {
+      approved = approvedHosts.has(new URL(url).hostname)
+    } catch {
+      approved = false
+    }
+    const v = subresourcePass({
+      url,
+      resourceType,
+      policy: subPolicy,
+      allowlistHit: verdict.ok,
+      approvedHost: approved,
+      allowedSites: st.allowedSites,
+    })
+    if (v.pass) {
+      if (normalizeResourceType(resourceType) === "document") rememberSite(st.allowedSites, url)
+    } else {
+      st.blocked.count++
+      try {
+        st.blocked.hosts.add(new URL(url).hostname)
+      } catch {
+        /* no host to name */
+      }
+    }
+    // NO per-request trajectory: a real page is hundreds of requests and the
+    // log would be pure noise.  Blocked verdicts aggregate into st.blocked
+    // and flush as ONE line (blockedNote / close).
+    return v
+  }
+
   async function openLegacySession(headless: boolean): Promise<ActiveSession> {
-    const executable = findBrowserExecutable(env)
+    const executable = discover(env)
     if (!executable) throw discoveryError()
     const profileDir = fs.mkdtempSync(path.join(os.tmpdir(), "tm-browser-"))
     const child = spawn(
@@ -723,26 +1056,20 @@ export function buildTmBrowserTool(deps: {
     if (!page) throw new Error("浏览器启动后未找到 page target")
     const { sessionId } = (await cdp.call("Target.attachToTarget", { targetId: page.targetId, flatten: true })) as { sessionId: string }
     await cdp.call("Page.enable", {}, sessionId)
-    // network-layer allowlist enforcement (Qoder's per-hop re-check analog)
+    // network-layer enforcement — the SAME gateDecide the playwright leg uses
+    // (subresource policy + per-hop redirect re-check + dialog-approved hosts)
+    const allowedSites = new Set<string>()
+    const blocked = { count: 0, hosts: new Set<string>() }
     await cdp.call("Fetch.enable", { patterns: [{ urlPattern: "*" }] }, sessionId)
     cdp.onEvent((m) => {
       if (m.method !== "Fetch.requestPaused" || m.sessionId !== sessionId) return
       const requestId = String((m.params as { requestId?: string }).requestId ?? "")
-      const url = String((m.params as { request?: { url?: string } }).request?.url ?? "")
-      const verdict = checkWebUrl(url, allowlist as readonly string[])
-      let pass = verdict.ok
-      if (!pass) {
-        // an approved-via-dialog host passes the network layer too
-        try {
-          pass = approvedHosts.has(new URL(url).hostname)
-        } catch {
-          pass = false
-        }
-      }
+      const p = (m.params as { request?: { url?: string; resourceType?: string } }).request ?? {}
+      const url = String(p.url ?? "")
+      const { pass } = gateDecide({ allowedSites, blocked }, url, p.resourceType)
       if (pass) {
         void cdp.call("Fetch.continueRequest", { requestId }, sessionId, 5000).catch(() => {})
       } else {
-        traj({ step_id: "browser", event: "blocked", url: url.slice(0, 200) })
         void cdp.call("Fetch.failRequest", { requestId, errorReason: "BlockedByClient" }, sessionId, 5000).catch(() => {})
       }
     })
@@ -750,13 +1077,19 @@ export function buildTmBrowserTool(deps: {
     const sess: ActiveSession = {
       kind: "cdp-legacy",
       currentUrl: "about:blank",
+      headless,
+      label: `cdp-legacy · ${path.basename(executable)} · pid ${child.pid ?? "?"}`,
+      attachments: [],
+      blocked,
+      allowedSites,
       async act(action, args, stepId) {
         if (action === "navigate" || action === "navigate_page") {
           const url = String(args.url ?? "").trim()
+          rememberSite(allowedSites, url)
           await cdp.call("Page.navigate", { url }, sessionId)
           await cdp.waitEvent("Page.loadEventFired", sessionId, NAVIGATE_EVENT_TIMEOUT_MS).catch(() => {})
           sess.currentUrl = url
-          return `已导航：${url}`
+          return `已导航：${url}${blockedNote(sess)}`
         }
         if (action === "read") {
           traj({ step_id: stepId, event: "call", url: sess.currentUrl.slice(0, 200) })
@@ -767,14 +1100,17 @@ export function buildTmBrowserTool(deps: {
           )
           const text = String((ev.result as { value?: unknown })?.value ?? "")
           traj({ step_id: stepId, event: "result", tokens: Math.ceil(text.length / 4) })
-          return pageTextOutput(sess.currentUrl, text)
+          return `${pageTextOutput(sess.currentUrl, text)}${blockedNote(sess)}`
         }
         if (action === "screenshot" || action === "take_screenshot") {
           traj({ step_id: stepId, event: "call", kind: "screenshot", url: sess.currentUrl.slice(0, 200) })
           const shot = await cdp.call("Page.captureScreenshot", { format: "png" }, sessionId)
           const png = Buffer.from(String((shot as { data?: string }).data ?? ""), "base64")
           const { file } = saveShotPng(new Uint8Array(png), stepId)
-          return shotOutput(file, png.length)
+          return shotOutput(sess, file, png, args, async () => {
+            const j = await cdp.call("Page.captureScreenshot", { format: "jpeg", quality: 70 }, sessionId)
+            return Buffer.from(String((j as { data?: string }).data ?? ""), "base64")
+          })
         }
         if (action === "list_pages") {
           const t = await cdp.call("Target.getTargets")
@@ -814,12 +1150,20 @@ export function buildTmBrowserTool(deps: {
             res()
           })
         })
+        const dead = (child as { exitCode?: number | null; killed?: boolean }).exitCode !== null
         try {
           rmForceSafe(profileDir, { recursive: true })
         } catch {
           /* a locked leftover temp dir is reclaimed by the OS — never fail close */
         }
-        return "浏览器会话已关闭，临时配置目录已清理。"
+        return dead
+          ? { closed: true, text: "浏览器进程已退出（cdp-legacy），临时配置目录已清理。" }
+          : {
+              closed: false,
+              text:
+                `警告：cdp-legacy 子进程 pid ${child.pid ?? "?"} 未在 3s 内退出，窗口可能仍在前台——` +
+                `请手动关闭该浏览器窗口（临时目录 ${profileDir}）。`,
+            }
       },
     }
     const onExit = () => {
@@ -839,7 +1183,7 @@ export function buildTmBrowserTool(deps: {
   // ================= playwright engine (primary) ==============================
 
   async function openPlaywrightSession(pw: PwModule, headless: boolean): Promise<ActiveSession> {
-    const executable = findBrowserExecutable(env)
+    const executable = discover(env)
     if (!executable) throw discoveryError()
     const launchArgs = [
       "--no-first-run", "--no-default-browser-check", "--disable-extensions",
@@ -856,29 +1200,32 @@ export function buildTmBrowserTool(deps: {
       viewport: headless ? undefined : null,
     }
     const persistentDir = String(env.TM_BROWSER_USER_DATA_DIR ?? "").trim()
-    // R2: channel launches are cross-version-fragile (official warning), so
-    // they are a SMOKE-ONLY attempt; any failure retries with the explicit
-    // executablePath from our own discovery layer.
-    const channel = /msedge/i.test(executable) ? "msedge" : /chrome/i.test(executable) ? "chrome" : undefined
+    // R2 (revised 2026-09-18): playwright's `channel` resolves the executable
+    // ITSELF, which silently overrode our discovery (a Beta-default Windows
+    // host opened STABLE Edge).  executablePath is now the primary launch and
+    // the channel spelling only a fallback — the opposite of the old order.
+    const target = playwrightLaunchTarget(executable, {
+      explicitOverride: String(env.TM_BROWSER_PATH ?? "").trim() !== "",
+    })
     let browser: PwBrowser | null = null
     let context: PwBrowserContext
     let via = "executablePath"
     if (persistentDir) {
       context = await pw.chromium.launchPersistentContext(persistentDir, {
         ...contextOpts,
-        ...(channel ? { channel } : { executablePath: executable }),
+        executablePath: target.executablePath,
         headless,
         args: launchArgs,
       })
-      via = `persistent(${channel ?? "executablePath"})`
+      via = `persistent(executablePath)`
     } else {
       try {
-        browser = await pw.chromium.launch({ ...(channel ? { channel } : { executablePath: executable }), headless, args: launchArgs })
-        via = channel ? `channel(${channel})` : "executablePath"
+        browser = await pw.chromium.launch({ executablePath: target.executablePath, headless, args: launchArgs })
+        via = "executablePath"
       } catch (e1) {
-        if (!channel) throw e1
-        browser = await pw.chromium.launch({ executablePath: executable, headless, args: launchArgs })
-        via = "executablePath(channel 回退)"
+        if (!target.channel) throw e1
+        browser = await pw.chromium.launch({ channel: target.channel, headless, args: launchArgs })
+        via = `channel(${target.channel})`
       }
       context = await browser.newContext(contextOpts)
     }
@@ -889,6 +1236,8 @@ export function buildTmBrowserTool(deps: {
       dialogs: [] as PwDialog[],
       consoleBuf: [] as Array<{ type: string; text: string }>,
       netBuf: [] as Array<{ method: string; url: string; status?: number; failure?: string; blocked?: boolean }>,
+      allowedSites: new Set<string>(),
+      blocked: { count: 0, hosts: new Set<string>() },
     }
     const attached = new WeakSet<PwPage>()
     const attach = (p: PwPage): void => {
@@ -936,20 +1285,11 @@ export function buildTmBrowserTool(deps: {
         await route.continue().catch(() => {})
         return
       }
-      const verdict = checkWebUrl(u, allowlist as readonly string[])
-      let pass = verdict.ok
-      if (!pass) {
-        try {
-          pass = approvedHosts.has(new URL(u).hostname)
-        } catch {
-          pass = false
-        }
-      }
+      const { pass } = gateDecide(state, u, request.resourceType?.())
       if (pass) {
         await route.continue().catch(() => {})
       } else {
         // per-hop re-check lands here for every redirect hop too
-        traj({ step_id: "browser", event: "blocked", url: u.slice(0, 200) })
         state.netBuf.push({ method: request.method?.() ?? "?", url: u.slice(0, 300), blocked: true })
         await route.abort().catch(() => {})
       }
@@ -1003,25 +1343,36 @@ export function buildTmBrowserTool(deps: {
     const sess: ActiveSession = {
       kind: "playwright",
       currentUrl: "about:blank",
+      headless,
+      label: `playwright/${via} · ${path.basename(executable)} · ${headless ? "headless" : "headful"}`,
+      attachments: [],
+      blocked: state.blocked,
+      allowedSites: state.allowedSites,
       async act(action, args, stepId) {
         if (action === "navigate" || action === "navigate_page") {
           const url = String(args.url ?? "").trim()
+          // the navigation itself already cleared the allowlist (execute()
+          // asked the user otherwise) — its SITE may now load subresources
+          rememberSite(state.allowedSites, url)
           // domcontentloaded ONLY — networkidle is banned (prompt discipline)
           await state.page.goto(url, { waitUntil: "domcontentloaded", timeout: 20_000 })
           sess.currentUrl = state.page.url?.() || url
-          return `已导航：${url}`
+          rememberSite(state.allowedSites, sess.currentUrl)
+          return `已导航：${url}${blockedNote(sess)}`
         }
         if (action === "read") {
           traj({ step_id: stepId, event: "call", url: sess.currentUrl.slice(0, 200) })
           const text = String((await state.page.evaluate("document.body ? document.body.innerText : ''")) ?? "")
           traj({ step_id: stepId, event: "result", tokens: Math.ceil(text.length / 4) })
-          return pageTextOutput(sess.currentUrl, text)
+          return `${pageTextOutput(sess.currentUrl, text)}${blockedNote(sess)}`
         }
         if (action === "screenshot" || action === "take_screenshot") {
           traj({ step_id: stepId, event: "call", kind: "screenshot", url: sess.currentUrl.slice(0, 200) })
           const bytes = await state.page.screenshot({ type: "png", fullPage: Boolean(args.fullPage) })
           const { file, png } = saveShotPng(bytes, stepId)
-          return shotOutput(file, png.length)
+          return shotOutput(sess, file, png, args, async () =>
+            Buffer.from(await state.page.screenshot({ type: "jpeg", quality: 70, fullPage: Boolean(args.fullPage) })),
+          )
         }
         if (action === "take_snapshot") {
           traj({ step_id: stepId, event: "call", kind: "snapshot", url: sess.currentUrl.slice(0, 200) })
@@ -1030,14 +1381,14 @@ export function buildTmBrowserTool(deps: {
             yaml = await state.page.locator("body").ariaSnapshot()
           } catch (e) {
             throw new Error(
-              `ariaSnapshot 不可用（playwright-core 版本过旧或缺失）：${(e as Error).message} —— 升级 playwright-core（需 ≥1.65 才有 locator.ariaSnapshot）`,
+              `ariaSnapshot 不可用：${(e as Error).message} —— locator.ariaSnapshot 需要 playwright-core ≥1.49（本包 optionalDependencies 锁 1.63）；未安装或过旧会走 cdp-legacy 降级，那边没有快照动作。`,
             )
           }
           const annotated = snapIndex.annotate(yaml)
           traj({ step_id: stepId, event: "result", tokens: estimateTokens(annotated), nodes: snapIndex.size })
           const body = capTokens(annotated, `…(快照超过 browserSnapshotMaxTokens=${snapshotBudget}，后续行已截断——用 read 拿原文或先滚动再快照)`)
           const hint = state.dialogs.length ? `\n注意：有 ${state.dialogs.length} 个未处理对话框——先 handle_dialog` : ""
-          return `ARIA 快照（${sess.currentUrl} · ${snapIndex.size} 个可寻址节点）——后续动作按行内 [uid=eN] 寻址：\n${body}${hint}`
+          return `ARIA 快照（${sess.currentUrl} · ${snapIndex.size} 个可寻址节点）——后续动作按行内 [uid=eN] 寻址：\n${body}${hint}${blockedNote(sess)}`
         }
         if (action === "click") {
           const loc = targetOf("uid", "selector", args)
@@ -1143,20 +1494,65 @@ export function buildTmBrowserTool(deps: {
       },
       async close() {
         state.dialogs.length = 0
-        await Promise.resolve(context.close()).catch(() => {})
-        if (browser) await Promise.resolve(browser.close()).catch(() => {})
-        if (persistentDir) {
-          return `浏览器会话已关闭；持久配置目录已保留（下次 open 复用登录态）：${persistentDir}`
+        const errs: string[] = []
+        const fail = (label2: string) => (e: unknown) => {
+          errs.push(`${label2}: ${String((e as Error)?.message ?? e)}`)
         }
-        // playwright owns (and self-reclaims) the ephemeral profile under
-        // the browser process — nothing on our side to delete
-        return "浏览器会话已关闭，临时配置目录已清理。"
+        await Promise.resolve(context.close()).catch(fail("context"))
+        if (browser) await Promise.resolve(browser.close()).catch(fail("browser"))
+        // VERIFY before claiming — an agent quotes this line to the user as
+        // "浏览器已关闭", so a swallowed failure must not read like success.
+        let alivePages = 0
+        try {
+          alivePages = context.pages().length
+        } catch {
+          alivePages = 0
+        }
+        const connected = browser ? Boolean((browser as { isConnected?: () => boolean }).isConnected?.()) : false
+        const closed = errs.length === 0 && alivePages === 0 && !connected
+        const profile = persistentDir
+          ? `持久配置目录已保留（下次 open 复用登录态）：${persistentDir}`
+          : "临时配置目录由 playwright 自行回收"
+        if (closed) return { closed: true, text: `浏览器会话已确认关闭（${sess.label}）；${profile}。` }
+        return {
+          closed: false,
+          text:
+            `警告：关闭未完全成功（${sess.label}${errs.length ? `：${errs.join("; ")}` : ""}）——` +
+            `残留标签页 ${alivePages} 个${connected ? "，浏览器进程仍处于连接状态" : ""}。` +
+            `窗口可能仍在前台，需要用户手动关闭。${profile}。`,
+        }
       },
     }
     return sess
   }
 
   // ---------- engine-neutral session lifecycle ----------
+
+  /** Idle reaper.  The pre-v1.5.13 layer had NO cleanup path other than the
+   *  agent remembering to call `close` — and an agent that believes it
+   *  closed the window (issue #3) leaves the user staring at a Chromium
+   *  window nobody owns.  An untouched session now closes itself and tells
+   *  the user it did. */
+  let idleTimer: ReturnType<typeof setTimeout> | null = null
+  const armIdle = (): void => {
+    if (idleTimer) clearTimeout(idleTimer)
+    idleTimer = null
+    if (!idleCloseMs || !session) return
+    idleTimer = setTimeout(() => {
+      idleTimer = null
+      if (!session) return
+      traj({ step_id: "browser", event: "idle_close", idle_ms: idleCloseMs })
+      void closeActive()
+        .then((r) =>
+          notify?.(
+            `tm_browser 空闲 ${Math.round(idleCloseMs / 1000)}s，会话已自动关闭${r.closed ? "（窗口应已消失）" : "——但窗口可能仍需手动关闭"}`,
+          ),
+        )
+        .catch(() => {})
+    }, idleCloseMs)
+    // never hold the event loop open for a reaper
+    ;(idleTimer as { unref?: () => void }).unref?.()
+  }
 
   async function ensureSession(headless: boolean): Promise<ActiveSession> {
     if (session) return session
@@ -1168,11 +1564,26 @@ export function buildTmBrowserTool(deps: {
     return session
   }
 
-  async function closeActive(): Promise<string> {
+  async function closeActive(): Promise<{ text: string; closed: boolean }> {
     const s = session
-    if (!s) return "没有打开的浏览器会话。"
+    if (!s) return { text: "没有打开的浏览器会话。", closed: true }
     session = null
+    if (idleTimer) {
+      clearTimeout(idleTimer)
+      idleTimer = null
+    }
     return s.close()
+  }
+
+  /** Move any screenshot pixels act() produced out of the session and onto
+   *  the ToolResult.  Drained per call so a stale attachment can never ride
+   *  along on the next action. */
+  function withAttachments(res: ToolResult, sess: ActiveSession | null): ToolResult {
+    const atts = sess?.attachments ?? []
+    if (sess) sess.attachments = []
+    if (!atts.length) return res
+    const base = typeof res === "string" ? { output: res } : res
+    return { ...base, attachments: atts }
   }
 
   const ALL_ACTIONS = new Set<string>([...BROWSER_PLAYWRIGHT_ACTIONS, ...BROWSER_COMPAT_ACTIONS, "navigate_page"])
@@ -1214,29 +1625,51 @@ export function buildTmBrowserTool(deps: {
       if (action === "open") {
         if (!url) return toToolResult(tmError(tool, "args", "缺少 url 参数"))
         if (session) {
-          // already open: navigate instead of spawning a second browser
-          return toToolResult(await session.act("navigate", { url }, "browser"))
+          // already open: navigate instead of spawning a second browser.
+          // Report the mode the RUNNING instance is actually in — the old
+          // code echoed the REQUESTED mode, so a sticky session could be
+          // described as headful while it was a headless leftover.
+          const out = await session.act("navigate", { url }, "browser")
+          armIdle()
+          return withAttachments(
+            toToolResult(
+              `复用已运行的会话（${session.headless ? "无头" : "有头窗口"} · ${session.label}）。${out}`,
+            ),
+            session,
+          )
         }
-        const headless = args.headless != null ? Boolean(args.headless) : resolveHeadless(env)
+        // Mode is an OPERATOR decision (TM_BROWSER_HEADLESS), never a model
+        // arg: a model that once passed headless:"false" (string → truthy
+        // under Boolean()) pinned the whole process to headless and every
+        // anti-bot gate in the run failed.
+        const headless = resolveHeadless(env)
         const s = await ensureSession(headless)
         const out = await s.act("navigate", { url }, "browser")
-        traj({ step_id: "browser", event: "open", headless })
-        const mode = headless ? "无头" : "有头窗口"
+        traj({ step_id: "browser", event: "open", headless, label: s.label })
+        const mode = s.headless ? "无头" : "有头窗口"
         const profile = String(env.TM_BROWSER_USER_DATA_DIR ?? "").trim() ? "持久登录配置" : "隔离临时配置"
         const note =
           lastSel && preference !== "cdp-legacy" && lastSel.kind === "cdp-legacy"
             ? `\n（引擎：cdp-legacy 降级——${lastSel.reason ?? ""}；完整 16 动作需 npm install playwright-core + node≥20）`
             : ""
-        return toToolResult(`浏览器已启动（${mode}，${profile}）。${out}${note}`)
+        const guard =
+          subPolicy === "off"
+            ? `\n（子资源策略=off：跨域图片/脚本一律拦截，页面可能显示不全——TM_BROWSER_SUBRESOURCE=same-site 可恢复）`
+            : ""
+        armIdle()
+        return withAttachments(toToolResult(`浏览器已启动（${mode}，${profile} · ${s.label}）。${out}${note}${guard}`), s)
       }
       if (action === "navigate" || action === "navigate_page") {
         if (!url) return toToolResult(tmError(tool, "args", "缺少 url 参数"))
         if (!session) return toToolResult(tmError(tool, "args", '没有打开的浏览器会话——先用 action:"open"'))
-        return toToolResult(await session.act(action, { url }, "browser"))
+        const out = await session.act(action, { url }, "browser")
+        armIdle()
+        return withAttachments(toToolResult(out), session)
       }
       if (action === "close") {
         traj({ step_id: "browser", event: "close" })
-        return toToolResult(await closeActive())
+        const r = await closeActive()
+        return toToolResult(r.text)
       }
       if (!ALL_ACTIONS.has(action)) {
         return toToolResult(
@@ -1259,7 +1692,9 @@ export function buildTmBrowserTool(deps: {
         }
       }
       const stepId = pipelines.nextStepId()
-      return toToolResult(await session.act(action, args, stepId))
+      const out = await session.act(action, args, stepId)
+      armIdle()
+      return withAttachments(toToolResult(out), session)
     } catch (err) {
       const e = err as { name?: string; message?: unknown }
       return toToolResult(tmError(tool, "execute", String(e?.message ?? err ?? "browser 操作失败")))
@@ -1267,10 +1702,11 @@ export function buildTmBrowserTool(deps: {
   }
 
   const DESCRIPTION = `Interactive browser (governed, Plan C): drives the user's own Chromium-family browser HEADFUL — playwright-core engine primary (npm install + node>=20; auto-degrades to the zero-dep CDP pipe when absent, snapshot actions then unavailable). Snapshot-first flow: open → take_snapshot → act by [uid] → observe again.
-- 16 actions (chrome-devtools-mcp aligned): navigate_page { url } · take_snapshot { } → ariaSnapshot YAML with injected [uid=eN] · click/fill{text}/hover { uid|selector } · drag { uid, targetUid } · press_key { key } · select_page { index } · upload_file { uid, filePath } (filePath must live INSIDE the workspace/blackboard scope — .env & shell-rc files are refused) · wait_for { text|uid, timeoutMs<=3000 default } · evaluate_script { function } · list_console_messages · list_network_requests · list_pages · take_screenshot { fullPage? } → PNG path into the run store (pixels never enter context) · handle_dialog { dialogAction: accept|dismiss, promptText }.
-- Compat actions: open { url } — launch/reuse + navigate; TM_BROWSER_PATH override → DEFAULT browser (Chromium-family only; Edge/Chrome probes fall through when it is Firefox). Isolated temp profile by default; persistent login ONLY via TM_BROWSER_USER_DATA_DIR (the real profile is never touched). navigate / read (page text) / screenshot / close also work.
+- 16 actions (chrome-devtools-mcp aligned): navigate_page { url } · take_snapshot { } → ariaSnapshot YAML with injected [uid=eN] · click/fill{text}/hover { uid|selector } · drag { uid, targetUid } · press_key { key } · select_page { index } · upload_file { uid, filePath } (filePath must live INSIDE the workspace/blackboard scope — .env & shell-rc files are refused) · wait_for { text|uid, timeoutMs<=3000 default } · evaluate_script { function } · list_console_messages · list_network_requests · list_pages · take_screenshot { fullPage?, image? } → the PNG always lands in the run store (path in the reply); with image:true a quality-70 JPEG of the same view is attached to THIS result so a vision model can actually see it (opt-in: pixels cost context, so ask only when the screenshot is the evidence) · handle_dialog { dialogAction: accept|dismiss, promptText }.
+- Compat actions: open { url } — launch/reuse + navigate (TM_BROWSER_PATH override → DEFAULT browser, Chromium-family only; the registry ProgId decides the CHANNEL, so an Edge Beta default opens Edge Beta, not stable). Isolated temp profile by default; persistent login ONLY via TM_BROWSER_USER_DATA_DIR (the real profile is never touched). navigate / read (page text) / screenshot / close also work.
+- Lifecycle (the user SEES this window): headful by default — headless is an operator setting (TM_BROWSER_HEADLESS), not a parameter you can pass. An idle session closes itself (TM_BROWSER_IDLE_MS, default 180s) and the user is told. ALWAYS action:"close" when your browser work is done, and quote the tool's own close line — "已确认关闭" vs "警告：关闭未完全成功" — instead of asserting the window is gone.
 - Discipline (enforced by defaults): act ONLY on uids from the latest take_snapshot — no guessed locators; one action then one observation; fold dialogs into the same round (snapshot header warns while a dialog is held); 3000 ms action budget; networkidle is never waited on; screenshots are the visual-last-resort, not the primary read.
-- Network: per-request domain allowlist enforced INSIDE the page (playwright context.route abort / CDP Fetch interception), re-checked on every redirect hop; seeded = tm_webfetch's hosts (extend via TM_WEBFETCH_ALLOWED_DOMAINS). Out-of-allowlist open/navigate routes through the OFFICIAL confirmation dialog BEFORE any spawn; approved hosts pass the network layer for the session; env-file URLs and non-http(s) schemes hard-reject.
+- Network: the top-level navigation must clear the domain allowlist (seeded = tm_webfetch's hosts; out-of-allowlist open/navigate asks the user through the OFFICIAL confirmation dialog BEFORE any spawn). SUBRESOURCES then follow TM_BROWSER_SUBRESOURCE (default same-site): images/media/fonts/stylesheets load, a script/XHR loads when it belongs to a site this session actually opened, anything else is blocked and reported as a "N 个子资源被拦截" note on the next snapshot — that note means the gate trimmed the page, NOT that the site has no images. env-file URLs and non-http(s) schemes hard-reject under every policy.
 - Fixed priority ladder: ① tm_* governed tools → ② user MCP/plugin tools → ③ reasoning (never fabricate).  No browser installed → structured error, fall back to tm_webfetch / MCP.  Role grant: team + researcher full, tester browser-only (UI verification).`
 
   return {
@@ -1278,7 +1714,7 @@ export function buildTmBrowserTool(deps: {
     args: deps.args ?? {
       action: { descriptor: "action: take_snapshot|click|fill|navigate_page|... (16 playwright verbs + open/navigate/read/screenshot/close)" },
       url: { descriptor: "url: string (open/navigate/navigate_page, allowlisted https)" },
-      headless: { descriptor: "headless: boolean (open, optional — default auto)" },
+      image: { descriptor: "image: true (take_screenshot only — attach the PNG pixels to this result; default is path-only)" },
       uid: { descriptor: "uid: snapshot [uid=eN] token (click/fill/hover/drag/upload_file/wait_for)" },
       selector: { descriptor: "selector: CSS/text locator escape hatch (only when a snapshot cannot express the node)" },
       targetUid: { descriptor: "targetUid: drag destination uid" },
@@ -1295,8 +1731,14 @@ export function buildTmBrowserTool(deps: {
       clear: { descriptor: "clear: drain the console buffer after list_console_messages" },
     },
     execute,
-    dispose: () => {
-      void closeActive().catch(() => {})
+    dispose: async () => {
+      if (idleTimer) {
+        clearTimeout(idleTimer)
+        idleTimer = null
+      }
+      // AWAITED: the host's dispose hook is Promise-returning, and tearing
+      // down while a close was still in flight left the window on screen.
+      await closeActive().catch(() => {})
     },
     engineInfo: () => ({
       kind: lastSel?.kind ?? null,

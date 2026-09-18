@@ -19,7 +19,7 @@ import * as crypto from "node:crypto"
 import * as fs from "node:fs"
 import * as os from "node:os"
 import * as path from "node:path"
-import type { PluginInput, ToolDefinition } from "../types.js"
+import type { HostEvent, PluginInput, ToolDefinition } from "../types.js"
 import { findRepoRoot } from "../blackboard.js"
 import {
   parseExtraDeny,
@@ -51,13 +51,29 @@ export {
   defaultBrowserExecutable,
   findBrowserExecutable,
   isChromiumFamily,
+  isPassiveResource,
+  normalizeResourceType,
   parseDesktopExec,
   parseProgId,
   parseRegCommand,
+  playwrightLaunchTarget,
+  rememberSite,
   resolveHeadless,
+  siteOf,
+  subresourcePass,
 } from "./browser.js"
 import { buildTmMemoryTool } from "./memory.js"
 import { buildTmBrowserTool } from "./browser.js"
+import { buildDispatchTools } from "./dispatch.js"
+export {
+  buildDispatchTools,
+  DISPATCH_TARGETS,
+  lastAssistantText,
+  renderChildLine,
+  sessionApiOf,
+  summarizeStates,
+} from "./dispatch.js"
+export type { ChildRecord, DispatchDeps } from "./dispatch.js"
 
 export interface TmRuntime {
   runId: string
@@ -66,8 +82,15 @@ export interface TmRuntime {
   /** The ONE main pipeline instance (exposed for tests + tool builders). */
   pipelines: ReturnType<typeof import("./pipelines.js").buildPipelines>
   tools: Record<string, ToolDefinition>
-  /** Kill any long-lived session the tools own (tm_browser child process). */
-  dispose: () => void
+  /** Kill any long-lived session the tools own (tm_browser child process).
+   *  ASYNC because the host's dispose hook awaits it — a fire-and-forget
+   *  browser close could lose the window. */
+  dispose: () => Promise<void>
+  /** Host event bus slice the async dispatcher needs (session.idle /
+   *  .error / .status settle the lead's children). */
+  observeDispatchEvent: (event: HostEvent) => void
+  /** Open async dispatches this plugin started (tests + observability). */
+  dispatches: () => Array<{ sessionID: string; agent: string; label: string; state: string }>
 }
 
 export interface CreateTmToolsOptions {
@@ -75,6 +98,13 @@ export interface CreateTmToolsOptions {
   mode?: EnvProtectMode
   /** R6 extra deny rules — same single-source rule. */
   extra?: RegExp[]
+  /** Best-effort user notification (the host toast) — tm_browser's idle
+   *  reaper uses it so an auto-closed window is announced, not silent. */
+  notify?: (message: string) => void
+  /** A tm_dispatch child session was created — let the approval gate
+   *  register it so the sub-agent's own protected read opens the official
+   *  dialog instead of hard-throwing in an unregistered session. */
+  onChildSession?: (sessionID: string, agent: string) => void
 }
 
 export async function createTmTools(
@@ -181,7 +211,12 @@ export async function createTmTools(
   // Network role tool: team + researcher carry the allow; the other four
   // hold an explicit deny (overrides the tm_* wildcard).  dispose() kills
   // the browser child when the host tears the plugin down.
-  const browserTool = buildTmBrowserTool({ pipelines, cfg, args: await buildBrowserArgsSchema() })
+  const browserTool = buildTmBrowserTool({
+    pipelines,
+    cfg,
+    args: await buildBrowserArgsSchema(),
+    notify: opts.notify,
+  })
   tools.tm_browser = browserTool
   // M3: build tm_ptc_run using a separate pipeline instance (governance
   // reused verbatim).  Its step counter starts at s0001 again — the
@@ -239,7 +274,28 @@ export async function createTmTools(
     webTools: ptcWebTools,
   })
   tools.tm_ptc_run = ptcTool
-  return { runId, config: cfg, store, pipelines, tools, dispose: () => browserTool.dispose() }
+  // tm_dispatch / tm_join — ASYNC sub-agent dispatch for the lead (issue #7:
+  // the host's `task` tool blocks the calling session, so "parallel team"
+  // really meant "serial with extra steps").  Built on the official client
+  // session API; both tools self-gate to the lead agent, and the five
+  // specialists carry an explicit deny in agents.ts.
+  const dispatch = buildDispatchTools({
+    client: input?.client,
+    pipelines,
+    onChildSession: opts.onChildSession,
+  })
+  tools.tm_dispatch = dispatch.tm_dispatch
+  tools.tm_join = dispatch.tm_join
+  return {
+    runId,
+    config: cfg,
+    store,
+    pipelines,
+    tools,
+    dispose: () => browserTool.dispose(),
+    observeDispatchEvent: dispatch.observeEvent,
+    dispatches: () => dispatch.children().map((c) => ({ sessionID: c.sessionID, agent: c.agent, label: c.label, state: c.state })),
+  }
 }
 
 // ---------- re-exports (stable import surface for tests + plugin entry) ----------

@@ -85,9 +85,26 @@ export interface ToolExecuteBeforeOutput {
  * sees.  Anything else (bare handles, structured error objects) breaks the
  * host's result pipeline — real-session crash `c.split` on a non-string —
  * so every return path must ride inside `output`.
+ *
+ * `attachments` is the SAME contract (tool.d.ts:33-38 `ToolAttachment`): a
+ * `{type:"file", mime, url}` entry the host turns into a FilePart on the tool
+ * result, which is how tm_browser hands a screenshot's PIXELS to a vision
+ * model instead of only a path.  It is opt-in per call (token economy) and
+ * every attachment-producing path still writes the file and prints its path,
+ * so a host that ignores `attachments` degrades to the old path-only
+ * behavior rather than losing the artifact.
  */
+export interface ToolAttachment {
+  type: "file"
+  mime: string
+  /** data: URL (base64) or a file/asset URL the host understands. */
+  url: string
+  filename?: string
+}
+
 export interface ToolResultObject {
   output: string
+  attachments?: ToolAttachment[]
   [key: string]: unknown
 }
 

@@ -129,7 +129,20 @@ const whitelist = (
   permission["tm_webfetch"] = "deny"
   permission["tm_search"] = "deny"
   permission["tm_browser"] = "deny"
+  // Async dispatch (tm_dispatch / tm_join) is the LEAD's lever — the tm_*
+  // wildcard would otherwise hand every specialist the ability to spawn
+  // sub-agents, which is exactly the nesting T3 closed.
+  permission["tm_dispatch"] = "deny"
+  permission["tm_join"] = "deny"
   return permission
+}
+
+/** Grant the async dispatcher to the lead only (issue #7).  A child cannot
+ *  dispatch: tm_dispatch additionally self-gates on ctx.agent at runtime, so
+ *  this matrix entry and the tool check are two independent locks. */
+export function applyDispatcherPermission(permission: AgentPermission, isTeamLead: boolean): void {
+  permission["tm_dispatch"] = isTeamLead ? "allow" : "deny"
+  permission["tm_join"] = isTeamLead ? "allow" : "deny"
 }
 
 /** Apply the tm_ptc_run grant to an agent's permission block.  All six
@@ -292,12 +305,14 @@ for (const a of [architect, implementer, reviewer, tester, researcher]) {
 if (teamLead.permission) {
   applyPtcPermission(teamLead.permission, true)
   applyNetworkPermission(teamLead.permission, true)
+  applyDispatcherPermission(teamLead.permission, true)
 }
 for (const a of [architect, implementer, reviewer, tester, researcher]) {
   if (a.permission) {
     applyPtcPermission(a.permission, false)
     // tester: tm_browser only (UI verification); researcher: full web grant
     applyNetworkPermission(a.permission, a === researcher, a === tester)
+    applyDispatcherPermission(a.permission, false)
   }
 }
 

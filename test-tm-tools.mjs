@@ -1102,7 +1102,38 @@ try {
       { routes: ["hn", "github", "npm"], queryClass: "dev-ecosystem", notes: [] },
       "dev-ecosystem fan-out set",
     )
-    assert.deepEqual(sm.resolveAutoRoutes("初音未来").routes, ["bing"], "cjk routes to bing alone")
+    // 2026-09-18: cjk/general used to route to bing ALONE (no consensus, no
+    // fusion, a raw bing mirror).  Every route now has >=2 legs.
+    assert.deepEqual(
+      sm.resolveAutoRoutes("初音未来").routes,
+      ["bing", "moegirl", "stackoverflow", "hn"],
+      "cjk fans out to bing + a CN wiki + two dev legs",
+    )
+    assert.deepEqual(
+      sm.resolveAutoRoutes("best coffee in Paris").routes,
+      ["bing", "stackoverflow", "hn", "github"],
+      "general fans out to bing + three JSON legs",
+    )
+    assert.deepEqual(
+      sm.resolveAutoRoutes("初音未来", ["moegirl", "hn", "stackoverflow"]).routes,
+      ["bing"],
+      "TM_SEARCH_DISABLED_ENGINES removes legs from a route",
+    )
+    assert.match(
+      sm.resolveAutoRoutes("初音未来", ["moegirl", "hn", "stackoverflow"]).notes.join(" "),
+      /单引擎路由/,
+      "a degenerate single-engine route says so (no consensus available)",
+    )
+    assert.deepEqual(
+      sm.resolveAutoRoutes("初音未来", ["bing", "moegirl", "stackoverflow", "hn"]).routes,
+      ["bing"],
+      "disabling EVERY leg of a route still answers (falls back to bing, never errors)",
+    )
+    assert.deepEqual(
+      sm.resolveAutoRoutes("ERR_MODULE_NOT_FOUND").routes,
+      ["stackoverflow", "github", "bing"],
+      "error-code fan-out set unchanged",
+    )
     // CJK phrase protection: core = the most-CJK token, quoted; passthrough
     // cases stay byte-exact (single word / already quoted / <2 CJK chars).
     assert.equal(sm.protectCjkPhrase("开源 大模型 推理框架"), '开源 大模型 "推理框架"', "core CJK phrase auto-quoted")
@@ -1122,6 +1153,46 @@ try {
     assert.deepEqual(fusedUnit.map((h) => h.title), ["A", "C", "B"], "weighted RRF: deduped A (bing r0 + SO r1) tops, then SO r0 C, then bing r1 B")
     assert.equal(fusedUnit[0].source, "bing+stackoverflow", "deduped hit carries merged sources")
     assert.deepEqual(fusedUnit.map((h) => h.rank), [1, 2, 3], "fused ranks are 1-based")
+
+    // 2026-09-18 relevance floor: bing's 0.4 trust weight used to beat ANY
+    // other engine's best hit no matter how off-topic it was (0.4/70 >
+    // 0.2/61).  A hit sharing no query token now keeps only the floor
+    // fraction of its weight, so a relevant low-trust hit can win.
+    {
+      const bingLeg = {
+        engine: "bing",
+        hits: [
+          { title: "完全无关的娱乐新闻", url: "https://junk.example/1" },
+          { title: "另一条无关结果", url: "https://junk.example/2" },
+        ],
+      }
+      const hnLeg = { engine: "hn", hits: [{ title: "Redis pipeline 性能", url: "https://news.ycombinator.com/item?id=9" }] }
+      const before = sm.fuseRrf([bingLeg, hnLeg])
+      assert.equal(before[0].url, "https://junk.example/1", "no query passed = pure rank fusion (legacy behavior preserved)")
+      const after = sm.fuseRrf([bingLeg, hnLeg], { query: "redis pipeline 性能" })
+      assert.equal(after[0].url, "https://news.ycombinator.com/item?id=9", "a relevant hn hit outranks two zero-overlap bing hits")
+      assert.equal(
+        sm.fuseRrf([bingLeg, hnLeg], { query: "redis pipeline 性能", floor: 1, weights: { bing: 0.4 } })[0].url,
+        "https://junk.example/1",
+        "the old regime is still reachable by config (floor=1 + bing 0.4 = trust owns the list)",
+      )
+      assert.equal(after.find((h) => h.url.endsWith("/1")).fetchable, undefined, "fetchable unset when no predicate supplied")
+      const tagged = sm.fuseRrf([bingLeg, hnLeg], { query: "redis", fetchable: (u) => u.includes("junk.example") })
+      assert.equal(tagged.find((h) => h.url.includes("news.ycombinator")).fetchable, false, "unfetchable hit tagged for the renderer")
+    }
+    assert.deepEqual(
+      sm.queryTerms("Redis Pipeline 性能").sort(),
+      ["pipeline", "性能", "redis"].sort(),
+      "latin tokens lowercased + a 2-char CJK run indexed as its own bigram",
+    )
+    assert.equal(sm.queryTerms("  ").length, 0, "blank query = no terms (relevance stays 1, nothing to demote)")
+    assert.ok(sm.queryTerms("Redis Pipeline").includes("pipeline"), "latin token lowercased into the term set")
+    assert.ok(sm.queryTerms("键词").includes("键词"), "CJK bigram indexed for segmenter-free overlap")
+    assert.equal(sm.relevanceOf(["redis"], { title: "Redis vs KeyDB", url: "https://x/1", snippet: undefined }), 1, "full overlap = 1")
+    assert.equal(sm.relevanceOf(["redis"], { title: "无关", url: "https://x/1" }), 0, "zero overlap = 0")
+    assert.equal(sm.weightFor("bing", { bing: 0.9 }), 0.9, "TM_SEARCH_WEIGHTS override wins")
+    assert.equal(sm.weightFor("bing"), sm.RRF_DEFAULT_WEIGHT, "bing lost its 0.4 trust weight")
+    assert.equal(sm.weightFor("stackoverflow"), 0.4, "stackoverflow keeps the trust weight")
 
     // engine table sanity: every buildUrl host is allowlisted by the
     // T4-MERGED seeds (api.stackexchange.com + hn.algolia.com included)
@@ -1227,10 +1298,21 @@ try {
     }
     try {
       // engine:"auto" is the DEFAULT (cfg.searchDefaultEngine="auto"):
-      // a CJK query routes to bing alone, hits carry source tags.
+      // a CJK query now fans out over bing + a CN wiki + two dev legs, and
+      // the relevant bing hit still tops the fused list.
       const autoCjk = await reg.execute({ query: "测试 q" }, ctx)
-      assert.ok(autoCjk.output.includes('auto→bing × "测试 q"'), "auto default: CJK query -> bing-only route, header names it")
-      assert.ok(autoCjk.output.includes("[bing] Great result about 测试"), "auto hits are source-tagged")
+      assert.ok(autoCjk.output.includes('auto × "测试 q"'), "auto default: multi-leg route, header names auto (not auto→bing)")
+      assert.ok(autoCjk.output.includes("路由 bing+moegirl+stackoverflow+hn"), "cjk route table drives the fan-out")
+      assert.ok(autoCjk.output.includes("RRF 融合"), "multi-engine route fuses rather than dumping one SERP")
+      assert.ok(
+        autoCjk.output.includes("[bing+stackoverflow] Great result about 测试"),
+        "auto hits are source-tagged — and a multi-leg route can actually report cross-engine agreement",
+      )
+      {
+        const iConsensus = autoCjk.output.indexOf("[bing+stackoverflow] Great result")
+        const iWiki = autoCjk.output.indexOf("[moegirl] 初音未来")
+        assert.ok(iConsensus >= 0 && iWiki >= 0 && iConsensus < iWiki, "the relevant consensus hit outranks a zero-overlap wiki hit")
+      }
 
       // explicit bing — plain title+URL list (no auto labeling)
       const bing = await reg.execute({ query: "测试 q", engine: "bing" }, ctx)
@@ -1650,24 +1732,91 @@ try {
           ? "    ProgId    REG_SZ    FirefoxURL\r\n"
           : "    (Default)    REG_SZ    \"C:\\FF\\firefox.exe\" -osint -url \"%1\"\r\n"
       assert.equal(tm.defaultBrowserExecutable({}, ffReg), null, "Firefox default → null (CDP cannot drive it; probe list takes over)")
+      // Issue #5 of 2026-09-18: the user's default was Edge BETA, installed
+      // machine-wide (HKLM\SOFTWARE\Classes) with the association recorded on
+      // https.  The old probe read http + HKCU only, came back null, and the
+      // STABLE candidate path won — so stable Edge kept opening.
+      const betaFake = path.join(mktmp("defbrowser-beta"), "Microsoft", "Edge Beta", "Application", "msedge.exe")
+      fs.mkdirSync(path.dirname(betaFake), { recursive: true })
+      fs.writeFileSync(betaFake, "x")
+      const betaReg = (cmd, args) => {
+        const a = String(args.join(" "))
+        if (a.includes("UrlAssociations\\http\\UserChoice")) throw new Error("reg: key not found")
+        if (a.includes("UrlAssociations\\https\\UserChoice")) return "    ProgId    REG_SZ    MSEdgeBetaHTM\r\n"
+        if (a.includes("HKCU\\Software\\Classes")) throw new Error("reg: key not found")
+        if (a.includes("HKLM\\SOFTWARE\\Classes")) return `    (Default)    REG_SZ    "${betaFake}" --no-first-run --url "%1"\r\n`
+        throw new Error(`unexpected probe: ${a}`)
+      }
+      assert.equal(
+        tm.defaultBrowserExecutable({}, betaReg),
+        betaFake,
+        "https UserChoice + HKLM classes resolve Edge BETA when http/HKCU both fail",
+      )
+      assert.equal(
+        tm.playwrightLaunchTarget(betaFake).channel,
+        undefined,
+        "the discovered BETA path launches as-is (channel msedge would silently open stable)",
+      )
+      assert.equal(
+        tm.playwrightLaunchTarget(betaFake.replace("Edge Beta", "Edge")).channel,
+        "msedge",
+        "a stable-shaped path is the only case allowed to carry a channel",
+      )
     }
     // allowlist is checked BEFORE any browser spawns (works without a browser)
     const blocked = await runtime.tools.tm_browser.execute({ action: "open", url: "https://evil.example.com/x" }, ctx)
     assert.ok(blocked.output.includes("phase=permission"), "disallowed host → permission error, no spawn")
     const noUrl = await runtime.tools.tm_browser.execute({ action: "open" }, ctx)
     assert.ok(noUrl.output.includes("缺少 url"), "open without url → args error")
-    // real round-trip ONLY when a browser exists (skip on bare CI)
+    // real round-trip ONLY when a browser exists (skip on bare CI).  Mode is
+    // an OPERATOR setting now (TM_BROWSER_HEADLESS) — the model-facing
+    // `headless` arg is gone, so a test suite must never pop a window on the
+    // developer running it.
     if (tm.findBrowserExecutable()) {
-      const open = await runtime.tools.tm_browser.execute({ action: "open", url: "https://cn.bing.com", headless: true }, ctx)
-      assert.ok(open.output.includes("浏览器已启动") && open.output.includes("已导航"), "open launches + navigates")
-      const read = await runtime.tools.tm_browser.execute({ action: "read" }, ctx)
-      assert.ok(/bing/i.test(read.output), "read extracts page text")
-      const shot = await runtime.tools.tm_browser.execute({ action: "screenshot" }, ctx)
-      const shotPath = /截图已保存（\d+ bytes）：(.+)$/m.exec(shot.output)?.[1]
-      assert.ok(shotPath && fs.existsSync(shotPath.trim()) && fs.statSync(shotPath.trim()).size > 1000, "screenshot PNG written to the run store")
-      const closed = await runtime.tools.tm_browser.execute({ action: "close" }, ctx)
-      assert.ok(closed.output.includes("已关闭"), "close kills the child + cleans the temp profile")
-      assert.ok(fs.existsSync(shotPath.trim()), "screenshot stays in the run store after close (TTL owns reclamation)")
+      const savedHeadless = process.env.TM_BROWSER_HEADLESS
+      process.env.TM_BROWSER_HEADLESS = "1"
+      // its OWN runtime: this block drives a real browser, and the shared §6
+      // runtime has already been through env changes in earlier sections
+      // (store dirs, allowlists) — a live round-trip must not inherit those.
+      const liveRt = await tm.createTmTools({
+        directory: mktmp("browser-live"),
+        client: fakeClient({}),
+        $: fake$Ok(""),
+      })
+      const B = liveRt.tools.tm_browser
+      try {
+        const open = await B.execute({ action: "open", url: "https://cn.bing.com" }, ctx)
+        assert.ok(open.output.includes("浏览器已启动") && open.output.includes("无头"), "open launches headless via the env knob and reports the REAL mode")
+        assert.ok(open.output.includes("已导航"), "open navigates")
+        const read = await B.execute({ action: "read" }, ctx)
+        assert.ok(/bing/i.test(read.output), "read extracts page text")
+        const shot = await B.execute({ action: "screenshot" }, ctx)
+        const shotPath = /截图已保存（PNG \d+ bytes）：(.+)$/m.exec(shot.output)?.[1]
+        assert.ok(shotPath && fs.existsSync(shotPath.trim()) && fs.statSync(shotPath.trim()).size > 1000, "screenshot PNG written to the run store")
+        assert.ok(shot.output.includes("上下文只携带路径"), "default screenshot ships the path, not the pixels")
+        assert.equal(shot.attachments, undefined, "no attachment unless the caller asks")
+        const shotImg = await B.execute({ action: "take_screenshot", image: true }, ctx)
+        assert.ok(
+          Array.isArray(shotImg.attachments) && shotImg.attachments.length === 1,
+          "image:true attaches ONE file :: " + JSON.stringify(String(shotImg.output)).slice(0, 240),
+        )
+        assert.equal(shotImg.attachments?.[0]?.mime, "image/jpeg", "the model gets a JPEG (a real page is ~1.5MB as PNG — never inline that)")
+        assert.equal(shotImg.attachments?.[0]?.type, "file", "attachment carries the official {type:'file'} shape")
+        assert.ok(String(shotImg.attachments?.[0]?.url ?? "").startsWith("data:image/jpeg;base64,"), "pixels ride as a data URL")
+        assert.ok(shotImg.attachments[0].url.length < 400_000 * 1.4 + 64, "the attached image respects TM_BROWSER_IMAGE_MAX_BYTES (base64 ceiling)")
+        const after = await B.execute({ action: "take_screenshot" }, ctx)
+        assert.equal(after.attachments, undefined, "attachments do NOT leak onto the next call")
+        const closed = await B.execute({ action: "close" }, ctx)
+        assert.ok(
+          closed.output.includes("已确认关闭") || closed.output.includes("警告：关闭未完全成功"),
+          "close states an VERIFIED verdict — success or an explicit warning, never a bare claim",
+        )
+        assert.ok(fs.existsSync(shotPath.trim()), "screenshot stays in the run store after close (TTL owns reclamation)")
+      } finally {
+        await liveRt.dispose()
+        if (savedHeadless === undefined) delete process.env.TM_BROWSER_HEADLESS
+        else process.env.TM_BROWSER_HEADLESS = savedHeadless
+      }
     } else {
       console.log("  (no browser found — live round-trip skipped)")
     }
@@ -2202,8 +2351,11 @@ try {
       assert.ok("tm_ptc_run" in hooks.tool, "tm_ptc_run registered in the tool segment (M3)")
       assert.deepEqual(
         Object.keys(hooks.tool).sort(),
-        ["tm_bash", "tm_browser", "tm_fetch", "tm_grep", "tm_memory", "tm_ptc_run", "tm_read", "tm_search", "tm_webfetch"],
-        "registered tm_* set includes tm_ptc_run + tm_webfetch + tm_search + tm_memory + tm_browser",
+        [
+          "tm_bash", "tm_browser", "tm_dispatch", "tm_fetch", "tm_grep", "tm_join",
+          "tm_memory", "tm_ptc_run", "tm_read", "tm_search", "tm_webfetch",
+        ],
+        "registered tm_* set includes the async dispatcher (tm_dispatch + tm_join) alongside the ten governed tools",
       )
       // program over the cap is rejected through the tool as an args error
       const big = await tool.execute({ program: "x".repeat(4001) }, { directory: process.cwd() })
@@ -2488,6 +2640,199 @@ try {
       assert.equal(degradedRun.returnValue, "ran-on-inline", "the program executed once on the inline engine")
     }
     console.log("9l. C1 escape containment: OK (constructor/chain/eval/new Function/data-object/dynamic-import escapes throw in BOTH real engines, a normal bridged call still works, started-then-crashed worker NOT replayed on inline, engine-init fault still degrades)")
+  }
+
+  // ---------- 10. tm_dispatch / tm_join — async sub-agent dispatch ----------
+  // Issue #7: the host's `task` tool blocks the calling session, so the lead
+  // could not overlap its own work with the team's.  These tools ride the
+  // official client.session API (create + promptAsync = start and return
+  // immediately); a fake session API is what a real host answers with.
+  {
+    const dmod = await import("./dist/tm/dispatch.js")
+    assert.equal(
+      dmod.lastAssistantText([
+        { info: { role: "user" }, parts: [{ type: "text", text: "the brief" }] },
+        { info: { role: "assistant" }, parts: [{ type: "tool", callID: "c1" }, { type: "text", text: "STATUS: done" }] },
+      ]),
+      "STATUS: done",
+      "lastAssistantText skips the user turn and non-text parts",
+    )
+    assert.equal(dmod.lastAssistantText([]), "", "no messages = empty reply, never a crash")
+    assert.equal(
+      dmod.lastAssistantText([{ info: { role: "assistant" }, parts: [{ type: "text", text: "a" }, { type: "text", text: "b" }] }]),
+      "a\nb",
+      "multiple text parts of the final message join",
+    )
+    assert.equal(dmod.sessionApiOf({}), null, "a client with no session namespace degrades (no throw)")
+    assert.equal(dmod.sessionApiOf({ session: { create: () => {} } }), null, "create alone is not enough — promptAsync must exist too")
+    assert.deepEqual(dmod.summarizeStates([{ state: "idle" }, { state: "running" }, { state: "error" }]), { running: 1, idle: 1, error: 1 }, "state summary counts")
+
+    const sessionFake = (over = {}) => {
+      const calls = { create: [], promptAsync: [], messages: [], status: [], abort: [] }
+      const ids = over.ids ?? ["ses_child_1"]
+      const client = {
+        ...fakeClient({}),
+        session: over.noApi
+          ? undefined
+          : {
+              create: async (o) => (calls.create.push(o), { ok: true, data: { id: ids.shift() ?? "ses_x" } }),
+              promptAsync: async (o) => (calls.promptAsync.push(o), { data: undefined }),
+              messages: async (o) => {
+                calls.messages.push(o)
+                const text = (over.replies ?? {})[o.path.id] ?? "STATUS: done\nEVIDENCE: tsc clean"
+                return {
+                  ok: true,
+                  data: [
+                    { info: { role: "user" }, parts: [{ type: "text", text: "brief" }] },
+                    { info: { role: "assistant" }, parts: [{ type: "text", text }] },
+                  ],
+                }
+              },
+              status: async () => (calls.status.push(1), { ok: true, data: over.statusMap ?? { ses_child_1: { type: "busy" } } }),
+              abort: async (o) => (calls.abort.push(o), { ok: true, data: {} }),
+            },
+      }
+      return { client, calls }
+    }
+    const LEAD = { agent: "team", sessionID: "ses_lead", directory: "." }
+    const BRIEF = "重构 tm_browser 的关闭路径：目标是 close 之后窗口必须真的消失，涉及 src/tm/browser.ts，完成判据是 npm test 全绿。"
+
+    // --- gates: who may dispatch, and what counts as a usable brief ---
+    {
+      const { client } = sessionFake()
+      const rt = await tm.createTmTools({ directory: mktmp("disp-gate"), client, $: fake$Ok("") })
+      const notLead = await rt.tools.tm_dispatch.execute({ agent: "implementer", task: BRIEF }, { agent: "implementer", sessionID: "ses_x" })
+      assert.ok(notLead.output.includes("phase=governance") && notLead.output.includes("只有 team"), "a specialist cannot dispatch (T3: no sub-agent spawns a sub-agent)")
+      const badTarget = await rt.tools.tm_dispatch.execute({ agent: "team", task: BRIEF }, LEAD)
+      assert.ok(badTarget.output.includes("phase=args") && badTarget.output.includes("未知派发目标"), "dispatching a TEAM (nested lead) is rejected by the roster")
+      const thin = await rt.tools.tm_dispatch.execute({ agent: "tester", task: "修一下" }, LEAD)
+      assert.ok(thin.output.includes("task 太短"), "a non-self-contained brief is refused before a child is spawned")
+      const joinNotLead = await rt.tools.tm_join.execute({}, { agent: "reviewer", sessionID: "ses_x" })
+      assert.ok(joinNotLead.output.includes("phase=governance"), "only the lead collects dispatch results")
+      const empty = await rt.tools.tm_join.execute({}, LEAD)
+      assert.ok(empty.output.includes("没有待收集的派发"), "join with nothing dispatched says so")
+      await rt.dispose()
+    }
+    // --- degrade: a host without the async session API ---
+    {
+      const { client } = sessionFake({ noApi: true })
+      const rt = await tm.createTmTools({ directory: mktmp("disp-degrade"), client, $: fake$Ok("") })
+      const res = await rt.tools.tm_dispatch.execute({ agent: "tester", task: BRIEF }, LEAD)
+      assert.ok(res.output.includes("phase=client") && res.output.includes("task 工具"), "no session API -> explicit 'use the built-in task' directive, never a silent hang")
+      await rt.dispose()
+    }
+    // --- happy path: fire, keep going, collect ---
+    {
+      const registered = []
+      const { client, calls } = sessionFake()
+      const rt = await tm.createTmTools({ directory: mktmp("disp-happy"), client, $: fake$Ok("") }, { onChildSession: (sid, agent) => registered.push([sid, agent]) })
+      const fired = await rt.tools.tm_dispatch.execute({ agent: "implementer", task: BRIEF, label: "close-path" }, LEAD)
+      assert.ok(fired.output.includes("已派发（非阻塞）") && fired.output.includes("ses_child_1"), "dispatch returns the child id immediately")
+      assert.ok(fired.output.includes("你现在可以继续"), "dispatch tells the lead it keeps the round")
+      assert.equal(calls.create[0].body.parentID, "ses_lead", "the child session is PARENTED to the lead session")
+      assert.equal(calls.promptAsync[0].path.id, "ses_child_1", "promptAsync targets the new child")
+      assert.equal(calls.promptAsync[0].body.agent, "implementer", "the child runs as the named specialist")
+      assert.equal(calls.promptAsync[0].body.parts[0].text, BRIEF, "the brief is delivered verbatim")
+      assert.deepEqual(registered, [["ses_child_1", "implementer"]], "the child session is handed to the approval gate for registration")
+      assert.deepEqual(rt.dispatches().map((d) => [d.agent, d.state]), [["implementer", "running"]], "the child starts as running")
+      // no wait + host says busy -> an honest snapshot, not a stall
+      const busy = await rt.tools.tm_join.execute({ waitMs: 0 }, LEAD)
+      assert.ok(busy.output.includes("0 完成 / 1 运行中"), "join reports the live state (idle child is still 'running' until the host settles it)")
+      assert.ok(busy.output.includes("implementer") && busy.output.includes("close-path"), "the status line names agent + label")
+      // the event bus settles it (push path — no polling needed)
+      rt.observeDispatchEvent({ type: "session.idle", properties: { sessionID: "ses_child_1" } })
+      const done = await rt.tools.tm_join.execute({}, LEAD)
+      assert.ok(done.output.includes("1 完成"), "session.idle settles the child without waiting")
+      assert.ok(done.output.includes("STATUS: done") && done.output.includes("tsc clean"), "the child's reply skeleton is collected")
+      assert.ok(done.output.includes("全部已结算"), "join states that everything settled")
+      // second dispatch + cancel of a child that never finished
+      const { client: c2, calls: calls2 } = sessionFake({ statusMap: { ses_child_1: { type: "busy" }, ses_child_2: { type: "busy" } } })
+      const rt2 = await tm.createTmTools({ directory: mktmp("disp-cancel"), client: c2, $: fake$Ok("") })
+      await rt2.tools.tm_dispatch.execute({ agent: "tester", task: BRIEF }, LEAD)
+      await rt2.tools.tm_dispatch.execute({ agent: "reviewer", task: BRIEF }, LEAD)
+      const cancelled = await rt2.tools.tm_join.execute({ cancel: true }, LEAD)
+      assert.equal(calls2.abort.length, 2, "cancel:true aborts every still-running child")
+      assert.ok(cancelled.output.includes("aborted on request"), "an aborted child reports why")
+      assert.ok(cancelled.output.includes("2 失败"), "aborted children are counted as failed, not silently dropped")
+      await rt.dispose()
+      await rt2.dispose()
+    }
+    // --- context economy: a fat child reply offloads instead of flooding ---
+    {
+      const fat = "详细发现".repeat(2500) // ~10k tokens, far past the prose threshold
+      const { client } = sessionFake({ statusMap: { ses_child_1: { type: "idle" } }, replies: { ses_child_1: fat } })
+      const rt = await tm.createTmTools({ directory: mktmp("disp-fat"), client, $: fake$Ok("") })
+      await rt.tools.tm_dispatch.execute({ agent: "researcher", task: BRIEF }, LEAD)
+      rt.observeDispatchEvent({ type: "session.idle", properties: { sessionID: "ses_child_1" } })
+      const joined = await rt.tools.tm_join.execute({}, LEAD)
+      assert.ok(joined.output.includes("已卸载到 run 存储"), "a long collected reply OFFLOADS (lead context stays bounded)")
+      assert.ok(joined.output.includes("access_token"), "the handle is visible so tm_fetch can page it")
+      const light = await rt.tools.tm_join.execute({ includeText: false }, LEAD)
+      assert.ok(!light.output.includes("详细发现"), "includeText:false returns the status table only")
+      await rt.dispose()
+    }
+    console.log("10. tm_dispatch/tm_join: OK (lead-only gate + nested-team reject + self-contained brief, parentID + verbatim brief over the session API, event-driven settle + bounded wait, cancel, offloaded collection, graceful 'use task' degrade)")
+  }
+
+  // ---------- 11. bash timeout clamp (tool.execute.before mutation) ----------
+  // The host's shell tool defaults to 120 s (flags.bashDefaultTimeoutMs ??
+  // 2*60*1e3) and models pass 120000+ for `Get-ChildItem`.  The plugin owns no
+  // timer; it clamps the ARG through the official mutable hook, and only for
+  // commands the P3 read-only allowlist already accepts.
+  {
+    const bt = await import("./dist/tm/bash-timeout.js")
+    const RO = ["ls", "grep", "Get-ChildItem"]
+    const r = (o2) => bt.resolveBashTimeout({ readonlyAllowed: RO, probeMs: 60_000, maxMs: 0, ...o2 })
+    assert.deepEqual(
+      r({ command: "Get-ChildItem .", timeoutMs: 120000 }),
+      { changed: true, via: "probe", from: 120000, to: 60000 },
+      "a read-only probe carrying 120 s is clamped to the probe ceiling",
+    )
+    assert.equal(r({ command: "npm test", timeoutMs: 120000 }).changed, false, "a real build/test run keeps the model's timeout (general cap is off by default)")
+    assert.deepEqual(
+      r({ command: "npm test", timeoutMs: 600000, maxMs: 300000 }),
+      { changed: true, via: "max", from: 600000, to: 300000 },
+      "TM_BASH_TIMEOUT_MAX_MS caps everything once the user opts in",
+    )
+    assert.equal(r({ command: "ls", timeoutMs: null }).changed, false, "no timeout supplied = untouched (never invent one for the model)")
+    assert.equal(r({ command: "ls", timeoutMs: 30000 }).changed, false, "already under the ceiling = no rewrite")
+    assert.equal(r({ command: "ls", timeoutMs: 90000, probeMs: 0 }).changed, false, "probeMs=0 disables the probe ceiling")
+    assert.equal(bt.parseTimeoutArg("120000"), 120000, "a stringified timeout still parses (LLMs do this)")
+    assert.equal(bt.parseTimeoutArg("0"), null, "zero is not a timeout")
+    assert.equal(bt.parseTimeoutArg("abc"), null, "garbage = absent, never a clamp to NaN")
+    // hook behavior
+    const clamped = []
+    const hook = bt.createBashTimeoutHook({ probeMs: 60_000, maxMs: 0, readonlyAllowed: RO, onClamp: (i) => clamped.push(i) })
+    const out = { args: { command: "ls -la", timeout: 120000 } }
+    assert.equal(hook({ tool: "bash", sessionID: "s1" }, out), true, "the hook mutates output.args")
+    assert.equal(out.args.timeout, 60000, "args.timeout rewritten in place")
+    assert.equal(clamped.length, 1, "one clamp reported for the trajectory")
+    assert.equal(hook({ tool: "write", sessionID: "s1" }, { args: { command: "ls", timeout: 120000 } }), false, "only the built-in bash tool is touched")
+    assert.equal(out.args.command, "ls -la", "the command itself is never rewritten")
+    assert.equal(hook({ tool: "bash" }, undefined), false, "a malformed hook payload cannot throw")
+    assert.equal(hook({ tool: "bash" }, { args: { command: "rm -rf /", timeout: 120000 } }), false, "a NON-allowlisted command is left alone (this hook never widens what may run)")
+    // config plumbing
+    const cfgBt = tm.resolveTmConfig({ TM_BASH_TIMEOUT_MAX_MS: "1200000", TM_BASH_TIMEOUT_PROBE_MS: "0" })
+    assert.equal(cfgBt.bashTimeoutMaxMs, 1200000, "TM_BASH_TIMEOUT_MAX_MS resolves")
+    assert.equal(cfgBt.bashTimeoutProbeMs, 0, "TM_BASH_TIMEOUT_PROBE_MS=0 disables the probe ceiling")
+    assert.equal(tm.resolveTmConfig({}).bashTimeoutMaxMs, 0, "the general cap is OFF by default")
+    assert.equal(tm.resolveTmConfig({}).bashTimeoutProbeMs, 60_000, "the probe ceiling ships enabled")
+    assert.equal(tm.resolveTmConfig({ TM_BASH_TIMEOUT_MAX_MS: "banana" }).bashTimeoutMaxMs, 0, "invalid value falls back to the default")
+    // wired through the real plugin hook (clamp runs, R6 still guards)
+    {
+      const hooks = await plugin.server({ directory: mktmp("bt-wire"), client: fakeClient({}), $: fake$Ok("") }, { envProtect: true })
+      const wired = { args: { command: "grep -R TODO src", timeout: 900000 } }
+      await hooks["tool.execute.before"]({ tool: "bash", sessionID: "s1" }, wired)
+      assert.equal(wired.args.timeout, 60000, "the composed plugin hook clamps a read-only bash timeout")
+      let threw = null
+      try {
+        await hooks["tool.execute.before"]({ tool: "bash", sessionID: "s1" }, { args: { command: "printenv PATH" } })
+      } catch (e) {
+        threw = e
+      }
+      assert.ok(threw, "R6 interception still fires from the SAME hook")
+    }
+    console.log("11. bash timeout clamp: OK (probe-only ceiling by default, opt-in global cap, never invents a timeout, never widens the allowlist, string args tolerated, composed with R6)")
   }
 } finally {
   restoreEnv()

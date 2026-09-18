@@ -199,11 +199,22 @@ console.log("1. default_agent promotion matrix: OK (opt-out default; custom/plan
     expected["tm_webfetch"] = isWebRole ? { ...webAsk } : "deny"
     expected["tm_search"] = isWebRole ? { ...webAsk } : "deny"
     expected["tm_browser"] = isWebRole || isTester ? { ...webAsk } : "deny"
-    const allowCount = granted.length + tmTools.length + 2 // + wildcard + ptc
+    // issue #7: async dispatch is the LEAD's lever.  The tm_* wildcard would
+    // otherwise hand every specialist the power to spawn sub-agents — the
+    // nesting T3 closed — so both keys are explicit denies for the five.
+    expected["tm_dispatch"] = name === "team" ? "allow" : "deny"
+    expected["tm_join"] = name === "team" ? "allow" : "deny"
+    const allowCount =
+      granted.length + tmTools.length + 2 + (name === "team" ? 2 : 0) // + wildcard + ptc (+ dispatch/join)
     assert.deepStrictEqual(
       perm, expected,
       name + ": whitelist content exact (" + allowCount + " allow entries / " +
         Object.keys(expected).length + " keys)",
+    )
+    assert.notEqual(
+      name === "team" ? "deny" : "allow",
+      perm["tm_dispatch"],
+      name + ": tm_dispatch grant matches the lead-only rule",
     )
 
     // dispatch-mandated explicit checks on top of deep-equality

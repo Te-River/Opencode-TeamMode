@@ -351,8 +351,14 @@ export async function buildMemoryArgsSchema(): Promise<Record<string, unknown>> 
  * (BROWSER_PLAYWRIGHT_ACTIONS, browser.ts:505) + the 5 compat verbs consume
  * 19 fields across execute/act (args.uid/selector/targetUid/targetSelector/
  * text/key/function/expression/filePath/files/index/timeoutMs/dialogAction/
- * promptText/clear/fullPage, browser.ts:956-1100, :1130-1170) — every one
+ * promptText/clear/fullPage/image, browser.ts act() + execute()) — every one
  * is declared below, or the corresponding verb silently loses its input.
+ *
+ * `headless` is DELIBERATELY not declared (2026-09-18): it used to be a model
+ * arg, `Boolean("false")` read as true, and one such call pinned the whole
+ * host process to a headless browser that every anti-bot gate then rejected.
+ * Mode is an operator setting (TM_BROWSER_HEADLESS) — a closed surface here
+ * is the fix, not a validation layer.
  */
 export async function buildBrowserArgsSchema(): Promise<Record<string, unknown>> {
   const z = await loadZod()
@@ -362,7 +368,7 @@ export async function buildBrowserArgsSchema(): Promise<Record<string, unknown>>
     return {
       action: { descriptor: `action: ${ACTION_LIST} (required)` },
       url: { descriptor: "url: string (open/navigate/navigate_page, allowlisted https)" },
-      headless: { descriptor: "headless: boolean (open, optional — default auto)" },
+      image: { descriptor: "image: true with take_screenshot — inline the PNG pixels in this result" },
       uid: { descriptor: "uid: snapshot [uid=eN] token (click/fill/hover/drag/upload_file/wait_for)" },
       selector: { descriptor: "selector: CSS/text locator escape hatch (only when a snapshot cannot express the node)" },
       targetUid: { descriptor: "targetUid: drag destination uid" },
@@ -401,7 +407,7 @@ export async function buildBrowserArgsSchema(): Promise<Record<string, unknown>>
   return {
     action: zz.string().describe(ACTION_LIST),
     url: str("Absolute https URL on an allowlisted host (open/navigate/navigate_page). URL-encode the query (CJK terms too)."),
-    headless: bool("Force headless/headful on open (optional — default auto by display availability)."),
+    image: bool("take_screenshot only: inline the PNG pixels into this tool result (default false = path only; pixels cost context, so ask only when the screenshot IS the evidence)."),
     uid: str("Snapshot [uid=eN] token from the LATEST take_snapshot (click/fill/hover/drag source/upload_file/wait_for)."),
     selector: str("CSS/text locator escape hatch — only for a node the snapshot cannot express; never guess locators."),
     targetUid: str("drag destination uid from the latest take_snapshot."),

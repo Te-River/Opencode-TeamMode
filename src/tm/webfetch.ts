@@ -162,6 +162,20 @@ export const SEARCH_PAGE_RE =
 const ENGINE_TRACKER_RE =
   /bing\.com\/ck\/|baidu\.com\/link\?|sogou\.com\/link\?|go\.microsoft\.com\/fwlink|so\.com\/link\?|ai\.so\.com/i
 
+/** The engine's OWN pages.  bing returns /images, /academic, /dict, /news,
+ *  its own CN landing page and `www.microsoft.com` chrome as "results";
+ *  those are never the answer to a lookup about something else, and they
+ *  made the hit list look like the engine was recommending itself.  The
+ *  engine hosts stay on the FETCH allowlist (tm_webfetch can still read a
+ *  bing SERP on purpose) — this only stops them being rendered as results. */
+const ENGINE_OWN_HOST_RE = /(^|\.)bing\.(com|cn|net)$|(^|\.)microsofttranslator\.com$/i
+
+/** Sponsored-slot marker (bing CN wraps an ad in `class="b_ad"`, which is
+ *  distinct from the organic `b_algo` — a substring test cannot confuse
+ *  them).  Checked in the 320 chars preceding the anchor, i.e. the slot it
+ *  lives in, never the whole page. */
+const AD_SLOT_RE = /b_ad\b|ads-title|data-kq="dsp\.srp\./i
+
 /** Domains that collide with common search terms (e.g. maimai.cn is the
  *  Chinese professional-networking site 脉脉, NOT the SEGA maimai DX rhythm
  *  game — a real session showed bing returning 10/10 maimai.cn hits for
@@ -187,6 +201,10 @@ export interface SearchHit {
   source?: string
   /** 1-based fused rank (auto-fusion only). */
   rank?: number
+  /** False when the host is outside the fetch allowlist (auto-fusion only) —
+   *  following it will open an approval dialog, so the agent should prefer a
+   *  hit it can actually read.  Undefined = not evaluated. */
+  fetchable?: boolean
 }
 
 function decodeEntities(s: string): string {
@@ -245,18 +263,32 @@ export function extractSearchHits(
     if (seen.has(key)) continue
     // domain blacklist: same-name-different-site collisions (maimai.cn 脉脉
     // vs the maimai DX game) must not ride the hit list as "results"
+    let host = ""
     try {
-      const host = new URL(href).hostname.toLowerCase()
+      host = new URL(href).hostname.toLowerCase()
       if (blacklist.some((d) => host === d || host.endsWith("." + d))) continue
+      // the engine's own chrome (bing /images, /dict, /news …) is not a result
+      if (ENGINE_OWN_HOST_RE.test(host)) continue
     } catch {
       /* URL parse fail: keep the hit (the anchor scan already vetted it) */
     }
+    // sponsored slot: the markup immediately BEFORE this anchor decides
+    // whether the hit is an ad — bounded so it cannot bleed in from earlier
+    // results on the page.
+    const slotStart = Math.max(0, (m.index ?? 0) - 320)
+    if (AD_SLOT_RE.test(html.slice(slotStart, m.index ?? 0))) continue
     seen.add(key)
-    // snippet window: this anchor's end up to the NEXT anchor (or 600
-    // chars) — bounded so a SERP chrome wall can't bleed in
+    // snippet window: this anchor's end up to the NEXT organic result
+    // (`b_algo`) when the SERP marks those, else the next anchor, else 600
+    // chars.  The b_algo bound matters: bing puts a nested <a> INSIDE the
+    // caption, so an "up to the next anchor" window cut nearly every CN
+    // snippet off before the text started.
     const start = (m.index ?? 0) + m[0].length
-    const nextStart = ai + 1 < anchors.length ? (anchors[ai + 1].index ?? start + 600) : start + 600
-    const snippet = extractCaptionSnippet(html.slice(start, Math.min(nextStart, start + 600)))
+    const capEnd = start + 600
+    const nextAnchor = ai + 1 < anchors.length ? (anchors[ai + 1].index ?? capEnd) : capEnd
+    const nextAlgo = html.indexOf("b_algo", start)
+    const end = nextAlgo > -1 && nextAlgo < capEnd ? nextAlgo : Math.min(nextAnchor, capEnd)
+    const snippet = extractCaptionSnippet(html.slice(start, end))
     hits.push({
       title: title.length > 110 ? title.slice(0, 110) + "…" : title,
       url: href,

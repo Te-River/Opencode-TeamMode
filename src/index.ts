@@ -49,6 +49,7 @@ import {
   hasPermissionReplyCapability,
 } from "./approval-gate.js"
 import { createTmTools } from "./tm/index.js"
+import { createBashTimeoutHook } from "./tm/bash-timeout.js"
 
 /** Runtime addendum to the team prompt: concrete board + TTL (hybrid mode). */
 function blackboardNote(root: string, ttlDays: number): string {
@@ -162,6 +163,34 @@ const plugin: OpenCodePlugin = {
     const tmRuntime = await createTmTools(input, {
       mode: envProtectMode,
       extra: envProtectExtra,
+      notify: notifyAsk,
+      // A tm_dispatch child is registered the moment it is created (the
+      // message.updated route below re-confirms it): an exec-role sub-agent
+      // whose session were NOT registered would hard-throw its own protected
+      // reads instead of opening the dialog.
+      onChildSession: (sessionID, agent) => {
+        if (approvalGate && injectedExecAgents.has(agent)) approvalGate.registerExecSession(sessionID)
+      },
+    })
+
+    // ---------- bash timeout clamp (issue #6, see tm/bash-timeout.ts) ------
+    const bashTimeoutHook = createBashTimeoutHook({
+      probeMs: tmRuntime.config.bashTimeoutProbeMs,
+      maxMs: tmRuntime.config.bashTimeoutMaxMs,
+      readonlyAllowed: tmRuntime.config.bashReadonlyAllowed,
+      onClamp: (info) => {
+        try {
+          tmRuntime.pipelines.store.appendTrajectory({
+            tool: "bash",
+            step_id: "timeout-clamp",
+            event: info.via,
+            from_ms: info.from,
+            to_ms: info.to,
+          })
+        } catch {
+          /* observability only */
+        }
+      },
     })
 
     return {
@@ -209,10 +238,20 @@ const plugin: OpenCodePlugin = {
       },
 
       // ---------- R6: block the model's env-var read paths in code ----------
-      "tool.execute.before": envProtectHook,
+      // ONE hook, two independent jobs (the host calls the single
+      // `tool.execute.before` slot per plugin): first clamp a wasteful
+      // model-set bash timeout, then run the R6 interception.  The clamp
+      // runs BEFORE R6 so a blocked call is never also a slow one.
+      "tool.execute.before": async (input: unknown, output: unknown) => {
+        bashTimeoutHook(input, output)
+        await envProtectHook(input, output)
+      },
 
       // ---------- unified approval gate: watch the host permission dialog ---
       event: ({ event }: { event: HostEvent }) => {
+        // Async dispatch bookkeeping runs FIRST and independently of R6:
+        // session.idle / .error are what tell the lead its children settled.
+        tmRuntime.observeDispatchEvent(event)
         if (!approvalGate) return
         // Pre-tool session registration: the live host emits message.updated
         // with the full UserMessage ({ sessionID, role:"user", agent }) when
@@ -262,10 +301,11 @@ const plugin: OpenCodePlugin = {
           }
         }
       },
-      dispose: () => {
+      dispose: async () => {
         approvalGate?.dispose()
-        // tm_browser owns a browser child process — kill it on teardown.
-        tmRuntime.dispose()
+        // tm_browser owns a browser child process — kill it on teardown and
+        // WAIT, or the process can exit with the window still on screen.
+        await tmRuntime.dispose()
       },
 
       // ---------- JIT layer-2: tm_read / tm_grep / tm_bash / tm_fetch ----------

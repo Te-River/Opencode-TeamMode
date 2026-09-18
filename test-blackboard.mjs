@@ -258,7 +258,27 @@ assert.ok(
     leadPrompt.indexOf("## Dispatch concurrency") < leadPrompt.indexOf("## Approval gate"),
   "lead: dispatch concurrency section sits between routing table and approval gate",
 )
-assert.ok(leadPrompt.includes("CONCURRENTLY IN ONE ROUND"), "lead: independent dispatches batch into one round, actively")
+assert.ok(leadPrompt.includes("you and your team run AT THE SAME TIME"), "lead: concurrency section states the real-parallel contract")
+assert.ok(leadPrompt.includes("tm_dispatch is the parallel lever"), "lead: tm_dispatch taught as the non-blocking dispatch lever")
+assert.ok(leadPrompt.includes("blocks you until that child finishes"), "lead: WHY task is the serial path is stated, not just banned")
+assert.ok(leadPrompt.includes("Write a SELF-CONTAINED brief"), "lead: dispatch briefs must stand alone (child sees no history)")
+assert.ok(leadPrompt.includes("quick / standard /\n  deep"), "lead: the brief carries an expected thoroughness level")
+assert.ok(leadPrompt.includes("While they run, keep working — on lead work only"), "lead: the leader works during the wait, and only on lead work")
+assert.ok(leadPrompt.includes("Do NOT pull big payloads into your\n  own context while waiting"), "lead: leader context discipline — delegated bulk stays delegated")
+assert.ok(leadPrompt.includes("Collect with **tm_join**"), "lead: tm_join is the collection path")
+assert.ok(leadPrompt.includes("Never end a turn with a dispatched child uncollected"), "lead: no orphaned dispatches at end of turn")
+assert.ok(leadPrompt.includes("cancel: true"), "lead: a runaway child is abortable")
+assert.ok(leadPrompt.includes("your context is the team's scarce"), "lead: division of labour framed as context economy")
+assert.ok(leadPrompt.includes("blocking on `task`"), "lead: blocking on task for independent work is named an anti-pattern")
+// async dispatch makes multi-in_progress normal, and order is negotiable
+assert.ok(leadPrompt.includes("SEVERAL items"), "lead: parallel dispatch explicitly licenses several in_progress items")
+assert.ok(leadPrompt.includes("ORDER IS A DEFAULT, NOT A LAW"), "lead: todo-list order yields to parallelism")
+assert.ok(leadPrompt.includes("fire every package whose inputs already exist"), "lead: scan the whole list for dispatchable work each round")
+assert.ok(leadPrompt.includes("Partition before you parallelize"), "lead: file-ownership partition is the precondition for parallel work")
+assert.ok(leadPrompt.includes("never let two agents edit one file"), "lead: children must not collide")
+assert.ok(leadPrompt.includes("Reuse before you build"), "lead: existing dependencies are checked before designing a new module")
+assert.ok(leadPrompt.includes("already available,"), "lead: 'already available, use it' is stated as the better outcome")
+assert.ok(leadPrompt.includes("The team exists to be FASTER"), "lead: throughput is the justification for the team")
 assert.ok(leadPrompt.includes("Pre-commit hygiene"), "lead: hygiene check before ANY commit")
 
 /* v1.4.7: approval gate + uncertainty policy + no-ceremony fast path */
@@ -359,7 +379,26 @@ for (const expert of EXPERTS) {
 assert.ok(cfg2.agent["researcher"].prompt.includes("Recon batching (PTC-first)"), "researcher: PTC-first recon section present")
 assert.ok(cfg2.agent["researcher"].prompt.includes("## Web lookups (two channels)"), "researcher: two-channel web policy (governed tools first, MCP fallback)")
 assert.ok(cfg2.agent["researcher"].prompt.includes("tm_search (open-ended lookups)"), "researcher: tm_search is the open-ended lookup front")
-assert.ok(cfg2.agent["researcher"].prompt.includes("bing-int"), "researcher: international-bing engine documented")
+assert.ok(cfg2.agent["researcher"].prompt.includes("engine:\"auto\" (the default)"), "researcher: tm_search auto fan-out is the documented default")
+assert.ok(cfg2.agent["researcher"].prompt.includes("stackoverflow · hn · github · npm · moegirl"), "researcher: the LIVE engine roster is documented")
+for (const dead of ["bing-int", "sogou", "baidu", "360"]) {
+  assert.ok(
+    !new RegExp(`Engines[^\\n]*${dead}`).test(cfg2.agent["researcher"].prompt),
+    `researcher: dead engine ${dead} is no longer listed as a selectable engine`,
+  )
+}
+assert.ok(cfg2.agent["researcher"].prompt.includes("never build a search URL there"), "researcher: dead CN SERPs are named as dead ends, not options")
+assert.ok(cfg2.agent["researcher"].prompt.includes("ONE SEARCH IS A SAMPLE, NOT A SEARCH"), "researcher: multi-query refinement loop is mandatory (no one-shot search)")
+assert.ok(cfg2.agent["researcher"].prompt.includes("个子资源请求被拦截"), "researcher: a trimmed page is reported as gate action, not 'the site has no images'")
+assert.ok(cfg2.agent["researcher"].prompt.includes("已确认关闭 vs 警告：关闭未完全成功"), "researcher: close claims must quote the tool's verified verdict")
+assert.ok(cfg2.agent["researcher"].prompt.includes("there is no headless parameter for you"), "researcher: headless is an operator setting, not a model arg")
+assert.ok(/independent web calls: two unrelated tm_search queries belong in/.test(cfg2.agent["researcher"].prompt), "researcher: independent web calls batch into one round")
+assert.ok(cfg2.agent["researcher"].prompt.includes("Command time budget"), "researcher: command time budget section present")
+assert.ok(cfg2.agent["researcher"].prompt.includes("does not make anything finish"), "researcher: a big timeout is explained as dead air, not speed")
+assert.ok(cfg2.agent["researcher"].prompt.includes("compound form is for CHEAP probes only"), "researcher: slow independent steps must NOT be chained into one serial command")
+assert.ok(cfg2.agent["implementer"].prompt.includes("Independent calls in the SAME round"), "implementer: same-round independent-call rule is shared")
+assert.ok(cfg2.agent["implementer"].prompt.includes("never a 120-second command"), "implementer: probes must not carry a 120s timeout")
+assert.ok(cfg2.agent["implementer"].prompt.includes("Never wait inside a command"), "implementer: no sleep/polling inside a bash command")
 assert.ok(cfg2.agent["researcher"].prompt.includes("registry.npmjs.org/-/v1/search"), "researcher: npm search endpoint documented")
 assert.ok(cfg2.agent["researcher"].prompt.includes("mobile.moegirl.org.cn"), "researcher: seeded web hosts documented")
 assert.ok(cfg2.agent["team"].prompt.includes("tm_search"), "lead: governed search front referenced")
