@@ -29,6 +29,7 @@
 import type { HostEvent, ToolDefinition, ToolResult } from "../types.js"
 import { tmError, toToolResult } from "./result.js"
 import { unwrapClientResult, type Unwrapped } from "./client-unwrap.js"
+import { askUserForTarget } from "./perm-ask.js"
 import { detectContentType } from "./preview.js"
 import { shorten } from "./config.js"
 import type { TmPipelines } from "./pipelines.js"
@@ -69,12 +70,18 @@ export interface DispatchDeps {
   now?: () => number
   /** Ceiling on how long tm_join will wait on a round of children. */
   maxWaitMs?: number
+  /** Ask the OFFICIAL dialog before a child is spawned (mirrors the built-in
+   *  task tool, which calls ctx.ask per subagent_type). Default on. */
+  askBeforeSpawn?: boolean
+  /** Nesting ceiling mirroring the host's `subagent_depth` (default 1). */
+  maxDepth?: number
 }
 
 interface SessionApi {
   create?: (opts: unknown) => Promise<unknown>
   promptAsync?: (opts: unknown) => Promise<unknown>
   messages?: (opts: unknown) => Promise<unknown>
+  get?: (opts: unknown) => Promise<unknown>
   status?: (opts: unknown) => Promise<unknown>
   abort?: (opts: unknown) => Promise<unknown>
   /** GET /session/{id}/children -> Session[] — the host's own session tree,
@@ -125,20 +132,24 @@ export function parseDispatchTitle(
  * "finished while we were not listening": AssistantMessage.time.completed is
  * only set once the message is done.
  */
-export function lastAssistantMessage(messages: unknown): { text: string; completedAt?: number } {
+export function lastAssistantMessage(messages: unknown): { text: string; completedAt?: number; error?: string } {
   const list = Array.isArray(messages) ? messages : []
   for (let i = list.length - 1; i >= 0; i--) {
-    const entry = list[i] as { info?: { role?: unknown; time?: { completed?: unknown } }; parts?: unknown } | unknown
-    const info = (entry as { info?: { role?: unknown; time?: { completed?: unknown } } })?.info
+    const entry = list[i] as { info?: { role?: unknown; time?: { completed?: unknown }; error?: unknown }; parts?: unknown } | unknown
+    const info = (entry as { info?: { role?: unknown; time?: { completed?: unknown }; error?: unknown } })?.info
     const role = typeof info?.role === "string" ? String(info.role).toLowerCase() : ""
     if (role && role !== "assistant") continue
     const completed = Number(info?.time?.completed)
     const completedAt = Number.isFinite(completed) && completed > 0 ? completed : undefined
+    // an assistant turn that errored carries the reason on info.error — the
+    // lead must see it, or "no reply" reads as "the agent had nothing to say"
+    const error = info?.error ? describeHostError(info.error, 200) : undefined
     const parts = (entry as { parts?: unknown })?.parts
     if (!Array.isArray(parts)) {
       // a bare message list (no {info,parts} envelope) — take any text part
       const one = (entry as { text?: unknown; type?: unknown }) ?? {}
-      if (one.type === "text" && typeof one.text === "string") return { text: one.text, completedAt }
+      if (one.type === "text" && typeof one.text === "string")
+        return { text: one.text, ...(completedAt ? { completedAt } : {}), ...(error ? { error } : {}) }
       continue
     }
     const texts = parts
@@ -147,7 +158,10 @@ export function lastAssistantMessage(messages: unknown): { text: string; complet
         return pp && pp.type === "text" && typeof pp.text === "string" && (pp.text as string).trim() !== ""
       })
       .map((p) => String((p as { text: unknown }).text))
-    if (texts.length) return { text: texts.join("\n"), completedAt }
+    // keys are added only when present so a deep-equality assertion sees the
+    // shape the caller actually got (no `error: undefined` noise)
+    if (texts.length) return { text: texts.join("\n"), ...(completedAt ? { completedAt } : {}), ...(error ? { error } : {}) }
+    if (error) return { text: "", ...(completedAt ? { completedAt } : {}), error }
   }
   return { text: "" }
 }
@@ -155,6 +169,45 @@ export function lastAssistantMessage(messages: unknown): { text: string; complet
 /** Back-compat seam: the reply text alone. */
 export function lastAssistantText(messages: unknown): string {
   return lastAssistantMessage(messages).text
+}
+
+/**
+ * Turn whatever the host puts in an error slot into ONE readable line.
+ *
+ * The live host nests them (`{name, data:{message, ref}}`, `{error:{message}}`,
+ * a bare string — sometimes several at once), and `String(obj)` is
+ * "[object Object]".  That is what a lead reported to a user for three child
+ * sessions that died at launch: the one diagnostic the whole flow had was
+ * destroyed by our own rendering.  Never again: dig the known fields, then
+ * fall back to a compact key dump — never a bare object stringify.
+ */
+export function describeHostError(err: unknown, max = 220): string {
+  if (typeof err === "string") return shorten(err.trim() || "session.error", max)
+  if (err === null || err === undefined) return "session.error"
+  if (typeof err !== "object") return shorten(String(err), max)
+  const o = err as Record<string, unknown>
+  const box = (v: unknown): Record<string, unknown> | undefined =>
+    v && typeof v === "object" ? (v as Record<string, unknown>) : undefined
+  const data = box(o.data)
+  const inner = box(o.error)
+  const pick = (...cands: unknown[]): string => {
+    for (const c of cands) if (typeof c === "string" && c.trim()) return c.trim()
+    return ""
+  }
+  const message = pick(o.message, data?.message, inner?.message, inner?.name, data?.ref ? `ref=${String(data.ref)}` : "")
+  const name = pick(o.name, inner?.name, data?.name)
+  const ref = pick(data?.ref, o.ref)
+  if (message || name) {
+    const head = name && message && !message.startsWith(name) ? `${name}: ${message}` : message || name
+    return shorten(ref && !head.includes(ref) ? `${head}（ref=${ref}）` : head, max)
+  }
+  // nothing recognised — dump the SHAPE with short values, which is still
+  // infinitely more useful than "[object Object]"
+  const flat = Object.entries(o)
+    .slice(0, 6)
+    .map(([k, v]) => `${k}=${typeof v === "object" && v !== null ? Object.keys(v as object).slice(0, 4).join("+") : String(v).slice(0, 60)}`)
+    .join(" ")
+  return shorten(flat || "session.error", max)
 }
 
 /** One child's status line — the lead reads these, so keep them terse. */
@@ -190,6 +243,27 @@ function sleep(ms: number): Promise<void> {
   })
 }
 
+/** `ids` arrives in three shapes on the live host: a real array, a
+ *  JSON-array STRING (`"[\"ses_x\"]"` — what a model actually sent on
+ *  2026-09-19), or a comma-separated list.  Array.isArray alone silently
+ *  ignored the string form and returned EVERY child when the lead asked for
+ *  one, which is the same class of bug as the old `Boolean("false")` headless
+ *  trap: the arg is trusted because it "looks" like the declared type. */
+export function parseIdList(raw: unknown): string[] | null {
+  if (Array.isArray(raw)) return raw.map((x) => String(x ?? "").trim()).filter(Boolean)
+  const s = typeof raw === "string" ? raw.trim() : ""
+  if (!s) return null
+  if (s.startsWith("[") && s.endsWith("]")) {
+    try {
+      const parsed = JSON.parse(s)
+      if (Array.isArray(parsed)) return parsed.map((x) => String(x ?? "").trim()).filter(Boolean)
+    } catch {
+      /* fall through to the comma split */
+    }
+  }
+  return s.split(",").map((x) => x.trim().replace(/^["']|["']$/g, "")).filter(Boolean)
+}
+
 export function buildDispatchTools(deps: DispatchDeps): {
   tm_dispatch: ToolDefinition
   tm_join: ToolDefinition
@@ -202,6 +276,8 @@ export function buildDispatchTools(deps: DispatchDeps): {
   const leadAgent = deps.leadAgent ?? "team"
   const targets = deps.targets ?? DISPATCH_TARGETS
   const maxWaitMs = deps.maxWaitMs ?? 300_000
+  const askBeforeSpawn = deps.askBeforeSpawn !== false
+  const maxDepth = Math.max(0, Number.isFinite(deps.maxDepth as number) ? (deps.maxDepth as number) : 1)
   const now = deps.now ?? (() => Date.now())
   const store = deps.pipelines.store
   const log = (e: Record<string, unknown>) => store.appendTrajectory({ tool: "tm_dispatch", ...e })
@@ -239,7 +315,7 @@ export function buildDispatchTools(deps: DispatchDeps): {
     }
   }
 
-  function fetchReply(sid: string, directory: string | undefined): Promise<{ text: string; completedAt?: number }> {
+  function fetchReply(sid: string, directory: string | undefined): Promise<{ text: string; completedAt?: number; error?: string }> {
     return (async () => {
       if (typeof api?.messages !== "function") return { text: "" }
       try {
@@ -249,6 +325,36 @@ export function buildDispatchTools(deps: DispatchDeps): {
         return { text: "" }
       }
     })()
+  }
+
+  /**
+   * The model the CHILD should run.  A child session carries no model of its
+   * own, and `prompt_async` accepts `model:{providerID,modelID}` — the
+   * built-in `task` tool supplies one, we did not, and three dispatched
+   * children died at launch with no readable reply (2026-09-19).  Inherit the
+   * lead's own last-used model from the parent transcript; when nothing can
+   * be resolved, dispatch anyway and say so in the reply, so a failure is
+   * never mysterious.
+   */
+  async function parentModel(
+    parent: string,
+    directory: string | undefined,
+  ): Promise<{ providerID: string; modelID: string } | undefined> {
+    if (typeof api?.messages !== "function" || !parent) return undefined
+    try {
+      const un = unwrapClientResult(await api.messages({ path: { id: parent }, ...(directory ? { query: { directory } } : {}) }))
+      if (!un.ok || !Array.isArray(un.data)) return undefined
+      for (let i = un.data.length - 1; i >= 0; i--) {
+        const info = (un.data[i] as { info?: Record<string, unknown> })?.info
+        if (!info || String(info.role ?? "").toLowerCase() !== "assistant") continue
+        const providerID = typeof info.providerID === "string" ? info.providerID.trim() : ""
+        const modelID = typeof info.modelID === "string" ? info.modelID.trim() : ""
+        if (providerID && modelID) return { providerID, modelID }
+      }
+    } catch {
+      /* no transcript readable — dispatch without a model and report it */
+    }
+    return undefined
   }
 
   /**
@@ -316,6 +422,32 @@ export function buildDispatchTools(deps: DispatchDeps): {
     }
   }
 
+  /**
+   * How deep the caller's session sits: the host's task tool counts the
+   * parentID chain and refuses at `subagent_depth` (default 1 = no nested
+   * subagents). That check lives in the TOOL, not in the session API, so a
+   * plugin-side dispatcher that skipped it would quietly let a user's nesting
+   * limit be escaped. Walk it the same way; an unreachable session (no `get`
+   * endpoint, deleted) stops the walk at what we know rather than allowing.
+   */
+  async function sessionDepth(sessionID: string, directory: string | undefined): Promise<number> {
+    if (typeof api?.get !== "function" || !sessionID) return 0
+    let depth = 0
+    let current = sessionID
+    for (let hop = 0; hop < 16; hop++) {
+      try {
+        const un = unwrapClientResult(await api.get({ path: { id: current }, ...(directory ? { query: { directory } } : {}) }))
+        const parentID = un.ok ? String((un.data as { parentID?: unknown } | null)?.parentID ?? "").trim() : ""
+        if (!parentID) break
+        depth++
+        current = parentID
+      } catch {
+        break
+      }
+    }
+    return depth
+  }
+
   const dispatch: ToolDefinition = {
     description: `Fire-and-continue sub-agent dispatch — the lead's parallelism lever (the built-in task tool BLOCKS you until the child finishes; this one does not).
 - { agent: ${targets.join("|")} , task: "<self-contained brief>", label: "<short slug>" } → starts the specialist in its OWN child session (parented to yours) and returns the child session id IMMEDIATELY.  You keep working the same round: plan the next step, do a cheap read of your own, or fire more dispatches — independent work runs concurrently instead of serially.
@@ -367,6 +499,43 @@ export function buildDispatchTools(deps: DispatchDeps): {
           )
         }
         const label = (typeof args.label === "string" && args.label.trim() ? args.label.trim() : task.split(/\s+/).slice(0, 4).join(" ")).slice(0, 40)
+        const directory = typeof c.directory === "string" && c.directory ? c.directory : undefined
+        // --- governance the built-in task tool applies and we must not lose -
+        // (1) nesting ceiling, same 口径 as the host's subagent_depth
+        const depth = await sessionDepth(parent, directory)
+        if (depth >= maxDepth) {
+          return toToolResult(
+            tmError(
+              tool,
+              "governance",
+              `已达子代理嵌套上限（当前深度 ${depth}，TM_SUBAGENT_DEPTH=${maxDepth}，与宿主 subagent_depth 同口径）。` +
+                `这与 T3「子代理不再派子代理」同源：把这项工作留在你自己这一层，或让宿主配置放宽。`,
+            ),
+          )
+        }
+        // (2) the user decides which sub-agent gets spawned — the task tool
+        // asks ctx.ask({permission:"task", patterns:[subagent_type]}) and we
+        // bypass that tool, so we ask on our own permission name. No bridge ⇒
+        // refuse (never a silent pass), same rule as tm_pty / evaluate_script.
+        if (askBeforeSpawn) {
+          const outcome = await askUserForTarget(ctx, {
+            permission: tool,
+            patterns: [agent],
+            metadata: { tool, subagent_type: agent, description: label },
+          })
+          log({ step_id: "dispatch", event: "consent", agent, label, verdict: outcome })
+          if (outcome !== "approved") {
+            return toToolResult(
+              tmError(
+                tool,
+                "permission",
+                outcome === "unavailable"
+                  ? `tm_dispatch 需要官方确认窗批准派工，本宿主没有 ask 桥——已拒绝。改用内置 task 工具（会阻塞你，但由宿主治理），或 TM_DISPATCH_ASK=off。`
+                  : `派工未获批准（${agent}），已拒绝创建子会话。请改用内置 task 工具，或向用户确认后再派。`,
+              ),
+            )
+          }
+        }
         if (typeof api?.create !== "function" || typeof api?.promptAsync !== "function") {
           return toToolResult(tmError(tool, "client", "此宿主的 client.session 缺少 create/promptAsync——改用内置 task 工具。"))
         }
@@ -376,12 +545,13 @@ export function buildDispatchTools(deps: DispatchDeps): {
         if (!created.ok) return toToolResult(tmError(tool, "client", `创建子会话失败：${shorten(created.message ?? "", 120)}`))
         const sid = String((created.data as { id?: unknown } | null)?.id ?? "").trim()
         if (!sid) return toToolResult(tmError(tool, "client", "子会话创建后未返回 id"))
+        const model = await parentModel(parent, directory)
         const promptBody: Record<string, unknown> = {
           agent,
           noReply: false,
+          ...(model ? { model } : {}),
           parts: [{ type: "text", text: task }],
         }
-        const directory = typeof c.directory === "string" && c.directory ? c.directory : undefined
         const sent = unwrapClientResult(await api.promptAsync({ path: { id: sid }, ...(directory ? { query: { directory } } : {}), body: promptBody }))
         if (!sent.ok) {
           return toToolResult(
@@ -395,17 +565,20 @@ export function buildDispatchTools(deps: DispatchDeps): {
         const rec: ChildRecord = { sessionID: sid, agent, label, parentSessionID: parent, startedAt: now(), state: "running" }
         children.set(sid, rec)
         deps.onChildSession?.(sid, agent)
-        log({ step_id: "dispatch", event: "start", child: sid, parent: parent, agent, label })
+        log({ step_id: "dispatch", event: "start", child: sid, parent: parent, agent, label, model: model ? `${model.providerID}/${model.modelID}` : "host-default" })
         return toToolResult(
           [
             `已派发（非阻塞）：${agent} · "${label}" · 子会话 ${sid}`,
+            model
+              ? `模型沿用你当前的：${model.providerID}/${model.modelID}（子会话不自带模型）。`
+              : `⚠ 未能从本会话记录里解析出模型，子会话将由宿主决定——若它启动即失败，改用内置 task 工具。`,
             `你现在可以继续：编排下一步、做廉价检查、或继续派发其它独立任务。`,
             `收集结果：tm_join（立即看状态）或 tm_join { waitMs: 60000 }。所有派发完成前不要提交结论。`,
           ].join("\n"),
         )
       } catch (err) {
         const e = err as { message?: unknown }
-        return toToolResult(tmError(tool, "execute", `tm_dispatch 失败：${shorten(e?.message ?? err, 160)}`))
+        return toToolResult(tmError(tool, "execute", `tm_dispatch 失败：${describeHostError(e?.message ?? err, 160)}`))
       }
     },
   }
@@ -434,9 +607,8 @@ export function buildDispatchTools(deps: DispatchDeps): {
         }
         const parent = String(c.sessionID ?? "").trim()
         const directory = typeof c.directory === "string" && c.directory ? c.directory : undefined
-        const idFilter = Array.isArray(args.ids)
-          ? new Set((args.ids as unknown[]).map((x) => String(x ?? "").trim()).filter(Boolean))
-          : null
+        const idList = parseIdList(args.ids)
+        const idFilter = idList && idList.length ? new Set(idList) : null
         const owned = (): ChildRecord[] =>
           [...children.values()].filter(
             (r) => (!parent || r.parentSessionID === parent) && (!idFilter || idFilter.has(r.sessionID)),
@@ -491,7 +663,13 @@ export function buildDispatchTools(deps: DispatchDeps): {
           for (const r of collectible) {
             const reply = await fetchReply(r.sessionID, directory)
             const text = reply.text
-            blocks.push(`--- ${r.agent} "${r.label}" (${r.sessionID}) ---\n${text.trim() || "（该子会话没有可读的助手回复——用内置 read/tm_read 检查其会话，或重新派发）"}`)
+            blocks.push(
+              `--- ${r.agent} "${r.label}" (${r.sessionID}) ---\n${
+                text.trim() ||
+                `（该子会话没有可读的助手回复${r.error ? `；宿主错误：${r.error}` : reply.error ? `；宿主错误：${reply.error}` : ""}）` +
+                  `——子会话不是文件，tm_read 读不到它：在宿主的会话面板里看这条子会话，或改用内置 task 工具重做这一步。`
+              }`,
+            )
           }
         }
         const body = [...header, ...(blocks.length ? ["", blocks.join("\n")] : [])].join("\n")
@@ -504,7 +682,7 @@ export function buildDispatchTools(deps: DispatchDeps): {
         )
       } catch (err) {
         const e = err as { message?: unknown }
-        return toToolResult(tmError(tool, "execute", `tm_join 失败：${shorten(e?.message ?? err, 160)}`))
+        return toToolResult(tmError(tool, "execute", `tm_join 失败：${describeHostError(e?.message ?? err, 160)}`))
       }
     },
   }
@@ -528,10 +706,9 @@ export function buildDispatchTools(deps: DispatchDeps): {
     if (type === "session.error") {
       rec.state = "error"
       rec.finishedAt = now()
-      rec.error = shorten(
-        (props?.error as { message?: unknown } | undefined)?.message ?? props?.error ?? "session.error",
-        120,
-      )
+      // describeHostError, NOT String(err): the host nests its errors and the
+      // bare stringify produced "[object Object]" for a real launch failure
+      rec.error = describeHostError(props?.error ?? "session.error", 200)
       log({ step_id: "events", event: "error", child: sid, agent: rec.agent, reason: rec.error })
       return
     }

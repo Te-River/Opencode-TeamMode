@@ -304,6 +304,11 @@ export async function createTmTools(
     client: input?.client,
     pipelines,
     onChildSession: opts.onChildSession,
+    // the two guards the built-in task tool applies and a plugin-side
+    // dispatcher would otherwise skip: the user's spawn consent and the
+    // host's subagent_depth ceiling
+    askBeforeSpawn: cfg.dispatchAsk !== "off",
+    maxDepth: cfg.subagentDepth,
   })
   tools.tm_dispatch = dispatch.tm_dispatch
   tools.tm_join = dispatch.tm_join

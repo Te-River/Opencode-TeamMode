@@ -38,9 +38,17 @@ const ENV_KEYS = [
   // T4 tiering + search knobs — must be cleared so the ambient shell can
   // never flip the DEFAULTS these tests pin (4000 text / 2000 data / auto).
   "TM_SEARCH_DEFAULT_ENGINE", "TM_OFFLOAD_THRESHOLD_TEXT", "TM_OFFLOAD_THRESHOLD_DATA",
+  "TM_WEB_CACHE_TTL_SEC",
 ]
 const savedEnv = Object.fromEntries(ENV_KEYS.map((k) => [k, process.env[k]]))
-const clearTmEnv = () => { for (const k of ENV_KEYS) delete process.env[k] }
+// The shared runtimes below INSPECT THE WIRE (which URL did the engine leg
+// actually request?).  A cached leg never issues a request, so those
+// assertions would depend on test order and on whatever a previous process
+// left in the tmpdir store — the cache is OFF for them and is tested on its
+// own in §6m-c with explicit instances.  It lives INSIDE clearTmEnv because
+// several blocks call it, and a one-time set at the top got wiped.
+const CACHE_OFF = () => { process.env.TM_WEB_CACHE_TTL_SEC = "0" }
+const clearTmEnv = () => { for (const k of ENV_KEYS) delete process.env[k]; CACHE_OFF() }
 const restoreEnv = () => {
   for (const k of ENV_KEYS) {
     if (savedEnv[k] === undefined) delete process.env[k]
@@ -56,6 +64,11 @@ const mktmp = (label) => {
 
 try {
   clearTmEnv()
+  // The shared runtimes below INSPECT THE WIRE (which URL did the engine leg
+  // actually request?).  A cached leg never issues a request, so those
+  // assertions would depend on test order — the cache is OFF for them and is
+  // tested on its own in §6m-c with explicit instances.
+  process.env.TM_WEB_CACHE_TTL_SEC = "0"
 
   /* ---------- 1. config + token口径 ---------- */
   {
@@ -1143,6 +1156,10 @@ try {
     assert.equal(inside, 1, "the second identical fetch is served from disk (one network round per TTL window)")
     assert.ok(!String(first.output).includes("缓存命中"), "the first call is a real fetch and says nothing about cache")
     assert.ok(String(second.output).includes("缓存命中"), "a re-served page SAYS SO — a stale read must not read as a fresh observation")
+    // `fresh: true` is the model-visible escape hatch on that trade
+    const forced = await insideTool.execute({ url: npmUrl, fresh: true }, wctx)
+    assert.equal(inside, 2, "fresh:true bypasses the cache and hits the network again")
+    assert.ok(!String(forced.output).includes("缓存命中"), "and the fresh reply makes no cache claim")
 
     let never = 0
     const narrowedTool = wf.buildTmWebfetchTool({
@@ -1531,15 +1548,21 @@ try {
 
       // CJK phrase protection on the wire: the core phrase reaches bing quoted
       reqUrls.length = 0
-      await reg.execute({ query: "开源 大模型 推理框架", engine: "bing" }, ctx)
-      const cjkQ = new URL(reqUrls.find((u) => u.includes("bing.com/search"))).searchParams.get("q")
+      const cjkRes = await reg.execute({ query: "开源 大模型 推理框架", engine: "bing" }, ctx)
+      const cjkUrl = reqUrls.find((u) => u.includes("bing.com/search"))
+      // a missing request is the finding — report it as one instead of
+      // crashing inside new URL(undefined)
+      assert.ok(cjkUrl, `the bing leg must hit the wire; reqUrls=${JSON.stringify(reqUrls)} output=${String(cjkRes.output).slice(0, 200)}`)
+      const cjkQ = new URL(cjkUrl).searchParams.get("q")
       assert.equal(cjkQ, '开源 大模型 "推理框架"', "multi-word CJK query hits bing with its core phrase quoted")
 
       // github qualifier pass-through on the wire (whitelisted only, reordered
       // after the free text which stays free text)
       reqUrls.length = 0
       const gh = await reg.execute({ query: "repo stars:>500 language:rust org:redis", engine: "github" }, ctx)
-      const ghQ = new URL(reqUrls.find((u) => u.includes("api.github.com/search"))).searchParams.get("q")
+      const ghUrl = reqUrls.find((u) => u.includes("api.github.com/search"))
+      assert.ok(ghUrl, `the github leg must hit the wire; reqUrls=${JSON.stringify(reqUrls)} output=${String(gh.output).slice(0, 200)}`)
+      const ghQ = new URL(ghUrl).searchParams.get("q")
       assert.equal(ghQ, "repo stars:>500 language:rust org:redis", "github q= = free text + folded qualifiers")
       assert.ok(gh.output.includes("owner/repo ★4321 — A repo"), "github JSON → owner/repo ★stars — desc")
       assert.ok(gh.output.includes("https://github.com/owner/repo"), "github hit links to the repo page")
@@ -2873,7 +2896,7 @@ try {
     assert.deepEqual(dmod.summarizeStates([{ state: "idle" }, { state: "running" }, { state: "error" }]), { running: 1, idle: 1, error: 1 }, "state summary counts")
 
     const sessionFake = (over = {}) => {
-      const calls = { create: [], promptAsync: [], messages: [], status: [], abort: [], children: [] }
+      const calls = { create: [], promptAsync: [], messages: [], status: [], abort: [], children: [], get: [] }
       const ids = over.ids ?? ["ses_child_1"]
       // THE BINDING PIN: the real SDK's endpoints read their receiver, so a
       // captured reference (`const f = api.create`) throws
@@ -2895,15 +2918,30 @@ try {
         messages: async function (o) {
           assert.equal(this?.__sdkNamespace, "session", "client.session.messages must be called as a METHOD")
           calls.messages.push(o)
+          // the LEAD's own transcript carries the model tm_dispatch must
+          // inherit (a child session has none of its own)
+          if (o.path.id === "ses_lead") {
+            return {
+              ok: true,
+              data: [
+                { info: { role: "user" }, parts: [{ type: "text", text: "go" }] },
+                {
+                  info: { role: "assistant", providerID: "opencode", modelID: "deepseek-v4.1-flash", time: { created: 1, completed: 2 } },
+                  parts: [{ type: "text", text: "ok" }],
+                },
+              ],
+            }
+          }
           const text = (over.replies ?? {})[o.path.id] ?? "STATUS: done\nEVIDENCE: tsc clean"
           const completed = (over.completedFor ?? []).includes(o.path.id) ? over.completedAt ?? 9000 : undefined
+          const errInfo = (over.childErrors ?? {})[o.path.id]
           return {
             ok: true,
             data: [
               { info: { role: "user" }, parts: [{ type: "text", text: "brief" }] },
               {
-                info: { role: "assistant", time: { created: over.createdAt ?? 1000, completed } },
-                parts: [{ type: "text", text }],
+                info: { role: "assistant", time: { created: over.createdAt ?? 1000, completed }, ...(errInfo ? { error: errInfo } : {}) },
+                parts: errInfo ? [] : [{ type: "text", text }],
               },
             ],
           }
@@ -2912,6 +2950,12 @@ try {
           assert.equal(this?.__sdkNamespace, "session", "client.session.status must be called as a METHOD")
           calls.status.push(1)
           return { ok: true, data: over.statusMap ?? { ses_child_1: { type: "busy" } } }
+        },
+        // the parentID chain tm_dispatch walks for its subagent_depth check
+        get: async function (o) {
+          assert.equal(this?.__sdkNamespace, "session", "client.session.get must be called as a METHOD")
+          calls.get.push(o.path.id)
+          return { ok: true, data: { id: o.path.id, parentID: (over.parents ?? {})[o.path.id] } }
         },
         abort: async function (o) {
           assert.equal(this?.__sdkNamespace, "session", "client.session.abort must be called as a METHOD")
@@ -2931,7 +2975,9 @@ try {
       const client = { ...fakeClient({}), session: over.noApi ? undefined : ns }
       return { client, calls }
     }
-    const LEAD = { agent: "team", sessionID: "ses_lead", directory: "." }
+    // the real host hands tool ctx an ask() bridge, and tm_dispatch now uses
+    // it for spawn consent (parity with the built-in task tool's ctx.ask)
+    const LEAD = { agent: "team", sessionID: "ses_lead", directory: ".", ask: async () => "once" }
     const BRIEF = "重构 tm_browser 的关闭路径：目标是 close 之后窗口必须真的消失，涉及 src/tm/browser.ts，完成判据是 npm test 全绿。"
 
     // --- gates: who may dispatch, and what counts as a usable brief ---
@@ -3071,7 +3117,109 @@ try {
       assert.ok(none.output.includes("没有待收集的派发"), "no children endpoint -> the same 'nothing to collect' answer, no crash")
       await rt3.dispose()
     }
-    console.log("10. tm_dispatch/tm_join: OK (lead-only gate + nested-team reject + self-contained brief, parentID + verbatim brief over the session API, event-driven settle + bounded wait, cancel, offloaded collection, graceful 'use task' degrade, RESTART RECOVERY via session.children + title discriminator + completedAt verdict)")
+    // --- 2026-09-19 live-host findings: model inheritance + readable errors ---
+    {
+      // describeHostError: the host nests its errors; String(obj) is
+      // "[object Object]", which is what a user was told about three dead
+      // children instead of the reason.
+      assert.equal(dmod.describeHostError("plain boom"), "plain boom", "a string error passes through")
+      assert.ok(dmod.describeHostError({ name: "ProviderAuthError", data: { message: "No API key for opencode", ref: "err_9f2" } }).includes("No API key for opencode"), "the nested data.message is extracted")
+      assert.ok(dmod.describeHostError({ name: "ProviderAuthError", data: { message: "no key", ref: "err_9f2" } }).includes("err_9f2"), "the host error REF survives (it is what support asks for)")
+      assert.ok(dmod.describeHostError({ error: { message: "inner level" } }).includes("inner level"), "an {error:{message}} envelope unwraps")
+      assert.ok(!dmod.describeHostError({ foo: 1, bar: { a: 2 } }).includes("[object Object]"), "an unrecognised object NEVER renders as [object Object]")
+      assert.ok(dmod.describeHostError({ foo: 1, bar: { a: 2 } }).includes("foo=1"), "…and still says something about its shape")
+      assert.equal(dmod.describeHostError(undefined), "session.error", "nothing at all still renders a label")
+
+      const { client, calls } = sessionFake()
+      const rt = await tm.createTmTools({ directory: mktmp("disp-model"), client, $: fake$Ok("") })
+      const fired = await rt.tools.tm_dispatch.execute({ agent: "researcher", task: BRIEF }, LEAD)
+      assert.deepEqual(
+        calls.promptAsync[0].body.model,
+        { providerID: "opencode", modelID: "deepseek-v4.1-flash" },
+        "the child inherits the lead's model — prompt_async accepts it and a child session has none of its own",
+      )
+      assert.ok(fired.output.includes("opencode/deepseek-v4.1-flash"), "the dispatch reply states WHICH model the child runs")
+      assert.ok(!fired.output.includes("未能从本会话记录里解析出模型"), "no false warning when the model WAS resolved")
+      await rt.dispose()
+
+      // spawn consent: the built-in task tool asks ctx.ask per subagent_type,
+      // so a plugin-side dispatcher must not be the way around that gate
+      const { client: cAsk, calls: callsAsk } = sessionFake()
+      const rtAsk = await tm.createTmTools({ directory: mktmp("disp-consent"), client: cAsk, $: fake$Ok("") })
+      const askedFor = []
+      const noBridge = await rtAsk.tools.tm_dispatch.execute({ agent: "researcher", task: BRIEF }, { agent: "team", sessionID: "ses_lead", directory: "." })
+      assert.ok(noBridge.output.includes("phase=permission") && noBridge.output.includes("ask 桥"), "no ask bridge -> tm_dispatch refuses instead of spawning ungoverned")
+      assert.equal(callsAsk.create.length, 0, "a refused dispatch never creates a child session")
+      const okConsent = await rtAsk.tools.tm_dispatch.execute({ agent: "researcher", task: BRIEF }, {
+        agent: "team", sessionID: "ses_lead", directory: ".", ask: async (req) => (askedFor.push([req.permission, req.patterns]), "once"),
+      })
+      assert.deepEqual(askedFor, [["tm_dispatch", ["researcher"]]], "the dialog names the tool and the sub-agent type, exactly like task's own ask")
+      assert.ok(okConsent.output.includes("已派发（非阻塞）"), "approved consent lets the dispatch through")
+      const denied = await rtAsk.tools.tm_dispatch.execute({ agent: "tester", task: BRIEF }, {
+        agent: "team", sessionID: "ses_lead", directory: ".", ask: async () => { throw new Error("user said no") },
+      })
+      assert.ok(denied.output.includes("派工未获批准"), "a rejected consent is a refusal, never a fall-through")
+      await rtAsk.dispose()
+
+      // nesting ceiling, same 口径 as the host's subagent_depth (default 1)
+      const { client: cDeep } = sessionFake({ parents: { ses_lead: "ses_parent", ses_parent: "ses_grandparent" } })
+      const rtDeep = await tm.createTmTools({ directory: mktmp("disp-depth"), client: cDeep, $: fake$Ok("") })
+      const tooDeep = await rtDeep.tools.tm_dispatch.execute({ agent: "researcher", task: BRIEF }, LEAD)
+      assert.ok(tooDeep.output.includes("嵌套上限") && tooDeep.output.includes("深度 2"), "a caller already nested past TM_SUBAGENT_DEPTH cannot spawn more")
+      const { client: cRoot } = sessionFake()
+      const rtRoot = await tm.createTmTools({ directory: mktmp("disp-root"), client: cRoot, $: fake$Ok("") })
+      const atRoot = await rtRoot.tools.tm_dispatch.execute({ agent: "researcher", task: BRIEF }, LEAD)
+      assert.ok(atRoot.output.includes("已派发（非阻塞）"), "an unnested lead (depth 0 < 1) dispatches normally")
+      await rtDeep.dispose()
+      await rtRoot.dispose()
+
+      // ids arrives as a JSON STRING from real models — it must not degrade
+      // into "return everything"
+      assert.deepEqual(dmod.parseIdList('["ses_a","ses_b"]'), ["ses_a", "ses_b"], "a JSON-array string parses")
+      assert.deepEqual(dmod.parseIdList(["ses_a", " ses_b "]), ["ses_a", "ses_b"], "a real array still parses (trimmed)")
+      assert.deepEqual(dmod.parseIdList("ses_a, ses_b"), ["ses_a", "ses_b"], "a comma list parses")
+      assert.equal(dmod.parseIdList(undefined), null, "absent ids = no filter")
+      {
+        const { client: cIds } = sessionFake({ ids: ["ses_child_1", "ses_child_2"], statusMap: { ses_child_1: { type: "idle" }, ses_child_2: { type: "idle" } } })
+        const rtIds = await tm.createTmTools({ directory: mktmp("disp-ids"), client: cIds, $: fake$Ok("") })
+        await rtIds.tools.tm_dispatch.execute({ agent: "tester", task: BRIEF, label: "one" }, LEAD)
+        await rtIds.tools.tm_dispatch.execute({ agent: "reviewer", task: BRIEF, label: "two" }, LEAD)
+        const one = await rtIds.tools.tm_join.execute({ ids: '["ses_child_2"]' }, LEAD)
+        assert.ok(one.output.includes("ses_child_2"), "the requested child is reported")
+        assert.ok(!one.output.includes("ses_child_1"), "and the OTHER child is not smuggled in by a stringified ids arg")
+        assert.ok(one.output.includes("1 完成"), "the summary counts only the requested set")
+        await rtIds.dispose()
+      }
+
+      // a session.error whose payload is an OBJECT must reach tm_join readable
+      const { client: c2 } = sessionFake()
+      const rt2 = await tm.createTmTools({ directory: mktmp("disp-err"), client: c2, $: fake$Ok("") })
+      await rt2.tools.tm_dispatch.execute({ agent: "tester", task: BRIEF }, LEAD)
+      rt2.observeDispatchEvent({
+        type: "session.error",
+        properties: { sessionID: "ses_child_1", error: { name: "MessageAbortedError", data: { message: "user cancelled" } } },
+      })
+      const joined = await rt2.tools.tm_join.execute({}, LEAD)
+      assert.ok(joined.output.includes("user cancelled"), "the child's real failure reason reaches the lead")
+      assert.ok(!joined.output.includes("[object Object]"), "and nothing in the report is a stringified object")
+      await rt2.dispose()
+
+      // a child that died before writing anything: the collected block quotes
+      // the assistant message's own error field
+      const { client: c3 } = sessionFake({
+        statusMap: { ses_child_1: { type: "idle" } },
+        childErrors: { ses_child_1: { name: "ProviderAuthError", data: { message: "no model configured for researcher" } } },
+      })
+      const rt3 = await tm.createTmTools({ directory: mktmp("disp-nochild"), client: c3, $: fake$Ok("") })
+      await rt3.tools.tm_dispatch.execute({ agent: "researcher", task: BRIEF }, LEAD)
+      rt3.observeDispatchEvent({ type: "session.idle", properties: { sessionID: "ses_child_1" } })
+      const empty = await rt3.tools.tm_join.execute({}, LEAD)
+      assert.ok(empty.output.includes("没有可读的助手回复"), "an empty child reply is called out, not silently blank")
+      assert.ok(empty.output.includes("no model configured for researcher"), "with the host's reason attached")
+      assert.ok(empty.output.includes("task"), "and it points at the concrete fallback")
+      await rt3.dispose()
+    }
+    console.log("10. tm_dispatch/tm_join: OK (lead-only gate + nested-team reject + self-contained brief, parentID + verbatim brief over the session API, event-driven settle + bounded wait, cancel, offloaded collection, graceful 'use task' degrade, RESTART RECOVERY via session.children + title discriminator + completedAt verdict, MODEL INHERITANCE from the parent transcript, describeHostError so a nested host error never renders as [object Object])")
   }
 
   // ---------- 11. bash timeout clamp (tool.execute.before mutation) ----------

@@ -212,6 +212,7 @@ export async function buildWebfetchArgsSchema(): Promise<Record<string, unknown>
     return {
       url: { descriptor: "url: string (required, absolute https URL on an allowlisted host, query URL-encoded)" },
       fields: { descriptor: "fields: string (optional, dot-path projection over a JSON response, e.g. items[].name; ignored on non-JSON)" },
+      fresh: { descriptor: "fresh: true (optional — bypass the URL cache and hit the network)" },
     }
   }
   // describe-LAST on the optional `fields` chain (zod v4 drops a
@@ -219,6 +220,9 @@ export async function buildWebfetchArgsSchema(): Promise<Record<string, unknown>
   const zz = z as unknown as {
     string: () => {
       describe: (d: string) => unknown
+      optional: () => { describe: (d: string) => unknown }
+    }
+    boolean: () => {
       optional: () => { describe: (d: string) => unknown }
     }
   }
@@ -233,6 +237,15 @@ export async function buildWebfetchArgsSchema(): Promise<Record<string, unknown>
       .optional()
       .describe(
         "Dot-path projection over a JSON response body (Wave B M2): e.g. items[].name or user.email — returns ONLY the matched values, mirroring tm_fetch's `fields`. Ignored when the response is not JSON.",
+      ),
+    // The cache is a throughput win with a freshness cost, so the escape hatch
+    // has to be on the model-visible surface: "the page changed" is a claim
+    // only a real fetch can settle.
+    fresh: zz
+      .boolean()
+      .optional()
+      .describe(
+        "Bypass the URL cache (TM_WEB_CACHE_TTL_SEC) and fetch the network again — use when you specifically need the page as it is NOW, e.g. you expect it changed since a cached read.",
       ),
   }
 }

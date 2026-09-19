@@ -524,7 +524,8 @@ const WEBFETCH_DESCRIPTION = `Fetch a web page through the governed pipeline (do
 - ANTI-PATTERN: do NOT hand-build search-engine URLs here — that is tm_search's job (multi-engine, extracted hit lists).  Use THIS tool for a page you already know: a direct article/wiki term, a registry JSON endpoint, a raw file.
 - Seeded hosts (CN-reachable, no API keys): moegirl.org.cn (parent — all subdomains: mobile. term https://mobile.moegirl.org.cn/TERM, mzh. main site) · search.bilibili.com · cn.bing.com (search: https://cn.bing.com/search?q=QUERY; &ensearch=1 for international results) · baidu.com (parent: www. search /s?wd=QUERY, baike. encyclopedia entries) · www.sogou.com (https://www.sogou.com/web?query=QUERY) · www.so.com (https://www.so.com/s?q=QUERY) · registry.npmjs.org (package JSON: https://registry.npmjs.org/<pkg>/latest, search: https://registry.npmjs.org/-/v1/search?text=QUERY) · api.github.com (repo search: https://api.github.com/search/repositories?q=QUERY) · api.stackexchange.com (question search: https://api.stackexchange.com/2.3/search/advanced?order=desc&sort=relevance&q=QUERY&site=stackoverflow&pagesize=10) · hn.algolia.com (HN story search: https://hn.algolia.com/api/v1/search?query=QUERY&tags=story) · raw.githubusercontent.com + gist.githubusercontent.com + github.com (docs/code/issues) · ghproxy.net (mainland mirror for github raw).  URL-encode the query (CJK terms too).  Search-engine result pages are auto-extracted to a title+URL hit list.  Expand colloquial/abbreviated terms to canonical forms and fetch BOTH spellings.
 - Governance: only http(s), hosts must be allowlisted (extend via TM_WEBFETCH_ALLOWED_DOMAINS, "*" opens all), redirects re-checked per hop, HTML stripped to text; output above TM_OFFLOAD_THRESHOLD tokens is offloaded to a handle — page with tm_fetch (try mode:"structure" first).
-- Governance: out-of-allowlist hosts route through the OFFICIAL confirmation dialog (approve to proceed once; the 1-min unanswered auto-reject applies); env-file URLs and non-http(s) schemes are hard-rejected with no dialog.`
+- Governance: out-of-allowlist hosts route through the OFFICIAL confirmation dialog (approve to proceed once; the 1-min unanswered auto-reject applies); env-file URLs and non-http(s) schemes are hard-rejected with no dialog.
+- Freshness: a repeated URL is served from a local TTL cache (TM_WEB_CACHE_TTL_SEC, default 300 s) and the reply SAYS 缓存命中 with its age.  Need the page as it is NOW?  Pass { fresh: true } to bypass the cache and hit the network.`
 
 /** Build the tm_webfetch ToolDefinition over the SHARED main pipelines
  *  instance (same step counter as tm_read/tm_grep/tm_bash — refs stay
@@ -584,11 +585,15 @@ export function buildTmWebfetchTool(deps: {
         pipelines.store.appendTrajectory({ tool, step_id: stepId, event: "call" })
         const approvedHosts = new Set<string>([verdict.ok ? verdict.url.hostname : new URL(requested).hostname])
         const askFn = askFnOf(ctx) ?? undefined
+        // `fresh` is the model-visible escape hatch on the cache: a cached
+        // body is a PAST observation, and "did this page change?" can only be
+        // answered by asking it again.
+        const fresh = args.fresh === true || String(args.fresh).toLowerCase() === "true"
         const res = await fetchWebText(verdict.ok ? verdict.url : new URL(requested), allowlist, {
           fetchImpl: deps.fetchImpl,
           ask: askFn,
           skipAskHosts: approvedHosts,
-          cache: deps.cache,
+          cache: fresh ? undefined : deps.cache,
         })
         // A re-served page is stated as such — an agent that believes a cache
         // hit is a fresh observation propagates a stale fact into the plan.
