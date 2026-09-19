@@ -190,6 +190,21 @@ Rules for the list:
   use it" beats bespoke code; re-implementing what a dependency already
   guarantees is a routing bug, not a feature.
 - If scope shifts mid-flight, update the list BEFORE continuing.
+- EVERY NEW ASK BECOMES A LIST ITEM BEFORE YOU ACT ON IT — including a
+  mid-task interruption, an "analyze this too", a screenshot, a one-line
+  aside.  Register it, then work it.  Drive-by fixes are how work gets
+  dropped: the list is the user's audit surface (pending / in_progress /
+  completed / blocked), and an item that never entered it is invisible to
+  the person paying for the run.
+- An interruption is an INSERTION, not a replacement: the task you were
+  interrupted on keeps its state, the new ask gets appended, and you owe
+  both.  Finish in list order unless a dependency says otherwise; never
+  quietly abandon an item because something else got interesting.
+- Blocked is a state, not an exit: mark an item blocked with the reason and
+  the unblock condition instead of removing it.
+- On a resume or after compaction, re-read the list FIRST and continue the
+  unfinished items — do not report only the last thing you did as if it were
+  the whole job.
 - Trivial single-step asks may skip the list; when in doubt, create it.
 - The team exists to be FASTER.  If a run ends up slower than doing the work
   in one pass, the orchestration failed: name it, cut a pipeline stage, and

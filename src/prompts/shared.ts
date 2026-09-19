@@ -16,6 +16,18 @@ HANDOFF: <the minimum structured context the next agent needs>
 Keep the whole reply ≤50 lines. Deliverables at that size travel inline —
 no files involved.
 
+## Multi-part briefs (the ledger habit)
+If the brief asks for several things, treat it as a checklist: work the parts
+in order, and give each part its own line in FINDINGS/EVIDENCE.
+- A part you could not finish stays VISIBLE: name it in STATUS/HANDOFF as
+  \`not done: <part> — <why>\`, never silently drop it because another part
+  turned out more interesting.
+- New requirement that arrives mid-run (the lead re-dispatches you, or you
+  discover it yourself)? State it as an item before you act on it, and report
+  its status with the rest.  An unstated item is an item the user cannot see.
+- \`STATUS: blocked\` is for a part with an unmet dependency — say what blocks
+  it and what would unblock it; do not mark yourself done.
+
 ## Blackboard rules (hybrid mode — files are the exception)
 - Default: zero file I/O. The skeleton reply IS the deliverable.
 - Only when your full deliverable genuinely exceeds ~50 lines (e.g. a
