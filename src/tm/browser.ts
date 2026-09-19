@@ -397,6 +397,59 @@ export function rememberSite(allowedSites: Set<string>, url: string): void {
   }
 }
 
+// ---------- evaluate_script: consent + result redaction ---------------------
+
+/** `evaluate_script` is the one browser verb the network gate cannot cover:
+ *  the allowlist limits where we NAVIGATE, not what an already-loaded page
+ *  hands back.  In a `TM_BROWSER_USER_DATA_DIR` profile that page may be a
+ *  signed-in session, and `document.cookie` / `localStorage` / a token in the
+ *  DOM is one expression away — and its value would then ride into the model
+ *  context, the run store and the trajectory.  So: ask once per browser
+ *  session (the OFFICIAL dialog), and name-anchor the result on the shapes
+ *  that are secrets, not on "looks random" (which would blank legitimate
+ *  JSON and teach the agent to distrust every read). */
+export const EVAL_SECRET_SHAPES: ReadonlyArray<{ name: string; re: RegExp }> = [
+  { name: "JWT", re: /\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b/g },
+  { name: "bearer", re: /\b(bearer\s+[A-Za-z0-9._~+/-]{12,}=*)/gi },
+  { name: "auth-header", re: /\b(authorization\s*[:=]\s*[^\s"',}]{8,})/gi },
+  { name: "cookie", re: /\b(set-cookie|cookie)\s*[:=]\s*[^"',}\n]{6,}/gi },
+  { name: "api-key", re: /\b(sk|ghp|gho|github_pat|xox[baprs]|AKIA|AIza)[A-Za-z0-9_-]{8,}\b/g },
+  { name: "secret-pair", re: /\b((?:password|passwd|secret|api_?key|access_?token|refresh_?token|client_?secret)\s*[:=]\s*"?[^\s"',}]{4,})/gi },
+]
+
+/** Mask every known secret shape in an in-page result.  Returns the masked
+ *  text plus WHICH kinds were masked (counted, never the values). */
+export function redactEvalResult(text: string): { text: string; masked: string[] } {
+  let out = text
+  const kinds: string[] = []
+  for (const shape of EVAL_SECRET_SHAPES) {
+    const re = new RegExp(shape.re.source, shape.re.flags)
+    let hits = 0
+    out = out.replace(re, () => {
+      hits++
+      return `〔已脱敏:${shape.name}〕`
+    })
+    if (hits) kinds.push(`${shape.name}×${hits}`)
+  }
+  return { text: out, masked: kinds }
+}
+
+/** Consent is per BROWSER SESSION, not per call: one dialog when the lead
+ *  decides to script the page, then the round stops paying for it. */
+export function needsEvalConsent(policy: "on" | "off", alreadyApproved: boolean | undefined): boolean {
+  return policy !== "off" && !alreadyApproved
+}
+
+/** Host only — the consent line in the dialog and in the trajectory never
+ *  carries a query string (a search URL can hold the very token we guard). */
+export function hostOnly(url: string): string {
+  try {
+    return new URL(url).host
+  } catch {
+    return url.slice(0, 60)
+  }
+}
+
 // ---------- pipe CDP client (JSON + NUL framing over fds 3/4) ----------------
 
 interface CdpMessage {
@@ -759,6 +812,9 @@ interface ActiveSession {
   blocked: { count: number; hosts: Set<string> }
   /** Registrable sites this session navigated to (same-site subresources). */
   allowedSites: Set<string>
+  /** evaluate_script consent was granted for THIS browser session (see
+   *  needsEvalConsent) — one dialog per session, not per call. */
+  evalApproved?: boolean
   /** Engine action dispatch; throws Error with an agent-actionable message
    *  (the execute() catch renders it as phase=execute). */
   act(action: string, args: Record<string, unknown>, stepId: string): Promise<string>
@@ -812,6 +868,7 @@ export function buildTmBrowserTool(deps: {
   const approvedHosts = new Set<string>()
   const snapshotBudget = Math.max(10, Number(deps.cfg?.browserSnapshotMaxTokens) || 1200)
   const subPolicy = deps.cfg?.browserSubresource ?? "same-site"
+  const evalAskPolicy = deps.cfg?.browserAskEval ?? "on"
   const discover = deps.findExecutable ?? findBrowserExecutable
   const imageMaxBytes = Math.max(1000, Number(deps.cfg?.browserImageMaxBytes) || 400_000)
   const idleCloseMs = Number(deps.cfg?.browserIdleCloseMs ?? 180_000)
@@ -1691,10 +1748,58 @@ export function buildTmBrowserTool(deps: {
           return toToolResult(tmError(tool, "permission", refusal))
         }
       }
+      // M5 (v1.5.14): evaluate_script's consent + result redaction run at the
+      // execute layer for BOTH engines — same reason upload_file's source
+      // check does: the engine act() has no host ctx, and one choke point
+      // cannot drift from the other.
+      if (action === "evaluate_script" && needsEvalConsent(evalAskPolicy, session.evalApproved)) {
+        const target = hostOnly(session.currentUrl)
+        const outcome = await askUserForTarget(ctx, {
+          permission: tool,
+          patterns: [`evaluate_script:${target}`],
+          metadata: {
+            tool,
+            action: "evaluate_script",
+            host: target,
+            source: String(args.function ?? args.expression ?? "").slice(0, 160),
+          },
+        })
+        traj({ step_id: "browser", event: "eval_consent", host: target, verdict: outcome })
+        if (outcome !== "approved") {
+          return toToolResult(
+            tmError(
+              tool,
+              "permission",
+              outcome === "unavailable"
+                ? `evaluate_script 需要官方确认窗授权，本宿主没有 ask 桥——已拒绝执行。TM_BROWSER_ASK_EVAL=off 可关掉这道确认（不建议：这个动词能在你已登录的浏览器里读任意页面数据）。`
+                : `evaluate_script 未获批准（目标站点 ${target}），已拒绝执行。改用 take_snapshot/read 的受治理读取，或让用户单独批准。`,
+            ),
+          )
+        }
+        session.evalApproved = true
+      }
       const stepId = pipelines.nextStepId()
       const out = await session.act(action, args, stepId)
+      if (action !== "evaluate_script") {
+        armIdle()
+        return withAttachments(toToolResult(out), session)
+      }
+      // The value is masked BEFORE it can reach the context window, the run
+      // store or the trajectory; the agent is told a mask happened (a silent
+      // blank would read as "the page has no token").
+      const red = redactEvalResult(out)
+      if (red.masked.length) {
+        traj({ step_id: "browser", event: "eval_redacted", kinds: red.masked.join(",") })
+        armIdle()
+        return withAttachments(
+          toToolResult(
+            `${red.text}\n注意：结果里有 ${red.masked.join("、")} 被识别为密钥形状并已脱敏——不是页面没有这些值，是插件不把它们送进上下文。需要它们请让用户自己在浏览器里看。`,
+          ),
+          session,
+        )
+      }
       armIdle()
-      return withAttachments(toToolResult(out), session)
+      return withAttachments(toToolResult(red.text), session)
     } catch (err) {
       const e = err as { name?: string; message?: unknown }
       return toToolResult(tmError(tool, "execute", String(e?.message ?? err ?? "browser 操作失败")))
@@ -1702,7 +1807,7 @@ export function buildTmBrowserTool(deps: {
   }
 
   const DESCRIPTION = `Interactive browser (governed, Plan C): drives the user's own Chromium-family browser HEADFUL — playwright-core engine primary (npm install + node>=20; auto-degrades to the zero-dep CDP pipe when absent, snapshot actions then unavailable). Snapshot-first flow: open → take_snapshot → act by [uid] → observe again.
-- 16 actions (chrome-devtools-mcp aligned): navigate_page { url } · take_snapshot { } → ariaSnapshot YAML with injected [uid=eN] · click/fill{text}/hover { uid|selector } · drag { uid, targetUid } · press_key { key } · select_page { index } · upload_file { uid, filePath } (filePath must live INSIDE the workspace/blackboard scope — .env & shell-rc files are refused) · wait_for { text|uid, timeoutMs<=3000 default } · evaluate_script { function } · list_console_messages · list_network_requests · list_pages · take_screenshot { fullPage?, image? } → the PNG always lands in the run store (path in the reply); with image:true a quality-70 JPEG of the same view is attached to THIS result so a vision model can actually see it (opt-in: pixels cost context, so ask only when the screenshot is the evidence) · handle_dialog { dialogAction: accept|dismiss, promptText }.
+- 16 actions (chrome-devtools-mcp aligned): navigate_page { url } · take_snapshot { } → ariaSnapshot YAML with injected [uid=eN] · click/fill{text}/hover { uid|selector } · drag { uid, targetUid } · press_key { key } · select_page { index } · upload_file { uid, filePath } (filePath must live INSIDE the workspace/blackboard scope — .env & shell-rc files are refused) · wait_for { text|uid, timeoutMs<=3000 default } · evaluate_script { function } (arbitrary JS in YOUR browser: needs one official-dialog consent per browser session, and the result is scanned so JWT/bearer/cookie/api-key shapes never enter the context) · list_console_messages · list_network_requests · list_pages · take_screenshot { fullPage?, image? } → the PNG always lands in the run store (path in the reply); with image:true a quality-70 JPEG of the same view is attached to THIS result so a vision model can actually see it (opt-in: pixels cost context, so ask only when the screenshot is the evidence) · handle_dialog { dialogAction: accept|dismiss, promptText }.
 - Compat actions: open { url } — launch/reuse + navigate (TM_BROWSER_PATH override → DEFAULT browser, Chromium-family only; the registry ProgId decides the CHANNEL, so an Edge Beta default opens Edge Beta, not stable). Isolated temp profile by default; persistent login ONLY via TM_BROWSER_USER_DATA_DIR (the real profile is never touched). navigate / read (page text) / screenshot / close also work.
 - Lifecycle (the user SEES this window): headful by default — headless is an operator setting (TM_BROWSER_HEADLESS), not a parameter you can pass. An idle session closes itself (TM_BROWSER_IDLE_MS, default 180s) and the user is told. ALWAYS action:"close" when your browser work is done, and quote the tool's own close line — "已确认关闭" vs "警告：关闭未完全成功" — instead of asserting the window is gone.
 - Discipline (enforced by defaults): act ONLY on uids from the latest take_snapshot — no guessed locators; one action then one observation; fold dialogs into the same round (snapshot header warns while a dialog is held); 3000 ms action budget; networkidle is never waited on; screenshots are the visual-last-resort, not the primary read.

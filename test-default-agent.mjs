@@ -155,7 +155,7 @@ console.log("1. default_agent promotion matrix: OK (opt-out default; custom/plan
   // questions — the tools must exist to comply).
   const perAgent = ["edit", "write", "task", "bash", "todowrite", "question"]
   // The four governed tools, named explicitly next to the tm_* wildcard.
-  const tmTools = ["tm_read", "tm_grep", "tm_bash", "tm_fetch", "tm_memory"]
+  const tmTools = ["tm_read", "tm_grep", "tm_bash", "tm_fetch", "tm_memory", "tm_stats"]
   // Revised T2.1 matrix: bash on execution roles only; architect/researcher
   // stay bash-free (unchanged from the pre-T2.1 posture).
   // The unified approval gate escalates the execution roles' bare

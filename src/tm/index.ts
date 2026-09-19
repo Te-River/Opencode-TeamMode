@@ -33,6 +33,9 @@ import { buildTmTools } from "./tools.js"
 import { buildPipelines } from "./pipelines.js"
 import { buildPtcArgsSchema, buildWebfetchArgsSchema, buildMemoryArgsSchema, buildBrowserArgsSchema, buildSearchArgsSchema } from "./args-schema.js"
 import { buildPtcRunTool } from "./ptc/index.js"
+import { buildStatsTool } from "./stats.js"
+import { createWebCache } from "./cache.js"
+import type { CapabilityRow } from "../capabilities.js"
 import { buildTmWebfetchTool } from "./webfetch.js"
 import { buildTmSearchTool, SEARCH_ENGINES, SEARCH_ENGINE_NAMES } from "./search.js"
 export { rmForceSafe } from "../fs-safe.js"
@@ -108,6 +111,10 @@ export interface CreateTmToolsOptions {
    *  register it so the sub-agent's own protected read opens the official
    *  dialog instead of hard-throwing in an unregistered session. */
   onChildSession?: (sessionID: string, agent: string) => void
+  /** Live host-capability matrix, rendered by tm_stats (the probe itself
+   *  lives at the plugin entry because that is where the host surfaces are
+   *  handed to us). */
+  capabilities?: () => CapabilityRow[]
 }
 
 export async function createTmTools(
@@ -156,6 +163,15 @@ export async function createTmTools(
   // Startup-only TTL reclamation for expired run payloads — the sole cleanup
   // path for the tm store (mirrors blackboard.ts's sweeper philosophy).
   store.sweepExpired()
+  // ONE URL cache for the whole web channel — tm_webfetch, tm_search's engine
+  // legs and the PTC bridge all read it, so a page fetched once in a round is
+  // never paid for twice.  Lives beside the run store (under .git in AUTO
+  // mode, never in the user's working tree) and OUTSIDE `runs/`, which is all
+  // sweepExpired() ever deletes.
+  const webCache = createWebCache({
+    dir: path.join(store.blackboardRoot, "webcache"),
+    ttlSec: cfg.webCacheTtlSec,
+  })
   const mode = opts.mode ?? resolveEnvProtectMode(process.env.TM_ENV_PROTECT)
   const extra = opts.extra ?? parseExtraDeny(process.env.TM_ENV_PROTECT_EXTRA_DENY)
   const expireAt = Date.now() + cfg.blackboardTtlDays * 24 * 60 * 60 * 1000
@@ -192,12 +208,12 @@ export async function createTmTools(
   // sees it: explicit allow for team + researcher only (agents.ts), explicit
   // deny for the other four (overrides the tm_* wildcard).
   const webfetchArgs = await buildWebfetchArgsSchema()
-  tools.tm_webfetch = buildTmWebfetchTool({ pipelines, cfg, args: webfetchArgs })
+  tools.tm_webfetch = buildTmWebfetchTool({ pipelines, cfg, args: webfetchArgs, cache: webCache })
   // tm_search — the governed search FRONT: multi-engine (bing/bing-int/
   // sogou/so/baidu/bilibili + npm/github JSON), extracted title+URL hit
   // lists, same pipeline + allowlist as tm_webfetch.  Network-role tool
   // like the other two web channels (agents.ts gates who sees it).
-  tools.tm_search = buildTmSearchTool({ pipelines, cfg, args: await buildSearchArgsSchema() })
+  tools.tm_search = buildTmSearchTool({ pipelines, cfg, args: await buildSearchArgsSchema(), cache: webCache })
   // tm_memory — project/global memory mirror (Markdown + frontmatter under
   // the same git-aware store base).  Available to ALL agents: memory is not
   // a network channel, it is shared project knowledge.
@@ -256,11 +272,13 @@ export async function createTmTools(
             pipelines: ptcPipelines,
             cfg,
             args: await buildSearchArgsSchema(),
+            cache: webCache,
           }),
           tm_webfetch: buildTmWebfetchTool({
             pipelines: ptcPipelines,
             cfg,
             args: await buildWebfetchArgsSchema(),
+            cache: webCache,
           }),
         }
       : undefined
@@ -294,6 +312,11 @@ export async function createTmTools(
   // air inside one bash call).  Every start passes the R6 classifier AND the
   // official dialog, so this is an async lever, not a bypass channel.
   tools.tm_pty = buildTmPtyTool({ client: input?.client, pipelines, mode, max: cfg.ptyMax })
+  // tm_stats — the plugin reads its OWN trajectory back (throughput numbers +
+  // the host-capability matrix).  This is what makes "Team is faster" a claim
+  // with a number behind it instead of a vibe, and what names the surface an
+  // OpenCode upgrade removed.
+  tools.tm_stats = buildStatsTool({ store, capabilities: opts.capabilities })
   return {
     runId,
     config: cfg,

@@ -5,6 +5,90 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 versioning is semver (the 1.4.x train shipped under working labels; the
 registry saw 1.5.0 as the install-script fix release).
 
+## [1.5.14] - 2026-09-19
+
+### Fixed
+- **tm_dispatch crashed on the live host: `Cannot read properties of undefined
+  (reading 'client')`.** Every `client.session.*` endpoint was captured as a
+  bare function reference (`const createApi = api.create` … `createApi({...})`),
+  which drops the SDK's receiver binding — so every async dispatch died before
+  a child session existed and the lead had to fall back to the blocking `task`
+  tool.  All six call sites (create / promptAsync / messages / status / abort /
+  children) are now property-access calls, the rule `approval-gate.ts` already
+  documents for permission replies and `pty.ts` already follows.  The test
+  fake's session namespace now REQUIRES `this`, so the bug class fails the
+  suite instead of shipping (found in a user-reported Desktop session).
+- **bing's international layout was mis-classified as a dead engine.** The
+  2026-09-14 benchmark removed `bing-int` as "100% empty"; the real cause was
+  ours — that layout wraps every result in
+  `https://www.bing.com/ck/a?...&u=a1<base64>` and `extractSearchHits` dropped
+  every wrapped anchor.  The wrapper is now decoded (`decodeEngineWrapperUrl`,
+  bing-only, falls back to the old skip when undecodable), re-probed live at
+  10 real hits, and `bing-int` is selectable again.  It stays OUT of the `auto`
+  routes on purpose: two layouts of one index would double bing's vote, which
+  is the weight 1.5.13 deliberately removed.
+
+### Added
+- **tm_stats — the plugin reads its own trajectory back.** Until now
+  `steps.jsonl` was write-only, so "Team is faster" was unfalsifiable.  It
+  reports tokens kept out of the context window by offloading (net of the
+  preview that DID arrive), seconds saved by dispatch overlap (sum of each
+  child's own duration minus the wall window they occupied), PTC internals,
+  and the governance counts (blocked subresources, refused tm_pty starts,
+  clamped bash timeouts, cache hits, redactions) — plus the capability matrix
+  below, in one call.  Read-only over files this plugin wrote.  Allowed for
+  all six agents.
+- **Host-capability probe (`src/capabilities.ts`) — an OpenCode upgrade now
+  fails loud.** The plugin leans on surfaces with no stability promise
+  (`ctx.ask`, `permission.asked`, `session.create/promptAsync/children`,
+  `client.pty`, `tui.showToast`, the hook set, `attachments`).  Each feature
+  already degraded silently when one disappeared; the probe classifies every
+  seam as 已验证 / 存在未用 / 待观察 / 缺失 / 需人眼, logs one trajectory line at
+  boot, and raises exactly one toast when a REQUIRED seam is gone.
+  `attachments` is permanently 需人眼 — we emit the shape and cannot observe
+  whether the desktop paints it.
+- **tm_join recovers a dispatch across a restart.** The child registry was an
+  in-process Map, so a plugin restart answered "没有待收集的派发" while a
+  finished report sat in the host — the exact silent loss tm_dispatch exists
+  to prevent.  tm_join now falls back to `client.session.children`, adopts only
+  sessions whose title matches the `tm:<agent>:<label>` shape we write (a
+  `task`-spawned child is never claimed), settles adopted rows from
+  `AssistantMessage.time.completed`, and marks the line 接管.
+- **URL-level TTL cache for the web channel** (`TM_WEB_CACHE_TTL_SEC`, default
+  300 s, `0` = off): one store shared by tm_webfetch, tm_search's engine legs
+  and the PTC bridge, keyed by URL, entries named by hash so a token-bearing
+  query string never lands on disk.  Governance is the point: an entry is read
+  and written ONLY for a hop the STATIC allowlist admitted, so a hit can never
+  resurrect a removed host or replace per-request dialog consent (pinned by
+  test); a served page says 缓存命中.
+- **`evaluate_script` now has its own consent and result redaction**
+  (`TM_BROWSER_ASK_EVAL`, default on).  It is the one browser verb the network
+  gate cannot cover — the allowlist limits where we navigate, not what a
+  loaded page hands back, and with a persistent profile that page may be
+  signed in.  One official-dialog consent per browser session, refused when
+  there is no ask bridge (tm_pty's rule), and the result is scanned for
+  JWT/bearer/cookie/api-key/token shapes before it can reach the context, the
+  run store or the trajectory — masking is not switchable and the reply says
+  what was masked.
+- **The search engine that ignores you now says so** (`src/tm/dupe-guard.ts`).
+  In a real Desktop session the lead burned 66 tool calls / 25 steps / 2.8 M
+  input tokens on a three-term lookup because bing answered two DIFFERENT
+  quoted queries with a byte-identical list about the single character 舞, and
+  nothing in the reply admitted the collapse.  tm_search now fingerprints each
+  result set: identical set under a different query → 引擎忽略了你的限定词,
+  zero query-token overlap across every hit → 结果与查询无关（不要把无结果当结论）,
+  and at the third collapse the directive sends the work to `tm_dispatch`
+  instead of another serial retry.
+
+### Changed
+- `access_token` is now OPTIONAL on tm_fetch (and the PTC handle reads): it is
+  a run constant, not a per-handle secret, and a real session was re-typing the
+  same 64 hex characters into every call.  Omitting it resolves against the
+  current run; the run-match and HMAC checks are unchanged, so a handle from
+  another run is still refused.
+- `pipelines` records `preview_tokens` on an offload event, so tm_stats can
+  report the saving net of what actually entered the context.
+
 ## [1.5.13] - 2026-09-19
 
 > Patch train by choice: this release carries new tools, but `1.6.0` is held

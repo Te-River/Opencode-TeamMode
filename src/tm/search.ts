@@ -39,7 +39,9 @@ import {
   type FetchImpl,
   type SearchHit,
 } from "./webfetch.js"
+import type { WebCache } from "./cache.js"
 import { askFnOf, askUserForTarget } from "./perm-ask.js"
+import { createDupeGuard } from "./dupe-guard.js"
 import { shorten, type TmConfig } from "./config.js"
 import { detectContentType } from "./preview.js"
 import { tmError, toToolResult } from "./result.js"
@@ -250,6 +252,21 @@ export const SEARCH_ENGINES: Record<string, SearchEngine> = {
     buildUrl: (q) => `https://cn.bing.com/search?q=${q}`,
     prepareQuery: protectCjkPhrase,
     alt: "stackoverflow / github / hn（编程类）或缩小查询词",
+  },
+  // RE-ADDED 2026-09-19.  The 2026-09-14 benchmark killed bing-int as
+  // "100% empty"; that verdict was OURS, not the engine's: the international
+  // layout wraps every result in `https://www.bing.com/ck/a?...&u=a1<base64>`
+  // and extractSearchHits dropped every one of them.  With the wrapper
+  // decoded (webfetch.decodeEngineWrapperUrl) the same URL yields a full hit
+  // list — a live second opinion when the CN layout collapses.  NOT in the
+  // auto routes: the two layouts are the same index, so fusing both would
+  // double bing's vote, which is exactly the weight we just removed.
+  "bing-int": {
+    name: "bing-int",
+    kind: "html",
+    buildUrl: (q) => `https://cn.bing.com/search?q=${q}&ensearch=1`,
+    prepareQuery: protectCjkPhrase,
+    alt: "bing（国内版）/ moegirl / bilibili（中文概念）",
   },
   stackoverflow: {
     name: "stackoverflow",
@@ -690,12 +707,20 @@ export function buildTmSearchTool(deps: {
   cfg: TmConfig
   args?: Record<string, unknown>
   fetchImpl?: FetchImpl
+  /** The SAME cache tm_webfetch uses: an `auto` fan-out whose legs overlap a
+   *  previous query (or a page the lead just fetched) costs one fetch, not
+   *  two.  Keyed by URL, so the sharing is exact. */
+  cache?: WebCache
 }): {
   description: string
   args: Record<string, unknown>
   execute: (rawArgs: Record<string, unknown>, ctx: unknown) => Promise<import("../types.js").ToolResult>
 } {
   const { pipelines, cfg } = deps
+  /** One guard per plugin process: it observes the SHAPE of what came back
+   *  across the whole conversation, which is the only way to notice an engine
+   *  answering two different questions with the same list. */
+  const dupe = createDupeGuard()
   // T4: the DEFAULT seed carries api.stackexchange.com + hn.algolia.com
   // (consumer-side merge — config.ts's constant is untouched).
   const allowlist = seedWebfetchDomains(cfg.webfetchAllowedDomains)
@@ -747,7 +772,7 @@ export function buildTmSearchTool(deps: {
                 return { engine: key, hits: [], note: `${key} 主机不在白名单，已跳过` }
               }
               try {
-                const res = await fetchWebText(target, allowlist, { fetchImpl: deps.fetchImpl })
+                const res = await fetchWebText(target, allowlist, { fetchImpl: deps.fetchImpl, cache: deps.cache })
                 return { engine: key, hits: bodyToHits(engine, res.text, maxHits) }
               } catch (err) {
                 const e = err as { name?: string; message?: unknown }
@@ -776,10 +801,15 @@ export function buildTmSearchTool(deps: {
           if (fused.length === 0) {
             return toToolResult(tmError(tool, "execute", `auto(${routes.join("+")}) 结果为空——换显式引擎或换词`))
           }
-          const rendered = renderFusedHits(query, routes, fused, notes)
+          const av = dupe.observe(`auto(${routes.join("+")})`, query, fused, queryTerms(query))
+          let renderedAuto = renderFusedHits(query, routes, fused, notes)
+          if (av.note) {
+            pipelines.store.appendTrajectory({ tool, step_id: stepId, event: av.collapse ? "collapse" : "irrelevant", engine: "auto", repeats: av.repeats })
+            renderedAuto = `${renderedAuto}\n${av.note}`
+          }
           return toToolResult(
-            pipelines.govern(stepId, tool, rendered, {
-              contentType: detectContentType(rendered),
+            pipelines.govern(stepId, tool, renderedAuto, {
+              contentType: detectContentType(renderedAuto),
               clue: `search auto(${queryClass}) routes=${routes.join("+")} q=${shorten(query, 80)}`,
             }),
           )
@@ -840,8 +870,11 @@ export function buildTmSearchTool(deps: {
           fetchImpl: deps.fetchImpl,
           ask: ask ?? undefined,
           skipAskHosts: approvedHosts,
+          cache: deps.cache,
         })
         let rendered: string | null = null
+        /** the html engines hand their hit list to the collapse guard */
+        let guardHits: ReadonlyArray<{ url?: string; title?: string; snippet?: string }> = []
         if (engine.kind === "npm-json") {
           rendered = renderNpmResults(query, res.text)
         } else if (engine.kind === "github-json") {
@@ -854,6 +887,7 @@ export function buildTmSearchTool(deps: {
           rendered = renderHnResults(query, res.text)
         } else {
           const hits = extractHtmlResults(res.text)
+          guardHits = hits
           rendered = hits.length > 0 ? renderSearchHits(query, engine.name, hits) : null
         }
         if (!rendered || !rendered.trim()) {
@@ -864,6 +898,17 @@ export function buildTmSearchTool(deps: {
               `${engine.name} 没有返回可提取的结果（可能是反爬拦截或该词确实无结果）。换其他引擎: ${engine.alt}。`,
             ),
           )
+        }
+        const verdict = dupe.observe(engine.name, query, guardHits, queryTerms(query))
+        if (verdict.note) {
+          pipelines.store.appendTrajectory({
+            tool,
+            step_id: stepId,
+            event: verdict.collapse ? "collapse" : "irrelevant",
+            engine: engine.name,
+            repeats: verdict.repeats,
+          })
+          rendered = `${rendered}\n${verdict.note}`
         }
         return toToolResult(
           pipelines.govern(stepId, tool, rendered, {

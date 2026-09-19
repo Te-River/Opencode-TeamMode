@@ -215,6 +215,7 @@ HMAC 句柄，agent 真需要 payload 时用 `tm_fetch` 分页取。
 | `tm_webfetch` | 白名单页面的单次受治理 GET（搜索页自动提取） | Lead + Researcher |
 | `tm_dispatch` / `tm_join` | **异步子代理派发**：`tm_dispatch` 在独立子会话里启动某个专员并立刻返回其 id（内置 `task` 会把你阻塞到子代理结束），`tm_join` 负责回收——不带参数=状态快照，`waitMs`=有界等待，`cancel:true` 取消跑飞的子任务；回收到的回复同样走卸载管线，五份长报告变成句柄+预览而不是压垮你的上下文 | 仅 Lead（子代理不得再派发） |
 | `tm_pty` | 在宿主自己的终端会话上**非阻塞执行命令**（`start`/`status`/`list`/`kill`）：独立的构建与测试各自一个会话并行跑，不再串成一条 120 秒的 bash 调用。它不抓输出（命令自己 tee 日志，用 `tm_read` 读），且每次启动都先过 R6 分类器、R2 危险面 glob，再走官方确认窗，才真的建进程 | 仅 Lead |
+| `tm_stats` | **插件把自己的 trajectory 读回来**：卸载挡在上下文之外的 token（扣掉确实回来的预览）、派发重叠省下的秒数（串行代价减去子代理实际占用的墙钟）、PTC 内部量、治理计数（被拦子资源、`tm_pty` 拒绝、bash 超时夹顶、缓存命中、脱敏次数）——外加**宿主能力矩阵**（每个宿主接口标 `已验证/存在未用/待观察/缺失/需人眼`）。只读本插件自己写的文件；OpenCode 升级后第一个跑它 | 全角色 |
 | `tm_browser` | 交互式浏览器会话（**驱动你的默认浏览器**）：16 个 Playwright 动词（快照优先：`take_snapshot` → 按 uid 寻址的 `click`/`fill`/`drag`…）+ 5 个旧版兼容动词（open/navigate/read/screenshot/close）；Playwright 引擎需 Node ≥ 20，不满足或导入失败时自动降级到旧版 CDP 引擎。它开的是**你自己的默认浏览器渠道**（默认装 Edge Beta 就开 Beta），除操作者设 `TM_BROWSER_HEADLESS` 外保持有头；页面自家图片/CSS/JS 靠 `same-site` 子资源策略正常加载；`take_screenshot { image:true }` 会附一张 JPEG，让模型真能看见画面 | Lead + Researcher + Tester（仅 UI 验证） |
 
 > **固定工具优先级阶梯（每个任务都适用）：① TeamMode 受治理工具（`tm_*`）
@@ -429,6 +430,8 @@ Team Lead 自己从不删黑板，你可以随时审计任何一次运行。
 | `TM_SEARCH_DISABLED_ENGINES` | 未设 | 从引擎表与所有 `auto` 路由中移除的引擎（`sogou,baidu` 写法） |
 | `TM_BROWSER_SUBRESOURCE` | `same-site` | 顶层导航过白名单后，页面子资源的策略：`same-site` = 图/媒体/字体/样式表一律放行，脚本/XHR 仅当属于本次会话真正打开过的站点；`passive` = 只放被动资源；`off` = 旧行为（逐请求过白名单）。被拦掉的请求会在下一次快照以"N 个子资源请求被拦截"告知 |
 | `TM_BROWSER_IDLE_MS` | `180000` | 无人触碰的浏览器会话超过该毫秒数自动关闭并提示用户（0 关闭该回收）——没人负责的窗口是打扰用户的 bug |
+| `TM_BROWSER_ASK_EVAL` | `on` | `evaluate_script` 在**你的**浏览器里跑任意 JS——这是域白名单管不住的唯一动词（白名单限制我们去哪儿导航，管不了已加载的页面交回什么）。每个浏览器会话走一次官方确认窗；没有 ask 桥就拒绝。`off` 恢复旧行为；结果脱敏（JWT/bearer/cookie/api-key 形状）不可关闭 |
+| `TM_WEB_CACHE_TTL_SEC` | `300` | 受治理抓取在同一 URL 上可复用多久（0 = 关）。tm_webfetch / tm_search / PTC 桥共用一份缓存；条目以哈希命名（带令牌的查询串不落盘），且只在**静态白名单**放行的那一跳读写——弹窗授权仍是逐请求的，复用命中会标注 缓存命中 |
 | `TM_BROWSER_IMAGE_MAX_BYTES` | `400000` | `take_screenshot { image:true }` 内联给模型的 JPEG 上限；超过则只回路径并说明原因 |
 | `TM_BASH_TIMEOUT_PROBE_MS` | `60000` | 对只读探针命令（P3 白名单内）强制夹顶模型自设的 `timeout`（0 关闭） |
 | `TM_BASH_TIMEOUT_MAX_MS` | `0` | 其它 bash 命令的可选全局上限——默认关闭，真实构建保留它要的超时 |

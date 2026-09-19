@@ -176,6 +176,14 @@ export interface TmConfig {
    *    off   — the legacy verbatim behavior (every request re-checked).
    *  Consumed by browser.ts. */
   browserSubresource: "same-site" | "passive" | "off"
+  /** TM_BROWSER_ASK_EVAL (default on) — `evaluate_script` runs arbitrary JS in
+   *  the user's OWN browser, which is the one verb the domain allowlist cannot
+   *  cover: the allowlist limits where we NAVIGATE, not what a loaded page
+   *  hands back (cookies, localStorage, any token in the DOM).  So this verb
+   *  asks the official dialog once per browser session, and refuses when the
+   *  host gives us no ask bridge (tm_pty's rule).  `off` restores the
+   *  pre-v1.5.14 behaviour; result redaction is NOT switchable. */
+  browserAskEval: "on" | "off"
   /** Ceiling on PNG bytes tm_browser will base64-inline as a tool-result
    *  attachment (an oversized screenshot stays path-only + says why).
    *  Consumed by browser.ts. */
@@ -194,6 +202,15 @@ export interface TmConfig {
    *  facades to PTC programs; "off" removes them from the bridge set.
    *  Consumed by ptc/* (T6). */
   ptcWebBridge: "on" | "off"
+  /** TM_WEB_CACHE_TTL_SEC (default 300; 0 disables) — how long a governed
+   *  fetch body may be re-served for the SAME URL.  The web channel is the
+   *  slowest thing the team does and the most duplicated (lead + researcher
+   *  issuing overlapping queries, `auto` re-fanning engine legs), so this is
+   *  a throughput knob, not a convenience one.  Freshness is the price, which
+   *  is why a hit is announced in the reply and counted by tm_stats.  A cache
+   *  entry is only ever consulted after the STATIC allowlist admits the hop
+   *  (see cache.ts) — dialog consent is per-request and is never cached. */
+  webCacheTtlSec: number
   /** Floor (minutes) for the approval-gate ask timeout.  LIVE (Wave A/T2):
    *  approval-gate.ts `resolveAskTimeoutMs` clamps the reply with
    *  `Math.max(min, resolveTmConfig(env).askTimeoutFloorMin)` — this knob
@@ -256,10 +273,12 @@ export const TM_CONFIG_DEFAULTS = {
   browserEngine: "playwright",
   browserSnapshotMaxTokens: 1200,
   browserSubresource: "same-site",
+  browserAskEval: "on",
   browserImageMaxBytes: 400_000,
   browserIdleCloseMs: 180_000,
   ptyMax: 4,
   ptcWebBridge: "on",
+  webCacheTtlSec: 300,
   // Consumed by approval-gate.ts resolveAskTimeoutMs (Math.max floor, Wave A).
   // 1 min since the T2 benign already-closed split (user directive).
   askTimeoutFloorMin: 1,
@@ -390,10 +409,12 @@ export function resolveTmConfig(env: EnvLike = process.env): TmConfig {
     browserEngine: resolveBrowserEngine(env.TM_BROWSER_ENGINE),
     browserSnapshotMaxTokens: envInt(env, "TM_BROWSER_SNAPSHOT_MAX_TOKENS", TM_CONFIG_DEFAULTS.browserSnapshotMaxTokens, 10, 100_000),
     browserSubresource: resolveSubresourcePolicy(env.TM_BROWSER_SUBRESOURCE),
+    browserAskEval: resolveOnOff(env.TM_BROWSER_ASK_EVAL),
     browserImageMaxBytes: envInt(env, "TM_BROWSER_IMAGE_MAX_BYTES", TM_CONFIG_DEFAULTS.browserImageMaxBytes, 10_000, 5_000_000),
     browserIdleCloseMs: envInt(env, "TM_BROWSER_IDLE_MS", TM_CONFIG_DEFAULTS.browserIdleCloseMs, 0, 3_600_000),
     ptyMax: envInt(env, "TM_PTY_MAX", TM_CONFIG_DEFAULTS.ptyMax, 1, 16),
     ptcWebBridge: resolveOnOff(env.TM_PTC_WEB_BRIDGE),
+    webCacheTtlSec: envInt(env, "TM_WEB_CACHE_TTL_SEC", TM_CONFIG_DEFAULTS.webCacheTtlSec, 0, 86_400),
     askTimeoutFloorMin: envInt(env, "TM_ASK_TIMEOUT_FLOOR_MIN", TM_CONFIG_DEFAULTS.askTimeoutFloorMin, 1, 1440),
     bashTimeoutMaxMs: envInt(env, "TM_BASH_TIMEOUT_MAX_MS", TM_CONFIG_DEFAULTS.bashTimeoutMaxMs, 0, 3_600_000),
     bashTimeoutProbeMs: envInt(env, "TM_BASH_TIMEOUT_PROBE_MS", TM_CONFIG_DEFAULTS.bashTimeoutProbeMs, 0, 600_000),

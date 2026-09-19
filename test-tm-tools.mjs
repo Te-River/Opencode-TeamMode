@@ -640,10 +640,13 @@ try {
     const tampered = hTok.slice(0, -1) + (hTok.endsWith("0") ? "1" : "0")
     const bad = (await fetchTool.execute({ ref: hRef, access_token: tampered }, ctx)).output
     assert.ok(bad.includes("token 校验失败"), "tampered token rejected")
-    // missing token
-    const missing = (await fetchTool.execute({ ref: hRef }, ctx)).output
-    assert.ok(missing.includes("phase=args"), "missing token -> args error")
-    assert.ok(missing.includes("access_token"), "missing token message")
+    // omitted token = THIS run's token (a real session re-typed the same 64
+    // hex chars into every call; it is a run constant, not a per-handle secret)
+    const omitted = (await fetchTool.execute({ ref: hRef }, ctx)).output
+    assert.ok(!omitted.includes("phase=args") && !omitted.includes("phase=permission"), "omitted access_token resolves against the current run")
+    assert.ok(omitted.includes("已返回"), "and the payload is served")
+    const crossNoTok = (await runtime2.tools.tm_fetch.execute({ ref: hRef }, { directory: root6 })).output
+    assert.ok(crossNoTok.includes("run 不匹配"), "the SAME omission on another run is still refused — the default never widens authority")
     // malformed ref
     const malformed = (await fetchTool.execute({ ref: "file:///etc/passwd", access_token: hTok }, ctx)).output
     assert.ok(malformed.includes("ref 格式无效"), "malformed ref rejected")
@@ -1048,6 +1051,155 @@ try {
   }
   console.log("6m-t. T4 tiering + projection: OK (4000/2000 split boundaries, json fields projection incl. miss/malformed, non-json ignores fields, tm_webfetch honors fields on a JSON body + ignores it on non-JSON, seed merge default-only)")
 
+  // ---------- 6m-c. URL TTL cache (item 6 of 2026-09-19) ----------
+  // The web channel is the slowest thing the team does and the most
+  // duplicated; the cache lives at the ONE choke point both tools share.
+  // The pins that matter are the GOVERNANCE ones: a hit may never bypass the
+  // static allowlist, and a dialog approval is per-request, not a licence to
+  // cache.
+  {
+    const cm = await import("./dist/tm/cache.js")
+    const wf = await import("./dist/tm/webfetch.js")
+    const sm = await import("./dist/tm/search.js")
+    const cacheRoot = mktmp("cache-root")
+    const wctx = { directory: cacheRoot }
+
+    // (a) key + freshness rules
+    assert.equal(cm.cacheKeyFor("https://a.test/x"), cm.cacheKeyFor("https://a.test/x"), "the key is deterministic")
+    assert.match(cm.cacheKeyFor("https://a.test/x"), /^[0-9a-f]{40}$/, "the file name is a HASH, never the URL — a query string can carry the token we are guarding")
+    assert.notEqual(cm.cacheKeyFor("https://a.test/x"), cm.cacheKeyFor("https://a.test/y"), "a different URL is a different entry")
+    const entry = (at, body) => ({ status: 200, contentType: "text/html", body, at })
+    assert.equal(cm.cacheEntryFresh(entry(1000, "x"), 1000 + 300_000, 300), true, "exactly at the TTL is still fresh")
+    assert.equal(cm.cacheEntryFresh(entry(1000, "x"), 1000 + 300_001, 300), false, "one ms past it is gone")
+    assert.equal(cm.cacheEntryFresh(entry(1000, "x"), 1000, 0), false, "TTL 0 never serves")
+    assert.equal(cm.cacheEntryFresh(null, 1, 300), false, "a miss is not fresh, trivially")
+    assert.equal(cm.cacheEntryFresh({ status: 200, contentType: "t", at: 1 }, 1, 300), false, "a malformed entry is a miss, never a crash")
+
+    // (b) the store on a real dir
+    let clock = 1_000
+    const cdir = mktmp("cache-dir")
+    const c1 = cm.createWebCache({ dir: cdir, ttlSec: 300, now: () => clock })
+    assert.equal(c1.enabled(), true, "a positive TTL enables the cache")
+    assert.equal(c1.get("https://x.test/a"), null, "cold cache = miss")
+    c1.put("https://x.test/a", { status: 200, contentType: "text/html", body: "PAGE-A" })
+    assert.equal(c1.get("https://x.test/a").body, "PAGE-A", "put -> get round-trips the body")
+    const aFile = cm.cacheFileFor(cdir, "https://x.test/a")
+    assert.equal(fs.existsSync(aFile), true, "one file per URL")
+    assert.ok(!fs.readFileSync(aFile, "utf8").includes("x.test"), "the URL itself is NEVER written to disk")
+    clock = 1_000 + 301_000
+    assert.equal(c1.get("https://x.test/a"), null, "expired -> miss")
+    assert.equal(fs.existsSync(aFile), false, "the read that finds it dead deletes it (no separate sweeper)")
+    assert.deepEqual(c1.counts(), { hits: 1, misses: 1, sets: 1, stale: 1 }, "hit/miss/stale counts are the observability surface tm_stats reads (the cold read counted once as a miss, the expired one as stale — not both)")
+    fs.writeFileSync(cm.cacheFileFor(cdir, "https://x.test/b"), "{torn", "utf8")
+    assert.equal(c1.get("https://x.test/b"), null, "a torn write reads as a miss, not an exception")
+    const cdir2 = mktmp("cache-cap")
+    const capped = cm.createWebCache({ dir: cdir2, ttlSec: 300, maxEntries: 8, now: () => clock })
+    for (let i = 0; i < 12; i++) {
+      clock += 1000
+      capped.put(`https://p.test/${i}`, { status: 200, contentType: "text/plain", body: `B${i}` })
+    }
+    assert.equal(fs.readdirSync(cdir2).filter((f) => f.endsWith(".json")).length, 8, "the entry cap is enforced at write time")
+    assert.equal(capped.get("https://p.test/0"), null, "the oldest goes first")
+    assert.ok(capped.get("https://p.test/11"), "the newest survives")
+    const cdir3 = path.join(mktmp("cache-off"), "never")
+    const offCache = cm.createWebCache({ dir: cdir3, ttlSec: 0 })
+    assert.equal(offCache.enabled(), false, "TM_WEB_CACHE_TTL_SEC=0 means OFF")
+    offCache.put("https://x.test/z", { status: 200, contentType: "text/plain", body: "z" })
+    assert.equal(fs.existsSync(cdir3), false, "a disabled cache creates NO files and NO directories")
+
+    // (c) governance through the real tool
+    const res200 = (body, ct) => ({ status: 200, headers: { get: (n) => (String(n).toLowerCase() === "content-type" ? ct : null) }, text: async () => body })
+    // A pipelines stand-in that keeps the real contract: govern() is SYNC and
+    // returns the content verbatim inline (a cache note appended to a short
+    // page must survive it).
+    const fakePipes = () => ({
+      store: { appendTrajectory: () => {} },
+      nextStepId: () => "sC01",
+      govern: (_s, _t, content) => content,
+    })
+    const shared = cm.createWebCache({ dir: mktmp("cache-gov"), ttlSec: 300 })
+    let govFetches = 0
+    const govTool = wf.buildTmWebfetchTool({
+      pipelines: fakePipes(),
+      cfg: { ...tm.resolveTmConfig({}), webfetchAllowedDomains: ["cn.bing.com"] },
+      fetchImpl: async () => (govFetches++, res200("OUTSIDE-PAGE", "text/plain")),
+      cache: shared,
+    })
+    const ctxOnce = { directory: cacheRoot, ask: async () => "once" }
+    await govTool.execute({ url: "https://not-allowed.test/page" }, ctxOnce)
+    await govTool.execute({ url: "https://not-allowed.test/page" }, ctxOnce)
+    assert.equal(govFetches, 2, "a dialog-approved host is fetched EVERY time — consent is per-request and never becomes a cached licence")
+
+    let inside = 0
+    const insideTool = wf.buildTmWebfetchTool({
+      pipelines: fakePipes(),
+      cfg: tm.resolveTmConfig({}),
+      fetchImpl: async () => (inside++, res200("npm registry payload for left-pad", "application/json")),
+      cache: shared,
+    })
+    const npmUrl = "https://registry.npmjs.org/left-pad/latest"
+    const first = await insideTool.execute({ url: npmUrl }, wctx)
+    const second = await insideTool.execute({ url: npmUrl }, wctx)
+    assert.equal(inside, 1, "the second identical fetch is served from disk (one network round per TTL window)")
+    assert.ok(!String(first.output).includes("缓存命中"), "the first call is a real fetch and says nothing about cache")
+    assert.ok(String(second.output).includes("缓存命中"), "a re-served page SAYS SO — a stale read must not read as a fresh observation")
+
+    let never = 0
+    const narrowedTool = wf.buildTmWebfetchTool({
+      pipelines: fakePipes(),
+      cfg: { ...tm.resolveTmConfig({}), webfetchAllowedDomains: ["cn.bing.com"] },
+      fetchImpl: async () => (never++, res200("should never be fetched", "text/plain")),
+      cache: shared,
+    })
+    const blocked = await narrowedTool.execute({ url: npmUrl }, wctx)
+    assert.equal(never, 0, "a body sitting in the cache is NEVER served to a host the CURRENT allowlist rejects")
+    assert.ok(String(blocked.output).includes("phase="), "and the refusal is the normal governance error")
+
+    // search legs share the SAME cache as tm_webfetch (URL-keyed = exact)
+    let legs = 0
+    const searchCache = cm.createWebCache({ dir: mktmp("cache-share"), ttlSec: 300 })
+    const npmJson = JSON.stringify({ objects: [{ package: { name: "left-pad", description: "tiny", version: "1.3.0" } }] })
+    const legUrls = []
+    const legFetch = async (u) => (legs++, legUrls.push(String(u)), res200(npmJson, "application/json"))
+    const searchTool = sm.buildTmSearchTool({ pipelines: fakePipes(), cfg: tm.resolveTmConfig({}), fetchImpl: legFetch, cache: searchCache })
+    await searchTool.execute({ query: "left-pad", engine: "npm" }, wctx)
+    const searched = await searchTool.execute({ query: "left-pad", engine: "npm" }, wctx)
+    assert.equal(legs, 1, "the same query twice costs one engine round")
+    assert.ok(String(searched.output).includes("left-pad"), "and the second call still returns real hits, not an empty result")
+    const wfOnEngineUrl = wf.buildTmWebfetchTool({
+      pipelines: fakePipes(),
+      cfg: tm.resolveTmConfig({}),
+      fetchImpl: async () => (legs++, res200(npmJson, "application/json")),
+      cache: searchCache,
+    })
+    await wfOnEngineUrl.execute({ url: legUrls[0] }, wctx)
+    assert.equal(legs, 1, "tm_webfetch of the exact URL tm_search already pulled hits the SAME cache (one store, not two)")
+
+    // (d) the runtime wires ONE cache from the knob
+    const bbDir = mktmp("cache-runtime-bb")
+    process.env.TM_BLACKBOARD_DIR = bbDir
+    process.env.TM_WEB_CACHE_TTL_SEC = "300"
+    const rtW = await tm.createTmTools({ directory: mktmp("cache-rt"), client: {}, $: () => ({}) }, {})
+    delete process.env.TM_BLACKBOARD_DIR
+    delete process.env.TM_WEB_CACHE_TTL_SEC
+    assert.equal(rtW.config.webCacheTtlSec, 300, "TM_WEB_CACHE_TTL_SEC resolves through the config layer")
+    let hits = 0
+    const realFetch = globalThis.fetch
+    globalThis.fetch = async () => (hits++, res200("runtime cached page", "text/plain"))
+    try {
+      await rtW.tools.tm_webfetch.execute({ url: "https://registry.npmjs.org/left-pad/latest" }, wctx)
+      const again = await rtW.tools.tm_webfetch.execute({ url: "https://registry.npmjs.org/left-pad/latest" }, wctx)
+      assert.equal(hits, 1, "two calls, one fetch — the wiring is live, not just unit-testable")
+      assert.ok(String(again.output).includes("缓存命中"), "through the real tool surface too")
+      assert.ok(fs.existsSync(path.join(bbDir, "webcache")), "it sits beside the run store (under .git in AUTO mode), never in the working tree")
+      assert.equal(path.join(rtW.store.blackboardRoot, "webcache"), path.join(bbDir, "webcache"), "the cache is a SIBLING of runs/ — sweepExpired() only ever deletes runs/*, so it cannot eat the cache (and the cache never lands in a run dir)")
+    } finally {
+      globalThis.fetch = realFetch
+      await rtW.dispose()
+    }
+  }
+  console.log("6m-c. URL TTL cache: OK (hash-named entries that never store the URL, TTL + prune + corrupt-file miss, dialog approvals never cached, narrowed allowlist cannot read a stale hit, search/webfetch share one store, runtime wiring from TM_WEB_CACHE_TTL_SEC)")
+
   // 6m-s. tm_search — the governed search FRONT (T4 upgrade): the engine
   // roster is bing + stackoverflow + hn + github + npm + moegirl + bilibili
   // (dead CN SERPs sogou/so/baidu/bing-int REMOVED, not even manually
@@ -1065,12 +1217,21 @@ try {
     // unit: classification + routes + guards (no network)
     assert.deepEqual(
       sm.SEARCH_ENGINE_NAMES.slice().sort(),
-      ["bilibili", "bing", "github", "hn", "moegirl", "npm", "stackoverflow"],
-      "engine roster = 7 (dead engines removed, SO + HN added)",
+      ["bilibili", "bing", "bing-int", "github", "hn", "moegirl", "npm", "stackoverflow"],
+      "engine roster = 8 (bing-int RE-ADDED 2026-09-19: the 2026-09-14 'dead' verdict was our extractor dropping bing's /ck/a wrapper, not the engine)",
     )
-    for (const dead of ["sogou", "so", "baidu", "bing-int"]) {
+    for (const dead of ["sogou", "so", "baidu"]) {
       assert.equal(sm.SEARCH_ENGINES[dead], undefined, `dead engine ${dead} fully removed (not manually selectable)`)
     }
+    assert.equal(
+      sm.SEARCH_ENGINES["bing-int"].buildUrl("x"),
+      "https://cn.bing.com/search?q=x&ensearch=1",
+      "bing-int is the INTERNATIONAL layout of the same index (ensearch=1)",
+    )
+    assert.ok(
+      !JSON.stringify(sm.AUTO_ROUTES ?? {}).includes("bing-int"),
+      "bing-int stays OUT of the auto routes — two layouts of one index would double bing's vote",
+    )
     assert.equal(sm.SEARCH_ENGINES["auto"], undefined, "auto is a routing selector, not a table entry")
     // Wave B M1 anti-drift: the MODEL-VISIBLE tm_search args schema (built in
     // args-schema.ts, injected as deps.args so search.ts's fallback never
@@ -1087,7 +1248,7 @@ try {
           `args descriptor names the live engine "${live}"`,
         )
       }
-      for (const dead of ["bing-int", "sogou", "baidu"]) {
+      for (const dead of ["sogou", "baidu"]) {
         assert.ok(!engDesc.toLowerCase().includes(dead.toLowerCase()), `args descriptor no longer names dead engine "${dead}"`)
       }
       assert.match(engDesc, /default auto/, "args descriptor states the real default (auto)")
@@ -1207,9 +1368,53 @@ try {
     }
     assert.deepEqual(
       tm.SEARCH_ENGINE_NAMES.slice().sort(),
-      ["bilibili", "bing", "github", "hn", "moegirl", "npm", "stackoverflow"],
+      ["bilibili", "bing", "bing-int", "github", "hn", "moegirl", "npm", "stackoverflow"],
       "engine roster via the index re-export",
     )
+
+    // ---- 2026-09-19 trace findings: the engine that IGNORED the query ----
+    {
+      const dg = await import("./dist/tm/dupe-guard.js")
+      const h = (u, title = "t", snippet = "") => ({ url: u, title, snippet })
+      const sigA = dg.hitSignature([h("https://a.test/x"), h("https://b.test/y")])
+      assert.equal(sigA, dg.hitSignature([h("https://www.b.test/y"), h("https://a.test/x")]), "the signature is order-free and www-insensitive (a re-rank is the same answer)")
+      assert.notEqual(sigA, dg.hitSignature([h("https://a.test/x"), h("https://c.test/z")]), "a different set is a different signature")
+      assert.equal(dg.hitsShareAnyQueryTerm([h("https://x.test/a", "舞的解释", "跳舞")], ["舞萌", "maimai"]), false, "a page about the single character 舞 does NOT match the term 舞萌 (bigram口径)")
+      assert.equal(dg.hitsShareAnyQueryTerm([h("https://x.test/a", "舞萌DX 介绍")], ["舞萌"]), true, "a real hit matches")
+      assert.equal(dg.hitsShareAnyQueryTerm([], ["x"]), true, "no hits is not 'irrelevant', it is empty (the caller handles that separately)")
+
+      const g = dg.createDupeGuard()
+      const junk = [h("https://baike.baidu.com/item/舞"), h("https://zidian.test/zi-33310")]
+      const v1 = g.observe("bing", '"舞萌DX" "你好世界"', junk, ["舞萌", "你好世界"])
+      assert.equal(v1.collapse, false, "the first answer cannot be judged a collapse")
+      assert.equal(v1.irrelevant, true, "…but it IS flagged as unrelated to what was asked")
+      assert.ok(v1.note.includes("没有任何一条提到查询词"), "and the note says so plainly")
+      const v2 = g.observe("bing", '"舞萌DX" "我的世界"', junk, ["舞萌", "我的世界"])
+      assert.equal(v2.collapse, true, "the SAME set for a DIFFERENT query = the engine ignored the qualifiers")
+      assert.ok(v2.note.includes("完全相同"), "the directive names the failure")
+      assert.ok(v2.note.includes("tm_dispatch") || v2.note.includes("拆成一次查询"), "and gives a next step, not a shrug")
+      const v3 = g.observe("bing", "第三个问题", junk, ["第三个", "问题"])
+      assert.equal(v3.repeats, 3, "the repeat count climbs so the escalation can trigger")
+      assert.ok(v3.note.includes("tm_dispatch"), "at 3 collapses the tool tells the lead to dispatch instead of serially retrying")
+      const g2 = dg.createDupeGuard()
+      const good = [h("https://maimai.sega.com/", "maimai DX"), h("https://zhuanlan.zhihu.com/p/1", "舞萌DX 是什么")]
+      assert.equal(g2.observe("bing", "舞萌DX", good, ["舞萌"]).note, "", "a normal, on-topic result set gets NO warning text")
+    }
+
+    // bing's international layout wraps EVERY hit in /ck/a?…u=a1<base64> —
+    // dropping those is what made the engine look "100% dead" in 2026-09-14.
+    {
+      const wfx = await import("./dist/tm/webfetch.js")
+      const target = "https://jinyan.baidu.com/see/12345"
+      const wrapped = "https://www.bing.com/ck/a?!&&p=159463ac&ptn=3&u=a1" + Buffer.from(target).toString("base64")
+      assert.equal(wfx.decodeEngineWrapperUrl(wrapped), target, "the /ck/a wrapper decodes to the real destination")
+      assert.equal(wfx.decodeEngineWrapperUrl("https://www.bing.com/ck/a?!u=notbase64%24%24"), null, "an undecodable wrapper returns null (and is then skipped as before)")
+      assert.equal(wfx.decodeEngineWrapperUrl("https://example.com/ck/a?u=a1aGVsbG8"), null, "only bing's wrapper is decoded — no general unwrapping")
+      const intlHtml = `<ol><li class="b_algo"><h2><a target="_blank" href="${wrapped.replace(/&/g, "&amp;")}">maimai DX 官网</a></h2><p>SEGA 音乐游戏</p></li></ol>`
+      const extracted = wfx.extractSearchHits(intlHtml)
+      assert.equal(extracted.length, 1, "extractSearchHits now keeps a wrapped hit instead of discarding it")
+      assert.equal(extracted[0].url, target, "with the tracker URL replaced by the destination")
+    }
 
     // HTML SERP extraction through the registered tool (bing b_algo shape;
     // the THIRD hit carries a b_caption -> snippet, the first two do NOT)
@@ -2353,9 +2558,9 @@ try {
         Object.keys(hooks.tool).sort(),
         [
           "tm_bash", "tm_browser", "tm_dispatch", "tm_fetch", "tm_grep", "tm_join",
-          "tm_memory", "tm_ptc_run", "tm_pty", "tm_read", "tm_search", "tm_webfetch",
+          "tm_memory", "tm_ptc_run", "tm_pty", "tm_read", "tm_search", "tm_stats", "tm_webfetch",
         ],
-        "registered tm_* set includes the async dispatcher (tm_dispatch + tm_join) and tm_pty alongside the governed tools",
+        "registered tm_* set includes the async dispatcher (tm_dispatch + tm_join), tm_pty and tm_stats alongside the governed tools",
       )
       // program over the cap is rejected through the tool as an args error
       const big = await tool.execute({ program: "x".repeat(4001) }, { directory: process.cwd() })
@@ -2668,30 +2873,62 @@ try {
     assert.deepEqual(dmod.summarizeStates([{ state: "idle" }, { state: "running" }, { state: "error" }]), { running: 1, idle: 1, error: 1 }, "state summary counts")
 
     const sessionFake = (over = {}) => {
-      const calls = { create: [], promptAsync: [], messages: [], status: [], abort: [] }
+      const calls = { create: [], promptAsync: [], messages: [], status: [], abort: [], children: [] }
       const ids = over.ids ?? ["ses_child_1"]
-      const client = {
-        ...fakeClient({}),
-        session: over.noApi
-          ? undefined
-          : {
-              create: async (o) => (calls.create.push(o), { ok: true, data: { id: ids.shift() ?? "ses_x" } }),
-              promptAsync: async (o) => (calls.promptAsync.push(o), { data: undefined }),
-              messages: async (o) => {
-                calls.messages.push(o)
-                const text = (over.replies ?? {})[o.path.id] ?? "STATUS: done\nEVIDENCE: tsc clean"
-                return {
-                  ok: true,
-                  data: [
-                    { info: { role: "user" }, parts: [{ type: "text", text: "brief" }] },
-                    { info: { role: "assistant" }, parts: [{ type: "text", text }] },
-                  ],
-                }
+      // THE BINDING PIN: the real SDK's endpoints read their receiver, so a
+      // captured reference (`const f = api.create`) throws
+      // "Cannot read properties of undefined (reading 'client')" — which is
+      // exactly how tm_dispatch died on the live host (2026-09-19).  Every
+      // method below REQUIRES `this`, so the bug class cannot come back.
+      const ns = {
+        __sdkNamespace: "session",
+        create: async function (o) {
+          assert.equal(this?.__sdkNamespace, "session", "client.session.create must be called as a METHOD")
+          calls.create.push(o)
+          return { ok: true, data: { id: ids.shift() ?? "ses_x" } }
+        },
+        promptAsync: async function (o) {
+          assert.equal(this?.__sdkNamespace, "session", "client.session.promptAsync must be called as a METHOD")
+          calls.promptAsync.push(o)
+          return { data: undefined }
+        },
+        messages: async function (o) {
+          assert.equal(this?.__sdkNamespace, "session", "client.session.messages must be called as a METHOD")
+          calls.messages.push(o)
+          const text = (over.replies ?? {})[o.path.id] ?? "STATUS: done\nEVIDENCE: tsc clean"
+          const completed = (over.completedFor ?? []).includes(o.path.id) ? over.completedAt ?? 9000 : undefined
+          return {
+            ok: true,
+            data: [
+              { info: { role: "user" }, parts: [{ type: "text", text: "brief" }] },
+              {
+                info: { role: "assistant", time: { created: over.createdAt ?? 1000, completed } },
+                parts: [{ type: "text", text }],
               },
-              status: async () => (calls.status.push(1), { ok: true, data: over.statusMap ?? { ses_child_1: { type: "busy" } } }),
-              abort: async (o) => (calls.abort.push(o), { ok: true, data: {} }),
+            ],
+          }
+        },
+        status: async function () {
+          assert.equal(this?.__sdkNamespace, "session", "client.session.status must be called as a METHOD")
+          calls.status.push(1)
+          return { ok: true, data: over.statusMap ?? { ses_child_1: { type: "busy" } } }
+        },
+        abort: async function (o) {
+          assert.equal(this?.__sdkNamespace, "session", "client.session.abort must be called as a METHOD")
+          calls.abort.push(o)
+          return { ok: true, data: {} }
+        },
+        // GET /session/{id}/children — what a RESTARTED plugin instance
+        // still can ask, and therefore the recovery source for tm_join.
+        children: over.noChildren
+          ? undefined
+          : async function (o) {
+              assert.equal(this?.__sdkNamespace, "session", "client.session.children must be called as a METHOD")
+              calls.children.push(o)
+              return { ok: true, data: over.children ?? [] }
             },
       }
+      const client = { ...fakeClient({}), session: over.noApi ? undefined : ns }
       return { client, calls }
     }
     const LEAD = { agent: "team", sessionID: "ses_lead", directory: "." }
@@ -2771,7 +3008,70 @@ try {
       assert.ok(!light.output.includes("详细发现"), "includeText:false returns the status table only")
       await rt.dispose()
     }
-    console.log("10. tm_dispatch/tm_join: OK (lead-only gate + nested-team reject + self-contained brief, parentID + verbatim brief over the session API, event-driven settle + bounded wait, cancel, offloaded collection, graceful 'use task' degrade)")
+    // --- restart recovery: the HOST's session tree is the authority, not our memory ---
+    {
+      const T = dmod.DISPATCH_TARGETS
+      assert.deepEqual(
+        dmod.parseDispatchTitle("tm:researcher:auth-bug", T),
+        { agent: "researcher", label: "auth-bug" },
+        "the title tm_dispatch writes is what identifies one of ours",
+      )
+      assert.equal(dmod.parseDispatchTitle("Explore the repo", T), null, "a task-tool child (free-form title) is NEVER claimed")
+      assert.equal(dmod.parseDispatchTitle("tm:team:hierarch", T), null, "a nested-lead title is not adoptable (T3 stays closed)")
+      assert.deepEqual(
+        dmod.lastAssistantMessage([
+          { info: { role: "assistant", time: { created: 1000, completed: 9000 } }, parts: [{ type: "text", text: "STATUS: done" }] },
+        ]),
+        { text: "STATUS: done", completedAt: 9000 },
+        "lastAssistantMessage surfaces time.completed — the settled verdict for a child nobody listened to",
+      )
+      assert.equal(
+        dmod.lastAssistantMessage([{ info: { role: "assistant", time: { created: 1000 } }, parts: [{ type: "text", text: "x" }] }])
+          .completedAt,
+        undefined,
+        "an unfinished reply has no completedAt -> stays running",
+      )
+
+      const registered = []
+      const { client, calls } = sessionFake({
+        children: [
+          { id: "ses_orphan", title: "tm:researcher:auth-bug", time: { created: 1000, updated: 9000 } },
+          { id: "ses_taskchild", title: "Explore the repo", time: { created: 1 } },
+        ],
+        completedFor: ["ses_orphan"],
+        statusMap: {},
+      })
+      // a FRESH plugin instance: the in-process registry is empty, the child is not
+      const rt = await tm.createTmTools({ directory: mktmp("disp-adopt"), client, $: fake$Ok("") }, { onChildSession: (sid, a) => registered.push([sid, a]) })
+      const joined = await rt.tools.tm_join.execute({}, LEAD)
+      assert.equal(calls.children.length, 1, "tm_join asks the host for its children when its own memory is empty")
+      assert.equal(calls.children[0].path.id, "ses_lead", "…under the CALLING lead session")
+      assert.ok(joined.output.includes("ses_orphan"), "the orphaned dispatch is adopted and collected")
+      assert.ok(!joined.output.includes("ses_taskchild"), "a child spawned by the built-in task tool is not ours to collect")
+      assert.ok(joined.output.includes("接管"), "an adopted row says out loud that it was rebuilt from the host")
+      assert.ok(joined.output.includes("1 完成"), "answered-while-nobody-was-listening reports 完成, not 运行中")
+      assert.ok(joined.output.includes("已完成 8s"), "elapsed comes from the HOST's timestamps (9000-1000), not from this process")
+      assert.ok(joined.output.includes("STATUS: done"), "the adopted child's reply text is still collected")
+      assert.deepEqual(registered, [["ses_orphan", "researcher"]], "an adopted child is handed to the approval gate too")
+      await rt.dispose()
+
+      // ids: [...] naming a child this process never saw still resolves
+      const viaIds = sessionFake({ children: [{ id: "ses_z", title: "tm:tester:login", time: { created: 5 } }], statusMap: { ses_z: { type: "idle" } } })
+      const rt2 = await tm.createTmTools({ directory: mktmp("disp-adopt-ids"), client: viaIds.client, $: fake$Ok("") })
+      const picked = await rt2.tools.tm_join.execute({ ids: ["ses_z"] }, LEAD)
+      assert.ok(picked.output.includes("ses_z") && picked.output.includes("1 完成"), "explicit ids recover through the session tree (status map settles it)")
+      const miss = await rt2.tools.tm_join.execute({ ids: ["ses_never_existed"] }, LEAD)
+      assert.ok(miss.output.includes("没有待收集的派发"), "an id the host does not list stays an honest miss, never a hang")
+      await rt2.dispose()
+
+      // a host without the children endpoint: the old behaviour, still honest
+      const legacy = sessionFake({ noChildren: true })
+      const rt3 = await tm.createTmTools({ directory: mktmp("disp-adopt-none"), client: legacy.client, $: fake$Ok("") })
+      const none = await rt3.tools.tm_join.execute({}, LEAD)
+      assert.ok(none.output.includes("没有待收集的派发"), "no children endpoint -> the same 'nothing to collect' answer, no crash")
+      await rt3.dispose()
+    }
+    console.log("10. tm_dispatch/tm_join: OK (lead-only gate + nested-team reject + self-contained brief, parentID + verbatim brief over the session API, event-driven settle + bounded wait, cancel, offloaded collection, graceful 'use task' degrade, RESTART RECOVERY via session.children + title discriminator + completedAt verdict)")
   }
 
   // ---------- 11. bash timeout clamp (tool.execute.before mutation) ----------

@@ -50,6 +50,8 @@ import {
 } from "./approval-gate.js"
 import { createTmTools } from "./tm/index.js"
 import { createBashTimeoutHook } from "./tm/bash-timeout.js"
+import { createCapabilityProbe, type CapabilityProbe } from "./capabilities.js"
+import { setAskBridgeObserver } from "./tm/perm-ask.js"
 import {
   applyToolDefinition,
   applyChatParams,
@@ -168,10 +170,21 @@ const plugin: OpenCodePlugin = {
     // The R6 mode/extra resolved above are passed in so the tm_* pipelines
     // share the SAME interception source as the built-in tools (anti-backdoor:
     // the global hook ALSO aliases tm_* onto read/grep/bash — see envprotect).
+    // ---------- host-capability probe (see src/capabilities.ts) ----------
+    // The plugin's features degrade quietly when a host surface disappears;
+    // this records what is actually present and says so once, at startup,
+    // instead of letting an OpenCode upgrade surface as an agent working
+    // around something the user never agreed to lose.
+    let capabilityProbe: CapabilityProbe | null = null
+
     const tmRuntime = await createTmTools(input, {
       mode: envProtectMode,
       extra: envProtectExtra,
       notify: notifyAsk,
+      // The capability probe is built from the tm runtime (it needs the run
+      // store to log into), and tm_stats needs the probe back — a declaration
+      // before construction breaks the cycle without weakening either side.
+      capabilities: () => capabilityProbe?.snapshot() ?? [],
       // A tm_dispatch child is registered the moment it is created (the
       // message.updated route below re-confirms it): an exec-role sub-agent
       // whose session were NOT registered would hard-throw its own protected
@@ -183,6 +196,20 @@ const plugin: OpenCodePlugin = {
 
     // ---------- host-hook switches (TM_TOOL_HINTS / TM_COMPACTION_*) ------
     const hostSwitches = hookSwitches(process.env)
+
+    capabilityProbe = createCapabilityProbe({
+      client: input?.client,
+      hasShellBridge: typeof input?.$ === "function",
+      hasPermissionReply: hasPermissionReplyCapability(input?.client),
+      trajectory: (event) => tmRuntime.pipelines.store.appendTrajectory(event),
+      notify: notifyAsk,
+    })
+    // ctx.ask is only observable from inside a tool call — perm-ask reports
+    // every lookup it makes, which is how this row ever reaches 已验证.
+    setAskBridgeObserver((present) => capabilityProbe?.observeAskBridge(present))
+    // Startup report: one trajectory line always, one toast ONLY when a
+    // required surface is gone (a missing 待观察 row is not an alarm).
+    capabilityProbe.report()
 
     // ---------- bash timeout clamp (issue #6, see tm/bash-timeout.ts) ------
     const bashTimeoutHook = createBashTimeoutHook({
@@ -254,6 +281,7 @@ const plugin: OpenCodePlugin = {
       // model-set bash timeout, then run the R6 interception.  The clamp
       // runs BEFORE R6 so a blocked call is never also a slow one.
       "tool.execute.before": async (input: unknown, output: unknown) => {
+        capabilityProbe?.observeHook("tool.execute.before")
         bashTimeoutHook(input, output)
         await envProtectHook(input, output)
       },
@@ -263,24 +291,33 @@ const plugin: OpenCodePlugin = {
       // fields whose shape is verified; each is independently switchable,
       // because this host's d.ts has shipped surfaces the runtime never
       // fires (permission.ask), so adapters must fail soft, not assume.
+      // The `observeHook` calls are that "not assume" made observable: a row
+      // stays 待观察 until the host actually calls the hook, and tm_stats
+      // reports it either way.
       "tool.definition": (input: unknown, output: unknown) => {
+        capabilityProbe?.observeHook("tool.definition")
         applyToolDefinition(input, output, hostSwitches.toolHints)
       },
       "chat.params": (input: unknown, output: unknown) => {
+        capabilityProbe?.observeHook("chat.params")
         applyChatParams(input, output, process.env)
       },
       "experimental.session.compacting": (input: unknown, output: unknown) => {
+        capabilityProbe?.observeHook("session.compacting")
         applySessionCompacting(output, hostSwitches.compactionContext)
       },
       "experimental.compaction.autocontinue": (input: unknown, output: unknown) => {
+        capabilityProbe?.observeHook("compaction.autocontinue")
         applyCompactionAutoContinue(output, process.env)
       },
       "shell.env": (input: unknown, output: unknown) => {
+        capabilityProbe?.observeHook("shell.env")
         applyShellEnv(output, process.env)
       },
 
       // ---------- unified approval gate: watch the host permission dialog ---
       event: ({ event }: { event: HostEvent }) => {
+        capabilityProbe?.observeEvent(event?.type ?? "")
         // Async dispatch bookkeeping runs FIRST and independently of R6:
         // session.idle / .error are what tell the lead its children settled.
         tmRuntime.observeDispatchEvent(event)

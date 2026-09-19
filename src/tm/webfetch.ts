@@ -45,6 +45,7 @@ export function seedWebfetchDomains(allowlist: readonly string[]): string[] {
 import { detectContentType } from "./preview.js"
 import { tmError, toToolResult } from "./result.js"
 import { projectJsonFields, type TmPipelines } from "./pipelines.js"
+import type { WebCache } from "./cache.js"
 
 /** Real-browser request headers.  Anti-bot gates (baike.baidu.com, zhihu,
  *  csdn — a real session collected 403s from both) reject robot-shaped UAs
@@ -162,6 +163,35 @@ export const SEARCH_PAGE_RE =
 const ENGINE_TRACKER_RE =
   /bing\.com\/ck\/|baidu\.com\/link\?|sogou\.com\/link\?|go\.microsoft\.com\/fwlink|so\.com\/link\?|ai\.so\.com/i
 
+/** BING WRAPS EVERY RESULT of its international layout (`…&ensearch=1`) in
+ *  `https://www.bing.com/ck/a?...&u=a1<base64(destination)>`.  Dropping those
+ *  anchors (what ENGINE_TRACKER_RE does) is why the 2026-09-14 benchmark
+ *  recorded "bing-int serves an anti-bot shell / 100% empty" — the shell was
+ *  fine, our extractor threw every hit away (re-probed 2026-09-19: 10 real
+ *  `b_algo` results, 0 extracted).  Decode the wrapper so the hit survives;
+ *  anything unrecognised still falls through to the skip. */
+export function decodeEngineWrapperUrl(href: string): string | null {
+  if (!/bing\.com\/ck\//i.test(href)) return null
+  let params: URLSearchParams
+  try {
+    params = new URL(href).searchParams
+  } catch {
+    return null
+  }
+  const u = params.get("u") ?? params.get("url")
+  if (!u) return null
+  // bing prefixes the base64 with an `a1` marker; strip it, then tolerate
+  // missing padding (base64 without `=` decodes fine in Node).
+  const b64 = u.startsWith("a1") ? u.slice(2) : u
+  if (!/^[A-Za-z0-9+/=_-]{8,}$/.test(b64)) return null
+  try {
+    const decoded = Buffer.from(b64.replace(/[-_]/g, (c) => (c === "-" ? "+" : "/")), "base64").toString("utf8")
+    return /^https?:\/\/[^\s]+$/i.test(decoded) ? decoded : null
+  } catch {
+    return null
+  }
+}
+
 /** The engine's OWN pages.  bing returns /images, /academic, /dict, /news,
  *  its own CN landing page and `www.microsoft.com` chrome as "results";
  *  those are never the answer to a lookup about something else, and they
@@ -251,7 +281,11 @@ export function extractSearchHits(
   const anchors = [...html.matchAll(ANCHOR_RE)]
   for (let ai = 0; ai < anchors.length; ai++) {
     const m = anchors[ai]
-    const href = decodeEntities((m[1] ?? m[2] ?? "").trim())
+    let href = decodeEntities((m[1] ?? m[2] ?? "").trim())
+    // a tracker wrapper is only "engine chrome" when we cannot see through
+    // it — bing's /ck/a carries the real destination, so decode first
+    const unwrapped = decodeEngineWrapperUrl(href)
+    if (unwrapped) href = unwrapped
     if (!/^https?:\/\//i.test(href)) continue
     if (ENGINE_TRACKER_RE.test(href)) continue
     const title = decodeEntities(m[3].replace(/<[^>]+>/g, " "))
@@ -319,6 +353,9 @@ export interface WebFetchResult {
   text: string
   contentType: string
   finalUrl: string
+  /** Set when the body came from the URL cache instead of the network — the
+   *  reply says so, because a re-served page is not a freshly-verified one. */
+  cachedAt?: number
 }
 
 export type FetchImpl = (input: string, init?: Record<string, unknown>) => Promise<{
@@ -379,6 +416,10 @@ export async function fetchWebText(
     /** Hosts already approved by the caller (e.g. the initial target) —
      *  their hops pass without a second dialog. */
     skipAskHosts?: Set<string>
+    /** URL-level TTL cache (see tm/cache.ts).  Consulted and written ONLY for
+     *  a hop the static allowlist admitted, so a hit can never bypass a
+     *  dialog the current config still requires. */
+    cache?: WebCache
   } = {},
 ): Promise<WebFetchResult> {
   const doFetch = opts.fetchImpl ?? (globalThis as { fetch?: FetchImpl }).fetch
@@ -392,6 +433,7 @@ export async function fetchWebText(
   for (let hop = 0; hop <= WEBFETCH_MAX_REDIRECTS; hop++) {
     // every hop re-checked — an allowlisted shortener cannot bounce off-site
     const verdict = checkWebUrl(current.toString(), allowlist)
+    const staticAllow = verdict.ok
     if (!verdict.ok) {
       // an ASKABLE miss (allowlist only) can be walked through the official
       // dialog; hard red lines (scheme / env-file / bad URL) never ask
@@ -407,6 +449,13 @@ export async function fetchWebText(
         if (outcome !== "approved") throw new Error(verdict.message)
         approvedHosts.add(host)
       }
+    }
+    // CACHE — reached only when the STATIC allowlist admitted this hop, so a
+    // hit can neither resurrect a now-disallowed host nor skip consent the
+    // current config asks for.  A cache failure is a miss, never an error.
+    if (staticAllow && opts.cache?.enabled()) {
+      const hit = opts.cache.get(current.toString())
+      if (hit) return { text: hit.body, contentType: hit.contentType, finalUrl: current.toString(), cachedAt: hit.at }
     }
     const ctrl = new AbortController()
     const timer = setTimeout(() => ctrl.abort(), timeoutMs)
@@ -447,6 +496,10 @@ export async function fetchWebText(
       }
       const contentType = (res.headers.get("content-type") ?? "text/plain").toLowerCase()
       const raw = await readBodyCapped(res, maxBytes)
+      // Store the RAW body (pre-extraction) under the SAME static-allowlist
+      // condition; a 2xx-only rule keeps an error page from outliving itself
+      // as "the content of that URL".
+      if (staticAllow && opts.cache?.enabled()) opts.cache.put(current.toString(), { status: res.status, contentType, body: raw })
       return { text: raw, contentType, finalUrl: current.toString() }
     } finally {
       clearTimeout(timer)
@@ -481,6 +534,9 @@ export function buildTmWebfetchTool(deps: {
   cfg: TmConfig
   args?: Record<string, unknown>
   fetchImpl?: FetchImpl
+  /** Shared URL cache (tm/index.ts owns the one instance so tm_search and
+   *  tm_webfetch cannot drift into two stores of the same page). */
+  cache?: WebCache
 }): {
   description: string
   args: Record<string, unknown>
@@ -532,7 +588,16 @@ export function buildTmWebfetchTool(deps: {
           fetchImpl: deps.fetchImpl,
           ask: askFn,
           skipAskHosts: approvedHosts,
+          cache: deps.cache,
         })
+        // A re-served page is stated as such — an agent that believes a cache
+        // hit is a fresh observation propagates a stale fact into the plan.
+        let cacheNote = ""
+        if (typeof res.cachedAt === "number") {
+          const ageS = Math.max(0, Math.round((Date.now() - res.cachedAt) / 1000))
+          cacheNote = `\n（缓存命中：${ageS}s 前抓取的同一 URL，TM_WEB_CACHE_TTL_SEC=${deps.cache?.ttlSec ?? 0}；需要最新内容请等 TTL 过期或换 URL）`
+          pipelines.store.appendTrajectory({ tool, step_id: stepId, event: "cache_hit", age_s: ageS })
+        }
         // Search-engine result pages collapse to a clean hit list (title +
         // URL) BEFORE governance — the stripped page text is ~90% engine
         // chrome.  Thin extraction (markup changed / anti-bot shell) falls
@@ -542,7 +607,7 @@ export function buildTmWebfetchTool(deps: {
           if (hits.length > 0) {
             const sp = (verdict.ok ? verdict.url : new URL(requested)).searchParams
             const query = sp.get("q") ?? sp.get("wd") ?? sp.get("query") ?? sp.get("keyword") ?? ""
-            const listing = renderSearchHits(query || res.finalUrl, "webfetch", hits)
+            const listing = renderSearchHits(query || res.finalUrl, "webfetch", hits) + cacheNote
             return toToolResult(
               pipelines.govern(stepId, tool, listing, {
                 contentType: detectContentType(listing),
@@ -595,7 +660,7 @@ export function buildTmWebfetchTool(deps: {
           }
         }
         return toToolResult(
-          pipelines.govern(stepId, tool, text, {
+          pipelines.govern(stepId, tool, text + cacheNote, {
             contentType,
             clue: `url=${shorten(res.finalUrl, 120)}`,
           }),

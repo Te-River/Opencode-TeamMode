@@ -240,6 +240,9 @@ export function buildPipelines(deps: TmDeps) {
         event: "result",
         offloaded: true,
         tokens,
+        // what DID reach the context window — tm_stats nets this against
+        // `tokens` to report the saving rather than the payload size
+        preview_tokens: estimateTokens(preview),
         ref: stored.ref,
       })
       return {
@@ -416,6 +419,13 @@ export function buildPipelines(deps: TmDeps) {
       }
       let token = strArg(args.access_token).trim()
       if (!token && parsed.token) token = parsed.token
+      // A handle's token is a RUN constant, not a per-handle secret (auth is
+      // `runId === this run && verifyToken`, below, unchanged).  A real
+      // session was observed re-typing the same 64 hex chars into every
+      // tm_fetch and every PTC program — ~70 output tokens a pop and a typo
+      // waiting to happen — so an omitted token means "this run's".  A ref
+      // from another run still fails the run check exactly as before.
+      if (!token) token = deps.accessToken
       if (!token) return tmError(tool, "args", "缺少 access_token（offload 句柄中携带）")
       // Auth: run must match the current run AND the token must verify.
       let reason: string

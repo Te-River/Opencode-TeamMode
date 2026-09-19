@@ -58,6 +58,7 @@ function makeTool(over = {}) {
     browserSubresource: over.subresource,
     browserImageMaxBytes: over.imageMaxBytes,
     browserIdleCloseMs: over.idleMs,
+    browserAskEval: over.askEval ?? "on",
     webfetchAllowedDomains: over.cfgDomains ?? ["cn.bing.com", "bing.com", "example.com"],
   }
   // `discovered: true` feeds the exe through the discovery SEAM instead of
@@ -81,6 +82,7 @@ function makeTool(over = {}) {
 }
 
 const ctxNoAsk = { directory: root }
+const ctxApprove = { directory: root, ask: async () => "once" }
 const o = (r) => String(r?.output ?? "")
 
 // ---------- mock playwright-core (task c — NO real install) ------------------
@@ -543,8 +545,13 @@ async function main() {
     assert.deepEqual(byAct("setInputFiles").at(-1), ["setInputFiles", 'p0:getByRole(textbox,{"name":"用户名","exact":true})#nth0', [uploaded]], "upload_file by uid with a local path")
     const missingUp = await mk.tool.execute({ action: "upload_file", uid: "e4", filePath: path.join(root, "nope.bin") }, ctxNoAsk)
     assert.ok(o(missingUp).includes("不存在"), "upload_file validates the local path first")
-    const evald = await mk.tool.execute({ action: "evaluate_script", function: "document.title" }, ctxNoAsk)
-    assert.ok(o(evald).includes("EVAL"), "evaluate_script routes JS + returns the value")
+    // M5: evaluate_script needs the official dialog ONCE per browser session
+    const evalsBefore = fx.__ctxPage.evals.length
+    const evalNoBridge = await mk.tool.execute({ action: "evaluate_script", function: "document.title" }, ctxNoAsk)
+    assert.ok(o(evalNoBridge).includes("phase=permission"), "no ask bridge -> evaluate_script is REFUSED (tm_pty's rule, never a silent pass)")
+    assert.equal(fx.__ctxPage.evals.length, evalsBefore, "a refused evaluate never reached the page")
+    const evald = await mk.tool.execute({ action: "evaluate_script", function: "document.title" }, ctxApprove)
+    assert.ok(o(evald).includes("EVAL"), "approved evaluate_script routes JS + returns the value")
 
     // ---- tab management ----
     const listPages = await mk.tool.execute({ action: "list_pages" }, ctxNoAsk)
@@ -937,7 +944,66 @@ async function main() {
     log(`args-schema declares the full param surface (${CONSUMED.length} fields; ${seen.size} static reads covered)`)
   }
 
-  console.log("browser: OK (engine select/degrade matrix, 16-verb playwright mapping + uid registry on mock pw, route()-based allowlist, persistent-profile policy, prompt pins, full args-schema param surface; real-playwright smoke gated on npm install)")
+  // ---------- 18. M5: evaluate_script consent + result redaction ----------
+  {
+    // pure helpers first — the shapes are the security surface
+    const clean = br.redactEvalResult('执行结果：{"title":"定价页","h1":"Pro 计划"}')
+    assert.deepEqual(clean.masked, [], "a legitimate JSON read is NOT blanked (name-anchored, not entropy-anchored)")
+    assert.equal(clean.text.includes("定价页"), true, "the payload survives untouched when nothing matches")
+    const leaky = br.redactEvalResult(
+      '执行结果：{"jwt":"eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6IkpvYW4iLCJpYXQiOjE1MTYyMzkwMjJ9.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c","auth":"Authorization: Bearer abcdefghijklmnop1234","cookie":"document.cookie=sessionId=deadbeefcafe","key":"ghp_abcdefghijklmnopqrstuvwxyz1234"}',
+    )
+    assert.ok(!leaky.text.includes("SflKxwRJSMeKKF2QT4"), "the JWT value is gone")
+    assert.ok(!leaky.text.includes("eyJzdWIiOiIxMjM0NTY3ODkw"), "…including its payload segment")
+    assert.ok(!leaky.text.includes("deadbeefcafe"), "the cookie value is gone")
+    assert.ok(!leaky.text.includes("ghp_abcdefghijklmnopqrstuvwxyz"), "the GitHub token is gone")
+    assert.ok(leaky.masked.length >= 3, `which kinds were masked is reported, not hidden (${leaky.masked.join(",")})`)
+    assert.ok(leaky.text.includes("〔已脱敏:JWT〕"), "a masked slot says WHAT was masked so the agent does not read it as absent data")
+    assert.equal(br.needsEvalConsent("on", undefined), true, "first evaluate in a session asks")
+    assert.equal(br.needsEvalConsent("on", true), false, "once approved, the rest of the session is not nagged")
+    assert.equal(br.needsEvalConsent("off", undefined), false, "TM_BROWSER_ASK_EVAL=off restores the old behaviour")
+    assert.equal(br.hostOnly("https://site.test/private/path?token=abcdef"), "site.test", "the consent line + trajectory carry the HOST, never the query string")
+    assert.equal(br.hostOnly("not a url at all……"), "not a url at all……", "an unparseable url degrades to a short prefix, never a throw")
+
+    // one dialog per session, and the pattern is the host (verified end to end)
+    const asked = []
+    const fx = makeFakePw()
+    const mk = makeTool({ importPlaywright: async () => fx.pw, nodeMajor: 22 })
+    await mk.tool.execute({ action: "open", url: "https://cn.bing.com/search?q=token%3Dtopsecret" }, ctxNoAsk)
+    const ctxAskOnce = { directory: root, ask: async (req) => (asked.push(req.patterns.slice()), "once") }
+    fx.__ctxPage.evaluate = async () => ({ ok: true, note: "plain text stays" })
+    const first = await mk.tool.execute({ action: "evaluate_script", function: "x" }, ctxAskOnce)
+    assert.ok(o(first).includes("plain text stays"), "approved + unremarkable result passes through verbatim")
+    assert.deepEqual(asked, [["evaluate_script:cn.bing.com"]], "the dialog pattern is the HOST only (no query, no path)")
+    await mk.tool.execute({ action: "evaluate_script", function: "y" }, ctxAskOnce)
+    assert.equal(asked.length, 1, "the SECOND evaluate in the same browser session opens no second dialog")
+    const consented = mk.events.filter((e) => e.event === "eval_consent")
+    assert.equal(consented.length, 1, "one consent event per approval, and the trajectory never records a secret")
+    assert.equal(consented[0].host, "cn.bing.com", "the trajectory line holds the host, not the URL")
+
+    // rejection is a refusal, not a fall-through
+    const fxR = makeFakePw()
+    const mkR = makeTool({ importPlaywright: async () => fxR.pw, nodeMajor: 22 })
+    await mkR.tool.execute({ action: "open", url: "https://cn.bing.com" }, ctxNoAsk)
+    const denied = await mkR.tool.execute({ action: "evaluate_script", function: "document.cookie" }, { directory: root, ask: async () => { throw new Error("no") } })
+    assert.ok(o(denied).includes("未获批准"), "a rejected consent refuses — the plugin never runs the JS anyway")
+    assert.equal(fxR.__ctxPage.evals.length, 0, "the refused expression never reached the page")
+
+    // redaction observed through the tool, and TM_BROWSER_ASK_EVAL=off skips the dialog
+    const fxD = makeFakePw()
+    const mkD = makeTool({ importPlaywright: async () => fxD.pw, nodeMajor: 22, askEval: "off" })
+    await mkD.tool.execute({ action: "open", url: "https://cn.bing.com" }, ctxNoAsk)
+    fxD.__ctxPage.evaluate = async () => ({ token: "sk-abcdefghijklmnop1234" })
+    const offRes = await mkD.tool.execute({ action: "evaluate_script", function: "localStorage" }, ctxNoAsk)
+    assert.ok(!o(offRes).includes("sk-abcdefghijklmnop"), "redaction is NOT switchable — with consent off the secret is still masked")
+    assert.ok(o(offRes).includes("已脱敏"), "and the reply says so")
+    assert.ok(o(offRes).includes("注意"), "the agent is told a mask happened instead of guessing the page is empty")
+    assert.equal(mkD.events.filter((e) => e.event === "eval_redacted").length, 1, "the mask is counted in the trajectory (kinds only, never values)")
+    assert.ok(mkD.events.filter((e) => e.event === "eval_redacted")[0].kinds.includes("api-key"), "which shape matched is recorded")
+    log("M5: evaluate_script consent (once per session, host-only pattern, refuse on no-bridge/reject) + non-switchable result redaction")
+  }
+
+  console.log("browser: OK (engine select/degrade matrix, 16-verb playwright mapping + uid registry on mock pw, route()-based allowlist, persistent-profile policy, prompt pins, evaluate_script consent + redaction, full args-schema param surface; real-playwright smoke gated on npm install)")
 }
 
 main().then(

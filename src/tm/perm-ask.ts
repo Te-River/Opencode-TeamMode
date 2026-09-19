@@ -29,11 +29,25 @@ export interface TmAskRequest {
 
 export type TmAskFn = (req: TmAskRequest) => Promise<unknown>
 
+/** Observability seam for the host-capability probe (src/capabilities.ts):
+ *  the plugin learns whether the ctx.ask bridge is LIVE only by looking at a
+ *  real tool context, so every look reports what it found.  Never throws. */
+let askBridgeObserver: ((present: boolean) => void) | null = null
+export function setAskBridgeObserver(fn: ((present: boolean) => void) | null): void {
+  askBridgeObserver = fn
+}
+
 /** Extract ctx.ask defensively — host versions before the ctx bridge lack
  *  it, and test stubs may not provide it. */
 export function askFnOf(ctx: unknown): TmAskFn | null {
   const ask = (ctx as { ask?: unknown } | null | undefined)?.ask
-  return typeof ask === "function" ? (ask as TmAskFn) : null
+  const present = typeof ask === "function"
+  try {
+    askBridgeObserver?.(present)
+  } catch {
+    /* observability only */
+  }
+  return present ? (ask as TmAskFn) : null
 }
 
 export type AskOutcome = "approved" | "rejected" | "unavailable"

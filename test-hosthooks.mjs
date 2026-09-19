@@ -228,5 +228,177 @@ console.log("hosthooks. tool.definition / chat.params / compaction / shell.env /
   console.log("  6. tm_pty: capped at TM_PTY_MAX concurrent sessions, refusal happens before any dialog")
 }
 
+/* ---------- 7. capability probe: an upgrade must be NAMED, not worked around */
+{
+  const { createCapabilityProbe, renderCapabilityMatrix } = await import("./dist/capabilities.js")
+  const { askFnOf, setAskBridgeObserver } = await import("./dist/tm/perm-ask.js")
+  const state = (rows, seam) => rows.find((r) => r.seam === seam)?.state
+
+  // A STRIPPED host: no pty namespace, no async session API.
+  const toasts = []
+  const traj = []
+  const crippled = createCapabilityProbe({
+    client: { session: { create: async () => {} }, tui: {} },
+    hasShellBridge: false,
+    hasPermissionReply: false,
+    trajectory: (e) => traj.push(e),
+    notify: (m) => toasts.push(m),
+  })
+  const cRows = crippled.snapshot()
+  eq(state(cRows, "client.pty.create"), "missing", "no pty namespace -> tm_pty's seam reads 缺失")
+  eq(state(cRows, "client.session.create+promptAsync"), "missing", "promptAsync absent -> the async dispatcher reads 缺失 (it degrades to task)")
+  eq(state(cRows, "client.session.children"), "missing", "the restart-recovery seam is its OWN row (losing it must not look like losing dispatch)")
+  eq(state(cRows, "input.$ (shell bridge)"), "missing", "no host shell bridge -> tm_bash falls back to spawn, and says so")
+  eq(state(cRows, "hook tool.definition"), "not-seen", "an un-fired hook is 待观察, NOT a break — the distinction is the whole point")
+  eq(state(cRows, "ToolResult.attachments"), "unverified", "we can emit attachments but never observe them painted: 需人眼, no false 已验证")
+  const report = crippled.report()
+  ok(report.missing.some((s) => s.includes("pty")), "report() lists the missing seams")
+  eq(toasts.length, 1, "a REQUIRED seam missing raises exactly one toast")
+  ok(toasts[0].includes("tm_pty") && toasts[0].includes("tm_stats"), "the toast names what broke and where to look")
+  eq(traj.length, 1, "one trajectory line per process (a repeated report never re-notifies)")
+  crippled.report()
+  eq(toasts.length, 1, "report() is one-shot — no toast spam across the session")
+  ok(renderCapabilityMatrix(cRows).includes("| 宿主接口 | 影响的能力 | 状态 |"), "the matrix is a markdown TABLE (the host renders tables fast)")
+  ok(renderCapabilityMatrix(cRows).includes("✗ 缺失"), "a missing row is visibly 缺失 in the table")
+
+  // A HEALTHY host, progressively observed.
+  const quiet = []
+  const probe = createCapabilityProbe({
+    client: {
+      session: {
+        create: async () => {}, promptAsync: async () => {}, messages: async () => {},
+        status: async () => {}, abort: async () => {}, children: async () => {},
+      },
+      pty: { create: async () => {}, list: async () => {}, get: async () => {}, remove: async () => {} },
+      permission: { reply: async () => {} },
+      tui: { showToast: async () => {} },
+    },
+    hasShellBridge: true,
+    hasPermissionReply: true,
+    notify: (m) => quiet.push(m),
+  })
+  const h0 = probe.snapshot()
+  eq(state(h0, "client.pty.create"), "declared", "present but unused -> 存在未用 (not 已验证: existence is not evidence)")
+  eq(state(h0, "ToolContext.ask"), "not-seen", "the ask bridge cannot be judged until a tool sees a real ctx")
+  eq(quiet.length, 0, "a healthy host raises no toast")
+  probe.observeHook("tool.definition")
+  probe.observeEvent("permission.asked")
+  probe.observeAskBridge(true)
+  const h1 = probe.snapshot()
+  eq(state(h1, "hook tool.definition"), "ok", "the host CALLED our hook -> 已验证")
+  eq(state(h1, "event permission.asked"), "ok", "the dialog event actually arrives -> 已验证")
+  eq(state(h1, "ToolContext.ask"), "ok", "a tool ctx carrying ask() -> the web/pty consent path is live")
+  eq(
+    probe.missingRequired().length,
+    0,
+    "nothing required is missing on the shipped host surface",
+  )
+  // the observer seam is wired at the ONLY place that can see a real ctx
+  const seen = []
+  setAskBridgeObserver((present) => seen.push(present))
+  askFnOf({ ask: async () => {} })
+  askFnOf({})
+  setAskBridgeObserver(null)
+  eq(seen, [true, false], "every askFnOf() lookup reports what it found, present or not")
+}
+
+/* ---------- 8. tm_stats: the throughput claim, with a number behind it ---- */
+{
+  const { summarizeEvents, parseTrajectoryJsonl, listTrajectoryRuns, renderStats } = await import("./dist/tm/stats.js")
+  // parse: a torn tail line is normal in an append-only log
+  eq(parseTrajectoryJsonl('{"tool":"tm_read","event":"call"}\n{"too\n').length, 1, "a torn line is skipped, never thrown")
+
+  const iso = (ms) => new Date(1_700_000_000_000 + ms).toISOString()
+  const events = [
+    { ts: iso(0), run_id: "rA", tool: "tm_read", step_id: "s1", event: "call" },
+    { ts: iso(10), run_id: "rA", tool: "tm_read", step_id: "s1", event: "result", offloaded: false, tokens: 300 },
+    { ts: iso(20), run_id: "rA", tool: "tm_grep", step_id: "s2", event: "result", offloaded: true, tokens: 9000, preview_tokens: 78 },
+    { ts: iso(30), run_id: "rA", tool: "tm_bash", step_id: "s3", event: "result", offloaded: true, tokens: 4000 },
+    // three children, overlapping: serial cost = each child's own duration
+    // (c1 carries the live `ms`, which wins; c2/c3 have no `ms`, so their
+    // durations are derived from their start/settle timestamps)
+    { ts: iso(100), run_id: "rA", tool: "tm_dispatch", step_id: "dispatch", event: "start", child: "c1" },
+    { ts: iso(200), run_id: "rA", tool: "tm_dispatch", step_id: "dispatch", event: "start", child: "c2" },
+    { ts: iso(300), run_id: "rB", tool: "tm_dispatch", step_id: "dispatch", event: "start", child: "c3" },
+    { ts: iso(6_000), run_id: "rA", tool: "tm_dispatch", step_id: "events", event: "idle", child: "c1", ms: 6_000 },
+    { ts: iso(9_000), run_id: "rA", tool: "tm_dispatch", step_id: "events", event: "idle", child: "c2" },
+    { ts: iso(12_000), run_id: "rB", tool: "tm_dispatch", step_id: "events", event: "error", child: "c3" },
+    { ts: iso(13_000), run_id: "rB", tool: "tm_dispatch", step_id: "join", event: "adopt", child: "c4" },
+    { ts: iso(14_000), run_id: "rB", tool: "tm_browser", step_id: "browser", event: "blocked", count: 3, hosts: "cdn.x,fonts.y" },
+    { ts: iso(15_000), run_id: "rB", tool: "tm_browser", step_id: "browser", event: "blocked", count: 2, hosts: "cdn.x" },
+    { ts: iso(16_000), run_id: "rB", tool: "tm_pty", step_id: "pty", event: "refused", category: "delete" },
+    { ts: iso(17_000), run_id: "rB", tool: "bash", step_id: "timeout-clamp", event: "probe", from_ms: 120_000, to_ms: 60_000 },
+    { ts: iso(18_000), run_id: "rB", tool: "tm_ptc_run", step_id: "s9", event: "finish", status: "ok", calls: 7, errors: 0, retries: 1, ms: 2_500 },
+    { ts: iso(19_000), run_id: "rB", tool: "tm_browser", step_id: "browser", event: "engine", kind: "cdp-legacy", reason: "playwright-core import failed" },
+  ]
+  const s = summarizeEvents(events)
+  eq(s.window.runs, 2, "one run dir == one plugin process, so the window spans restarts")
+  const grep = s.tools.find((t) => t.tool === "tm_grep")
+  eq(grep.savedTokens, 9000 - 78, "saved = payload minus the preview that DID enter the context")
+  eq(s.tools.find((t) => t.tool === "tm_bash").savedTokens, 4000 - 80, "an older event without preview_tokens falls back to the 80-token cap")
+  eq(s.tools.find((t) => t.tool === "tm_read").savedTokens, 0, "an inline result saves nothing")
+  eq([s.dispatch.starts, s.dispatch.settled, s.dispatch.failed, s.dispatch.adopted], [3, 2, 1, 1], "dispatch counts split by what actually happened")
+  eq(s.dispatch.sumMs, 6_000 + 8_800 + 11_700, "serial cost = each child's OWN duration: c1's live ms wins, c2/c3 are timed from their timestamps (a child that worked 12 s is not free)")
+  eq(s.dispatch.maxMs, 11_700, "the longest child is the lower bound on any serial re-run")
+  eq(s.dispatch.overlapSavedMs, 26_500 - 11_900, "overlap saving = serial cost minus the wall window the children really used")
+  eq(s.governance.blockedSubresources, 5, "blocked subresources aggregate across pages")
+  eq(s.governance.blockedHosts, ["cdn.x", "fonts.y"], "hosts are deduped, not repeated per request")
+  eq(s.governance.ptyRefused, 1, "every tm_pty governance refusal is counted (it is a policy win, not an error)")
+  eq(s.governance.clampedTimeouts, 1, "a clamped bash timeout counts")
+  eq(s.governance.clampSavedMs, 60_000, "…and reports the dead air it removed")
+  eq(s.ptc, { runs: 1, calls: 7, errors: 0, retries: 1, sumMs: 2_500 }, "PTC internals roll up (one turn, N governed calls)")
+  eq(s.degrades, [{ seam: "tm_browser/playwright-core", reason: "playwright-core import failed" }], "an engine fallback is listed with its reason, not swallowed")
+  // one child alone proves nothing
+  eq(summarizeEvents([{ ts: iso(0), tool: "tm_dispatch", event: "start" }, { ts: iso(1000), tool: "tm_dispatch", event: "idle", ms: 1000 }]).dispatch.overlapSavedMs, 0, "a single dispatch claims no overlap saving")
+
+  const runRoot = mktmp("stats-runs")
+  for (const [i, id] of ["r1", "r2", "r3"].entries()) {
+    const dir = path.join(runRoot, "runs", id)
+    fs.mkdirSync(dir, { recursive: true })
+    fs.writeFileSync(path.join(dir, "steps.jsonl"), JSON.stringify({ ts: iso(i), tool: "tm_read", event: "call" }) + "\n")
+    const when = new Date(1_700_000_000_000 + i * 1000)
+    fs.utimesSync(path.join(dir, "steps.jsonl"), when, when)
+  }
+  fs.mkdirSync(path.join(runRoot, "runs", "r_empty"), { recursive: true })
+  eq(listTrajectoryRuns(runRoot, 10).map((r) => r.runId), ["r3", "r2", "r1"], "newest first, and a run without steps.jsonl is not listed")
+  eq(listTrajectoryRuns(runRoot, 2).length, 2, "the limit is honoured")
+  eq(listTrajectoryRuns(path.join(runRoot, "nope"), 5), [], "no trajectory dir -> empty, never a throw")
+
+  const md = renderStats(s, { runDirs: 3, roots: [runRoot], now: 1_700_000_020_000 })
+  ok(md.includes("| 工具 | 调用 | 结果 | 卸载 | 原始 token | 省下 token（估算） |"), "the token table has stable columns")
+  ok(md.includes("**口径**"), "the estimate is labelled as an estimate, in the first lines")
+  ok(md.includes("重叠省下"), "the parallelism number is its own labelled row")
+  ok(md.includes("| 派发 / 完成 / 失败 / 取消 | 3 / 2 / 1 / 0 |"), "dispatch counts render")
+  ok(md.includes("引擎降级"), "a degrade gets its own table")
+  ok(!md.includes("undefined") && !md.includes("NaN"), "no placeholder leaked into a user-facing table")
+
+  // the tool itself, over a REAL store (explicit trajectory dir: the AUTO
+  // fallback for a non-git workspace is a SHARED tmpdir path)
+  const trajDir = mktmp("stats-traj")
+  process.env.TM_TRAJECTORY_DIR = trajDir
+  const { createCapabilityProbe } = await import("./dist/capabilities.js")
+  const liveProbe = createCapabilityProbe({ client: {}, hasShellBridge: false, hasPermissionReply: false })
+  const rt = await tm.createTmTools(
+    { directory: mktmp("stats-tool"), client: {}, $: () => ({}) },
+    { capabilities: () => liveProbe.snapshot() },
+  )
+  const empty = await rt.tools.tm_stats.execute({}, { agent: "team" })
+  ok(empty.output.includes("trajectory 目录为空"), "before anything runs, the tool says so instead of printing zeros")
+  rt.pipelines.store.appendTrajectory({ tool: "tm_read", step_id: "s1", event: "call" })
+  rt.pipelines.store.appendTrajectory({ tool: "tm_read", step_id: "s1", event: "result", offloaded: true, tokens: 5000, preview_tokens: 70 })
+  const live = await rt.tools.tm_stats.execute({}, { agent: "researcher" })
+  ok(live.output.includes("tm_read"), "the live report names the tool that ran")
+  ok(live.output.includes("4,930"), "the saving is computed (5000 - 70), not decorative")
+  ok(live.output.includes("宿主能力矩阵"), "the capability matrix rides the same reply (one call after an upgrade)")
+  ok(live.output.includes("缺失"), "with a stub client the matrix really does report missing seams, live")
+  const noMatrix = await rt.tools.tm_stats.execute({ capabilities: false }, { agent: "team" })
+  ok(!noMatrix.output.includes("宿主能力矩阵") && noMatrix.output.includes("tm_read"), "capabilities:false trims the matrix and nothing else")
+  ok(!noMatrix.output.includes("已卸载到 run 存储"), "the stats reply comes back WHOLE — a table you have to page through is not a win")
+  await rt.dispose()
+  delete process.env.TM_TRAJECTORY_DIR
+  console.log("  7. capability probe: missing vs declared vs not-seen vs unverified, one-shot toast, table render, ask-bridge observer")
+  console.log("  8. tm_stats: token saving + dispatch overlap + governance counts, over a real trajectory store")
+}
+
 for (const dir of tmpDirs) fs.rmSync(dir, { recursive: true, force: true })
-console.log("\nHOSTHOOKS: ALL PASS (6 groups)")
+console.log("\nHOSTHOOKS: ALL PASS (8 groups)")

@@ -39,7 +39,8 @@ export const DISPATCH_TARGETS = ["architect", "implementer", "reviewer", "tester
 
 /** A dispatch lives for the plugin process.  A child that outlives the
  *  process is the host's session to clean up, not ours to forget silently,
- *  which is why tm_join reports "unknown" rather than pretending. */
+ *  which is why tm_join re-adopts it from `session.children` instead of
+ *  reporting "nothing to collect" (see `adoptFromHost`). */
 export interface ChildRecord {
   sessionID: string
   agent: string
@@ -49,6 +50,10 @@ export interface ChildRecord {
   finishedAt?: number
   state: "running" | "idle" | "error"
   error?: string
+  /** Reconstructed from the host's session tree, not observed live: the
+   *  wall-clock elapsed and the settle verdict come from the host, so the
+   *  lead must know this row was rebuilt. */
+  adopted?: boolean
 }
 
 export interface DispatchDeps {
@@ -72,6 +77,9 @@ interface SessionApi {
   messages?: (opts: unknown) => Promise<unknown>
   status?: (opts: unknown) => Promise<unknown>
   abort?: (opts: unknown) => Promise<unknown>
+  /** GET /session/{id}/children -> Session[] — the host's own session tree,
+   *  i.e. the recovery source when this process never saw the dispatch. */
+  children?: (opts: unknown) => Promise<unknown>
 }
 
 /** Resolve the host session API defensively — a missing namespace means the
@@ -84,24 +92,53 @@ export function sessionApiOf(client: unknown): SessionApi | null {
   return api
 }
 
+/** The title `tm_dispatch` gives every child session.  `parseDispatchTitle`
+ *  is the discriminator on the way back: a child the host lists but this
+ *  process never created is OURS only if this shape (and a known agent)
+ *  matches — otherwise it belongs to the built-in `task` tool and we must
+ *  not claim its reply. */
+export function dispatchTitle(agent: string, label: string): string {
+  return `tm:${agent}:${label}`
+}
+
+export function parseDispatchTitle(
+  title: unknown,
+  targets: readonly string[],
+): { agent: string; label: string } | null {
+  const t = typeof title === "string" ? title.trim() : ""
+  if (!t.startsWith("tm:")) return null
+  const rest = t.slice(3)
+  const colon = rest.indexOf(":")
+  const agent = (colon < 0 ? rest : rest.slice(0, colon)).trim().toLowerCase()
+  if (!agent || !targets.includes(agent)) return null
+  return { agent, label: (colon < 0 ? "" : rest.slice(colon + 1)).trim().slice(0, 40) }
+}
+
 /**
- * Pull the assistant reply text out of a `session.messages` payload.
+ * Pull the assistant reply text (and, when the host records it, the moment
+ * that reply completed) out of a `session.messages` payload.
  * Shapes accepted (host has renamed things before): {info,parts} pairs or a
  * bare Part[] — the LAST assistant message is the answer, everything earlier
  * is that agent's own working transcript.
+ *
+ * `completedAt` is what lets a rebuilt registry tell "still running" from
+ * "finished while we were not listening": AssistantMessage.time.completed is
+ * only set once the message is done.
  */
-export function lastAssistantText(messages: unknown): string {
+export function lastAssistantMessage(messages: unknown): { text: string; completedAt?: number } {
   const list = Array.isArray(messages) ? messages : []
   for (let i = list.length - 1; i >= 0; i--) {
-    const entry = list[i] as { info?: { role?: unknown }; parts?: unknown } | unknown
-    const info = (entry as { info?: { role?: unknown } })?.info
+    const entry = list[i] as { info?: { role?: unknown; time?: { completed?: unknown } }; parts?: unknown } | unknown
+    const info = (entry as { info?: { role?: unknown; time?: { completed?: unknown } } })?.info
     const role = typeof info?.role === "string" ? String(info.role).toLowerCase() : ""
     if (role && role !== "assistant") continue
+    const completed = Number(info?.time?.completed)
+    const completedAt = Number.isFinite(completed) && completed > 0 ? completed : undefined
     const parts = (entry as { parts?: unknown })?.parts
     if (!Array.isArray(parts)) {
       // a bare message list (no {info,parts} envelope) — take any text part
       const one = (entry as { text?: unknown; type?: unknown }) ?? {}
-      if (one.type === "text" && typeof one.text === "string") return one.text
+      if (one.type === "text" && typeof one.text === "string") return { text: one.text, completedAt }
       continue
     }
     const texts = parts
@@ -110,9 +147,14 @@ export function lastAssistantText(messages: unknown): string {
         return pp && pp.type === "text" && typeof pp.text === "string" && (pp.text as string).trim() !== ""
       })
       .map((p) => String((p as { text: unknown }).text))
-    if (texts.length) return texts.join("\n")
+    if (texts.length) return { text: texts.join("\n"), completedAt }
   }
-  return ""
+  return { text: "" }
+}
+
+/** Back-compat seam: the reply text alone. */
+export function lastAssistantText(messages: unknown): string {
+  return lastAssistantMessage(messages).text
 }
 
 /** One child's status line — the lead reads these, so keep them terse. */
@@ -120,7 +162,7 @@ export function renderChildLine(c: ChildRecord, elapsedMs: number): string {
   const secs = Math.round(elapsedMs / 1000)
   const tag =
     c.state === "running" ? `运行中 ${secs}s` : c.state === "error" ? `失败：${shorten(c.error ?? "", 80)}` : `已完成 ${secs}s`
-  return `${c.sessionID} · ${c.agent} · "${c.label}" · ${tag}`
+  return `${c.sessionID} · ${c.agent} · "${c.label}" · ${tag}${c.adopted ? " ·（本进程重启后由宿主会话树接管）" : ""}`
 }
 
 /** Verdicts tm_join can actually observe (issue #7's "leader keeps control"). */
@@ -171,11 +213,14 @@ export function buildDispatchTools(deps: DispatchDeps): {
    *  dispatched before a plugin restart, or a session.idle that never
    *  arrived). */
   async function refreshFromStatus(directory: string | undefined): Promise<void> {
-    const statusApi = api?.status
-    if (typeof statusApi !== "function") return
+    if (typeof api?.status !== "function") return
     let un: Unwrapped
     try {
-      un = unwrapClientResult(await statusApi(directory ? { query: { directory } } : {}))
+      // PROPERTY-ACCESS CALL — the SDK's endpoints need their receiver (see
+      // approval-gate.ts's replyCapableFn note); `const f = api.status` then
+      // `f(...)` threw "Cannot read properties of undefined (reading
+      // 'client')" on the live host and killed every dispatch.
+      un = unwrapClientResult(await api.status(directory ? { query: { directory } } : {}))
     } catch {
       return
     }
@@ -194,17 +239,81 @@ export function buildDispatchTools(deps: DispatchDeps): {
     }
   }
 
-  function fetchReply(sid: string, directory: string | undefined): Promise<string> {
+  function fetchReply(sid: string, directory: string | undefined): Promise<{ text: string; completedAt?: number }> {
     return (async () => {
-      const messages = api?.messages
-      if (typeof messages !== "function") return ""
+      if (typeof api?.messages !== "function") return { text: "" }
       try {
-        const un = unwrapClientResult(await messages({ path: { id: sid }, ...(directory ? { query: { directory } } : {}) }))
-        return un.ok ? lastAssistantText(un.data) : ""
+        const un = unwrapClientResult(await api.messages({ path: { id: sid }, ...(directory ? { query: { directory } } : {}) }))
+        return un.ok ? lastAssistantMessage(un.data) : { text: "" }
       } catch {
-        return ""
+        return { text: "" }
       }
     })()
+  }
+
+  /**
+   * Adopt the children the HOST lists under this parent but this process never
+   * dispatched: the plugin instance restarted (or the lead resumed a session
+   * an earlier instance created) while a specialist was still working — or had
+   * already answered into a registry that no longer exists.  Without this,
+   * tm_join's honest answer would be "没有待收集的派发" while a finished report
+   * sits in the host, which is exactly the silent loss issue #7 was about.
+   *
+   * The discriminator is the title tm_dispatch itself writes (`dispatchTitle`
+   * + a known agent), so a child spawned by the built-in `task` tool is never
+   * claimed as ours.
+   */
+  async function adoptFromHost(
+    parent: string,
+    directory: string | undefined,
+    only: Set<string> | null,
+  ): Promise<number> {
+    if (typeof api?.children !== "function" || !parent) return 0
+    let un: Unwrapped
+    try {
+      un = unwrapClientResult(await api.children({ path: { id: parent }, ...(directory ? { query: { directory } } : {}) }))
+    } catch {
+      return 0
+    }
+    if (!un.ok || !Array.isArray(un.data)) return 0
+    let adopted = 0
+    for (const raw of un.data as Array<Record<string, unknown>>) {
+      const sid = String(raw?.id ?? "").trim()
+      if (!sid || children.has(sid)) continue
+      if (only && !only.has(sid)) continue
+      const parsed = parseDispatchTitle(raw?.title, targets)
+      if (!parsed) continue
+      const created = Number((raw?.time as { created?: unknown } | undefined)?.created)
+      const rec: ChildRecord = {
+        sessionID: sid,
+        agent: parsed.agent,
+        label: parsed.label || parsed.agent,
+        parentSessionID: parent,
+        startedAt: Number.isFinite(created) && created > 0 ? created : now(),
+        state: "running",
+        adopted: true,
+      }
+      children.set(sid, rec)
+      // the child's own protected reads must still open the official dialog
+      deps.onChildSession?.(sid, parsed.agent)
+      adopted++
+      log({ step_id: "join", event: "adopt", child: sid, agent: parsed.agent, label: rec.label })
+    }
+    return adopted
+  }
+
+  /** Settle verdict for adopted rows: `AssistantMessage.time.completed` is
+   *  only set once the reply is done, so it answers "finished while nobody
+   *  was listening?" without waiting for an event that already fired. */
+  async function settleAdopted(records: readonly ChildRecord[], directory: string | undefined): Promise<void> {
+    for (const rec of records) {
+      if (!rec.adopted || rec.state !== "running") continue
+      const reply = await fetchReply(rec.sessionID, directory)
+      if (typeof reply.completedAt === "number") {
+        rec.state = "idle"
+        rec.finishedAt = reply.completedAt
+      }
+    }
   }
 
   const dispatch: ToolDefinition = {
@@ -258,12 +367,12 @@ export function buildDispatchTools(deps: DispatchDeps): {
           )
         }
         const label = (typeof args.label === "string" && args.label.trim() ? args.label.trim() : task.split(/\s+/).slice(0, 4).join(" ")).slice(0, 40)
-        const createApi = api?.create
-        const promptApi = api?.promptAsync
-        if (typeof createApi !== "function" || typeof promptApi !== "function") {
+        if (typeof api?.create !== "function" || typeof api?.promptAsync !== "function") {
           return toToolResult(tmError(tool, "client", "此宿主的 client.session 缺少 create/promptAsync——改用内置 task 工具。"))
         }
-        const created = unwrapClientResult(await createApi({ body: { parentID: parent, title: `tm:${agent}:${label}` } }))
+        // PROPERTY-ACCESS CALLS (api.create / api.promptAsync), never a
+        // captured function reference — see refreshFromStatus above.
+        const created = unwrapClientResult(await api.create({ body: { parentID: parent, title: dispatchTitle(agent, label) } }))
         if (!created.ok) return toToolResult(tmError(tool, "client", `创建子会话失败：${shorten(created.message ?? "", 120)}`))
         const sid = String((created.data as { id?: unknown } | null)?.id ?? "").trim()
         if (!sid) return toToolResult(tmError(tool, "client", "子会话创建后未返回 id"))
@@ -273,7 +382,7 @@ export function buildDispatchTools(deps: DispatchDeps): {
           parts: [{ type: "text", text: task }],
         }
         const directory = typeof c.directory === "string" && c.directory ? c.directory : undefined
-        const sent = unwrapClientResult(await promptApi({ path: { id: sid }, ...(directory ? { query: { directory } } : {}), body: promptBody }))
+        const sent = unwrapClientResult(await api.promptAsync({ path: { id: sid }, ...(directory ? { query: { directory } } : {}), body: promptBody }))
         if (!sent.ok) {
           return toToolResult(
             tmError(
@@ -306,6 +415,7 @@ export function buildDispatchTools(deps: DispatchDeps): {
 - No args: status snapshot of every open child of THIS session — running / idle(done) / error, with elapsed seconds.  Cheap and non-blocking: use it to decide whether to keep working or start merging.
 - { waitMs: 30000 }: bounded wait (capped at ${Math.round(maxWaitMs / 1000)}s) until every child settles, then returns each one's reply skeleton.  Never wait for a child whose result you do not need — abort it instead ({ cancel: true }).
 - { ids: [...] }: restrict to those child sessions; { cancel: true }: abort still-running ones (a runaway child is yours to stop, not the user's problem).
+- A plugin/host restart does NOT orphan a dispatch: children the host still lists under your session are re-adopted automatically (their rows are marked 接管), and one that answered while nobody was listening is reported 已完成, not lost.
 - Replies come back through the offload pipeline: a long sub-agent report arrives as a handle + ≤80-token preview (page it with tm_fetch), so five parallel dispatches do not multiply your context.  STATUS: blocked/failed children are surfaced first, always.`,
     args: {
       ids: { descriptor: "ids: string[] (optional — only these child sessions)" },
@@ -327,14 +437,22 @@ export function buildDispatchTools(deps: DispatchDeps): {
         const idFilter = Array.isArray(args.ids)
           ? new Set((args.ids as unknown[]).map((x) => String(x ?? "").trim()).filter(Boolean))
           : null
-        const mine = [...children.values()].filter(
-          (r) => (!parent || r.parentSessionID === parent) && (!idFilter || idFilter.has(r.sessionID)),
-        )
+        const owned = (): ChildRecord[] =>
+          [...children.values()].filter(
+            (r) => (!parent || r.parentSessionID === parent) && (!idFilter || idFilter.has(r.sessionID)),
+          )
+        let mine = owned()
+        // This process has never seen some (or all) of what the lead is asking
+        // for — the host's session tree, not our memory, is the authority.
+        if (mine.length < (idFilter ? idFilter.size : 1)) {
+          if (await adoptFromHost(parent, directory, idFilter)) mine = owned()
+        }
         if (!mine.length) {
           return toToolResult(
-            `没有待收集的派发${idFilter ? "（ids 未匹配到本会话的子代理）" : ""}。刚派发过却看不到？说明那次派发没成功——回到 tm_dispatch 的返回值检查。`,
+            `没有待收集的派发${idFilter ? "（ids 未匹配到本会话的子代理，宿主会话树里也没有 tm: 标题的子会话）" : ""}。刚派发过却看不到？说明那次派发没成功——回到 tm_dispatch 的返回值检查。`,
           )
         }
+        await settleAdopted(mine, directory)
         const waitMs = Math.max(0, Math.min(maxWaitMs, Number(args.waitMs) || 0))
         const deadline = now() + waitMs
         let settled = false
@@ -348,11 +466,10 @@ export function buildDispatchTools(deps: DispatchDeps): {
           await sleep(Math.min(1000, Math.max(100, deadline - now())))
         }
         const stillRunning = mine.filter((r) => r.state === "running")
-        const abortApi = api?.abort
         if (args.cancel === true || args.cancel === "true") {
           for (const r of stillRunning) {
-            if (typeof abortApi === "function") {
-              const un = unwrapClientResult(await abortApi({ path: { id: r.sessionID } }))
+            if (typeof api?.abort === "function") {
+              const un = unwrapClientResult(await api.abort({ path: { id: r.sessionID } }))
               r.error = un.ok ? "aborted on request" : `abort failed: ${shorten(un.message ?? "", 60)}`
             } else {
               r.error = "宿主无 abort 接口，未取消"
@@ -372,7 +489,8 @@ export function buildDispatchTools(deps: DispatchDeps): {
         const blocks: string[] = []
         if (wantText) {
           for (const r of collectible) {
-            const text = await fetchReply(r.sessionID, directory)
+            const reply = await fetchReply(r.sessionID, directory)
+            const text = reply.text
             blocks.push(`--- ${r.agent} "${r.label}" (${r.sessionID}) ---\n${text.trim() || "（该子会话没有可读的助手回复——用内置 read/tm_read 检查其会话，或重新派发）"}`)
           }
         }
