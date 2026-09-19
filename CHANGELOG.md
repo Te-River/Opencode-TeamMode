@@ -5,6 +5,66 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 versioning is semver (the 1.4.x train shipped under working labels; the
 registry saw 1.5.0 as the install-script fix release).
 
+## [Unreleased]
+
+### Added
+- **tm_dispatch now carries the governance the built-in `task` tool applies.**
+  Forensics on the desktop binary showed `task` doing four things the public
+  session API does not do for you: it asks the user (`ctx.ask({permission:
+  "task", patterns:[subagent_type]})`), enforces `subagent_depth` by walking
+  the parentID chain, creates the child session WITH an agent and a derived
+  permission set, and inherits the model.  A plugin-side dispatcher that
+  skipped them is a way around the user's own rules, so tm_dispatch now
+  re-imposes what it can: `TM_DISPATCH_ASK=on` (one official-dialog consent
+  per dispatch, refused when there is no ask bridge — tm_pty's rule),
+  `TM_SUBAGENT_DEPTH=1` (same 口径 as the host), and the model inherited from
+  the parent transcript into `prompt_async`'s `model` field.  What the public
+  surface cannot do: `POST /session` accepts only `{parentID,title}`, so the
+  child's derived permission set stays the host's own business — the T3
+  lead-only deny in `agents.ts` is what keeps nesting closed here.
+- **Ledger discipline in the prompts.** Every new ask — a mid-task
+  interruption, an "analyze this too", a screenshot, a one-line aside —
+  becomes a list item BEFORE the work starts; an interruption is an insertion,
+  not a replacement; `blocked` is a state, not an exit; and after a resume or
+  compaction the lead re-reads the list and continues the unfinished items
+  instead of reporting the last thing it did.  Specialists get the same habit
+  in their reply contract (`not done: <part> — <why>`), since they have no
+  todo tool of their own.
+- **tm_webfetch `{ fresh: true }`** bypasses the URL cache — the escape hatch
+  for "I need this page as it is NOW", which a TTL cache otherwise removes.
+- **`npm test` runs the suites in parallel** (`scripts/run-tests.mjs`): tsc
+  still runs first (the suites import `dist/`, so a stale build produces
+  phantom failures), then the seven `test-*.mjs` suites run concurrently with
+  per-suite buffered output and an aggregated exit code — measured 151 s wall
+  against 401 s serial. The two suites that launch a REAL browser never
+  overlap. `npm run test:serial` keeps the old one-at-a-time behaviour, and
+  positional filters (`node scripts/run-tests.mjs browser`) run a subset.
+  Dev-side only: `scripts/` is not part of the published package.
+
+### Fixed
+- **A host error never renders as `[object Object]` again.** `session.error`
+  payloads are nested (`{name, data:{message, ref}}`), and the old rendering
+  stringified the object — so a lead told three failed researchers "they died"
+  with no reason, and the one diagnostic in the flow was destroyed by our own
+  formatting.  `describeHostError` digs `message`/`data`/`error`/`ref` and
+  falls back to a shape dump; the same treatment now covers the collect path
+  (a child whose last assistant message carries an `error` reports it).
+- **`tm_join { ids }` accepts what models actually send.** The live host
+  delivered `ids` as a JSON-array STRING (`'["ses_x"]'`), `Array.isArray` said
+  no, and the filter silently degraded into "report every child" — the lead
+  asked for one and got four.  `parseIdList` handles arrays, JSON strings and
+  comma lists.
+- **The "no readable reply" line stopped pointing at the wrong tool.** It told
+  the agent to inspect a child SESSION with `tm_read`, which reads files.  It
+  now says the session is not a file and names the real fallback.
+
+### Changed
+- `pipelines` records `preview_tokens` on an offload event, so tm_stats can
+  report the saving net of what actually entered the context.
+- `test-tm-tools` keeps the URL cache OFF through `clearTmEnv()` — several
+  blocks call it, and a wire-inspection assertion that hits a cached leg
+  fails depending on what a previous process left in the shared tmpdir store.
+
 ## [1.5.14] - 2026-09-19
 
 ### Fixed
