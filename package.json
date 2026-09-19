@@ -20,7 +20,9 @@
   ],
   "scripts": {
     "build": "tsc",
-    "test": "tsc && node test-blackboard.mjs && node test-envprotect.mjs && node test-tm-tools.mjs && node test-hosthooks.mjs && node test-default-agent.mjs && node test-memory.mjs && node test-browser.mjs",
+    "test": "node scripts/run-tests.mjs",
+    "test:serial": "node scripts/run-tests.mjs --serial",
+    "test:one": "node scripts/run-tests.mjs --no-build",
     "prepublishOnly": "tsc",
     "dev": "tsc --watch"
   },
