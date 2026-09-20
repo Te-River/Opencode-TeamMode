@@ -95,6 +95,7 @@ console.log("hosthooks. tool.definition / chat.params / compaction / shell.env /
   ok(COMPACTION_CONTEXT.some((l) => l.includes("STATUS")), "the reply skeleton survives compaction")
   ok(COMPACTION_CONTEXT.some((l) => l.includes("access_token")), "offload handles are named as must-keep")
   ok(COMPACTION_CONTEXT.some((l) => l.includes("tm_dispatch")), "uncollected children survive the summary")
+  ok(COMPACTION_CONTEXT.some((l) => l.includes("GOAL")), "the goal directive survives the summary — a compressed transcript must not redefine the ask")
   ok(COMPACTION_CONTEXT.every((l) => l.includes("OpenCode TeamMode") || l.startsWith("Offloaded") || l.startsWith("Async") || l.startsWith("Every") || l.startsWith("The")), "lines self-identify as ours")
   eq(applySessionCompacting(out, true), false, "idempotent: a second compaction adds nothing")
   eq(applySessionCompacting(out, false), false, "TM_COMPACTION_CONTEXT=off disables it")

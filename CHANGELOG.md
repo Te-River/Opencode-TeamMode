@@ -8,6 +8,22 @@ registry saw 1.5.0 as the install-script fix release).
 ## [Unreleased]
 
 ### Added
+- **Goal directive — the user's own ask decides when the run may end.** The
+  lead must now open with `GOAL:` in the user's terms plus checkable
+  `ACCEPTANCE:` criteria, and keep working while any criterion lacks EVIDENCE;
+  the only legitimate stops are named (blocked on the user with the exact
+  criterion, or a criterion proven unachievable, with the attempts that show
+  it).  Reframing a partial result as the deliverable is called out as the
+  failure mode it is, the goal may be neither shrunk nor grown unilaterally,
+  and user-stated boundaries still outrank it.  The same list is what
+  specialists carry in their reply contract (`not done: <part> — <why>`).
+- **tm_join enforces it with the host's own state, not a shadow copy.**
+  `GET /session/{id}/todo` is read-only in the plugin surface (there is no
+  write body — writing stays the built-in `todowrite` tool's job), so when a
+  round settles with items still open, tm_join appends
+  `⚠ 目标未达成：宿主 todolist 还有 N 项未完成 …` at exactly the moment a lead
+  tends to wrap up.  The goal line also joins the compaction must-survive list,
+  so a summarized transcript cannot quietly redefine it.
 - **tm_dispatch now carries the governance the built-in `task` tool applies.**
   Forensics on the desktop binary showed `task` doing four things the public
   session API does not do for you: it asks the user (`ctx.ask({permission:

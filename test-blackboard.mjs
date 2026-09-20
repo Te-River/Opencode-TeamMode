@@ -277,6 +277,14 @@ assert.ok(leadPrompt.includes("fire every package whose inputs already exist"), 
 assert.ok(leadPrompt.includes("Partition before you parallelize"), "lead: file-ownership partition is the precondition for parallel work")
 assert.ok(leadPrompt.includes("never let two agents edit one file"), "lead: children must not collide")
 assert.ok(leadPrompt.includes("Reuse before you build"), "lead: existing dependencies are checked before designing a new module")
+// goal directive: the user's own ask is the contract, and it decides when the
+// run may end
+assert.ok(leadPrompt.includes("Goal directive — the user's own ask is the contract"), "lead: goal directive section present")
+assert.ok(leadPrompt.includes("ACCEPTANCE:"), "lead: the goal is stated as checkable acceptance criteria")
+assert.ok(leadPrompt.includes("The run ends when the criteria are met, not when it is convenient"), "lead: stopping is gated on evidence, not on effort spent")
+assert.ok(leadPrompt.includes("reframing a partial"), "lead: partial-as-final is named as the failure mode")
+assert.ok(leadPrompt.includes("Do not shrink the goal, and do not grow it"), "lead: scope is the user's call in both directions")
+assert.ok(leadPrompt.includes("USER-STATED BOUNDARIES STILL OUTRANK THE GOAL"), "lead: a goal never licenses crossing a user-set limit")
 assert.ok(leadPrompt.includes("EVERY NEW ASK BECOMES A LIST ITEM"), "lead: a new request enters the ledger before the work starts")
 assert.ok(leadPrompt.includes("INSERTION, not a replacement"), "lead: an interruption keeps the interrupted item alive")
 assert.ok(leadPrompt.includes("Blocked is a state, not an exit"), "lead: blocked items stay in the list with a reason")

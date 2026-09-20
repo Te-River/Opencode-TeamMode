@@ -87,6 +87,27 @@ interface SessionApi {
   /** GET /session/{id}/children -> Session[] — the host's own session tree,
    *  i.e. the recovery source when this process never saw the dispatch. */
   children?: (opts: unknown) => Promise<unknown>
+  /** GET /session/{id}/todo -> Todo[] — READ-ONLY (the SDK gives no write
+   *  body; writing is the built-in `todowrite` tool's job).  We use it as the
+   *  goal tripwire below. */
+  todo?: (opts: unknown) => Promise<unknown>
+}
+
+/** Open items on the host's own todo list, in the shape tm_join reports. */
+export interface HostTodo {
+  content: string
+  status: string
+}
+export function openHostTodos(todos: unknown): HostTodo[] {
+  if (!Array.isArray(todos)) return []
+  const open: HostTodo[] = []
+  for (const t of todos as Array<Record<string, unknown>>) {
+    const status = String(t?.status ?? "").toLowerCase()
+    if (!status || status === "completed" || status === "cancelled" || status === "done") continue
+    const content = String(t?.content ?? "").trim()
+    if (content) open.push({ content: content.slice(0, 120), status })
+  }
+  return open
 }
 
 /** Resolve the host session API defensively — a missing namespace means the
@@ -656,6 +677,26 @@ export function buildDispatchTools(deps: DispatchDeps): {
           `派发汇总：${sums.idle} 完成 / ${sums.running} 运行中 / ${sums.error} 失败${settled ? "（全部已结算）" : "（未等到全部结算，可再次 tm_join）"}`,
           ...mine.map((r) => renderChildLine(r, (r.finishedAt ?? now()) - r.startedAt)),
         ]
+        // Goal tripwire, at the exact moment a lead tends to wrap up: every
+        // child settled says nothing about the USER'S goal, and the host's own
+        // todo list does.  Read-only (GET /session/{id}/todo has no write
+        // body), so this can remind but never rewrite.
+        if (settled && typeof api?.todo === "function" && parent) {
+          try {
+            const un = unwrapClientResult(await api.todo({ path: { id: parent }, ...(directory ? { query: { directory } } : {}) }))
+            const open = un.ok ? openHostTodos(un.data) : []
+            if (open.length) {
+              header.push(
+                `⚠ 目标未达成：宿主 todolist 还有 ${open.length} 项未完成 —— ${open.slice(0, 6).map((t) => `「${t.content}」(${t.status})`).join("、")}` +
+                  (open.length > 6 ? ` …+${open.length - 6}` : "") +
+                  `\n按目标指令：要么继续做掉，要么向用户写明哪一条被什么卡住；不要把这轮当成收尾。`,
+              )
+              log({ step_id: "join", event: "goal_open", count: open.length })
+            }
+          } catch {
+            /* the todo endpoint is an extra, never a reason to fail a join */
+          }
+        }
         const wantText = !(args.includeText === false || args.includeText === "false")
         const collectible = mine.filter((r) => r.state !== "running")
         const blocks: string[] = []

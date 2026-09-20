@@ -2896,7 +2896,7 @@ try {
     assert.deepEqual(dmod.summarizeStates([{ state: "idle" }, { state: "running" }, { state: "error" }]), { running: 1, idle: 1, error: 1 }, "state summary counts")
 
     const sessionFake = (over = {}) => {
-      const calls = { create: [], promptAsync: [], messages: [], status: [], abort: [], children: [], get: [] }
+      const calls = { create: [], promptAsync: [], messages: [], status: [], abort: [], children: [], get: [], todo: [] }
       const ids = over.ids ?? ["ses_child_1"]
       // THE BINDING PIN: the real SDK's endpoints read their receiver, so a
       // captured reference (`const f = api.create`) throws
@@ -2957,6 +2957,13 @@ try {
           calls.get.push(o.path.id)
           return { ok: true, data: { id: o.path.id, parentID: (over.parents ?? {})[o.path.id] } }
         },
+        // GET /session/{id}/todo — read-only, and the goal tripwire's source
+        todo: over.todos === undefined
+          ? undefined
+          : async function (o) {
+              calls.todo.push(o.path.id)
+              return { ok: true, data: over.todos }
+            },
         abort: async function (o) {
           assert.equal(this?.__sdkNamespace, "session", "client.session.abort must be called as a METHOD")
           calls.abort.push(o)
@@ -3189,6 +3196,49 @@ try {
         assert.ok(!one.output.includes("ses_child_1"), "and the OTHER child is not smuggled in by a stringified ids arg")
         assert.ok(one.output.includes("1 完成"), "the summary counts only the requested set")
         await rtIds.dispose()
+      }
+
+      // the goal tripwire: every child settled says nothing about the USER'S
+      // ask, and the host's own todo list does
+      assert.deepEqual(
+        dmod.openHostTodos([
+          { content: "跑通回归", status: "completed" },
+          { content: "补文档", status: "in_progress" },
+          { content: "等用户拍板", status: "pending" },
+        ]).map((t) => t.content),
+        ["补文档", "等用户拍板"],
+        "completed/cancelled items are not open work; pending and in_progress are",
+      )
+      assert.deepEqual(dmod.openHostTodos(undefined), [], "a missing todo payload is no open work, never a crash")
+      assert.deepEqual(dmod.openHostTodos([{ content: "", status: "pending" }]), [], "an empty item is not reported")
+      {
+        const { client: cGoal, calls: callsGoal } = sessionFake({
+          statusMap: { ses_child_1: { type: "idle" } },
+          todos: [
+            { content: "为 tm_pty 写清治理边界", status: "pending" },
+            { content: "已完成的旧项", status: "completed" },
+          ],
+        })
+        const rtGoal = await tm.createTmTools({ directory: mktmp("disp-goal"), client: cGoal, $: fake$Ok("") })
+        await rtGoal.tools.tm_dispatch.execute({ agent: "tester", task: BRIEF }, LEAD)
+        rtGoal.observeDispatchEvent({ type: "session.idle", properties: { sessionID: "ses_child_1" } })
+        const withOpen = await rtGoal.tools.tm_join.execute({}, LEAD)
+        assert.ok(withOpen.output.includes("目标未达成"), "a settled round with open todos says the goal is NOT met")
+        assert.ok(withOpen.output.includes("为 tm_pty 写清治理边界"), "and names the open item verbatim")
+        assert.ok(!withOpen.output.includes("已完成的旧项"), "completed items are not thrown at the lead as unfinished")
+        assert.ok(withOpen.output.includes("不要把这轮当成收尾"), "the line tells it what to do instead of a status")
+        assert.deepEqual(callsGoal.todo, ["ses_lead"], "the todo read is scoped to the CALLING session")
+        await rtGoal.dispose()
+
+        // all todos done -> no warning, the round may legitimately close
+        const { client: cDone } = sessionFake({ statusMap: { ses_child_1: { type: "idle" } }, todos: [{ content: "全部做完", status: "completed" }] })
+        const rtDone = await tm.createTmTools({ directory: mktmp("disp-goal-done"), client: cDone, $: fake$Ok("") })
+        await rtDone.tools.tm_dispatch.execute({ agent: "tester", task: BRIEF }, LEAD)
+        rtDone.observeDispatchEvent({ type: "session.idle", properties: { sessionID: "ses_child_1" } })
+        const closed = await rtDone.tools.tm_join.execute({}, LEAD)
+        assert.ok(!closed.output.includes("目标未达成"), "a clean todo list adds no warning")
+        assert.ok(closed.output.includes("全部已结算"), "and the round still reports its own state")
+        await rtDone.dispose()
       }
 
       // a session.error whose payload is an OBJECT must reach tm_join readable

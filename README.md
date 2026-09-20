@@ -49,6 +49,7 @@ TeamMode's answer to each:
 | 🕳️ **Silent side effects** | R6/R2 approval gate: env-var reads and dangerous ops route through OpenCode's official confirmation dialog, auto-rejected after 1 unanswered minute (default). The plugin never approves on its own — it only ever rejects. |
 | 🌫️ **Hallucinated research** | Web access is a two-role grant with an allowlisted, governed tool chain. A fact that couldn't be fetched is reported as a gap — never fabricated. |
 | 🧭 **Walls of text** | Replies are steered into the shape the host renders fastest: a markdown table for per-file / per-case / per-finding results, fenced code for diffs and configs, a browser screenshot attached as an inline image only when you ask for one. The host does not draw mermaid, so no agent pretends it does. |
+| 🎯 **Goal drift** | The lead opens with `GOAL:` in your own words plus checkable `ACCEPTANCE:` criteria, and the run does not end while a criterion lacks evidence — the only legitimate stops are named (blocked on you, or provably unachievable). When a round settles with items still open on the host's todo list, `tm_join` says 目标未达成 and lists them, and the goal is carried through context compaction so a summarized transcript cannot redefine it. |
 
 And the workflow discipline underneath: deterministic routing, a ≤30-line plan
 you approve before ≥2 dispatches execute, structured `STATUS/CHANGES/FINDINGS/
@@ -485,6 +486,8 @@ for overrides, extra agents and disabling roles.
 | `TM_BASH_TIMEOUT_PROBE_MS` | `60000` | ceiling forced onto a `timeout` the model set for a read-only probe command (0 disables) |
 | `TM_BASH_TIMEOUT_MAX_MS` | `0` | optional global ceiling for every other bash command — off by default so a real build keeps the timeout it asked for |
 | `TM_PTY_MAX` | `4` | concurrent `tm_pty` terminal sessions this plugin may keep running at once |
+| `TM_DISPATCH_ASK` | `on` | `tm_dispatch` opens the official confirmation dialog before spawning a sub-agent — the same gate the built-in `task` tool applies (`ctx.ask` per sub-agent type), so a plugin-side dispatcher is not a way around the user's rules. No ask bridge ⇒ refused. `off` skips it (the lead-only lock still applies) |
+| `TM_SUBAGENT_DEPTH` | `1` | nesting ceiling for dispatched children, same 口径 as the host's `subagent_depth` (1 = sub-agents never spawn sub-agents). Enforced plugin-side because that check lives in the task tool, not in the session API |
 | `TM_TOOL_HINTS` | `on` | append TeamMode's call-site discipline to the built-in `bash` / `task` tool DESCRIPTIONS via `tool.definition` (append-only, idempotent — the host text is never replaced) |
 | `TM_AGENT_TEMPERATURE` | `off` | `on` applies a per-role sampling table (architect 0.35 / researcher 0.3 / reviewer 0.1 / rest 0.2) via `chat.params`; or give it `reviewer=0.05;team=0.4`. Off = the documented "all agents at 0.2" invariant stands |
 | `TM_COMPACTION_CONTEXT` | `on` | on the host's pre-compaction hook, add the must-survive list (reply skeleton, offload handles, dispatched child session ids, provenance, board paths). Additive — the host's own summarizer prompt is never replaced |

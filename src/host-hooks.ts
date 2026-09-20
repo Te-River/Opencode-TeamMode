@@ -173,6 +173,7 @@ export function applyChatParams(input: unknown, output: unknown, env: EnvLike = 
  *   - the todo list and board paths — the state lives there, not in chat.
  */
 export const COMPACTION_CONTEXT = [
+  "The GOAL directive survives compaction: the user's own ask (GOAL + its ACCEPTANCE criteria) is the contract for this run — carry it verbatim, keep working while a criterion lacks EVIDENCE, and never let a summarized transcript quietly redefine or shrink what they asked for.",
   "OpenCode TeamMode contract survives compaction: every specialist reply keeps the STATUS / CHANGES / FINDINGS / EVIDENCE / HANDOFF skeleton and the lead machine-checks it — never summarize a reply into prose without those keys.",
   "Offloaded payloads are addressed by handle (ref + access_token + expire_at) from tm_* results. Carry the handles forward VERBATIM; never re-run a tool to rediscover a payload a handle already names.",
   "Async dispatches (tm_dispatch) and their child session ids must survive: an uncollected child is still-running work, not finished work.",
