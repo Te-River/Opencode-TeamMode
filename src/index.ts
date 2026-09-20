@@ -51,6 +51,7 @@ import {
 import { createTmTools } from "./tm/index.js"
 import { createBashTimeoutHook } from "./tm/bash-timeout.js"
 import { createCapabilityProbe, type CapabilityProbe } from "./capabilities.js"
+import { createTaskOffload } from "./task-offload.js"
 import { setAskBridgeObserver } from "./tm/perm-ask.js"
 import {
   applyToolDefinition,
@@ -59,7 +60,9 @@ import {
   applyCompactionAutoContinue,
   applyShellEnv,
   hookSwitches,
+  TASK_HINT_BACKGROUND,
 } from "./host-hooks.js"
+import { hostBackgroundSubagentsEnabled } from "./tm/dispatch.js"
 
 /** Runtime addendum to the team prompt: concrete board + TTL (hybrid mode). */
 function blackboardNote(root: string, ttlDays: number): string {
@@ -207,6 +210,16 @@ const plugin: OpenCodePlugin = {
     // ctx.ask is only observable from inside a tool call — perm-ask reports
     // every lookup it makes, which is how this row ever reaches 已验证.
     setAskBridgeObserver((present) => capabilityProbe?.observeAskBridge(present))
+    // Plan B's other half: keep the host's background-task result injection
+    // inside the context budget. Built here because it needs the tm runtime's
+    // thresholds and its trajectory writer.
+    const taskOffloadHook = createTaskOffload({
+      enabled: tmRuntime.config.taskOffload === "on",
+      thresholdTokens: tmRuntime.config.offloadThresholdText,
+      previewLines: tmRuntime.config.previewLines,
+      previewMaxTokens: tmRuntime.config.previewMaxTokens,
+      log: (event) => tmRuntime.pipelines.store.appendTrajectory(event),
+    })
     // Startup report: one trajectory line always, one toast ONLY when a
     // required surface is gone (a missing 待观察 row is not an alarm).
     capabilityProbe.report()
@@ -296,7 +309,7 @@ const plugin: OpenCodePlugin = {
       // reports it either way.
       "tool.definition": (input: unknown, output: unknown) => {
         capabilityProbe?.observeHook("tool.definition")
-        applyToolDefinition(input, output, hostSwitches.toolHints)
+        applyToolDefinition(input, output, hostSwitches.toolHints, hostBackgroundSubagentsEnabled() ? TASK_HINT_BACKGROUND : undefined)
       },
       "chat.params": (input: unknown, output: unknown) => {
         capabilityProbe?.observeHook("chat.params")
@@ -356,7 +369,15 @@ const plugin: OpenCodePlugin = {
       },
       // secondary registration channel (official 1.18.x contract; the event
       // route above is the one verified against the live 1.18.29 bus)
-      "chat.message": (input: { sessionID?: string; agent?: string }) => {
+      "chat.message": (
+        input: { sessionID?: string; agent?: string },
+        output?: { message?: { role?: unknown }; parts?: Array<Record<string, unknown>> },
+      ) => {
+        // Plan B: the host's background sub-agent injects the child's FULL
+        // reply here. Governance first, and independent of the approval gate —
+        // it only ever touches synthetic parts carrying the host's own
+        // task envelope (see src/task-offload.ts).
+        taskOffloadHook(input, output ?? { message: undefined, parts: undefined })
         if (!approvalGate) return
         if (
           input &&

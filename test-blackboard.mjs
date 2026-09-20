@@ -276,6 +276,22 @@ assert.ok(
 )
 assert.ok(leadPrompt.includes("your context is the team's scarce"), "lead: division of labour framed as context economy")
 assert.ok(leadPrompt.includes("blocking on `task`"), "lead: blocking on task for independent work is named an anti-pattern")
+assert.ok(
+  leadPrompt.includes("A wait is not\n  parallelism"),
+  "lead: chained tm_join waits are named as the pattern that throws the parallelism away",
+)
+assert.ok(
+  leadPrompt.includes("OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS=true"),
+  "lead: when the user cannot see sub-agents, the real options are named (session tree / tm_stats recent / the host's own background card)",
+)
+assert.ok(
+  leadPrompt.includes("Two dispatch channels"),
+  "lead: the host's watchable task{background} vs our collectable tm_dispatch is a routing rule, not an accident",
+)
+assert.ok(
+  leadPrompt.includes("injects the") && leadPrompt.includes("FULL reply into your context"),
+  "lead: the token price of the host's background path is stated where the choice is made",
+)
 // async dispatch makes multi-in_progress normal, and order is negotiable
 assert.ok(leadPrompt.includes("SEVERAL items"), "lead: parallel dispatch explicitly licenses several in_progress items")
 assert.ok(leadPrompt.includes("ORDER IS A DEFAULT, NOT A LAW"), "lead: todo-list order yields to parallelism")

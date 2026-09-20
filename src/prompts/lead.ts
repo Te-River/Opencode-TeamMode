@@ -97,6 +97,17 @@ files — NOT docs, comments, formatting, NOT *.test.* files).
   but the host renders a plugin tool as a one-line card nobody can expand —
   so the round's reply names which children are live and what each is for,
   instead of letting a dispatch look like a stalled tool call.
+- **Two dispatch channels, pick on purpose.** The host's own
+  \`task { background: true }\` is the WATCHABLE path — its card links to the
+  live child session and it wakes you with the result — but it injects the
+  child's FULL reply into your context (N big reports = N× the tokens, every
+  later step). \`tm_dispatch\` + \`tm_join\` is the COLLECT path — skeletons
+  first, payloads behind handles, cancel + restart recovery. Watchable single
+  task → host path; a batch whose text you do not all need → ours. The host
+  path needs the operator to set \`OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS=true\`;
+  without it \`task\` blocks you. When the user says they cannot see the
+  sub-agents working, say which children are live and where to open them
+  (session tree, or \`tm_stats { recent: N }\` for what the calls returned).
 - \`TM_PARALLEL_DISPATCH=off\` means the user asked for one child at a time:
   dispatch, tm_join it, then dispatch the next, and say in your reply that
   the team is running serially by their setting.
@@ -117,7 +128,12 @@ files — NOT docs, comments, formatting, NOT *.test.* files).
   \`;\` behind one long bash call.  tm_pty returns no transcript — tee it to
   a log and read that log when it reports exited.
 - Collect with **tm_join**: no args = status snapshot (running / done /
-  error + elapsed seconds), { waitMs } = bounded wait.  Long child replies
+  error + elapsed seconds), { waitMs } = bounded wait.  **A wait is not
+  parallelism** — while tm_join is in flight your turn is parked exactly like
+  a synchronous \`task\` call, so chaining waits (wait, still running, wait
+  again) is the one pattern that throws the whole lever away: take the cheap
+  snapshot, go do lead work, and only wait when the very next step is blocked
+  on the answer.  Long child replies
   come back through the offload pipeline as handles + ≤80-token previews —
   page them with tm_fetch instead of asking a child to repeat itself.
   Never end a turn with a dispatched child uncollected: list it as an open

@@ -233,6 +233,22 @@ HMAC 句柄，agent 真需要 payload 时用 `tm_fetch` 分页取。
 > 磁盘文件，`tm_stats { recent: 20 }` 会把最近每一次调用连同句柄和文件路径
 > 列出来。想知道"刚才那个工具到底返回了什么"，直接这么问你的 agent。
 
+> **两条派活的路，以及该要哪一条。** OpenCode 自带的 `task` 是唯一能在界面上
+> **给你看**的子代理——它的卡片直接链到那个子会话；再加 `background: true`，
+> 它同时也不阻塞了：子任务跑完，宿主会把你的 lead 唤醒。这个开关是实验性的，
+> 要你自己打开：
+>
+> ```
+> OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS=true
+> ```
+>
+> （给宿主进程设好——Windows 用 `setx`，或从带这个变量的终端启动——然后重启
+> OpenCode）。打开之后 TeamMode 负责把它压在 token 预算内：注入进来的整篇回复
+> 会被换成"预览 + 取回方式"，并且**不会另存一份到磁盘**（`TM_TASK_OFFLOAD=off`
+> 就恢复宿主的原样注入）。`tm_dispatch` / `tm_join` 仍是批量路径——一次多个、
+> 回来的是结构化骨架而不是全文、可 `cancel`、插件重启后还能接管。
+> 宿主那条路的代价也说明白：每个后台任务完成都会唤醒 lead 一次、花一轮。
+
 所有受治理工具都**支持并行**：宿主可以把一批 `tm_search` / `tm_webfetch` /
 `tm_fetch` 调用并发执行——每次调用拿到自己的 step id 和自己的 payload，
 互不串扰（并行测试套件钉死了这一点）。
@@ -449,6 +465,9 @@ Team Lead 自己从不删黑板，你可以随时审计任何一次运行。
 | `TM_DISPATCH_ASK` | `on` | `tm_dispatch` 在创建子代理前先开官方确认窗——与内置 `task` 工具同一道闸（按子代理类型 `ctx.ask`），这样"走插件"不会变成绕过用户规则的后门。没有 ask 桥就拒绝。`off` 跳过这道确认（仅 lead 可派发的锁始终生效） |
 | `TM_SUBAGENT_DEPTH` | `1` | 派发子代理的嵌套上限，与宿主 `subagent_depth` 同口径（1 = 子代理不得再生子代理）。必须插件侧自己执行，因为那道检查长在 task 工具里，不在 session API 上 |
 | `TM_PARALLEL_DISPATCH` | `on` | lead 能否同时跑多个子代理。`off` 时只要还有子代理在跑，第二次 `tm_dispatch` 就被拒绝（拒绝语点名在跑的是谁，并让你先 `tm_join`），团队变成串行：派发 → 回收 → 再派发。拒绝发生在确认窗之前，也写在工具描述里。给带不动 N 个会话的机器或额度用 |
+| `TM_DISPATCH_MAX` | `4` | 一个 lead 同时可跑几个子代理（1..8）。拒绝发生在确认窗之前，拒绝语点名当前在跑的是谁。实测依据：6 个并发 researcher 跑了 19 分钟以上且无一结算 |
+| `TM_JOIN_MAX_WAIT_MS` | `60000` | `tm_join { waitMs }` 的上限。过去是 300 000，于是有了一次"连续两次各等 5 分钟、期间 lead 什么都没做"的实测——等待不是并行，所以默认改成"看一眼就去干活"。上一次没等到任何结算时，第二次等待被截到 10 秒并附替代动作 |
+| `TM_TASK_OFFLOAD` | `on` | 把宿主的后台子代理压在 token 预算内：`task { background: true }` 完成时宿主会把子代理全文注入你的会话，这里把超限的正文换成预览 + 取回指针（`tm_join { ids: [...] }`）。**只碰**同时满足三条的 part：`synthetic === true`、正文精确匹配宿主自己的 `<task id=… state="completed">` 信封、且超过文本卸载阈值；任一不满足就原样放过。不往磁盘复制任何东西——全文本来就写在子会话里。`off` 恢复宿主原样注入 |
 | `TM_TOOL_HINTS` | `on` | 通过 `tool.definition` 把本插件的调用点纪律追加到内置 `bash` / `task` 的**描述**后面（只追加、幂等，绝不替换宿主原文） |
 | `TM_AGENT_TEMPERATURE` | `off` | `on` 时按角色分档采样（architect 0.35 / researcher 0.3 / reviewer 0.1 / 其余 0.2）经 `chat.params` 生效；也可写 `reviewer=0.05;team=0.4`。默认关闭＝守住"所有 agent 0.2"这条既定原则 |
 | `TM_COMPACTION_CONTEXT` | `on` | 在宿主压缩前追加"必须存活清单"（回复骨架、offload 句柄、未回收的子会话 id、出处、板上路径）。只做追加——宿主自己的压缩提示词不被替换 |

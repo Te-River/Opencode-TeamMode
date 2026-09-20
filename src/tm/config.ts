@@ -232,6 +232,28 @@ export interface TmConfig {
    *  for a user whose machine (or provider quota) cannot carry N sessions at
    *  once — it is enforced in the dispatcher, not only in the prompt. */
   parallelDispatch: "on" | "off"
+  /** TM_JOIN_MAX_WAIT_MS (default 60 000) — the ceiling on tm_join's bounded
+   *  wait.  It was 300 000, and a live session used exactly that twice in a
+   *  row: ten minutes of a lead sitting inside a tool call while six
+   *  researchers worked.  A wait is not parallelism — the lead's turn is
+   *  blocked either way — so the default now says "check, then go do lead
+   *  work" instead of "park here".  Raise it only deliberately. */
+  joinMaxWaitMs: number
+  /** TM_DISPATCH_MAX (default 4) — how many children ONE lead may have
+   *  running at once.  A live session dispatched six researchers in 87
+   *  seconds and none of them settled inside 19 minutes: the ceiling is not
+   *  about taste, it is the provider quota and the machine.  Refused BEFORE
+   *  the consent dialog, same ordering as TM_PTY_MAX.  `TM_PARALLEL_DISPATCH=off`
+   *  is stricter (1). */
+  dispatchMax: number
+  /** TM_TASK_OFFLOAD (default on) — keep the HOST's own background sub-agent
+   *  (`task {background:true}`, needs OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS)
+   *  inside our context budget: when the host injects the finished child's full
+   *  reply into the parent session, swap the oversized body for a preview plus a
+   *  `tm_join` pointer (see src/task-offload.ts). Synthetic parts carrying the
+   *  host's own task envelope ONLY — never a message the user typed, and no
+   *  disk copy. `off` restores the host's verbatim injection. */
+  taskOffload: "on" | "off"
   /** Floor (minutes) for the approval-gate ask timeout.  LIVE (Wave A/T2):
    *  approval-gate.ts `resolveAskTimeoutMs` clamps the reply with
    *  `Math.max(min, resolveTmConfig(env).askTimeoutFloorMin)` — this knob
@@ -303,6 +325,9 @@ export const TM_CONFIG_DEFAULTS = {
   dispatchAsk: "on",
   subagentDepth: 1,
   parallelDispatch: "on",
+  joinMaxWaitMs: 60_000,
+  dispatchMax: 4,
+  taskOffload: "on",
   // Consumed by approval-gate.ts resolveAskTimeoutMs (Math.max floor, Wave A).
   // 1 min since the T2 benign already-closed split (user directive).
   askTimeoutFloorMin: 1,
@@ -442,6 +467,9 @@ export function resolveTmConfig(env: EnvLike = process.env): TmConfig {
     dispatchAsk: resolveOnOff(env.TM_DISPATCH_ASK),
     subagentDepth: envInt(env, "TM_SUBAGENT_DEPTH", TM_CONFIG_DEFAULTS.subagentDepth, 0, 8),
     parallelDispatch: resolveOnOff(env.TM_PARALLEL_DISPATCH),
+    joinMaxWaitMs: envInt(env, "TM_JOIN_MAX_WAIT_MS", TM_CONFIG_DEFAULTS.joinMaxWaitMs, 0, 600_000),
+    dispatchMax: envInt(env, "TM_DISPATCH_MAX", TM_CONFIG_DEFAULTS.dispatchMax, 1, 8),
+    taskOffload: resolveOnOff(env.TM_TASK_OFFLOAD),
     askTimeoutFloorMin: envInt(env, "TM_ASK_TIMEOUT_FLOOR_MIN", TM_CONFIG_DEFAULTS.askTimeoutFloorMin, 1, 1440),
     bashTimeoutMaxMs: envInt(env, "TM_BASH_TIMEOUT_MAX_MS", TM_CONFIG_DEFAULTS.bashTimeoutMaxMs, 0, 3_600_000),
     bashTimeoutProbeMs: envInt(env, "TM_BASH_TIMEOUT_PROBE_MS", TM_CONFIG_DEFAULTS.bashTimeoutProbeMs, 0, 600_000),

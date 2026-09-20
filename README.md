@@ -242,6 +242,25 @@ through with `tm_fetch` when it genuinely needs the payload.
 > recap with those handles and file paths, which you can open. Ask your agent
 > for it — "what did that tool actually return?"
 
+> **Two ways to delegate, and which to want.** OpenCode's own `task` tool is the
+> only sub-agent the interface can SHOW you: its card links to the live child
+> session. Add `background: true` and it is also non-blocking — the host wakes
+> your lead when the child finishes. That flag is experimental, so you turn it
+> on yourself:
+>
+> ```
+> OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS=true
+> ```
+>
+> (set it for the app process — `setx` on Windows, or launch from a shell that
+> exports it — then restart OpenCode). TeamMode then keeps that channel inside
+> your token budget: the injected full reply is replaced by a preview plus a
+> pointer, and nothing is copied to disk (`TM_TASK_OFFLOAD=off` restores the
+> host's verbatim text). `tm_dispatch` / `tm_join` remains the batch path —
+> several children at once, structured skeletons instead of full text, `cancel`,
+> and recovery after a restart. Cost of the host path, stated plainly: each
+> finished background task wakes the lead and costs a turn.
+
 All governed tools are **parallel-safe**: the host may run a batch of
 `tm_search` / `tm_webfetch` / `tm_fetch` calls concurrently — each call gets
 its own step id and its own payload, and nothing cross-contaminates
@@ -501,6 +520,9 @@ for overrides, extra agents and disabling roles.
 | `TM_DISPATCH_ASK` | `on` | `tm_dispatch` opens the official confirmation dialog before spawning a sub-agent — the same gate the built-in `task` tool applies (`ctx.ask` per sub-agent type), so a plugin-side dispatcher is not a way around the user's rules. No ask bridge ⇒ refused. `off` skips it (the lead-only lock still applies) |
 | `TM_SUBAGENT_DEPTH` | `1` | nesting ceiling for dispatched children, same 口径 as the host's `subagent_depth` (1 = sub-agents never spawn sub-agents). Enforced plugin-side because that check lives in the task tool, not in the session API |
 | `TM_PARALLEL_DISPATCH` | `on` | whether the lead may have more than one sub-agent running at a time. `off` refuses a second `tm_dispatch` while any child is still live (the refusal names the running children, and happens before the confirmation dialog), so the team works serially: dispatch → `tm_join` → next. For a machine or provider quota that cannot carry N sessions at once |
+| `TM_DISPATCH_MAX` | `4` | how many children ONE lead may have running at a time (1..8). Refused before the confirmation dialog, and the refusal names what is already live. Measured reason: six concurrent researchers ran 19+ minutes with nothing settled |
+| `TM_JOIN_MAX_WAIT_MS` | `60000` | ceiling on `tm_join { waitMs }`. Was 300 000, and a lead parked in it twice in a row (19 min of nothing) while its children worked — waiting is not parallelism, so the default now says "check, then work". A second consecutive wait after nothing settled is cut to 10 s and answered with what to do instead |
+| `TM_TASK_OFFLOAD` | `on` | keep the HOST's background sub-agent inside the context budget: when `task { background: true }` finishes, the host injects the child's full reply into your session; this replaces an oversized body with a preview + a `tm_fetch`-style pointer (`tm_join { ids: [...] }`), touching ONLY synthetic parts that carry the host's own `<task id=… state="completed">` envelope and exceed the text offload threshold. Nothing is copied to disk — the text stays where it was written (the child session). `off` restores the host's verbatim injection |
 | `TM_TOOL_HINTS` | `on` | append TeamMode's call-site discipline to the built-in `bash` / `task` tool DESCRIPTIONS via `tool.definition` (append-only, idempotent — the host text is never replaced) |
 | `TM_AGENT_TEMPERATURE` | `off` | `on` applies a per-role sampling table (architect 0.35 / researcher 0.3 / reviewer 0.1 / rest 0.2) via `chat.params`; or give it `reviewer=0.05;team=0.4`. Off = the documented "all agents at 0.2" invariant stands |
 | `TM_COMPACTION_CONTEXT` | `on` | on the host's pre-compaction hook, add the must-survive list (reply skeleton, offload handles, dispatched child session ids, provenance, board paths). Additive — the host's own summarizer prompt is never replaced |

@@ -78,6 +78,9 @@ export interface DispatchDeps {
   /** TM_PARALLEL_DISPATCH: may more than one child run at a time?  Default on;
    *  `off` refuses a second dispatch while any child of this session is live. */
   parallelDispatch?: "on" | "off"
+  /** TM_DISPATCH_MAX: how many children ONE lead may have running at once
+   *  (default 4).  Ignored when parallelDispatch is off, which means 1. */
+  maxConcurrent?: number
   /** The host's toast channel (wired from index.ts's tui.showToast).  A
    *  tm_dispatch child is invisible in the tool card — the desktop renders an
    *  unregistered tool as a one-line row with no body — so the toast is what
@@ -146,6 +149,45 @@ export function dispatchTitle(agent: string, label: string): string {
 
 /** Suffix tm_dispatch appends inside the host's `(@<agent> subagent)` shape. */
 export const DISPATCH_TITLE_MARKER = " ·tm"
+
+/** The host's OWN visible-and-non-blocking sub-agent path: its built-in `task`
+ *  tool takes `background: true`, and because that card is rendered by the
+ *  host's own `task` renderer it links to the child session — which a plugin
+ *  tool card structurally cannot do (see README).  The parameter is gated
+ *  behind a runtime flag (verified in the desktop binary):
+ *  `OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS`, falling back to the umbrella
+ *  `OPENCODE_EXPERIMENTAL`.  We read the SAME env the host reads — our plugin
+ *  runs inside that process — so this is a fact, not a guess. */
+export function hostBackgroundSubagentsEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
+  const truthy = (v: unknown): boolean | null => {
+    const s = typeof v === "string" ? v.trim().toLowerCase() : ""
+    if (!s) return null
+    return s === "1" || s === "true" || s === "yes" || s === "on"
+  }
+  return truthy(env.OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS) ?? truthy(env.OPENCODE_EXPERIMENTAL) ?? false
+}
+
+/** A wait budget spelled the way a human reads it (never "0s" for 300 ms). */
+function waitLabel(ms: number): string {
+  return ms >= 1000 ? `${Math.round(ms / 1000)}s` : `${ms}ms`
+}
+
+/** What a tm_join wait may actually cost.  The FIRST bounded wait gets the
+ *  requested budget (clamped to TM_JOIN_MAX_WAIT_MS); a wait that follows a
+ *  wait which settled nothing gets cut to REPEAT_WAIT_MS, because the second
+ *  one is the shape of a lead parking instead of working — measured live at
+ *  2 × 300 s of nothing while six children ran. */
+export const REPEAT_WAIT_MS = 10_000
+export function joinBudget(
+  waitMs: number,
+  maxWaitMs: number,
+  prev: { stillRunning: number; streak: number } | undefined,
+): { budget: number; repeat: boolean; streak: number } {
+  const clamped = Math.max(0, Math.min(maxWaitMs, waitMs))
+  const repeat = !!prev && prev.stillRunning > 0 && clamped > 0
+  const streak = clamped === 0 ? (prev?.streak ?? 0) : repeat ? (prev?.streak ?? 1) + 1 : 1
+  return { budget: repeat ? Math.min(clamped, REPEAT_WAIT_MS) : clamped, repeat, streak }
+}
 
 /** The pre-1.5.15 title (`tm:<agent>:<label>`).  Still accepted on the way in
  *  so a child created before the upgrade is not orphaned by restart recovery. */
@@ -324,14 +366,21 @@ export function buildDispatchTools(deps: DispatchDeps): {
 } {
   const leadAgent = deps.leadAgent ?? "team"
   const targets = deps.targets ?? DISPATCH_TARGETS
-  const maxWaitMs = deps.maxWaitMs ?? 300_000
+  const maxWaitMs = deps.maxWaitMs ?? 60_000
   const askBeforeSpawn = deps.askBeforeSpawn !== false
   const maxDepth = Math.max(0, Number.isFinite(deps.maxDepth as number) ? (deps.maxDepth as number) : 1)
   const parallel = deps.parallelDispatch !== "off"
+  const maxConcurrent = Math.max(1, Math.min(8, Math.round(Number(deps.maxConcurrent) || 4)))
   const now = deps.now ?? (() => Date.now())
   const store = deps.pipelines.store
   const log = (e: Record<string, unknown>) => store.appendTrajectory({ tool: "tm_dispatch", ...e })
   const children = new Map<string, ChildRecord>()
+  /** Per-parent memory of the LAST join's outcome.  A wait is not parallelism
+   *  — while tm_join is in flight the lead's turn is blocked exactly like a
+   *  synchronous `task` call — so a SECOND wait that inherited a first wait
+   *  which settled nothing is the pattern a live session burned ten minutes
+   *  on.  It gets cut short and answered with what to do instead. */
+  const lastJoin = new Map<string, { at: number; stillRunning: number; streak: number }>()
   const api = sessionApiOf(deps.client)
 
   /** Refresh a child's state from the host's own status map (the event bus
@@ -458,6 +507,43 @@ export function buildDispatchTools(deps: DispatchDeps): {
     return adopted
   }
 
+  /** Claim ONE explicitly named child of the calling session — the host's own
+   *  `task` child included, which `adoptFromHost` must never pick up on its
+   *  own.  The lock is the host's parentage (`parentID === the caller`), read
+   *  back rather than assumed: an id belonging to someone else stays a miss. */
+  async function claimNamedChild(
+    sid: string,
+    parent: string,
+    directory: string | undefined,
+  ): Promise<boolean> {
+    if (typeof api?.get !== "function" || !sid || !parent || children.has(sid)) return false
+    let un: Unwrapped
+    try {
+      un = unwrapClientResult(await api.get({ path: { id: sid }, ...(directory ? { query: { directory } } : {}) }))
+    } catch {
+      return false
+    }
+    if (!un.ok) return false
+    const info = un.data as Record<string, unknown> | null
+    if (String(info?.parentID ?? "").trim() !== parent) return false
+    const rawAgent = String(info?.agent ?? "").trim().toLowerCase()
+    const agent = targets.includes(rawAgent as (typeof targets)[number]) ? rawAgent : "task"
+    const title = String(info?.title ?? "").trim()
+    const created = Number((info?.time as { created?: unknown } | undefined)?.created)
+    children.set(sid, {
+      sessionID: sid,
+      agent,
+      label: (title || "host task").slice(0, 40),
+      parentSessionID: parent,
+      startedAt: Number.isFinite(created) && created > 0 ? created : now(),
+      state: "running",
+      adopted: true,
+    })
+    deps.onChildSession?.(sid, agent)
+    log({ step_id: "join", event: "claim_host_task", child: sid, agent })
+    return true
+  }
+
   /** Settle verdict for adopted rows: `AssistantMessage.time.completed` is
    *  only set once the reply is done, so it answers "finished while nobody
    *  was listening?" without waiting for an event that already fired. */
@@ -505,7 +591,9 @@ export function buildDispatchTools(deps: DispatchDeps): {
 - The brief must stand alone: the child has not seen this conversation, does not know what you tried, and cannot ask you mid-run.  Say what to do, WHY it matters, which files/paths are its territory, what "done" looks like, and how much thoroughness you expect — the child still answers the mandatory STATUS/CHANGES/FINDINGS/EVIDENCE/HANDOFF skeleton.
 - Collect with tm_join (no wait = status snapshot, waitMs = bounded wait).  Collected replies ride the offload pipeline: a long report arrives as a handle + preview, not a context flood.
 - Division of labour: bulk reading / searching / aggregation burns the CHILD's context and comes back as a skeleton; your own context is the scarce resource — keep it for routing, decisions and the final merge.
-- Only the team lead may call this; a child never dispatches (no nested teams).  If the host exposes no async session API the call fails with an explicit "use the built-in task tool" directive.${
+- Only the team lead may call this; a child never dispatches (no nested teams).  If the host exposes no async session API the call fails with an explicit "use the built-in task tool" directive.
+- At most ${maxConcurrent} children of ONE lead may run at a time (TM_DISPATCH_MAX); a further dispatch is refused until you collect one.  Each child is a full model session — six concurrent researchers measured 19+ minutes with nothing settled.
+- Pick the right channel: when the operator set OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS=true, the host's own \`task { background: true }\` is the WATCHABLE path (its card links to the live child session, and on completion it injects the result and wakes you).  tm_dispatch is the COLLECT path — replies come back as STATUS/CHANGES skeletons governed by the offload pipeline, plus cancel and restart recovery.  A big batch of full-text results through the host path lands verbatim in your context; that is the trade.${
   parallel
     ? ""
     : `
@@ -580,26 +668,36 @@ export function buildDispatchTools(deps: DispatchDeps): {
             ),
           )
         }
-        // (1b) TM_PARALLEL_DISPATCH=off — one child at a time.  Refused BEFORE
-        // the dialog (same ordering as tm_pty's concurrency cap): never ask the
+        // (1b) how many children this lead may have live at once.  Refused
+        // BEFORE the dialog (same ordering as tm_pty's cap): never ask the
         // user to approve a spawn the policy has already declined.
-        if (!parallel) {
-          const live = [...children.values()].filter(
-            (r) => r.state === "running" && r.parentSessionID === parent,
+        const live = [...children.values()].filter(
+          (r) => r.state === "running" && r.parentSessionID === parent,
+        )
+        const cap = parallel ? maxConcurrent : 1
+        if (live.length >= cap) {
+          const who = live.map((r) => `${r.agent}「${r.label}」`).slice(0, 4).join("、")
+          log({
+            step_id: "dispatch",
+            event: parallel ? "cap_refused" : "serial_refused",
+            agent,
+            label,
+            live: live.length,
+            cap,
+          })
+          return toToolResult(
+            tmError(
+              tool,
+              "governance",
+              parallel
+                ? `并发上限 ${cap} 个（TM_DISPATCH_MAX），你这轮已有 ${live.length} 个在跑（${who}）。` +
+                    `先 tm_join 收掉一个再派下一个；确实要更多就设 TM_DISPATCH_MAX（最大 8）——` +
+                    `注意每个子代理是一条完整的模型会话，6 个并发实测会把单轮拉到 19 分钟以上且全部未结算。`
+                : `TM_PARALLEL_DISPATCH=off：一次只跑一个子代理，而你这轮已有 ${live.length} 个在跑（${who}）。` +
+                    `先 tm_join 收掉再派 ${agent}。注意：并行才是 Team 的意义——串行是你选的模式，` +
+                    `要恢复默认值就删掉 TM_PARALLEL_DISPATCH 或设为 on。`,
+            ),
           )
-          if (live.length) {
-            const who = live.map((r) => `${r.agent}「${r.label}」`).slice(0, 4).join("、")
-            log({ step_id: "dispatch", event: "serial_refused", agent, label, live: live.length })
-            return toToolResult(
-              tmError(
-                tool,
-                "governance",
-                `TM_PARALLEL_DISPATCH=off：一次只跑一个子代理，而你这轮已有 ${live.length} 个在跑（${who}）。` +
-                  `先 tm_join 收掉再派 ${agent}。注意：并行才是 Team 的意义——串行是你选的模式，` +
-                  `要恢复默认值就删掉 TM_PARALLEL_DISPATCH 或设为 on。`,
-              ),
-            )
-          }
         }
         // (2) the user decides which sub-agent gets spawned — the task tool
         // asks ctx.ask({permission:"task", patterns:[subagent_type]}) and we
@@ -666,7 +764,10 @@ export function buildDispatchTools(deps: DispatchDeps): {
               ? `模型沿用你当前的：${model.providerID}/${model.modelID}（子会话不自带模型）。`
               : `⚠ 未能从本会话记录里解析出模型，子会话将由宿主决定——若它启动即失败，改用内置 task 工具。`,
             `你现在可以继续：编排下一步、做廉价检查、或继续派发其它独立任务。`,
-            `收集结果：tm_join（立即看状态）或 tm_join { waitMs: 60000 }。所有派发完成前不要提交结论。`,
+            `收集：先 tm_join（不带 waitMs = 快照，不花钱）。只有下一步真的卡在结果上才 waitMs（上限 ${waitLabel(maxWaitMs)}）——等待期间你的回合是被占住的，那不是并行。`,
+            hostBackgroundSubagentsEnabled()
+              ? `用户想看实时进度的话：宿主的内置 task {background:true} 卡片可以直接点开子会话。`
+              : `用户想看子代理在干什么时，如实说明：本插件派发的子会话挂在左侧会话树（标题含 (@${agent} subagent ·tm)），插件工具卡片宿主不给展开；要那种可点开的卡片，得让宿主开 OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS=true 后用内置 task {background:true}。`,
           ].join("\n"),
         )
       } catch (err) {
@@ -679,13 +780,13 @@ export function buildDispatchTools(deps: DispatchDeps): {
   const join: ToolDefinition = {
     description: `Collect what the async dispatches (tm_dispatch) have produced.
 - No args: status snapshot of every open child of THIS session — running / idle(done) / error, with elapsed seconds.  Cheap and non-blocking: use it to decide whether to keep working or start merging.
-- { waitMs: 30000 }: bounded wait (capped at ${Math.round(maxWaitMs / 1000)}s) until every child settles, then returns each one's reply skeleton.  Never wait for a child whose result you do not need — abort it instead ({ cancel: true }).
+- { waitMs: 30000 }: bounded wait (capped at ${waitLabel(maxWaitMs)}) until every child settles, then returns each one's reply skeleton.  A wait BLOCKS YOU — your turn is parked in this tool call, which is exactly the synchronous \`task\` behaviour tm_dispatch exists to avoid.  So: wait once, briefly, only when the very next step needs the answer; a second consecutive wait after nothing settled is cut to 10s and answered with what to do instead.  Never wait for a child whose result you do not need — abort it instead ({ cancel: true }).
 - { ids: [...] }: restrict to those child sessions; { cancel: true }: abort still-running ones (a runaway child is yours to stop, not the user's problem).
 - A plugin/host restart does NOT orphan a dispatch: children the host still lists under your session are re-adopted automatically (their rows are marked 接管), and one that answered while nobody was listening is reported 已完成, not lost.
 - Replies come back through the offload pipeline: a long sub-agent report arrives as a handle + ≤80-token preview (page it with tm_fetch), so five parallel dispatches do not multiply your context.  STATUS: blocked/failed children are surfaced first, always.`,
     args: {
       ids: { descriptor: "ids: string[] (optional — only these child sessions)" },
-      waitMs: { descriptor: "waitMs: number (optional 0..300000 — bounded wait before collecting)" },
+      waitMs: { descriptor: `waitMs: number (optional 0..${maxWaitMs} — bounded wait; a SECOND consecutive wait is cut to 10s, because waiting is not parallel work)` },
       cancel: { descriptor: "cancel: true (abort the still-running children in this set)" },
       includeText: { descriptor: "includeText: false to get only the status table (default true)" },
     },
@@ -711,6 +812,17 @@ export function buildDispatchTools(deps: DispatchDeps): {
         // for — the host's session tree, not our memory, is the authority.
         if (mine.length < (idFilter ? idFilter.size : 1)) {
           if (await adoptFromHost(parent, directory, idFilter)) mine = owned()
+          // Plan B: a NAMED id may be the host's own `task` child (no ·tm
+          // marker, so the tree walk above never claims it).  Collecting it is
+          // how the lead reads back a result we replaced with a pointer — the
+          // host's parentage check below replaces the title discriminator, and
+          // only an explicit request reaches this path.
+          if (idFilter) {
+            for (const sid of idFilter) {
+              if (children.has(sid)) continue
+              if (await claimNamedChild(sid, parent, directory)) mine = owned()
+            }
+          }
         }
         if (!mine.length) {
           return toToolResult(
@@ -719,7 +831,10 @@ export function buildDispatchTools(deps: DispatchDeps): {
         }
         await settleAdopted(mine, directory)
         const waitMs = Math.max(0, Math.min(maxWaitMs, Number(args.waitMs) || 0))
-        const deadline = now() + waitMs
+        const prev = lastJoin.get(parent)
+        const { budget, repeat: repeatWait, streak } = joinBudget(waitMs, maxWaitMs, prev)
+        const waitStart = now()
+        const deadline = waitStart + budget
         let settled = false
         for (;;) {
           await refreshFromStatus(directory)
@@ -731,6 +846,16 @@ export function buildDispatchTools(deps: DispatchDeps): {
           await sleep(Math.min(1000, Math.max(100, deadline - now())))
         }
         const stillRunning = mine.filter((r) => r.state === "running")
+        lastJoin.set(parent, { at: now(), stillRunning: stillRunning.length, streak })
+        log({
+          step_id: "join",
+          event: "wait",
+          asked_ms: waitMs,
+          budget_ms: budget,
+          waited_ms: Math.max(0, now() - waitStart),
+          still_running: stillRunning.length,
+          repeat: repeatWait,
+        })
         if (args.cancel === true || args.cancel === "true") {
           for (const r of stillRunning) {
             if (typeof api?.abort === "function") {
@@ -746,9 +871,18 @@ export function buildDispatchTools(deps: DispatchDeps): {
         }
         const sums = summarizeStates(mine)
         const header = [
-          `派发汇总：${sums.idle} 完成 / ${sums.running} 运行中 / ${sums.error} 失败${settled ? "（全部已结算）" : "（未等到全部结算，可再次 tm_join）"}`,
+          `派发汇总：${sums.idle} 完成 / ${sums.running} 运行中 / ${sums.error} 失败${settled ? "（全部已结算）" : `（未等到全部结算 · 本次已等 ${Math.round((now() - waitStart) / 1000)}s）`}`,
           ...mine.map((r) => renderChildLine(r, (r.finishedAt ?? now()) - r.startedAt)),
         ]
+        if (repeatWait && stillRunning.length) {
+          header.push(
+            `⏳ 连续第 ${streak} 次等待，而且上一次也没等到结算 —— 这段等待里你什么都没做，它不是并行，是同步 task 的等价物。` +
+              `别再等：① 先做 lead 工作（合并骨架、路由下一个独立任务、你自己的验收项），做完再 tm_join；` +
+              `② 或就此收尾，把未收的派发逐条列成 open handoff 交给用户；` +
+              `③ 或 { cancel: true } 收掉已经不需要的那些。` +
+              `（宿主若开了 OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS=true，内置 task {background:true} 的卡片可以直接点开看实时进度。）`,
+          )
+        }
         // Goal tripwire, at the exact moment a lead tends to wrap up: every
         // child settled says nothing about the USER'S goal, and the host's own
         // todo list does.  Read-only (GET /session/{id}/todo has no write
@@ -761,7 +895,8 @@ export function buildDispatchTools(deps: DispatchDeps): {
               header.push(
                 `⚠ 目标未达成：宿主 todolist 还有 ${open.length} 项未完成 —— ${open.slice(0, 6).map((t) => `「${t.content}」(${t.status})`).join("、")}` +
                   (open.length > 6 ? ` …+${open.length - 6}` : "") +
-                  `\n按目标指令：要么继续做掉，要么向用户写明哪一条被什么卡住；不要把这轮当成收尾。`,
+                  `\n按目标指令：要么继续做掉，要么向用户写明哪一条被什么卡住；不要把这轮当成收尾。` +
+                  `（若这些项其实已经做完——例如你刚把派发结果收齐——先用 todowrite 更新状态，再收尾。）`,
               )
               log({ step_id: "join", event: "goal_open", count: open.length })
             }

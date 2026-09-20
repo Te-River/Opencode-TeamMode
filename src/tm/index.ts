@@ -310,6 +310,8 @@ export async function createTmTools(
     askBeforeSpawn: cfg.dispatchAsk !== "off",
     maxDepth: cfg.subagentDepth,
     parallelDispatch: cfg.parallelDispatch,
+    maxConcurrent: cfg.dispatchMax,
+    maxWaitMs: cfg.joinMaxWaitMs,
     // a dispatch is invisible in the tool card (the host renders only its own
     // built-in tools' bodies), so the toast carries "where to look"
     notify: opts.notify,

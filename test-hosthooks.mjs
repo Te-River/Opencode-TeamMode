@@ -325,6 +325,9 @@ console.log("hosthooks. tool.definition / chat.params / compaction / shell.env /
     { ts: iso(9_000), run_id: "rA", tool: "tm_dispatch", step_id: "events", event: "idle", child: "c2" },
     { ts: iso(12_000), run_id: "rB", tool: "tm_dispatch", step_id: "events", event: "error", child: "c3" },
     { ts: iso(13_000), run_id: "rB", tool: "tm_dispatch", step_id: "join", event: "adopt", child: "c4" },
+    // the lead parked twice inside tm_join, the second time after nothing settled
+    { ts: iso(13_500), run_id: "rB", tool: "tm_dispatch", step_id: "join", event: "wait", waited_ms: 60_000, still_running: 1, repeat: false },
+    { ts: iso(13_600), run_id: "rB", tool: "tm_dispatch", step_id: "join", event: "wait", waited_ms: 10_000, still_running: 1, repeat: true },
     { ts: iso(14_000), run_id: "rB", tool: "tm_browser", step_id: "browser", event: "blocked", count: 3, hosts: "cdn.x,fonts.y" },
     { ts: iso(15_000), run_id: "rB", tool: "tm_browser", step_id: "browser", event: "blocked", count: 2, hosts: "cdn.x" },
     { ts: iso(16_000), run_id: "rB", tool: "tm_pty", step_id: "pty", event: "refused", category: "delete" },
@@ -348,6 +351,8 @@ console.log("hosthooks. tool.definition / chat.params / compaction / shell.env /
   eq(s.governance.clampedTimeouts, 1, "a clamped bash timeout counts")
   eq(s.governance.clampSavedMs, 60_000, "…and reports the dead air it removed")
   eq(s.ptc, { runs: 1, calls: 7, errors: 0, retries: 1, sumMs: 2_500 }, "PTC internals roll up (one turn, N governed calls)")
+  eq([s.dispatch.waitMs, s.dispatch.waits, s.dispatch.repeatWaits], [70_000, 2, 1], "the lead's blocked time inside tm_join is measured, and a chained wait is counted separately from a first one")
+  ok(renderStats(s, { runDirs: 1, roots: [] }).includes("lead 在 tm_join 里干等"), "…and it is a visible row, because 'parallel' that parks the lead is not parallel")
   eq(s.degrades, [{ seam: "tm_browser/playwright-core", reason: "playwright-core import failed" }], "an engine fallback is listed with its reason, not swallowed")
   // one child alone proves nothing
   eq(summarizeEvents([{ ts: iso(0), tool: "tm_dispatch", event: "start" }, { ts: iso(1000), tool: "tm_dispatch", event: "idle", ms: 1000 }]).dispatch.overlapSavedMs, 0, "a single dispatch claims no overlap saving")
@@ -424,5 +429,75 @@ console.log("hosthooks. tool.definition / chat.params / compaction / shell.env /
   console.log("  8. tm_stats: token saving + dispatch overlap + governance counts, over a real trajectory store")
 }
 
+/* ---------- 9. plan B: the host's background task, governed by us ---------- */
+{
+  const { parseTaskEnvelope, renderOffloadedTask, createTaskOffload } = await import("./dist/task-offload.js")
+  const { estimateTokens } = await import("./dist/tm/config.js")
+  const { summarizeEvents, renderStats } = await import("./dist/tm/stats.js")
+  const estimateTokensOf = (t) => estimateTokens(t)
+  const renderStatsWith = (...extra) =>
+    renderStats(summarizeEvents([{ ts: new Date(1_700_000_000_000).toISOString(), tool: "tm_read", step_id: "s1", event: "call" }, ...extra]), { runDirs: 1, roots: [] })
+  const body = "STATUS: done\n" + "FINDINGS: 论证与来源行。".repeat(600)
+  const envelope = `<task id="ses_child_9" state="completed">\n<summary>Background task completed: 夜间抑郁机制</summary>\n<task_result>\n${body}\n</task_result>\n</task>`
+
+  const env = parseTaskEnvelope(envelope)
+  ok(env && env.sessionId === "ses_child_9", "the host's own envelope parses")
+  eq(env.summary, "Background task completed: 夜间抑郁机制", "the summary survives")
+  eq(env.body, body, "the body is exactly what the host injected")
+  eq(parseTaskEnvelope("please run the tests"), null, "an ordinary message is not an envelope")
+  eq(parseTaskEnvelope(envelope.replace('state="completed"', 'state="error"')), null, "a failed task is left alone (its text is short and the user must see it)")
+  eq(parseTaskEnvelope(envelope.replace("<task_result>", "<other>")), null, "a malformed envelope is not touched")
+  eq(parseTaskEnvelope(`<task id="s" state="completed">\n<task_result>\n  \n</task_result>\n</task>`), null, "an empty body is not an offload")
+
+  const logs = []
+  const off = createTaskOffload({
+    enabled: true, thresholdTokens: 4000, previewLines: 20, previewMaxTokens: 80,
+    log: (e) => logs.push(e),
+  })
+  const big = { type: "text", synthetic: true, text: envelope }
+  off({ sessionID: "ses_lead" }, { message: { role: "user" }, parts: [big] })
+  ok(big.text !== envelope, "the oversized injection WAS rewritten")
+  ok(big.text.includes('id="ses_child_9"') && big.text.includes("Background task completed"), "the envelope and summary survive — the model still knows what finished")
+  ok(big.text.includes('tm_join { ids: ["ses_child_9"] }'), "and it is handed the way to read the whole thing")
+  ok(big.text.length < envelope.length / 4, "the full body is gone from the context (kept " + big.text.length + " of " + envelope.length + " chars)")
+  ok(estimateTokensOf(big.text) < 400, "the replacement is small: " + estimateTokensOf(big.text))
+  eq(logs.length, 1, "one trajectory line per offload (the count is how a silent host change gets noticed)")
+  eq(logs[0].tool, "task_offload", "…under its own tool name")
+  ok(logs[0].tokens > 4000 && logs[0].child === "ses_child_9", "…carrying the size it kept out and which child it came from")
+
+  // the three locks: nothing else may ever be rewritten
+  const typed = { type: "text", text: envelope }
+  const small = { type: "text", synthetic: true, text: `<task id="s" state="completed">\n<task_result>\nshort\n</task_result>\n</task>` }
+  const assistant = { type: "text", synthetic: true, text: envelope }
+  off({ sessionID: "ses_lead" }, { message: { role: "assistant" }, parts: [assistant] })
+  off({ sessionID: "ses_lead" }, { message: { role: "user" }, parts: [typed, small] })
+  ok(typed.text === envelope, "a part the USER typed is never touched, even holding a perfect envelope")
+  ok(small.text.startsWith("<task"), "under the threshold, the host's text passes through verbatim")
+  ok(assistant.text === envelope, "an assistant part is never touched")
+  eq(logs.length, 1, "no extra offloads were logged")
+
+  const offSwitch = createTaskOffload({ enabled: false, thresholdTokens: 4000, previewLines: 20, previewMaxTokens: 80 })
+  const untouched = { type: "text", synthetic: true, text: envelope }
+  offSwitch({ sessionID: "s" }, { message: { role: "user" }, parts: [untouched] })
+  ok(untouched.text === envelope, "TM_TASK_OFFLOAD=off restores the host's verbatim injection")
+  let threw = false
+  try {
+    off({ sessionID: "s" }, {})
+    off(undefined, undefined)
+    off({ sessionID: "s" }, { message: { role: "user" }, parts: null })
+  } catch {
+    threw = true
+  }
+  ok(!threw, "a governance hook that throws would eat the user's message — it never throws")
+  ok(renderOffloadedTask({ sessionId: "s1", summary: "", body: "x" }, "prev", 5000, 40).includes('id="s1"'), "the renderer survives a missing summary")
+
+  // the count reaches the report, and 0 explains itself
+  const md2 = renderStatsWith({ tool: "task_offload", step_id: "chat.message", event: "injected", child: "ses_x", tokens: 9000 })
+  ok(md2.includes("宿主后台 task 结果被挡在上下文外") && md2.includes("9,000"), "tm_stats shows what the host path cost us")
+  const md3 = renderStatsWith()
+  ok(md3.includes("这条通道已失效"), "and a zero says so out loud, because 0 is also what a broken hook looks like")
+  console.log("  9. plan B: host background-task injection offloaded under three locks (synthetic + envelope + threshold), never on disk")
+}
+
 for (const dir of tmpDirs) fs.rmSync(dir, { recursive: true, force: true })
-console.log("\nHOSTHOOKS: ALL PASS (8 groups)")
+console.log("\nHOSTHOOKS: ALL PASS (9 groups)")

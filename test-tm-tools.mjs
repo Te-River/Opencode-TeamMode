@@ -3137,6 +3137,27 @@ try {
       assert.ok(miss.output.includes("没有待收集的派发"), "an id the host does not list stays an honest miss, never a hang")
       await rt2.dispose()
 
+      // plan B: an EXPLICITLY NAMED host `task` child is collectable — that is
+      // how the lead reads back a result our chat.message hook replaced with a
+      // preview + pointer. The tree walk above still never claims one on its
+      // own; here the lock is the host's own parentage, read back per id.
+      {
+        const { client: cClaim } = sessionFake({
+          parents: { ses_hosttask: "ses_lead", ses_foreign: "ses_somebody_else" },
+          replies: { ses_hosttask: "STATUS: done\nFINDINGS: 后台任务的结论" },
+          completedFor: ["ses_hosttask"],
+          children: [],
+          statusMap: {},
+        })
+        const rtClaim = await tm.createTmTools({ directory: mktmp("disp-claim"), client: cClaim, $: fake$Ok("") })
+        const got = await rtClaim.tools.tm_join.execute({ ids: ["ses_hosttask"] }, LEAD)
+        assert.ok(got.output.includes("STATUS: done"), "a named host task child is collected by explicit id")
+        assert.ok(got.output.includes("接管"), "…and the row says it was rebuilt from the host, not dispatched here")
+        const foreign = await rtClaim.tools.tm_join.execute({ ids: ["ses_foreign"] }, LEAD)
+        assert.ok(foreign.output.includes("没有待收集的派发"), "a session the host does not parent to us stays a miss — parentage is read, never assumed")
+        await rtClaim.dispose()
+      }
+
       // a host without the children endpoint: the old behaviour, still honest
       const legacy = sessionFake({ noChildren: true })
       const rt3 = await tm.createTmTools({ directory: mktmp("disp-adopt-none"), client: legacy.client, $: fake$Ok("") })
@@ -3290,6 +3311,78 @@ try {
           delete process.env.TM_PARALLEL_DISPATCH
         }
       }
+      // TM_DISPATCH_MAX — six concurrent researchers measured 19+ minutes with
+      // nothing settled, so the ceiling is a quota/machine guard, and it fires
+      // BEFORE the consent dialog like every other policy refusal.
+      {
+        const keepAlive = setInterval(() => {}, 50)
+        try {
+          const { client: cCap, calls: callsCap } = sessionFake({ ids: ["ses_c1", "ses_c2", "ses_c3"], statusMap: {} })
+          const rtCap = await tm.createTmTools({ directory: mktmp("disp-cap"), client: cCap, $: fake$Ok("") }, {})
+          assert.ok(/At most 4 children/.test(rtCap.tools.tm_dispatch.description), "the default ceiling is stated in the tool the model reads")
+          let asks = 0
+          const capCtx = { ...LEAD, ask: async () => (asks++, "once") }
+          const BRIEF2 = BRIEF + " 涉及 src/tm/dispatch.ts。"
+          await rtCap.tools.tm_dispatch.execute({ agent: "tester", task: BRIEF2, description: "一" }, capCtx)
+          await rtCap.tools.tm_dispatch.execute({ agent: "reviewer", task: BRIEF2, description: "二" }, capCtx)
+          await rtCap.tools.tm_dispatch.execute({ agent: "researcher", task: BRIEF2, description: "三" }, capCtx)
+          await rtCap.tools.tm_dispatch.execute({ agent: "architect", task: BRIEF2, description: "四" }, capCtx)
+          assert.equal(callsCap.create.length, 4, "four go out under the default ceiling")
+          const fifth = await rtCap.tools.tm_dispatch.execute({ agent: "implementer", task: BRIEF2, description: "五" }, capCtx)
+          assert.ok(fifth.output.includes("并发上限 4") && fifth.output.includes("TM_DISPATCH_MAX"), "the fifth is refused by policy and names the knob")
+          assert.ok(fifth.output.includes("tester「一」"), "the refusal lists what is already live")
+          assert.equal(callsCap.create.length, 4, "no session was created for the refused dispatch")
+          assert.equal(asks, 4, "the refusal happens BEFORE the consent dialog")
+          // collecting one frees a slot
+          rtCap.observeDispatchEvent({ type: "session.idle", properties: { sessionID: "ses_c1" } })
+          await rtCap.tools.tm_join.execute({ includeText: false }, LEAD)
+          await rtCap.tools.tm_dispatch.execute({ agent: "implementer", task: BRIEF2, description: "五" }, capCtx)
+          assert.equal(callsCap.create.length, 5, "after a child settles, the next dispatch goes through")
+          await rtCap.dispose()
+        } finally {
+          clearInterval(keepAlive)
+        }
+      }
+      // TM_JOIN_MAX_WAIT_MS + the chained-wait cut: a wait is NOT parallelism
+      // (the lead's turn is parked in the tool call), and a live session burned
+      // 2 × 300 s of it while six researchers ran.  First wait gets the budget,
+      // a second one after nothing settled gets 10 s and a directive.
+      assert.deepEqual(dmod.joinBudget(300_000, 60_000, undefined), { budget: 60_000, repeat: false, streak: 1 }, "the first bounded wait is clamped to TM_JOIN_MAX_WAIT_MS")
+      assert.deepEqual(dmod.joinBudget(300_000, 60_000, { stillRunning: 2, streak: 1 }), { budget: 10_000, repeat: true, streak: 2 }, "a wait following a wait that settled nothing is cut to 10s")
+      assert.deepEqual(dmod.joinBudget(5_000, 60_000, { stillRunning: 0, streak: 1 }), { budget: 5_000, repeat: false, streak: 1 }, "once everything settled, the next wait is a fresh one")
+      assert.deepEqual(dmod.joinBudget(0, 60_000, { stillRunning: 3, streak: 4 }), { budget: 0, repeat: false, streak: 4 }, "a snapshot costs nothing and neither extends nor resets the streak")
+      assert.equal(dmod.REPEAT_WAIT_MS, 10_000, "the repeat budget is the number the description promises")
+      {
+        process.env.TM_JOIN_MAX_WAIT_MS = "300"
+        // tm_join's poll timer is deliberately unref'd (the plugin must never
+        // keep the HOST alive), which lets a bare test process exit mid-wait —
+        // hold a ref'd timer for the duration of this block.
+        const keepAlive = setInterval(() => {}, 50)
+        try {
+          const { client: cW } = sessionFake({ statusMap: { ses_child_1: { type: "busy" } } })
+          const rtW = await tm.createTmTools({ directory: mktmp("join-wait"), client: cW, $: fake$Ok("") })
+          assert.ok(rtW.tools.tm_join.description.includes("A wait BLOCKS YOU") && rtW.tools.tm_join.description.includes("capped at 300ms"), "the tool says out loud that waiting parks the lead, and never renders '0s'")
+          await rtW.tools.tm_dispatch.execute({ agent: "tester", task: BRIEF }, LEAD)
+          const first = await rtW.tools.tm_join.execute({ waitMs: 300 }, LEAD)
+          assert.ok(!first.output.includes("连续第"), "the first wait is just a wait")
+          assert.ok(first.output.includes("未等到全部结算"), "and it honestly reports that it did not settle")
+          const again = await rtW.tools.tm_join.execute({ waitMs: 300 }, LEAD)
+          assert.ok(again.output.includes("连续第 2 次等待"), "the second consecutive wait is named as such")
+          assert.ok(again.output.includes("别再等"), "and answered with what to do instead of another park")
+          assert.ok(again.output.includes("open handoff"), "one of the three options is to end the turn honestly")
+          await rtW.dispose()
+        } finally {
+          clearInterval(keepAlive)
+          delete process.env.TM_JOIN_MAX_WAIT_MS
+        }
+      }
+      // the host's OWN visible sub-agent card is an env flag away, and we read
+      // the same env the host reads (the plugin runs in that process)
+      assert.equal(dmod.hostBackgroundSubagentsEnabled({}), false, "no flag -> the host's task card is the blocking kind")
+      assert.equal(dmod.hostBackgroundSubagentsEnabled({ OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS: "true" }), true, "the specific flag turns it on")
+      assert.equal(dmod.hostBackgroundSubagentsEnabled({ OPENCODE_EXPERIMENTAL: "1" }), true, "the umbrella flag counts")
+      assert.equal(dmod.hostBackgroundSubagentsEnabled({ OPENCODE_EXPERIMENTAL: "1", OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS: "false" }), false, "the specific value overrides the umbrella, both ways")
+      assert.equal(dmod.hostBackgroundSubagentsEnabled({ OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS: "" }), false, "an empty value is not a yes")
       // a session.error whose payload is an OBJECT must reach tm_join readable
       const { client: c2 } = sessionFake()
       const rt2 = await tm.createTmTools({ directory: mktmp("disp-err"), client: c2, $: fake$Ok("") })

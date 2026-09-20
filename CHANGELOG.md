@@ -5,6 +5,48 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 versioning is semver (the 1.4.x train shipped under working labels; the
 registry saw 1.5.0 as the install-script fix release).
 
+## [Unreleased]
+
+### Added
+- **The host's own visible sub-agent, inside our token budget.** OpenCode's
+  built-in `task { background: true }` is the only delegation the interface can
+  SHOW — its card links to the live child session, it does not block the lead,
+  and the host wakes the parent when the child finishes. It is gated behind
+  `OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS=true` (operator-set; a plugin
+  cannot reach the host's own flags). The catch is that the wake injects the
+  child's FULL reply into the parent session. `TM_TASK_OFFLOAD` (default on)
+  takes the other half of the deal: `src/task-offload.ts` rewrites an oversized
+  injection into a preview plus a `tm_join { ids: [...] }` pointer, under three
+  locks that must all hold — the part is `synthetic` (a message you typed never
+  is), the text matches the host's own `<task id=… state="completed">` envelope
+  exactly, and the body is over the text offload threshold. Nothing is copied to
+  disk; `off` restores the host's verbatim text; every rewrite is counted, and
+  `tm_stats` prints the count with an explicit warning when it is 0 — because a
+  host that stops routing through `chat.message` would otherwise look exactly
+  like a quiet day.
+- **`TM_DISPATCH_MAX` (default 4)** — how many children one lead may have
+  running at once, refused before the confirmation dialog. Six concurrent
+  researchers measured 19+ minutes with nothing settled.
+- **`tm_join` can collect a host `task` child by explicit id** (parentage read
+  back from the host, never assumed). That is how the lead gets the whole reply
+  after we replaced it with a pointer; automatic adoption from the session tree
+  still requires our ` ·tm` marker, so a `task` child is never claimed on
+  speculation.
+
+### Changed
+- **`TM_JOIN_MAX_WAIT_MS` default 300 000 → 60 000, and chained waits are cut
+  short.** A live session parked twice in a row for five minutes each — 19 of
+  its 26 minutes spent inside `tm_join` with zero output — while the tool's own
+  closing line ("可再次 tm_join") invited the next park. Waiting is not
+  parallelism: your turn is blocked either way. A second wait after nothing
+  settled now costs 10 s and is answered with the three things worth doing
+  instead, and the lead's total blocked time became a measured row in tm_stats.
+- **The goal tripwire no longer traps a lead that has finished.** It fires when
+  the host's todo list still has open items, which is right — but a lead that
+  just collected every child and has not re-marked its list got "不要把这轮当成收尾"
+  for a stale list. The line now says to update `todowrite` first if the items
+  really are done.
+
 ## [1.5.15] - 2026-09-20
 
 ### Added

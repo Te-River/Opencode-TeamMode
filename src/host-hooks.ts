@@ -67,6 +67,20 @@ export const TOOL_HINTS: Record<string, string> = {
 }
 
 /**
+ * The `task` footer when the operator has the host's background sub-agents
+ * enabled (OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS).  The default hint says
+ * "prefer tm_dispatch" — with the host path available that is no longer the
+ * right advice for watchable work: the host's own card links to the live child
+ * session and it wakes the parent on completion, neither of which a plugin can
+ * do.  TeamMode keeps the injected text out of the context window (see
+ * src/task-offload.ts), so the two channels now differ by purpose, not cost.
+ */
+export const TASK_HINT_BACKGROUND: Partial<typeof TOOL_HINTS> = {
+  task:
+    "\n\n[OpenCode TeamMode] Delegating: `background:true` frees this session at once, the user can open the child's card to watch it, and the host wakes you with the result — TeamMode keeps that finished text OUT of your context (you get a preview; `tm_join { ids: [\"<child session>\"] }` pulls the whole reply when you actually need to merge it). Without `background` this call blocks. For a batch you want collected as skeletons in one go, tm_dispatch + tm_join is still the leaner shape.",
+}
+
+/**
  * The `tool.definition` adapter. Returns true when it appended (so the
  * caller can log it). Idempotent: a re-issued description that already
  * carries the marker is left byte-exact, and the host description is never
@@ -76,6 +90,7 @@ export function applyToolDefinition(
   input: unknown,
   output: unknown,
   enabled = true,
+  overrides?: Partial<typeof TOOL_HINTS>,
 ): boolean {
   if (!enabled) return false
   try {
@@ -86,7 +101,7 @@ export function applyToolDefinition(
     if (!out || typeof out.description !== "string") return false
     const marker = "[OpenCode TeamMode]"
     if (out.description.includes(marker)) return false
-    out.description = out.description + TOOL_HINTS[key]
+    out.description = out.description + (overrides?.[key] ?? TOOL_HINTS[key])
     return true
   } catch {
     return false

@@ -216,7 +216,7 @@ export interface Hooks {
    */
   "chat.message"?: (
     input: { sessionID?: string; agent?: string; [key: string]: unknown },
-    output?: unknown,
+    output?: { message?: { role?: unknown; [key: string]: unknown }; parts?: Array<Record<string, unknown>> },
   ) => void | Promise<void>
   /** Process teardown (clear the gate's poll interval + pending timers). */
   dispose?: () => void | Promise<void>

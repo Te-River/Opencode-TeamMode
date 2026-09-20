@@ -109,6 +109,11 @@ export interface TmStats {
     maxMs: number
     /** serial cost minus the wall-clock window the children really used. */
     overlapSavedMs: number
+    /** Σ ms the LEAD spent blocked inside tm_join (the price of waiting). */
+    waitMs: number
+    waits: number
+    /** waits that followed a wait that settled nothing — the anti-pattern. */
+    repeatWaits: number
   }
   ptc: { runs: number; calls: number; errors: number; retries: number; sumMs: number }
   governance: {
@@ -122,6 +127,10 @@ export interface TmStats {
     webCacheHits: number
     /** evaluate_script results that had a secret shape masked out. */
     evalMasks: number
+    /** Host background-task results we kept OUT of the parent's context
+     *  (plan B: the injection was replaced by a preview + tm_join pointer). */
+    taskOffloads: number
+    taskOffloadTokens: number
   }
   degrades: Array<{ seam: string; reason: string }>
 }
@@ -143,9 +152,9 @@ export function summarizeEvents(events: readonly TrajEvent[]): TmStats {
   const stats: TmStats = {
     window: { runs: 0, events: events.length, wallMs: 0 },
     tools: [],
-    dispatch: { starts: 0, settled: 0, failed: 0, adopted: 0, cancelled: 0, sumMs: 0, maxMs: 0, overlapSavedMs: 0 },
+    dispatch: { starts: 0, settled: 0, failed: 0, adopted: 0, cancelled: 0, sumMs: 0, maxMs: 0, overlapSavedMs: 0, waitMs: 0, waits: 0, repeatWaits: 0 },
     ptc: { runs: 0, calls: 0, errors: 0, retries: 0, sumMs: 0 },
-    governance: { blockedSubresources: 0, blockedHosts: [], ptyRefused: 0, clampedTimeouts: 0, clampSavedMs: 0, offloadDegraded: 0, webCacheHits: 0, evalMasks: 0 },
+    governance: { blockedSubresources: 0, blockedHosts: [], ptyRefused: 0, clampedTimeouts: 0, clampSavedMs: 0, offloadDegraded: 0, webCacheHits: 0, evalMasks: 0, taskOffloads: 0, taskOffloadTokens: 0 },
     degrades: [],
   }
   const byTool = new Map<string, ToolStat>()
@@ -213,6 +222,13 @@ export function summarizeEvents(events: readonly TrajEvent[]): TmStats {
     }
     if (tool === "tm_dispatch" && ev === "adopt") stats.dispatch.adopted++
     if (tool === "tm_dispatch" && ev === "cancel") stats.dispatch.cancelled++
+    if (tool === "tm_dispatch" && ev === "wait") {
+      // The cost the parallelism claim has to be netted against: every ms the
+      // LEAD spent parked inside tm_join is a ms it did no lead work.
+      stats.dispatch.waitMs += num(e.waited_ms)
+      stats.dispatch.waits++
+      if (e.repeat === true) stats.dispatch.repeatWaits++
+    }
     if (tool === "tm_ptc_run" && ev === "finish") {
       stats.ptc.runs++
       stats.ptc.calls += num(e.calls)
@@ -227,6 +243,10 @@ export function summarizeEvents(events: readonly TrajEvent[]): TmStats {
     if (tool === "tm_pty" && ev === "refused") stats.governance.ptyRefused++
     if (ev === "cache_hit") stats.governance.webCacheHits++
     if (ev === "eval_redacted") stats.governance.evalMasks++
+    if (tool === "task_offload" && ev === "injected") {
+      stats.governance.taskOffloads++
+      stats.governance.taskOffloadTokens += num(e.tokens)
+    }
     if (tool === "bash" && e.step_id === "timeout-clamp") {
       stats.governance.clampedTimeouts++
       stats.governance.clampSavedMs += Math.max(0, num(e.from_ms) - num(e.to_ms))
@@ -300,6 +320,7 @@ export function renderStats(
     `| 单个子代理耗时（最长 / 合计=串行代价） | ${d.maxMs ? secs(d.maxMs) : "—"} / ${d.sumMs ? secs(d.sumMs) : "—"} |`,
     `| **重叠省下**（串行 − 实际墙钟） | ${d.overlapSavedMs ? `**${secs(d.overlapSavedMs)}**` : "—（不足两个已结算的派发，或它们本就串行）"} |`,
     `| 重启后由宿主会话树接管 | ${d.adopted} |`,
+    `| lead 在 tm_join 里干等 | ${d.waitMs ? `${secs(d.waitMs)}（${d.waits} 次等待${d.repeatWaits ? ` · 其中 ${d.repeatWaits} 次是连续等待——等待期间你没有产出` : ""}）` : "—"} |`,
   )
 
   const p = stats.ptc
@@ -315,6 +336,7 @@ export function renderStats(
     `| tm_pty 治理面拒绝 | ${g.ptyRefused} |`,
     `| web URL 缓存命中（省下的抓取） | ${g.webCacheHits} |`,
     `| evaluate_script 结果脱敏次数 | ${g.evalMasks} |`,
+    `| 宿主后台 task 结果被挡在上下文外 | ${g.taskOffloads}${g.taskOffloadTokens ? ` 次 · 省下约 ${g.taskOffloadTokens.toLocaleString("en-US")} token` : ""}${g.taskOffloads ? "" : "（0 —— 若你确实开过 OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS 并派过后台任务，说明宿主的注入不再经过 chat.message，这条通道已失效）"} |`,
     `| bash 超时夹顶 | ${g.clampedTimeouts} 次 · 省 ${g.clampSavedMs ? secs(g.clampSavedMs) : "—"} |`,
     `| 卸载降级（存储写失败→截断） | ${g.offloadDegraded} |`,
   )
