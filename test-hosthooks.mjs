@@ -395,6 +395,29 @@ console.log("hosthooks. tool.definition / chat.params / compaction / shell.env /
   const noMatrix = await rt.tools.tm_stats.execute({ capabilities: false }, { agent: "team" })
   ok(!noMatrix.output.includes("宿主能力矩阵") && noMatrix.output.includes("tm_read"), "capabilities:false trims the matrix and nothing else")
   ok(!noMatrix.output.includes("已卸载到 run 存储"), "the stats reply comes back WHOLE — a table you have to page through is not a win")
+  // `recent` — the recap the host's UI cannot give: a plugin tool card is a
+  // one-liner with no body (the desktop registers renderers for its OWN tool
+  // names only), so the handle and the payload path have to be named out loud.
+  const stored = rt.pipelines.store.writeResult("s1", {
+    tool: "tm_read",
+    content: "line one\nline two",
+    tokens: 5000,
+    contentType: "text",
+    preview: "文件 42 行 · 首行 line one",
+    expireAt: Date.now() + 60_000,
+  })
+  rt.pipelines.store.appendTrajectory({ tool: "tm_read", step_id: "s1", seq: stored.seq, event: "result", offloaded: true, tokens: 5000, preview_tokens: 70, ref: stored.ref })
+  rt.pipelines.store.appendTrajectory({ tool: "tm_grep", step_id: "s2", event: "result", offloaded: false, tokens: 120 })
+  const recap = await rt.tools.tm_stats.execute({ recent: 5 }, { agent: "team" })
+  ok(recap.output.includes("最近调用"), "recent: appends the call-by-call recap")
+  ok(recap.output.includes(stored.ref), "an offloaded call names its handle — the user can ask for the full text")
+  ok(recap.output.includes(path.join("steps", "s1")), "…and the payload file path, which is the only thing openable outside the chat")
+  ok(recap.output.includes("首行 line one"), "…plus the preview that actually reached the model")
+  ok(recap.output.includes("全文就在模型上下文里"), "an inline call says where its result went instead of pointing at a file")
+  const tail = recap.output.slice(recap.output.indexOf("最近调用"))
+  ok(tail.indexOf("tm_grep") < tail.indexOf("tm_read"), "newest first inside the recap")
+  eq(tail.split("| `tm_read` |").length - 1, 2, "both tm_read results are listed, none merged")
+  ok(!recap.output.includes("undefined") && !recap.output.includes("NaN"), "the recap renders no placeholder")
   await rt.dispose()
   delete process.env.TM_TRAJECTORY_DIR
   console.log("  7. capability probe: missing vs declared vs not-seen vs unverified, one-shot toast, table render, ask-bridge observer")

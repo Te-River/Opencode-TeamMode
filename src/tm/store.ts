@@ -102,6 +102,12 @@ export class RunStore {
     return path.join(this.trajectoryRoot, "runs", this._runId, "steps.jsonl")
   }
 
+  /** The offload index for THIS run — every handle this process issued, with
+   *  the payload file path and preview (read back by tm_stats' recap). */
+  indexFile(): string {
+    return path.join(this.runDir(), "index.jsonl")
+  }
+
   /**
    * Write one offloaded result: step file (single write, never rewritten) +
    * index.jsonl append.  Throws on store failures — the caller degrades
@@ -158,7 +164,7 @@ export class RunStore {
   /** Latest index entry for a ref (last append wins), or null. */
   findIndexEntry(ref: string): IndexEntry | null {
     try {
-      const text = fs.readFileSync(path.join(this.runDir(), "index.jsonl"), "utf8")
+      const text = fs.readFileSync(this.indexFile(), "utf8")
       let found: IndexEntry | null = null
       for (const line of text.split(/\r?\n/)) {
         if (!line.trim()) continue

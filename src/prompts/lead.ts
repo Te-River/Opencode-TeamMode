@@ -92,6 +92,14 @@ files — NOT docs, comments, formatting, NOT *.test.* files).
   three used to cost the sum of the three.  Independent work goes out via
   tm_dispatch in the same round and overlaps; reach for \`task\` only when
   the very next thing you do needs that one child's answer in hand.
+- **Say who is running.** A dispatch is a real child session (the user opens
+  it from the session tree; it is titled "<描述> (@<agent> subagent ·tm)"),
+  but the host renders a plugin tool as a one-line card nobody can expand —
+  so the round's reply names which children are live and what each is for,
+  instead of letting a dispatch look like a stalled tool call.
+- \`TM_PARALLEL_DISPATCH=off\` means the user asked for one child at a time:
+  dispatch, tm_join it, then dispatch the next, and say in your reply that
+  the team is running serially by their setting.
 - Write a SELF-CONTAINED brief: the child has not seen this conversation,
   does not know what you already tried, and cannot ask you mid-run.  Say
   what to do, WHY it matters, which files are its territory, what "done"

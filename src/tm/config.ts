@@ -223,6 +223,15 @@ export interface TmConfig {
    *  plugin-side dispatcher must enforce it itself or nesting silently
    *  escapes the limit the user configured. */
   subagentDepth: number
+  /** TM_PARALLEL_DISPATCH (default on) — whether the lead may have MORE THAN
+   *  ONE child running at a time.  On is the whole point of tm_dispatch (the
+   *  built-in task tool blocks, so a team that cannot overlap is a team that
+   *  runs serially).  `off` makes a second dispatch while any child is still
+   *  running a refusal that names the live children, so the lead collects
+   *  first: serial dispatch, same governance, no lost work.  This is the knob
+   *  for a user whose machine (or provider quota) cannot carry N sessions at
+   *  once — it is enforced in the dispatcher, not only in the prompt. */
+  parallelDispatch: "on" | "off"
   /** Floor (minutes) for the approval-gate ask timeout.  LIVE (Wave A/T2):
    *  approval-gate.ts `resolveAskTimeoutMs` clamps the reply with
    *  `Math.max(min, resolveTmConfig(env).askTimeoutFloorMin)` — this knob
@@ -293,6 +302,7 @@ export const TM_CONFIG_DEFAULTS = {
   webCacheTtlSec: 300,
   dispatchAsk: "on",
   subagentDepth: 1,
+  parallelDispatch: "on",
   // Consumed by approval-gate.ts resolveAskTimeoutMs (Math.max floor, Wave A).
   // 1 min since the T2 benign already-closed split (user directive).
   askTimeoutFloorMin: 1,
@@ -431,6 +441,7 @@ export function resolveTmConfig(env: EnvLike = process.env): TmConfig {
     webCacheTtlSec: envInt(env, "TM_WEB_CACHE_TTL_SEC", TM_CONFIG_DEFAULTS.webCacheTtlSec, 0, 86_400),
     dispatchAsk: resolveOnOff(env.TM_DISPATCH_ASK),
     subagentDepth: envInt(env, "TM_SUBAGENT_DEPTH", TM_CONFIG_DEFAULTS.subagentDepth, 0, 8),
+    parallelDispatch: resolveOnOff(env.TM_PARALLEL_DISPATCH),
     askTimeoutFloorMin: envInt(env, "TM_ASK_TIMEOUT_FLOOR_MIN", TM_CONFIG_DEFAULTS.askTimeoutFloorMin, 1, 1440),
     bashTimeoutMaxMs: envInt(env, "TM_BASH_TIMEOUT_MAX_MS", TM_CONFIG_DEFAULTS.bashTimeoutMaxMs, 0, 3_600_000),
     bashTimeoutProbeMs: envInt(env, "TM_BASH_TIMEOUT_PROBE_MS", TM_CONFIG_DEFAULTS.bashTimeoutProbeMs, 0, 600_000),

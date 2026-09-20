@@ -56,6 +56,36 @@ registry saw 1.5.0 as the install-script fix release).
   overlap. `npm run test:serial` keeps the old one-at-a-time behaviour, and
   positional filters (`node scripts/run-tests.mjs browser`) run a subset.
   Dev-side only: `scripts/` is not part of the published package.
+- **`TM_PARALLEL_DISPATCH` (default `on`)** — the sub-agent parallelism switch.
+  `off` makes a second dispatch while any child of the session is still running
+  a refusal that names the live children and points at `tm_join`, enforced in
+  the dispatcher (before the consent dialog, the same ordering as `TM_PTY_MAX`)
+  and stated in the tool description, so the lead never discovers the mode by
+  hitting it.  For a machine or a provider quota that cannot carry N sessions.
+- **`tm_stats { recent: N }`** — a call-by-call recap appended to the stats
+  table: tool, step, tokens, and for every offloaded result its `tm_fetch`
+  handle plus the payload file path on disk, newest first.  This exists because
+  the desktop renders a plugin tool call as a one-line card with no body (its
+  tool-renderer registry holds only the built-in names and a plugin cannot add
+  to it), so the paths are the only details a human can actually open.
+- **A dispatched child announces itself.** The child session is now titled in
+  the host's own subagent shape — `<description> (@<agent> subagent ·tm)` — so
+  it reads as a sub-agent in the session tree instead of a mystery row
+  (` ·tm` is what still keeps a `task`-spawned child out of restart recovery,
+  and pre-1.5.15 `tm:<agent>:<label>` titles keep parsing), and one toast per
+  dispatch names the live child and where to watch it.
+
+### Changed
+- **The tool priority ladder now puts the user's own tools first**: user
+  MCP/plugin tools → TeamMode `tm_*` → the model's own reasoning (was
+  tm_* → MCP → own).  The web channel keeps `tm_search`/`tm_webfetch`/
+  `tm_browser` first and says why in the same breath: that path is the only one
+  carrying the domain allowlist, the per-request dialog and the R6 red lines,
+  and an MCP fetcher of the same page silently skips all three plus the offload.
+- **`tm_dispatch`'s `label` argument is renamed `description`** — the key the
+  desktop actually reads as a tool card's subtitle (and the built-in `task`
+  tool's own name for it), so a dispatch shows as "Called tm_dispatch ·
+  修登录页" instead of a raw argument chip.
 
 ### Fixed
 - **A host error never renders as `[object Object]` again.** `session.error`

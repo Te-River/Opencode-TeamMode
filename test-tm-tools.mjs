@@ -1200,6 +1200,11 @@ try {
     delete process.env.TM_BLACKBOARD_DIR
     delete process.env.TM_WEB_CACHE_TTL_SEC
     assert.equal(rtW.config.webCacheTtlSec, 300, "TM_WEB_CACHE_TTL_SEC resolves through the config layer")
+    assert.equal(rtW.config.parallelDispatch, "on", "sub-agent parallelism is ON unless the user says otherwise (parallel is the team's whole point)")
+    process.env.TM_PARALLEL_DISPATCH = "0"
+    const rtSerial = await tm.createTmTools({ directory: mktmp("serial-cfg"), client: {}, $: () => ({}) }, {})
+    delete process.env.TM_PARALLEL_DISPATCH
+    assert.equal(rtSerial.config.parallelDispatch, "off", "TM_PARALLEL_DISPATCH=0/off/false all mean off, same 口径 as the other switches")
     let hits = 0
     const realFetch = globalThis.fetch
     globalThis.fetch = async () => (hits++, res200("runtime cached page", "text/plain"))
@@ -3014,12 +3019,21 @@ try {
     // --- happy path: fire, keep going, collect ---
     {
       const registered = []
+      const toasts = []
       const { client, calls } = sessionFake()
-      const rt = await tm.createTmTools({ directory: mktmp("disp-happy"), client, $: fake$Ok("") }, { onChildSession: (sid, agent) => registered.push([sid, agent]) })
-      const fired = await rt.tools.tm_dispatch.execute({ agent: "implementer", task: BRIEF, label: "close-path" }, LEAD)
+      const rt = await tm.createTmTools(
+        { directory: mktmp("disp-happy"), client, $: fake$Ok("") },
+        { onChildSession: (sid, agent) => registered.push([sid, agent]), notify: (m) => toasts.push(m) },
+      )
+      const fired = await rt.tools.tm_dispatch.execute({ agent: "implementer", task: BRIEF, description: "close-path" }, LEAD)
       assert.ok(fired.output.includes("已派发（非阻塞）") && fired.output.includes("ses_child_1"), "dispatch returns the child id immediately")
       assert.ok(fired.output.includes("你现在可以继续"), "dispatch tells the lead it keeps the round")
       assert.equal(calls.create[0].body.parentID, "ses_lead", "the child session is PARENTED to the lead session")
+      // The host's OWN subagent title convention, plus our marker: this is what
+      // makes the child read as a sub-agent session in the desktop's sidebar.
+      assert.equal(calls.create[0].body.title, "close-path (@implementer subagent ·tm)", "the child is titled in the host's subagent shape with our marker")
+      assert.equal(toasts.length, 1, "one toast per dispatch")
+      assert.ok(toasts[0].includes("close-path") && toasts[0].includes("会话树"), "the toast names the child and points at where to watch it (its tool card cannot be opened)")
       assert.equal(calls.promptAsync[0].path.id, "ses_child_1", "promptAsync targets the new child")
       assert.equal(calls.promptAsync[0].body.agent, "implementer", "the child runs as the named specialist")
       assert.equal(calls.promptAsync[0].body.parts[0].text, BRIEF, "the brief is delivered verbatim")
@@ -3088,8 +3102,9 @@ try {
       const registered = []
       const { client, calls } = sessionFake({
         children: [
-          { id: "ses_orphan", title: "tm:researcher:auth-bug", time: { created: 1000, updated: 9000 } },
-          { id: "ses_taskchild", title: "Explore the repo", time: { created: 1 } },
+          { id: "ses_orphan", title: "auth-bug (@researcher subagent ·tm)", time: { created: 1000, updated: 9000 } },
+          { id: "ses_legacy", title: "tm:researcher:auth-bug-legacy", time: { created: 1000, updated: 9000 } },
+          { id: "ses_taskchild", title: "Explore the repo (@tester subagent)", time: { created: 1 } },
         ],
         completedFor: ["ses_orphan"],
         statusMap: {},
@@ -3100,12 +3115,17 @@ try {
       assert.equal(calls.children.length, 1, "tm_join asks the host for its children when its own memory is empty")
       assert.equal(calls.children[0].path.id, "ses_lead", "…under the CALLING lead session")
       assert.ok(joined.output.includes("ses_orphan"), "the orphaned dispatch is adopted and collected")
-      assert.ok(!joined.output.includes("ses_taskchild"), "a child spawned by the built-in task tool is not ours to collect")
+      assert.ok(joined.output.includes("ses_legacy"), "…and so is a child titled in the PRE-1.5.15 shape (an upgrade must not orphan a live dispatch)")
+      assert.ok(!joined.output.includes("ses_taskchild"), "a task-tool child (host shape, no ·tm marker) is never claimed as ours")
       assert.ok(joined.output.includes("接管"), "an adopted row says out loud that it was rebuilt from the host")
       assert.ok(joined.output.includes("1 完成"), "answered-while-nobody-was-listening reports 完成, not 运行中")
       assert.ok(joined.output.includes("已完成 8s"), "elapsed comes from the HOST's timestamps (9000-1000), not from this process")
       assert.ok(joined.output.includes("STATUS: done"), "the adopted child's reply text is still collected")
-      assert.deepEqual(registered, [["ses_orphan", "researcher"]], "an adopted child is handed to the approval gate too")
+      assert.deepEqual(
+        registered,
+        [["ses_orphan", "researcher"], ["ses_legacy", "researcher"]],
+        "an adopted child is handed to the approval gate too",
+      )
       await rt.dispose()
 
       // ids: [...] naming a child this process never saw still resolves
@@ -3189,8 +3209,8 @@ try {
       {
         const { client: cIds } = sessionFake({ ids: ["ses_child_1", "ses_child_2"], statusMap: { ses_child_1: { type: "idle" }, ses_child_2: { type: "idle" } } })
         const rtIds = await tm.createTmTools({ directory: mktmp("disp-ids"), client: cIds, $: fake$Ok("") })
-        await rtIds.tools.tm_dispatch.execute({ agent: "tester", task: BRIEF, label: "one" }, LEAD)
-        await rtIds.tools.tm_dispatch.execute({ agent: "reviewer", task: BRIEF, label: "two" }, LEAD)
+        await rtIds.tools.tm_dispatch.execute({ agent: "tester", task: BRIEF, description: "one" }, LEAD)
+        await rtIds.tools.tm_dispatch.execute({ agent: "reviewer", task: BRIEF, description: "two" }, LEAD)
         const one = await rtIds.tools.tm_join.execute({ ids: '["ses_child_2"]' }, LEAD)
         assert.ok(one.output.includes("ses_child_2"), "the requested child is reported")
         assert.ok(!one.output.includes("ses_child_1"), "and the OTHER child is not smuggled in by a stringified ids arg")
@@ -3241,6 +3261,35 @@ try {
         await rtDone.dispose()
       }
 
+      // TM_PARALLEL_DISPATCH=off — the lead may still parallelise nothing:
+      // a second live child is refused by policy, BEFORE the consent dialog
+      // (same ordering as tm_pty's cap: never ask the user to approve a spawn
+      // the config has already declined).
+      {
+        process.env.TM_PARALLEL_DISPATCH = "off"
+        try {
+          const { client: cSer, calls: callsSer } = sessionFake()
+          const rtSer = await tm.createTmTools({ directory: mktmp("disp-serial"), client: cSer, $: fake$Ok("") })
+          assert.ok(/TM_PARALLEL_DISPATCH=off/.test(rtSer.tools.tm_dispatch.description), "off is visible in the tool description, not only at runtime")
+          let asks = 0
+          const serialCtx = { ...LEAD, ask: async () => (asks++, "once") }
+          const first = await rtSer.tools.tm_dispatch.execute({ agent: "tester", task: BRIEF, description: "第一步" }, serialCtx)
+          assert.ok(first.output.includes("已派发"), "the first dispatch still runs with parallel off")
+          const second = await rtSer.tools.tm_dispatch.execute({ agent: "reviewer", task: BRIEF, description: "第二步" }, serialCtx)
+          assert.ok(second.output.includes("TM_PARALLEL_DISPATCH=off"), "a second concurrent child is refused")
+          assert.ok(second.output.includes("tester「第一步」"), "the refusal names what is still running, so the lead knows what to collect")
+          assert.ok(second.output.includes("tm_join"), "and says what to do next")
+          assert.equal(callsSer.create.length, 1, "no second session was created")
+          assert.equal(asks, 1, "refused BEFORE the consent dialog — the user is never asked about a spawn policy declined")
+          rtSer.observeDispatchEvent({ type: "session.idle", properties: { sessionID: "ses_child_1" } })
+          const third = await rtSer.tools.tm_dispatch.execute({ agent: "reviewer", task: BRIEF, description: "第二步" }, serialCtx)
+          assert.ok(third.output.includes("已派发"), "after the child settles the next one goes out — serial, not stuck")
+          assert.equal(callsSer.create.length, 2, "the second child is created only once the first is done")
+          await rtSer.dispose()
+        } finally {
+          delete process.env.TM_PARALLEL_DISPATCH
+        }
+      }
       // a session.error whose payload is an OBJECT must reach tm_join readable
       const { client: c2 } = sessionFake()
       const rt2 = await tm.createTmTools({ directory: mktmp("disp-err"), client: c2, $: fake$Ok("") })
@@ -3269,7 +3318,7 @@ try {
       assert.ok(empty.output.includes("task"), "and it points at the concrete fallback")
       await rt3.dispose()
     }
-    console.log("10. tm_dispatch/tm_join: OK (lead-only gate + nested-team reject + self-contained brief, parentID + verbatim brief over the session API, event-driven settle + bounded wait, cancel, offloaded collection, graceful 'use task' degrade, RESTART RECOVERY via session.children + title discriminator + completedAt verdict, MODEL INHERITANCE from the parent transcript, describeHostError so a nested host error never renders as [object Object])")
+    console.log("10. tm_dispatch/tm_join: OK (lead-only gate + nested-team reject + self-contained brief, parentID + verbatim brief over the session API, host-convention child title (@<agent> subagent ·tm) with legacy titles adopted and task children never claimed, one notify toast per dispatch, TM_PARALLEL_DISPATCH=off refused before the dialog, event-driven settle + bounded wait, cancel, offloaded collection, graceful 'use task' degrade, RESTART RECOVERY via session.children + title discriminator + completedAt verdict, MODEL INHERITANCE from the parent transcript, describeHostError so a nested host error never renders as [object Object])")
   }
 
   // ---------- 11. bash timeout clamp (tool.execute.before mutation) ----------

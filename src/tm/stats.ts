@@ -333,6 +333,105 @@ export function renderStats(
   return out.join("\n")
 }
 
+/** One row of the current run's offload index (`index.jsonl`). */
+export interface OffloadRow {
+  ref: string
+  /** `<stepId>/<file>.md`, relative to the run's steps dir. */
+  file: string
+  preview: string
+  tokens: number
+  expire_at: number
+}
+
+export function parseOffloadIndex(text: string): OffloadRow[] {
+  const rows: OffloadRow[] = []
+  for (const line of text.split(/\r?\n/)) {
+    if (!line.trim()) continue
+    try {
+      const e = JSON.parse(line) as OffloadRow
+      if (e && typeof e.ref === "string") rows.push(e)
+    } catch {
+      /* torn tail line */
+    }
+  }
+  return rows
+}
+
+/** One governed call, newest-first, for the "what actually came back" recap. */
+export interface RecentCall {
+  ts: string
+  tool: string
+  stepId: string
+  tokens: number
+  offloaded: boolean
+  ref?: string
+  /** tokens that DID reach the context window (an offloaded call's preview) */
+  previewTokens?: number
+  /** absolute path of the payload file — the only place a human can read it */
+  file?: string
+  preview?: string
+  /** the preview that rode a NON-offloaded result is the whole result */
+}
+
+/** Newest-first over `event:"result"` lines; `index` resolves refs to files. */
+export function recentCalls(
+  events: readonly TrajEvent[],
+  limit: number,
+  index: readonly OffloadRow[],
+  stepsRoot: string,
+): RecentCall[] {
+  const byRef = new Map<string, OffloadRow>()
+  for (const row of index) byRef.set(row.ref, row)
+  const out: RecentCall[] = []
+  for (let i = events.length - 1; i >= 0 && out.length < limit; i--) {
+    const e = events[i]
+    if (!e || e.event !== "result") continue
+    const ref = typeof e.ref === "string" ? e.ref : undefined
+    const row = ref ? byRef.get(ref) : undefined
+    const call: RecentCall = {
+      ts: String(e.ts ?? ""),
+      tool: String(e.tool ?? "?"),
+      stepId: String(e.step_id ?? "?"),
+      tokens: num(e.tokens),
+      offloaded: e.offloaded === true,
+    }
+    if (ref) call.ref = ref
+    const pt = num(e.preview_tokens)
+    if (pt) call.previewTokens = pt
+    if (row) {
+      call.file = path.join(stepsRoot, row.file)
+      call.preview = row.preview.replace(/\s+/g, " ").trim().slice(0, 160)
+    }
+    out.push(call)
+  }
+  return out
+}
+
+/** The recap the UI cannot give: every card a plugin tool renders is a one-line
+ *  row (the desktop's ToolRegistry holds only its own built-in names), so the
+ *  payload paths and previews have to be said out loud in the reply. */
+export function renderRecent(calls: readonly RecentCall[]): string[] {
+  if (!calls.length) return ["", "### 最近调用", "", "（这段时间里没有受治理的工具结果落盘。）"]
+  const out: string[] = [
+    "",
+    "### 最近调用（宿主不给插件工具卡片开详情——全文在下面这些文件里）",
+    "",
+    "| 时间 | 工具 | step | token | 细节在哪 |",
+    "|---|---|---|---:|---|",
+  ]
+  for (const c of calls) {
+    const hhmm = c.ts.length >= 16 ? c.ts.slice(11, 19) : c.ts || "—"
+    const detail = !c.offloaded
+      ? "结果未超限，全文就在模型上下文里"
+      : c.ref
+        ? `句柄 \`tm_fetch {ref:"${c.ref}"}\`${c.file ? ` · 文件 \`${c.file}\`` : " · 载荷不在本 run"}（${c.previewTokens ?? "?"} token 预览已进上下文）`
+        : "已卸载（本条事件没带句柄）"
+    out.push(`| ${hhmm} | \`${c.tool}\` | ${c.stepId} | ${c.tokens.toLocaleString("en-US")} | ${detail} |`)
+    if (c.offloaded && c.preview) out.push(`| | | | | 预览：${c.preview} |`)
+  }
+  return out
+}
+
 export interface StatsDeps {
   store: RunStore
   /** Live host-capability matrix (index.ts owns the probe). */
@@ -358,10 +457,12 @@ export function buildStatsTool(deps: StatsDeps): ToolDefinition {
     description: `Read the plugin's OWN trajectory back as numbers: what it saved and where it broke.
 - The throughput argument in one call — tokens kept out of the context window by offloading, and seconds saved by dispatch overlap (serial cost minus the wall-clock the children actually used), plus governance counts (blocked subresources, refused tm_pty starts, clamped bash timeouts, engine fallbacks).
 - It also renders the HOST CAPABILITY MATRIX: every OpenCode surface this plugin leans on, marked 已验证 / 存在未用 / 待观察 / 缺失.  After an OpenCode upgrade, call this FIRST — a missing row names the feature that silently went away.
-- { runs: 10 } recent run dirs (default 10, max 50); { capabilities: false } to skip the matrix.  Read-only over files this plugin wrote: no network, no shell, no secrets (the trajectory never records command text or values).`,
+- { runs: 10 } recent run dirs (default 10, max 50); { capabilities: false } to skip the matrix.  Read-only over files this plugin wrote: no network, no shell, no secrets (the trajectory never records command text or values).
+- { recent: 20 } appends a call-by-call recap — the host renders a plugin tool as a one-line card nobody can open, so this is where an offloaded result's handle AND its payload file path are named out loud.  When the user asks "what did that tool actually return", call this and paste the table.`,
     args: {
       runs: { descriptor: "runs: number (optional, how many recent run dirs to read; default 10, max 50)" },
       capabilities: { descriptor: "capabilities: false to omit the host-capability matrix" },
+      recent: { descriptor: "recent: number (optional, 1..50 — append a newest-first recap of governed calls with their handle refs and payload paths)" },
     },
     execute: async (rawArgs): Promise<ToolResult> => {
       try {
@@ -380,15 +481,25 @@ export function buildStatsTool(deps: StatsDeps): ToolDefinition {
         const events = (deps.readEvents ?? readDefault)(runs)
         const stats = summarizeEvents(events)
         const wantMatrix = !(args.capabilities === false || args.capabilities === "false")
-        const body = renderStats(stats, {
+        let lines = renderStats(stats, {
           runDirs: runs.length,
           roots: [deps.store.trajectoryRoot],
           matrix: wantMatrix ? (deps.capabilities?.() ?? []) : [],
         })
+        const recentLimit = Math.max(0, Math.min(50, Math.round(num(args.recent)) || 0))
+        if (recentLimit) {
+          let rows: OffloadRow[] = []
+          try {
+            rows = parseOffloadIndex(fs.readFileSync(deps.store.indexFile(), "utf8"))
+          } catch {
+            /* no offloads yet — the recap says so rather than failing */
+          }
+          lines += "\n" + renderRecent(recentCalls(events, recentLimit, rows, deps.store.stepsRoot())).join("\n")
+        }
         // Deliberately NOT offloaded: the point of this tool is the table the
         // user (or the lead) reads whole; it is bounded by construction (one
         // row per tool, per degraded seam, per capability).
-        return toToolResult(body)
+        return toToolResult(lines)
       } catch (err) {
         const e = err as { message?: unknown }
         return toToolResult(tmError(tool, "execute", `tm_stats 失败：${String(e?.message ?? err).slice(0, 160)}`))

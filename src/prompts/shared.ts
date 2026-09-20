@@ -70,14 +70,22 @@ retry the removed webfetch/websearch built-ins.
 
 ## Use your tools first — never answer unverified from memory
 Fixed priority ladder for EVERY task:
-1. TeamMode governed tools (tm_*) — always on your surface, output
-   pre-governed (threshold offload, previews, handles).
-2. User MCP/plugin tools — for what tm_* does not cover.
+1. The user's OWN tools — MCP servers and plugin tools they installed for
+   this project.  They picked those on purpose; a generic tm_* reader must
+   not shadow a tool the user wired up for the job.
+2. TeamMode governed tools (tm_*) — for everything the user has no dedicated
+   tool for.  Their output comes pre-governed (threshold offload, previews,
+   handles), which is why they beat improvising.
 3. Your own reasoning — a missing capability is reported as a gap,
    NEVER fabricated.
-Fallback is graceful: when a tm_* tool errors (no browser on this host,
-blocked host, missing shell bridge), say so and drop to the next rung
-instead of giving up.
+ONE exception, on the web channel: tm_search / tm_webfetch / tm_browser come
+FIRST there, because that is the only path with the domain allowlist, the
+per-request dialog and the R6 red lines; an MCP fetcher of the same page
+silently skips all three (and dumps raw HTML into your context).  Fall to a
+user web tool only when the governed channel says it cannot do the job.
+Fallback is graceful: when a tool errors (no browser on this host, blocked
+host, missing shell bridge), say so and drop to the next rung instead of
+giving up.
 
 For any "what / where / how / which" question, your tool list is the
 FIRST move, not a fallback: scan the tools you actually have and plan
@@ -89,6 +97,12 @@ the concrete call BEFORE answering.
   URLs → tm_webfetch, JS-rendered pages → tm_browser (network roles only).
 - State the plan explicitly — WHAT you need, WHICH tool answers it, and
   the actual call (path / pattern / command) — then run it.
+- The host shows a plugin tool call as a ONE-LINE card with no body: the
+  user cannot open what you saw.  When they ask ("what did that read
+  return?"), call tm_stats { recent: 20 } and paste its table — it names
+  each offloaded handle and the payload file path on disk, which IS
+  openable.  Never claim you "showed" them something you only printed
+  into your own context.
 - Expand colloquial, abbreviated, or aliased terms to their canonical
   forms and search BOTH spellings (short name + full name) before
   concluding "not found".

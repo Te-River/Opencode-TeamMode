@@ -75,6 +75,14 @@ export interface DispatchDeps {
   askBeforeSpawn?: boolean
   /** Nesting ceiling mirroring the host's `subagent_depth` (default 1). */
   maxDepth?: number
+  /** TM_PARALLEL_DISPATCH: may more than one child run at a time?  Default on;
+   *  `off` refuses a second dispatch while any child of this session is live. */
+  parallelDispatch?: "on" | "off"
+  /** The host's toast channel (wired from index.ts's tui.showToast).  A
+   *  tm_dispatch child is invisible in the tool card — the desktop renders an
+   *  unregistered tool as a one-line row with no body — so the toast is what
+   *  tells the user a sub-agent is live and where to watch it. */
+  notify?: (message: string) => void
 }
 
 interface SessionApi {
@@ -120,26 +128,46 @@ export function sessionApiOf(client: unknown): SessionApi | null {
   return api
 }
 
-/** The title `tm_dispatch` gives every child session.  `parseDispatchTitle`
- *  is the discriminator on the way back: a child the host lists but this
- *  process never created is OURS only if this shape (and a known agent)
- *  matches — otherwise it belongs to the built-in `task` tool and we must
- *  not claim its reply. */
+/** The title `tm_dispatch` gives every child session.
+ *
+ *  The shape is the host's OWN subagent convention — the built-in task tool
+ *  titles its children `${description} (@${agent} subagent)` (verified in the
+ *  desktop binary), because that is what the renderer's `taskSession()`
+ *  heuristic reads to colour a child row and to resolve it from a tool card.
+ *  A plugin cannot register a tool renderer (the desktop's ToolRegistry holds
+ *  exactly the built-in names), so matching the convention is the only way our
+ *  children look like sub-agent sessions in the sidebar instead of a mystery
+ *  row.  ` ·tm` is our own marker and it is LOAD-BEARING: it is what keeps a
+ *  `task`-spawned child out of `parseDispatchTitle`, so tm_join never claims a
+ *  reply that belongs to the host's dispatcher. */
 export function dispatchTitle(agent: string, label: string): string {
-  return `tm:${agent}:${label}`
+  return `${label} (@${agent} subagent${DISPATCH_TITLE_MARKER})`
 }
 
+/** Suffix tm_dispatch appends inside the host's `(@<agent> subagent)` shape. */
+export const DISPATCH_TITLE_MARKER = " ·tm"
+
+/** The pre-1.5.15 title (`tm:<agent>:<label>`).  Still accepted on the way in
+ *  so a child created before the upgrade is not orphaned by restart recovery. */
 export function parseDispatchTitle(
   title: unknown,
   targets: readonly string[],
 ): { agent: string; label: string } | null {
   const t = typeof title === "string" ? title.trim() : ""
-  if (!t.startsWith("tm:")) return null
-  const rest = t.slice(3)
-  const colon = rest.indexOf(":")
-  const agent = (colon < 0 ? rest : rest.slice(0, colon)).trim().toLowerCase()
+  if (t.startsWith("tm:")) {
+    const rest = t.slice(3)
+    const colon = rest.indexOf(":")
+    const legacyAgent = (colon < 0 ? rest : rest.slice(0, colon)).trim().toLowerCase()
+    if (!legacyAgent || !targets.includes(legacyAgent)) return null
+    return { agent: legacyAgent, label: (colon < 0 ? "" : rest.slice(colon + 1)).trim().slice(0, 40) }
+  }
+  // The marker is required here — without it a built-in task child would read
+  // as ours, which is the one thing the restart path must never do.
+  const m = /^(.*?) \(@([^\s()]+) subagent ·tm\)$/.exec(t)
+  if (!m) return null
+  const agent = m[2].trim().toLowerCase()
   if (!agent || !targets.includes(agent)) return null
-  return { agent, label: (colon < 0 ? "" : rest.slice(colon + 1)).trim().slice(0, 40) }
+  return { agent, label: m[1].trim().slice(0, 40) }
 }
 
 /**
@@ -299,6 +327,7 @@ export function buildDispatchTools(deps: DispatchDeps): {
   const maxWaitMs = deps.maxWaitMs ?? 300_000
   const askBeforeSpawn = deps.askBeforeSpawn !== false
   const maxDepth = Math.max(0, Number.isFinite(deps.maxDepth as number) ? (deps.maxDepth as number) : 1)
+  const parallel = deps.parallelDispatch !== "off"
   const now = deps.now ?? (() => Date.now())
   const store = deps.pipelines.store
   const log = (e: Record<string, unknown>) => store.appendTrajectory({ tool: "tm_dispatch", ...e })
@@ -471,15 +500,24 @@ export function buildDispatchTools(deps: DispatchDeps): {
 
   const dispatch: ToolDefinition = {
     description: `Fire-and-continue sub-agent dispatch — the lead's parallelism lever (the built-in task tool BLOCKS you until the child finishes; this one does not).
-- { agent: ${targets.join("|")} , task: "<self-contained brief>", label: "<short slug>" } → starts the specialist in its OWN child session (parented to yours) and returns the child session id IMMEDIATELY.  You keep working the same round: plan the next step, do a cheap read of your own, or fire more dispatches — independent work runs concurrently instead of serially.
+- { agent: ${targets.join("|")} , task: "<self-contained brief>", description: "<short slug>" } → starts the specialist in its OWN child session (parented to yours) and returns the child session id IMMEDIATELY.  You keep working the same round: plan the next step, do a cheap read of your own, or fire more dispatches — independent work runs concurrently instead of serially.
+- The child is a real session: it appears under yours in the host's session tree (titled "<description> (@<agent> subagent ·tm)"), so the user can open it and watch it work.  Its tool card is NOT expandable — the host only renders bodies for its own built-in tools — so say out loud which child is running and what it is for.
 - The brief must stand alone: the child has not seen this conversation, does not know what you tried, and cannot ask you mid-run.  Say what to do, WHY it matters, which files/paths are its territory, what "done" looks like, and how much thoroughness you expect — the child still answers the mandatory STATUS/CHANGES/FINDINGS/EVIDENCE/HANDOFF skeleton.
 - Collect with tm_join (no wait = status snapshot, waitMs = bounded wait).  Collected replies ride the offload pipeline: a long report arrives as a handle + preview, not a context flood.
 - Division of labour: bulk reading / searching / aggregation burns the CHILD's context and comes back as a skeleton; your own context is the scarce resource — keep it for routing, decisions and the final merge.
-- Only the team lead may call this; a child never dispatches (no nested teams).  If the host exposes no async session API the call fails with an explicit "use the built-in task tool" directive.`,
+- Only the team lead may call this; a child never dispatches (no nested teams).  If the host exposes no async session API the call fails with an explicit "use the built-in task tool" directive.${
+  parallel
+    ? ""
+    : `
+- TM_PARALLEL_DISPATCH=off is set: at most ONE child may run at a time, so a second dispatch while one is live is refused.  Dispatch, tm_join it, then dispatch the next — and tell the user why the team is serial.`
+}`,
     args: {
       agent: { descriptor: `agent: ${targets.join("|")} (required)` },
       task: { descriptor: "task: string (required — the full self-contained brief the child works from)" },
-      label: { descriptor: "label: string (optional short slug for this dispatch, ≤40 chars)" },
+      description: {
+        descriptor:
+          "description: string (optional ≤40-char slug — the child session's title and the line the UI shows for this call; defaults to the task's first words)",
+      },
     },
     execute: async (rawArgs, ctx): Promise<ToolResult> => {
       const tool = "tm_dispatch"
@@ -519,7 +557,15 @@ export function buildDispatchTools(deps: DispatchDeps): {
             ),
           )
         }
-        const label = (typeof args.label === "string" && args.label.trim() ? args.label.trim() : task.split(/\s+/).slice(0, 4).join(" ")).slice(0, 40)
+        // `description` is the host's own name for this field (the task tool
+        // takes prompt + description), and the desktop reads exactly that key
+        // as a tool card's subtitle — so the dispatch shows as
+        // "Called tm_dispatch · 修登录页" instead of a raw-JSON chip.
+        const label = (
+          typeof args.description === "string" && args.description.trim()
+            ? args.description.trim()
+            : task.split(/\s+/).slice(0, 4).join(" ")
+        ).slice(0, 40)
         const directory = typeof c.directory === "string" && c.directory ? c.directory : undefined
         // --- governance the built-in task tool applies and we must not lose -
         // (1) nesting ceiling, same 口径 as the host's subagent_depth
@@ -533,6 +579,27 @@ export function buildDispatchTools(deps: DispatchDeps): {
                 `这与 T3「子代理不再派子代理」同源：把这项工作留在你自己这一层，或让宿主配置放宽。`,
             ),
           )
+        }
+        // (1b) TM_PARALLEL_DISPATCH=off — one child at a time.  Refused BEFORE
+        // the dialog (same ordering as tm_pty's concurrency cap): never ask the
+        // user to approve a spawn the policy has already declined.
+        if (!parallel) {
+          const live = [...children.values()].filter(
+            (r) => r.state === "running" && r.parentSessionID === parent,
+          )
+          if (live.length) {
+            const who = live.map((r) => `${r.agent}「${r.label}」`).slice(0, 4).join("、")
+            log({ step_id: "dispatch", event: "serial_refused", agent, label, live: live.length })
+            return toToolResult(
+              tmError(
+                tool,
+                "governance",
+                `TM_PARALLEL_DISPATCH=off：一次只跑一个子代理，而你这轮已有 ${live.length} 个在跑（${who}）。` +
+                  `先 tm_join 收掉再派 ${agent}。注意：并行才是 Team 的意义——串行是你选的模式，` +
+                  `要恢复默认值就删掉 TM_PARALLEL_DISPATCH 或设为 on。`,
+              ),
+            )
+          }
         }
         // (2) the user decides which sub-agent gets spawned — the task tool
         // asks ctx.ask({permission:"task", patterns:[subagent_type]}) and we
@@ -587,6 +654,11 @@ export function buildDispatchTools(deps: DispatchDeps): {
         children.set(sid, rec)
         deps.onChildSession?.(sid, agent)
         log({ step_id: "dispatch", event: "start", child: sid, parent: parent, agent, label, model: model ? `${model.providerID}/${model.modelID}` : "host-default" })
+        // The child's tool card is a one-liner the user cannot open (a plugin
+        // cannot register a renderer), so the toast is the only thing that
+        // points at the live session — without it a dispatch just looks like a
+        // stalled tool call.
+        deps.notify?.(`子代理已启动：${agent}「${label}」— 在左侧会话树里展开本会话即可实时查看（子会话 ${sid}）`)
         return toToolResult(
           [
             `已派发（非阻塞）：${agent} · "${label}" · 子会话 ${sid}`,

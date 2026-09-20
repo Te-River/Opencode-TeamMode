@@ -309,6 +309,10 @@ export async function createTmTools(
     // host's subagent_depth ceiling
     askBeforeSpawn: cfg.dispatchAsk !== "off",
     maxDepth: cfg.subagentDepth,
+    parallelDispatch: cfg.parallelDispatch,
+    // a dispatch is invisible in the tool card (the host renders only its own
+    // built-in tools' bodies), so the toast carries "where to look"
+    notify: opts.notify,
   })
   tools.tm_dispatch = dispatch.tm_dispatch
   tools.tm_join = dispatch.tm_join

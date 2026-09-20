@@ -268,6 +268,12 @@ assert.ok(leadPrompt.includes("Do NOT pull big payloads into your\n  own context
 assert.ok(leadPrompt.includes("Collect with **tm_join**"), "lead: tm_join is the collection path")
 assert.ok(leadPrompt.includes("Never end a turn with a dispatched child uncollected"), "lead: no orphaned dispatches at end of turn")
 assert.ok(leadPrompt.includes("cancel: true"), "lead: a runaway child is abortable")
+assert.ok(leadPrompt.includes("Say who is running"), "lead: a dispatch is invisible in the tool card, so the reply must name the live children")
+assert.ok(leadPrompt.includes("one-line card nobody can expand"), "lead: WHY the card cannot be trusted to speak for itself")
+assert.ok(
+  leadPrompt.includes("TM_PARALLEL_DISPATCH=off"),
+  "lead: the serial-dispatch switch is a mode to announce, not a silent degradation",
+)
 assert.ok(leadPrompt.includes("your context is the team's scarce"), "lead: division of labour framed as context economy")
 assert.ok(leadPrompt.includes("blocking on `task`"), "lead: blocking on task for independent work is named an anti-pattern")
 // async dispatch makes multi-in_progress normal, and order is negotiable
@@ -387,9 +393,17 @@ for (const expert of EXPERTS) {
     cfg2.agent[expert].prompt.includes("the tester carries tm_browser for UI verification"),
     expert + ": web boundary rule names the tester's browser-only exception",
   )
-  assert.ok(cfg2.agent[expert].prompt.includes("1. TeamMode governed tools (tm_*)"), expert + ": priority ladder rung 1 (tm_* first)")
-  assert.ok(cfg2.agent[expert].prompt.includes("2. User MCP/plugin tools"), expert + ": priority ladder rung 2 (MCP second)")
+  assert.ok(cfg2.agent[expert].prompt.includes("1. The user's OWN tools"), expert + ": priority ladder rung 1 (the user's own MCP/plugin tools come first)")
+  assert.ok(cfg2.agent[expert].prompt.includes("2. TeamMode governed tools (tm_*)"), expert + ": priority ladder rung 2 (tm_* is the governed default, not the shadow)")
   assert.ok(cfg2.agent[expert].prompt.includes("3. Your own reasoning"), expert + ": priority ladder rung 3 (reasoning, never fabricate)")
+  assert.ok(
+    cfg2.agent[expert].prompt.includes("ONE exception, on the web channel"),
+    expert + ": the web channel keeps tm_* first (allowlist + dialog + offload are the reason)",
+  )
+  assert.ok(
+    cfg2.agent[expert].prompt.includes("ONE-LINE card with no body") && cfg2.agent[expert].prompt.includes("tm_stats { recent: 20 }"),
+    expert + ": the un-openable tool card is named, and tm_stats recent is the way to show details",
+  )
   assert.ok(
     cfg2.agent[expert].prompt.includes("Plan-time rule: the moment your plan lists ≥3") &&
       cfg2.agent[expert].prompt.includes("your FIRST move is ONE tm_ptc_run program"),
