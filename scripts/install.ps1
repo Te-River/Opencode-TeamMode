@@ -20,6 +20,12 @@
 
 #Requires -Version 5.1
 
+# Piped install (irm ... | iex) cannot pass switches; run the file directly to
+# use them, or set TEAMMODE_SKIP_BACKGROUND_SUBAGENTS=1 in the environment.
+param(
+    [switch]$NoBackgroundSubagents
+)
+
 $ErrorActionPreference = "Stop"
 
 $PKG = "@te-river/opencode-team-mode@latest"
@@ -181,7 +187,47 @@ if (Test-Path $nmCopy) {
     }
 }
 
+# ── the host's VISIBLE sub-agent: OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS ─
+# Why this is here: `task { background: true }` is the only sub-agent OpenCode
+# can show you — its card links to the live child session, it does not block the
+# lead, and the host wakes the parent with the result. TeamMode keeps that
+# result inside the token budget (TM_TASK_OFFLOAD). The flag is read from the
+# HOST process environment at startup, so a plugin cannot set it for itself —
+# it has to exist before OpenCode launches. It is an experimental OpenCode
+# switch, and this writes a user-level environment variable, so it is said out
+# loud here and it is reversible:
+#   skip it:   .\install.ps1 -NoBackgroundSubagents   (or set
+#              TEAMMODE_SKIP_BACKGROUND_SUBAGENTS=1 for a piped install)
+#   undo it:   REG delete HKCU\Environment /v OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS /f
+$BG_FLAG = "OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS"
+$bgSkip = [bool]$NoBackgroundSubagents -or @("1","true","yes","on") -contains ("$env:TEAMMODE_SKIP_BACKGROUND_SUBAGENTS").ToLower()
+if ($bgSkip) {
+    Write-Host "-  Left $BG_FLAG alone (opt-out): the host's task tool will block the lead, and its sub-agent cards stay non-background. Re-run without -NoBackgroundSubagents to enable." -ForegroundColor Yellow
+} else {
+    $cur = [Environment]::GetEnvironmentVariable($BG_FLAG, "User")
+    if (@("1","true","yes","on") -contains ("$cur").ToLower()) {
+        Write-Host "✔  $BG_FLAG already set for your user" -ForegroundColor Green
+    } else {
+        Write-Host "↻  Setting $BG_FLAG=true for this user (enables the visible background sub-agent) ..." -ForegroundColor Yellow
+        $null = & cmd.exe /c setx $BG_FLAG true 2>&1
+        if ($LASTEXITCODE -ne 0) {
+            Write-Host "!  setx failed (exit $LASTEXITCODE) — set it yourself, or launch OpenCode from a shell that exports it:" -ForegroundColor Yellow
+            Write-Host "   `$env:$BG_FLAG='true'; & `"$env:LOCALAPPDATA\Programs\@opencode-aidesktop\OpenCode.exe`"" -ForegroundColor Yellow
+        } else {
+            $after = [Environment]::GetEnvironmentVariable($BG_FLAG, "User")
+            if ($after -eq "true") {
+                Write-Host "✔  $BG_FLAG=true written to HKCU\Environment (takes effect on the next full restart of OpenCode)" -ForegroundColor Green
+            } else {
+                Write-Host "!  setx reported success but the value did not read back — set it manually (System > Advanced > Environment Variables)" -ForegroundColor Yellow
+            }
+        }
+    }
+}
+
 # ── done ────────────────────────────────────────────────────────────────────
 Write-Host ""
 Write-Host "✔  Done! Restart OpenCode Desktop to activate." -ForegroundColor Green
+Write-Host "   Self-check after the restart, in any session: ask the agent to run tm_stats" -ForegroundColor DarkGray
+Write-Host "   and look for the row '宿主后台 task 注入' — it proves which plugin build loaded" -ForegroundColor DarkGray
+Write-Host "   and whether the background sub-agent channel is live." -ForegroundColor DarkGray
 Write-Host ""

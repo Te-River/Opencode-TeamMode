@@ -461,9 +461,10 @@ console.log("hosthooks. tool.definition / chat.params / compaction / shell.env /
   ok(big.text.includes('tm_join { ids: ["ses_child_9"] }'), "and it is handed the way to read the whole thing")
   ok(big.text.length < envelope.length / 4, "the full body is gone from the context (kept " + big.text.length + " of " + envelope.length + " chars)")
   ok(estimateTokensOf(big.text) < 400, "the replacement is small: " + estimateTokensOf(big.text))
-  eq(logs.length, 1, "one trajectory line per offload (the count is how a silent host change gets noticed)")
+  eq(logs.length, 1, "one trajectory line per envelope the hook recognises")
   eq(logs[0].tool, "task_offload", "…under its own tool name")
-  ok(logs[0].tokens > 4000 && logs[0].child === "ses_child_9", "…carrying the size it kept out and which child it came from")
+  eq(logs[0].action, "offloaded", "…saying it offloaded")
+  ok(logs[0].tokens > 4000 && logs[0].child === "ses_child_9", "carrying the size it kept out and which child it came from")
 
   // the three locks: nothing else may ever be rewritten
   const typed = { type: "text", text: envelope }
@@ -474,7 +475,12 @@ console.log("hosthooks. tool.definition / chat.params / compaction / shell.env /
   ok(typed.text === envelope, "a part the USER typed is never touched, even holding a perfect envelope")
   ok(small.text.startsWith("<task"), "under the threshold, the host's text passes through verbatim")
   ok(assistant.text === envelope, "an assistant part is never touched")
-  eq(logs.length, 1, "no extra offloads were logged")
+  // the liveness distinction: a passthrough is STILL reported, because a
+  // counter that only moves on a rewrite cannot tell "alive, nothing big" from
+  // "the host stopped routing injections through the hook".
+  eq(logs.length, 2, "the under-threshold envelope is logged too")
+  eq(logs[1].action, "passthrough", "…marked as a passthrough, not an offload")
+  eq(logs[1].threshold, 4000, "…and carries the threshold it was judged against")
 
   const offSwitch = createTaskOffload({ enabled: false, thresholdTokens: 4000, previewLines: 20, previewMaxTokens: 80 })
   const untouched = { type: "text", synthetic: true, text: envelope }
@@ -491,13 +497,50 @@ console.log("hosthooks. tool.definition / chat.params / compaction / shell.env /
   ok(!threw, "a governance hook that throws would eat the user's message — it never throws")
   ok(renderOffloadedTask({ sessionId: "s1", summary: "", body: "x" }, "prev", 5000, 40).includes('id="s1"'), "the renderer survives a missing summary")
 
-  // the count reaches the report, and 0 explains itself
-  const md2 = renderStatsWith({ tool: "task_offload", step_id: "chat.message", event: "injected", child: "ses_x", tokens: 9000 })
-  ok(md2.includes("宿主后台 task 结果被挡在上下文外") && md2.includes("9,000"), "tm_stats shows what the host path cost us")
+  // the three report states, because "0" has two meanings and must not be
+  // allowed to look like either one on its own
+  const md2 = renderStatsWith({ tool: "task_offload", step_id: "chat.message", event: "envelope", action: "offloaded", child: "ses_x", tokens: 9000 })
+  ok(md2.includes("宿主后台 task 注入") && md2.includes("9,000"), "seen + offloaded + the saving all render")
+  const md4 = renderStatsWith({ tool: "task_offload", step_id: "chat.message", event: "envelope", action: "passthrough", child: "ses_x", tokens: 900 })
+  ok(md4.includes("通道是活的"), "seen but nothing over threshold says the channel is ALIVE, not broken")
   const md3 = renderStatsWith()
-  ok(md3.includes("这条通道已失效"), "and a zero says so out loud, because 0 is also what a broken hook looks like")
+  ok(md3.includes("分不清") && md3.includes("派一个后台任务再看这行"), "and a zero names both readings plus the one action that separates them")
   console.log("  9. plan B: host background-task injection offloaded under three locks (synthetic + envelope + threshold), never on disk")
 }
 
+/* ---------- 10. built-in arg coercion: the trap the host's schema rejects -- */
+{
+  const { coerceToolArgs } = await import("./dist/tool-coerce.js")
+  // live evidence: a lead following our own advice burned two task calls with
+  // "background":"True" then "true" before it sent a real boolean
+  const a = { args: { description: "d", background: "True" } }
+  eq(coerceToolArgs({ tool: "task" }, a), ["background"], "a string 'True' becomes the boolean the host validates")
+  eq(a.args.background, true, "…in place, on the object the host is about to read")
+  const b = { args: { background: "false" } }
+  coerceToolArgs({ tool: "opencode:task" }, b)
+  eq(b.args.background, false, "'false' is a real false, not an absent true — namespaced tool ids match too")
+  const c = { args: { background: "true" } }
+  coerceToolArgs({ tool: "local/task" }, c)
+  eq(c.args.background, true, "a path-suffixed id matches as well")
+  const keep = { args: { background: "when it finishes", prompt: "p", description: "d" } }
+  eq(coerceToolArgs({ tool: "task" }, keep), [], "any other string is left exactly as the model wrote it")
+  eq(keep.args.background, "when it finishes", "…including the value")
+  const absent = { args: { prompt: "p" } }
+  eq(coerceToolArgs({ tool: "task" }, absent), [], "an omitted flag is never invented")
+  ok(!("background" in absent.args), "…so the call keeps the host's own default")
+  const other = { args: { background: "true", command: "ls" } }
+  eq(coerceToolArgs({ tool: "bash" }, other), [], "other tools are not touched at all")
+  eq(other.args.background, "true", "…and their values stay byte-exact")
+  const real = { args: { background: true } }
+  eq(coerceToolArgs({ tool: "task" }, real), [], "a correct boolean passes through unchanged")
+  for (const bad of [undefined, null, {}, { args: null }, { args: "nope" }, { args: [] }]) {
+    eq(coerceToolArgs({ tool: "task" }, bad), [], "a malformed hook payload never throws")
+  }
+  const { summarizeEvents: sum2, renderStats: ren2 } = await import("./dist/tm/stats.js")
+  const md5 = ren2(sum2([{ ts: new Date(1_700_000_000_000).toISOString(), tool: "task", step_id: "args-coerce", event: "coerced", keys: "background" }]), { runDirs: 1, roots: [] })
+  ok(md5.includes("内置工具参数纠偏") && md5.includes("1 次"), "the repair is counted in tm_stats — a silent fix would hide how often the host would have rejected the call")
+  console.log("  10. built-in arg coercion: lossless, scoped to the known boolean, counted")
+}
+
 for (const dir of tmpDirs) fs.rmSync(dir, { recursive: true, force: true })
-console.log("\nHOSTHOOKS: ALL PASS (9 groups)")
+console.log("\nHOSTHOOKS: ALL PASS (10 groups)")

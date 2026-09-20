@@ -52,6 +52,7 @@ import { createTmTools } from "./tm/index.js"
 import { createBashTimeoutHook } from "./tm/bash-timeout.js"
 import { createCapabilityProbe, type CapabilityProbe } from "./capabilities.js"
 import { createTaskOffload } from "./task-offload.js"
+import { coerceToolArgs } from "./tool-coerce.js"
 import { setAskBridgeObserver } from "./tm/perm-ask.js"
 import {
   applyToolDefinition,
@@ -295,6 +296,18 @@ const plugin: OpenCodePlugin = {
       // runs BEFORE R6 so a blocked call is never also a slow one.
       "tool.execute.before": async (input: unknown, output: unknown) => {
         capabilityProbe?.observeHook("tool.execute.before")
+        // First, and narrowest: a built-in boolean the model sent as a string
+        // (the host's schema rejects it — two dead `task {background}` calls
+        // proved the trap). Then the timeout clamp, then R6.
+        const coerced = coerceToolArgs(input, output)
+        if (coerced.length) {
+          tmRuntime.pipelines.store.appendTrajectory({
+            tool: String((input as { tool?: unknown } | null)?.tool ?? "task"),
+            step_id: "args-coerce",
+            event: "coerced",
+            keys: coerced.join(","),
+          })
+        }
         bashTimeoutHook(input, output)
         await envProtectHook(input, output)
       },

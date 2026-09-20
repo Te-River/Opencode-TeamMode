@@ -58,9 +58,45 @@ After restart, verify in this order:
 
 1. The agent picker (`@` mentions) lists: **team, architect, implementer, reviewer, tester, researcher**.
 2. Slash commands `/team-plan`, `/team-implement`, `/team-review`, `/team-test`, `/team-research`, `/team-run` autocomplete.
-3. Optional deeper check: `npm view @te-river/opencode-team-mode version` shows the latest **published** version — but it queries the npm registry, **not** what OpenCode actually loads, so it misleads after an update. To confirm the **running** version, either read the `version` field of the cached `package.json` (`~/.cache/opencode/packages/@te-river/opencode-team-mode@latest/package.json` in the scoped layout, or `.../packages/@te_river+opencode-team-mode@latest/package.json` flat), or probe a feature that exists only in the new version (e.g. ask an agent to run `tm_memory` with `action: compact` — old builds reject it). Finally, ask the user to start a chat and confirm the **team** agent responds.
+3. Definitive check for the **running** build: ask an agent to run `tm_stats` and look at which rows appear. `npm view … version` queries the registry, not what OpenCode loads, so it misleads after an update; reading a `package.json` proves only the file, not the loaded code. A feature row (e.g. `宿主后台 task 注入`) either renders or it does not — that is the running build. Finally, ask the user to start a chat and confirm the **team** agent responds.
+
+> **Where the loaded copy actually lives.** Under `~/.cache/opencode/packages/` the
+> scoped layout is a **wrapper directory**: `packages/@te-river/opencode-team-mode@latest/`
+> holds only `package.json` (`{"dependencies": {"@te-river/opencode-team-mode": "<version>"}}`),
+> a `package-lock.json` and `node_modules/` — **the real package is the nested
+> `…@latest/node_modules/@te-river/opencode-team-mode/`**, and that is the copy
+> whose `dist/` executes. Overwriting a `dist/` at the wrapper root, or the one
+> under `~/.config/opencode/node_modules/`, does nothing. (Costly to learn: it
+> was found by a `tm_stats` row that refused to appear.)
 
 Report which checks passed. If verification fails, see Troubleshooting.
+
+### Step 5 — the visible sub-agent (the installer enables this)
+
+OpenCode's own `task { background: true }` is the only sub-agent its interface
+can **show**: the card links to the live child session, it does not block the
+lead, and the host wakes the parent with the result. TeamMode then keeps that
+result inside the token budget (`TM_TASK_OFFLOAD`).
+
+It rides an OpenCode **experimental flag** read from the host process
+environment at startup, so a plugin cannot set it — the installer writes it for
+you:
+
+| Platform | What the installer does | Revert |
+|---|---|---|
+| Windows | `setx OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS true` (user scope, survives reboot) | `REG delete HKCU\Environment /v OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS /f` |
+| macOS | `launchctl setenv …` — reaches GUI apps this login, **not** after a logout | `launchctl unsetenv OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS` |
+| Linux | `systemctl --user set-environment …` when a user session exists, else prints the `export` line | `systemctl --user unset-environment OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS` |
+
+Skip it entirely: run `install.ps1 -NoBackgroundSubagents`, or set
+`TEAMMODE_SKIP_BACKGROUND_SUBAGENTS=1` for a piped install. Without the flag
+nothing breaks — `task` simply blocks the lead, and TeamMode's own
+`tm_dispatch` / `tm_join` remains the non-blocking batch path.
+
+Cost, stated plainly: each finished background task wakes the lead and costs a
+turn, and the host injects the child's reply verbatim until TeamMode replaces
+an oversized one with a preview + pointer.
+
 
 ### Updating
 
@@ -269,9 +305,40 @@ never re-resolved on its own).
 
 1. Agent 选择器（`@` 提及）里出现：**team、architect、implementer、reviewer、tester、researcher**。
 2. 斜杠命令 `/team-plan`、`/team-implement`、`/team-review`、`/team-test`、`/team-research`、`/team-run` 可以自动补全。
-3. 可选的深度检查：`npm view @te-river/opencode-team-mode version` 显示**已发布**的最新版本——但它查的是 npm registry，**不是** OpenCode 实际加载的东西，升级后会造成误判。要确认**运行版本**：读缓存目录里 `package.json` 的 `version`（作用域式 `~/.cache/opencode/packages/@te-river/opencode-team-mode@latest/package.json`，扁平式 `.../packages/@te_river+opencode-team-mode@latest/package.json`），或用只存在于新版的特性做探针（例：让 agent 调用 `tm_memory` 的 `action: compact`——旧版没有该 action 会报错）。最后请用户开一个会话确认 **team** agent 能正常响应。
+3. 判定**运行版本**最可靠的办法：让 agent 跑一次 `tm_stats`，看表里出现了哪些行。`npm view … version` 查的是 registry，不是 OpenCode 实际加载的东西，升级后会误判；读 `package.json` 也只证明文件、不证明被执行的代码。而某一行特性（例如 `宿主后台 task 注入`）要么在要么不在——那就是正在运行的构建。最后请用户开一个会话确认 **team** agent 能正常响应。
+
+> **被加载的那份到底在哪。** `~/.cache/opencode/packages/` 下的作用域式目录是一个
+> **包装层**：`packages/@te-river/opencode-team-mode@latest/` 里只有 `package.json`
+> （内容仅是 `{"dependencies": {"@te-river/opencode-team-mode": "<版本>"}}`）、
+> `package-lock.json` 和 `node_modules/`——**真正的包是嵌套在里面的
+> `…@latest/node_modules/@te-river/opencode-team-mode/`**，被执行的是它的 `dist/`。
+> 覆盖包装层根上的 `dist/`、或覆盖 `~/.config/opencode/node_modules/` 里那份，都不生效。
+> （这条是踩出来的：覆盖后 `tm_stats` 里新行死活不出现，才发现还有一层。）
 
 报告哪些检查通过。验证失败时看"故障排查"。
+
+### 第 5 步 — 可见的子代理（安装脚本已默认开启）
+
+OpenCode 自带的 `task { background: true }` 是唯一能在它界面上**看见**的子代理：
+卡片直接链到那个子会话、不阻塞 lead、完成时宿主把父会话唤醒。TeamMode 再把
+回来的结果压在 token 预算内（`TM_TASK_OFFLOAD`）。
+
+它依赖一个 OpenCode 的**实验性开关**，由宿主进程启动时读环境变量决定，插件无法
+自己打开——所以安装脚本替你写：
+
+| 平台 | 安装脚本做什么 | 撤销 |
+|---|---|---|
+| Windows | `setx OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS true`（用户级，重启仍在） | `REG delete HKCU\Environment /v OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS /f` |
+| macOS | `launchctl setenv …`——本次登录对 GUI 生效，**注销后失效** | `launchctl unsetenv OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS` |
+| Linux | 有用户级 systemd 就 `systemctl --user set-environment …`，否则打印 `export` 那行 | `systemctl --user unset-environment OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS` |
+
+不想开：`install.ps1 -NoBackgroundSubagents`，或管道式安装前设
+`TEAMMODE_SKIP_BACKGROUND_SUBAGENTS=1`。**不开也不会坏**——`task` 只是会阻塞 lead，
+TeamMode 自己的 `tm_dispatch` / `tm_join` 仍是非阻塞的批量路径。
+
+代价说明白：每个后台任务完成都会唤醒 lead 一次、花一轮；而且在 TeamMode 把超限
+正文换成"预览 + 取回指针"之前，宿主注入的是全文。
+
 
 ### 更新
 

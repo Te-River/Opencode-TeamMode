@@ -156,6 +156,43 @@ if [ -d "${CFG_DIR}/node_modules/@te-river/opencode-team-mode" ]; then
   fi
 fi
 
+# ── the host's VISIBLE sub-agent: OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS ─
+# Same reasoning as install.ps1: `task { background: true }` is the only
+# sub-agent OpenCode can show (its card links to the live child session, it
+# does not block, and the host wakes the parent with the result), and the flag
+# is read from the HOST process environment, so a plugin cannot set it for
+# itself. Opt out with TEAMMODE_SKIP_BACKGROUND_SUBAGENTS=1.
+BG_FLAG="OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS"
+case "$(printf '%s' "${TEAMMODE_SKIP_BACKGROUND_SUBAGENTS:-}" | tr 'A-Z' 'a-z')" in
+  1|true|yes|on)
+    echo "-  Left $BG_FLAG alone (opt-out). Re-run without it to enable the visible background sub-agent."
+    ;;
+  *)
+    if [ "$(uname -s)" = "Darwin" ] && command -v launchctl >/dev/null 2>&1; then
+      # launchctl reaches GUI apps launched from the Finder/Dock for THIS login
+      # session; it does not survive a logout, so the line below says so.
+      if launchctl setenv "$BG_FLAG" true 2>/dev/null; then
+        echo "✔  $BG_FLAG=true set for this login session (launchctl — re-run this installer after a reboot)"
+      else
+        echo "!  launchctl setenv failed — set it yourself before launching OpenCode:"
+        echo "   export $BG_FLAG=true"
+      fi
+    elif command -v systemctl >/dev/null 2>&1 && [ -n "${XDG_RUNTIME_DIR:-}" ]; then
+      if systemctl --user set-environment "$BG_FLAG=true" 2>/dev/null; then
+        echo "✔  $BG_FLAG=true set for this systemd user session (re-run after a reboot to re-apply)"
+      else
+        echo "!  systemctl --user set-environment failed — export $BG_FLAG=true before launching OpenCode"
+      fi
+    else
+      echo "!  No session-scoped mechanism found — export $BG_FLAG=true before launching OpenCode:"
+      echo "   export $BG_FLAG=true"
+    fi
+    ;;
+esac
+
 echo ""
 echo "✔  Done! Restart OpenCode Desktop to activate."
+echo "   Self-check after the restart: ask the agent to run tm_stats and look for"
+echo "   the row '宿主后台 task 注入' — it proves which plugin build loaded and whether"
+echo "   the background sub-agent channel is live."
 echo ""

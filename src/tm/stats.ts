@@ -127,10 +127,15 @@ export interface TmStats {
     webCacheHits: number
     /** evaluate_script results that had a secret shape masked out. */
     evalMasks: number
-    /** Host background-task results we kept OUT of the parent's context
-     *  (plan B: the injection was replaced by a preview + tm_join pointer). */
+    /** Host background-task envelopes we SAW through chat.message — the
+     *  liveness proof for the channel, independent of size. */
+    taskEnvelopes: number
+    /** …of which were over the threshold and kept out of the context. */
     taskOffloads: number
     taskOffloadTokens: number
+    /** Built-in tool args we had to repair (a model-sent string where the
+     *  host's schema wants a boolean) — the trap the host would reject. */
+    argsCoerced: number
   }
   degrades: Array<{ seam: string; reason: string }>
 }
@@ -154,7 +159,7 @@ export function summarizeEvents(events: readonly TrajEvent[]): TmStats {
     tools: [],
     dispatch: { starts: 0, settled: 0, failed: 0, adopted: 0, cancelled: 0, sumMs: 0, maxMs: 0, overlapSavedMs: 0, waitMs: 0, waits: 0, repeatWaits: 0 },
     ptc: { runs: 0, calls: 0, errors: 0, retries: 0, sumMs: 0 },
-    governance: { blockedSubresources: 0, blockedHosts: [], ptyRefused: 0, clampedTimeouts: 0, clampSavedMs: 0, offloadDegraded: 0, webCacheHits: 0, evalMasks: 0, taskOffloads: 0, taskOffloadTokens: 0 },
+    governance: { blockedSubresources: 0, blockedHosts: [], ptyRefused: 0, clampedTimeouts: 0, clampSavedMs: 0, offloadDegraded: 0, webCacheHits: 0, evalMasks: 0, taskEnvelopes: 0, taskOffloads: 0, taskOffloadTokens: 0, argsCoerced: 0 },
     degrades: [],
   }
   const byTool = new Map<string, ToolStat>()
@@ -243,9 +248,13 @@ export function summarizeEvents(events: readonly TrajEvent[]): TmStats {
     if (tool === "tm_pty" && ev === "refused") stats.governance.ptyRefused++
     if (ev === "cache_hit") stats.governance.webCacheHits++
     if (ev === "eval_redacted") stats.governance.evalMasks++
-    if (tool === "task_offload" && ev === "injected") {
-      stats.governance.taskOffloads++
-      stats.governance.taskOffloadTokens += num(e.tokens)
+    if (ev === "coerced" && e.step_id === "args-coerce") stats.governance.argsCoerced++
+    if (tool === "task_offload" && ev === "envelope") {
+      stats.governance.taskEnvelopes++
+      if (e.action === "offloaded") {
+        stats.governance.taskOffloads++
+        stats.governance.taskOffloadTokens += num(e.tokens)
+      }
     }
     if (tool === "bash" && e.step_id === "timeout-clamp") {
       stats.governance.clampedTimeouts++
@@ -336,8 +345,9 @@ export function renderStats(
     `| tm_pty 治理面拒绝 | ${g.ptyRefused} |`,
     `| web URL 缓存命中（省下的抓取） | ${g.webCacheHits} |`,
     `| evaluate_script 结果脱敏次数 | ${g.evalMasks} |`,
-    `| 宿主后台 task 结果被挡在上下文外 | ${g.taskOffloads}${g.taskOffloadTokens ? ` 次 · 省下约 ${g.taskOffloadTokens.toLocaleString("en-US")} token` : ""}${g.taskOffloads ? "" : "（0 —— 若你确实开过 OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS 并派过后台任务，说明宿主的注入不再经过 chat.message，这条通道已失效）"} |`,
+    `| 宿主后台 task 注入（经 chat.message 实测） | ${g.taskEnvelopes ? `见到 ${g.taskEnvelopes} 次 · ${g.taskOffloads ? `其中 ${g.taskOffloads} 次超限，挡在上下文外约 ${g.taskOffloadTokens.toLocaleString("en-US")} token` : "全部未超阈值，按设计原样放行（通道是活的）"}` : "0 次 —— 分不清是「没派过后台任务」还是「宿主的注入不再经过 chat.message」（后者才是失效）；派一个后台任务再看这行就能分开"} |`,
     `| bash 超时夹顶 | ${g.clampedTimeouts} 次 · 省 ${g.clampSavedMs ? secs(g.clampSavedMs) : "—"} |`,
+    `| 内置工具参数纠偏（模型把布尔写成字符串） | ${g.argsCoerced || "—"}${g.argsCoerced ? " 次 · 宿主的 schema 会直接拒绝，不纠偏就是白挂一次" : ""} |`,
     `| 卸载降级（存储写失败→截断） | ${g.offloadDegraded} |`,
   )
 

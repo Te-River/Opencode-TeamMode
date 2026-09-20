@@ -93,8 +93,11 @@ export interface TaskOffloadDeps {
   thresholdTokens: number
   previewLines: number
   previewMaxTokens: number
-  /** Observability: without a count, a host change that stops firing this
-   *  hook would look exactly like "nothing needed offloading". */
+  /** Observability: the hook reports EVERY envelope it recognises, not only
+   *  the ones it rewrites. A counter that moves only on a rewrite cannot tell
+   *  "the channel is alive and nothing was big enough" apart from "the host
+   *  stopped routing injections through chat.message" — and the second case is
+   *  exactly what a future OpenCode upgrade would do silently. */
   log?: (event: Record<string, unknown>) => void
 }
 
@@ -114,21 +117,23 @@ export function createTaskOffload(deps: TaskOffloadDeps) {
         const env = parseTaskEnvelope(part.text)
         if (!env) continue
         const tokens = estimateTokens(env.body)
-        if (tokens < deps.thresholdTokens) continue
+        const offload = tokens >= deps.thresholdTokens
+        deps.log?.({
+          tool: "task_offload",
+          step_id: "chat.message",
+          event: "envelope",
+          action: offload ? "offloaded" : "passthrough",
+          session_id: input?.sessionID ?? "",
+          child: env.sessionId,
+          tokens,
+          threshold: deps.thresholdTokens,
+        })
+        if (!offload) continue
         const preview = buildPreview(env.body, "text", {
           lines: deps.previewLines,
           maxTokens: deps.previewMaxTokens,
         })
         part.text = renderOffloadedTask(env, preview, tokens, estimateTokens(preview))
-        deps.log?.({
-          tool: "task_offload",
-          step_id: "chat.message",
-          event: "injected",
-          session_id: input?.sessionID ?? "",
-          child: env.sessionId,
-          tokens,
-          preview_tokens: estimateTokens(preview),
-        })
       }
     } catch {
       // A governance hook that throws would eat the message. Fail open, always.

@@ -8,6 +8,41 @@ registry saw 1.5.0 as the install-script fix release).
 ## [Unreleased]
 
 ### Added
+- **The installers now enable the host's visible sub-agent for you.**
+  `task { background: true }` is the only sub-agent OpenCode can show (its card
+  links to the live child session, it does not block, and the host wakes the
+  parent on completion), and it rides an experimental host flag a plugin cannot
+  set: `OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS`. `install.ps1` writes it at
+  user scope (`-NoBackgroundSubagents`, or
+  `TEAMMODE_SKIP_BACKGROUND_SUBAGENTS=1`, opts out; the revert command is
+  printed), `install.sh` uses `launchctl setenv` / `systemctl --user
+  set-environment` where they exist and otherwise prints the `export` line.
+  Without it nothing breaks — `task` blocks and `tm_dispatch` stays the batch
+  path.
+- **Built-in tool arguments the host rejects now get repaired**
+  (`src/tool-coerce.ts`). Live evidence: a lead following our own advice burned
+  two `task` calls — `"background": "True"`, then `"background": "true"` —
+  before it sent a real boolean, because the host's schema is `Schema.Boolean`
+  and models serialize booleans as text. Same mutable-args surface as the bash
+  timeout clamp: one known boolean per known tool, only the strings true/false
+  convert, anything else left byte-exact, an omitted flag never invented — and
+  the repair is counted in `tm_stats`, because a silent fix would hide how often
+  the host would have failed the call.
+- **`tm_stats` counts every background-task envelope it sees**, not only the ones
+  it rewrote. A counter that moves only on a rewrite cannot distinguish "the
+  channel is alive and nothing was big enough" from "a host upgrade stopped
+  routing injections through `chat.message`" — and the second is the one that
+  would otherwise go unnoticed.
+
+### Fixed
+- **`docs/installation.md` said the cache was authoritative but not where inside
+  it.** The scoped cache directory is a *wrapper* whose `package.json` only
+  declares the dependency; the executed code is the nested
+  `…@latest/node_modules/@te-river/opencode-team-mode/dist`. Documented, with
+  `tm_stats` as the definitive "which build is running" probe (registry
+  `npm view` and a `package.json` read both prove less than they look).
+
+### Added
 - **The host's own visible sub-agent, inside our token budget.** OpenCode's
   built-in `task { background: true }` is the only delegation the interface can
   SHOW — its card links to the live child session, it does not block the lead,
