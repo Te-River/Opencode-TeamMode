@@ -8,6 +8,16 @@ registry saw 1.5.0 as the install-script fix release).
 ## [Unreleased]
 
 ### Added
+- **A wait has to be said out loud.** From the outside, a lead parked in
+  `tm_join` and a lead that finished look identical — the tool call is one line
+  the user cannot open. So the lead must now state, before any blocking
+  collection and again whenever it ends a turn with children open, who is still
+  working and that the task is not delivered. `tm_join`'s unsettled header
+  carries the same instruction at the moment of
+  decision (a prompt rule thousands of tokens earlier is not the same thing),
+  and the compaction must-survive list now records uncollected children as a
+  **not-finished state**, so a summary mid-wait cannot leave the lead believing
+  it had delivered.
 - **The installers now enable the host's visible sub-agent for you.**
   `task { background: true }` is the only sub-agent OpenCode can show (its card
   links to the live child session, it does not block, and the host wakes the
@@ -17,8 +27,8 @@ registry saw 1.5.0 as the install-script fix release).
   `TEAMMODE_SKIP_BACKGROUND_SUBAGENTS=1`, opts out; the revert command is
   printed), `install.sh` uses `launchctl setenv` / `systemctl --user
   set-environment` where they exist and otherwise prints the `export` line.
-  Without it nothing breaks — `task` blocks and `tm_dispatch` stays the batch
-  path.
+  Without it nothing breaks — `task` simply blocks the lead, and `tm_join`
+  still collects whatever children exist.
 - **Built-in tool arguments the host rejects now get repaired**
   (`src/tool-coerce.ts`). Live evidence: a lead following our own advice burned
   two `task` calls — `"background": "True"`, then `"background": "true"` —
@@ -59,14 +69,40 @@ registry saw 1.5.0 as the install-script fix release).
   `tm_stats` prints the count with an explicit warning when it is 0 — because a
   host that stops routing through `chat.message` would otherwise look exactly
   like a quiet day.
-- **`TM_DISPATCH_MAX` (default 4)** — how many children one lead may have
-  running at once, refused before the confirmation dialog. Six concurrent
-  researchers measured 19+ minutes with nothing settled.
 - **`tm_join` can collect a host `task` child by explicit id** (parentage read
   back from the host, never assumed). That is how the lead gets the whole reply
   after we replaced it with a pointer; automatic adoption from the session tree
   still requires our ` ·tm` marker, so a `task` child is never claimed on
   speculation.
+- **Delegation now has a routing rule, not a preference.** The lead picks
+  `task { background: true }` when several independent children run at once AND
+  it will keep working meanwhile, and a plain synchronous `task` when its very
+  next step needs that answer in hand — "background for anything else" was how a
+  lead ended up parking on a single child it could not act on until it landed.
+  The same split now decides which `task` footer the host shows the model
+  (`tool.definition` reads `OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS` the way
+  the host does, so the hint cannot advertise a shape the host would reject).
+
+### Removed
+- **`tm_dispatch` is gone; every agent is denied it and the tool is not
+  registered.** It existed because the host's `task` blocks the lead, and it
+  bought real overlap — but the children it created were sessions the user could
+  neither open from a card nor stop from the interface. A lead-side
+  `tm_join { cancel: true }` is not the same thing as the user being able to
+  pull the plug, and invisible, unstoppable sessions are not a trade this team
+  will make on the user's machine. So: `create`/`promptAsync` calls deleted, the
+  consent dialog (`TM_DISPATCH_ASK`), the depth ceiling (`TM_SUBAGENT_DEPTH`),
+  the serial switch (`TM_PARALLEL_DISPATCH`) and the concurrency cap
+  (`TM_DISPATCH_MAX`) went with it — all four were guards around a door that
+  should not have been there. The host's `task` (plus `background: true`) is now
+  the only delegation channel: governed by the host's own permission set, shown
+  as a card that links to the live child, and killable by the user.
+  `tm_join` stays and gains the read-back path, because collecting a child the
+  host created is the half that was never the problem — including children
+  dispatched by an older version, which are still adopted, settled and cancelled
+  exactly as before. The lead's prompt states the removal out loud, so a model
+  that remembers the old tool from a previous session finds the door closed in
+  writing rather than by trial.
 
 ### Changed
 - **`TM_JOIN_MAX_WAIT_MS` default 300 000 → 60 000, and chained waits are cut
@@ -81,6 +117,51 @@ registry saw 1.5.0 as the install-script fix release).
   just collected every child and has not re-marked its list got "不要把这轮当成收尾"
   for a stale list. The line now says to update `todowrite` first if the items
   really are done.
+
+### Fixed
+Three defects from one real session (a Go repo, 2026-09-21), each reproduced
+before it was changed — and two of the session's five complaints turned out to
+be the tools answering correctly, which is recorded here because "the tool is
+broken" and "the answer is not what I expected" must not be conflated.
+- **A confirmation dialog nobody answers now ends.** `tm_webfetch` of an
+  off-allowlist URL calls `ctx.ask` and waits — with no deadline of its own.
+  The approval gate's `TM_ASK_TIMEOUT_MIN` auto-reject only covers it when R6 is
+  on AND the client can reply; where it is not armed, the tool hung until the
+  user interrupted the turn, and the card read `Tool execution aborted` with
+  nothing to explain it. `askUserForTarget` now races its own timer
+  (`TM_ASK_TIMEOUT_MIN` + 15 s, so the gate stays authoritative when it can
+  fire) and returns a fourth verdict, `timed-out`, whose message says 无人应答
+  rather than 用户未批准 — a refusal means stop, a timeout means go and look at
+  the screen. All seven ask sites (webfetch, search, browser navigation,
+  `evaluate_script` consent, `tm_pty`, the PTC web bridge) share the one note.
+- **`evaluate_script` was silently discarding the model's function.** Every
+  browser tool documents `function: "() => …"`, but `evaluate()` treats a
+  STRING as an expression: a function source evaluates to a function object,
+  which cannot be serialized, so the call resolved to `undefined` and we
+  rendered `执行结果：null` — the model spent six rounds wondering whether the
+  page had the links, when our call had thrown them away. A function-shaped
+  source is now INVOKED (`(() => …)()`; an expression the model already
+  invoked is not double-wrapped, and `awaitPromise` carries async results out),
+  and the reply names the value's TYPE so `undefined` / `null` / `""` / `array(0)`
+  are four different sentences. On the legacy CDP engine a page-side throw now
+  surfaces as 页面内抛出异常 instead of `null`.
+- **An empty result is now an answer.** `tm_bash` returned the empty string for
+  a command that printed nothing — indistinguishable from "the tool never ran" —
+  and `tm_grep` returned nothing at all for 0 matches, so the agent's next move
+  was to distrust the tool. Both self-report now: bash says
+  `stdout 为空 = 0 行输出 · cwd=…` and points at `tm_read` for file content
+  (PowerShell 5.1 decodes a CJK UTF-8 file by the machine's ANSI codepage, so
+  the same file is 187 lines to `wc`/`tm_grep` and 168 to `Get-Content` —
+  measured, and the reason a line-range read silently came back empty); grep
+  says `（0 命中）pattern=… · 范围=…` and states that 0 in that directory does not
+  prove absence, with the widening moves. Non-empty results are returned
+  byte-exact — the note never rides along.
+- **tm_stats' parallelism table survived the removal by measuring what is still
+  observable.** "派发 / 完成" became "子代理结算 / 失败 / 取消（派活走宿主 task）"
+  plus a claim count, and the overlap number is now derived from each child's
+  own (settle − duration) window instead of a dispatch line that no longer
+  exists — a dead row is worse than a narrower one, because the throughput
+  claim is the only reason this team exists.
 
 ## [1.5.15] - 2026-09-20
 

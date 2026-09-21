@@ -214,7 +214,7 @@ HMAC 句柄，agent 真需要 payload 时用 `tm_fetch` 分页取。
 | `tm_ptc_run` | 批量编排：一个程序、N 次受治理调用、零 LLM 回合；联网角色还能在程序里调 `tm.search` / `tm.webfetch` | 全部六个 agent |
 | `tm_search` | 多引擎网络搜索，返回提取、去重、RRF 融合后的命中列表 | Lead + Researcher |
 | `tm_webfetch` | 白名单页面的单次受治理 GET（搜索页自动提取） | Lead + Researcher |
-| `tm_dispatch` / `tm_join` | **异步子代理派发**：`tm_dispatch` 在独立子会话里启动某个专员并立刻返回其 id（内置 `task` 会把你阻塞到子代理结束），`tm_join` 负责回收——不带参数=状态快照，`waitMs`=有界等待，`cancel:true` 取消跑飞的子任务；回收到的回复同样走卸载管线，五份长报告变成句柄+预览而不是压垮你的上下文。子会话是宿主会话树里一个真实会话（标题 `<description> (@<agent> subagent ·tm)`），派发时还会弹一条 toast 告诉你去看谁——因为工具卡片本身展不开 | 仅 Lead（子代理不得再派发） |
+| `tm_join` | **子代理回收**——插件侧的派发器已经没有了（`tm_dispatch` 被移除：插件创建的子会话，用户既打不开也停不掉）。派活统一走宿主自己的 `task` / `task { background: true }`，`tm_join` 是它的读端：不带参数=状态快照，`waitMs`=有界等待，`cancel:true` 取消跑飞的子任务，`tm_join { ids: ["ses_…"] }` 则把某个子代理的**整篇**回复经卸载管线取回（句柄 + ≤80 token 预览），而不是几千 token 直接压进上下文。插件重启后它还会从宿主会话树重建登记，遗留的子代理被"接管"而不是丢失 | 仅 Lead |
 | `tm_pty` | 在宿主自己的终端会话上**非阻塞执行命令**（`start`/`status`/`list`/`kill`）：独立的构建与测试各自一个会话并行跑，不再串成一条 120 秒的 bash 调用。它不抓输出（命令自己 tee 日志，用 `tm_read` 读），且每次启动都先过 R6 分类器、R2 危险面 glob，再走官方确认窗，才真的建进程 | 仅 Lead |
 | `tm_stats` | **插件把自己的 trajectory 读回来**：卸载挡在上下文之外的 token（扣掉确实回来的预览）、派发重叠省下的秒数（串行代价减去子代理实际占用的墙钟）、PTC 内部量、治理计数（被拦子资源、`tm_pty` 拒绝、bash 超时夹顶、缓存命中、脱敏次数）——外加**宿主能力矩阵**（每个宿主接口标 `已验证/存在未用/待观察/缺失/需人眼`）。只读本插件自己写的文件；OpenCode 升级后第一个跑它。`{ recent: 20 }` 追加一份逐条调用清单——每次卸载结果的句柄和落盘路径都在里面，这就是"看看刚才那个工具到底返回了什么"的办法（宿主不给插件工具卡片留展开位） | 全角色 |
 | `tm_browser` | 交互式浏览器会话（**驱动你的默认浏览器**）：16 个 Playwright 动词（快照优先：`take_snapshot` → 按 uid 寻址的 `click`/`fill`/`drag`…）+ 5 个旧版兼容动词（open/navigate/read/screenshot/close）；Playwright 引擎需 Node ≥ 20，不满足或导入失败时自动降级到旧版 CDP 引擎。它开的是**你自己的默认浏览器渠道**（默认装 Edge Beta 就开 Beta），除操作者设 `TM_BROWSER_HEADLESS` 外保持有头；页面自家图片/CSS/JS 靠 `same-site` 子资源策略正常加载；`take_screenshot { image:true }` 会附一张 JPEG，让模型真能看见画面 | Lead + Researcher + Tester（仅 UI 验证） |
@@ -233,21 +233,25 @@ HMAC 句柄，agent 真需要 payload 时用 `tm_fetch` 分页取。
 > 磁盘文件，`tm_stats { recent: 20 }` 会把最近每一次调用连同句柄和文件路径
 > 列出来。想知道"刚才那个工具到底返回了什么"，直接这么问你的 agent。
 
-> **两条派活的路，以及该要哪一条。** OpenCode 自带的 `task` 是唯一能在界面上
-> **给你看**的子代理——它的卡片直接链到那个子会话；再加 `background: true`，
-> 它同时也不阻塞了：子任务跑完，宿主会把你的 lead 唤醒。这个开关是实验性的，
-> 要你自己打开：
+> **派活只有一条路：宿主的 `task`，两种形态。** OpenCode 自带的 `task` 是唯一
+> 能在界面上**给你看**的子代理——它的卡片直接链到那个子会话，用户也能停掉它；
+> 再加 `background: true`，它同时也不阻塞了：子任务跑完，宿主会把你的 lead 唤醒。
+> 这个开关是实验性的，要你自己打开：
 >
 > ```
 > OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS=true
 > ```
 >
 > （给宿主进程设好——Windows 用 `setx`，或从带这个变量的终端启动——然后重启
-> OpenCode）。打开之后 TeamMode 负责把它压在 token 预算内：注入进来的整篇回复
-> 会被换成"预览 + 取回方式"，并且**不会另存一份到磁盘**（`TM_TASK_OFFLOAD=off`
-> 就恢复宿主的原样注入）。`tm_dispatch` / `tm_join` 仍是批量路径——一次多个、
-> 回来的是结构化骨架而不是全文、可 `cancel`、插件重启后还能接管。
-> 宿主那条路的代价也说明白：每个后台任务完成都会唤醒 lead 一次、花一轮。
+> OpenCode；安装脚本会替你做好）。打开之后 TeamMode 负责把它压在 token 预算内：
+> 注入进来的整篇回复会被换成"预览 + 取回方式"，并且**不会另存一份到磁盘**
+> （`TM_TASK_OFFLOAD=off` 就恢复宿主的原样注入）。这条路的代价也说明白：每个后台
+> 任务完成都会唤醒 lead 一次、花一轮。留在原地的读端是 `tm_join`：按 id 把某个
+> 子代理的整篇回复经卸载管线取回、取消跑飞的子任务、插件重启后从宿主会话树重建登记。
+>
+> 这里**刻意没有插件侧派发器**：早先的 `tm_dispatch` 创建的子会话，用户既打不开
+> 也停不掉，这个代价比它换来的批量收益更大。移除它不影响任何功能——宿主的 `task`
+> 一直是那条可见的路。
 
 所有受治理工具都**支持并行**：宿主可以把一批 `tm_search` / `tm_webfetch` /
 `tm_fetch` 调用并发执行——每次调用拿到自己的 step id 和自己的 payload，
@@ -438,7 +442,7 @@ Team Lead 自己从不删黑板，你可以随时审计任何一次运行。
 | 环境变量 | 默认 | 用途 |
 |---|---|---|
 | `TM_ENV_PROTECT` | `strict` | R6 模式：`strict` / `standard` / `off`（off 同时解除审批计时器） |
-| `TM_ASK_TIMEOUT_MIN` | `1` | 无人应答弹窗自动拒绝前等待的分钟数（地板 1 分钟——安全：抢跑应答良性记为 `already-closed`；宿主应答事件到插件晚约 120 秒是事件总线投递延迟，非点击解析延迟） |
+| `TM_ASK_TIMEOUT_MIN` | `1` | 无人应答弹窗自动拒绝前等待的分钟数（地板 1 分钟——安全：抢跑应答良性记为 `already-closed`；宿主应答事件到插件晚约 120 秒是事件总线投递延迟，非点击解析延迟）。此外每个受治理工具都会在"这个值 + 15 秒"处自己结束等待——审批闸只在 R6 开启且宿主能回复时才武装，而一个永不返回的工具在界面上读起来就是卡死，不是在请你确认 |
 | `TM_ASK_TIMEOUT_FLOOR_MIN` | `1` | 上述自动拒绝的强制最小时长 |
 | `TM_ENV_PROTECT_EXTRA_DENY` | — | 额外拦截模式（正则；永远硬拦截，不走弹窗） |
 | `TM_OFFLOAD_THRESHOLD` | `2000` | 全局卸载兜底阈值（token，CJK 感知估算）——内容类别未知时使用 |
@@ -462,10 +466,6 @@ Team Lead 自己从不删黑板，你可以随时审计任何一次运行。
 | `TM_BASH_TIMEOUT_PROBE_MS` | `60000` | 对只读探针命令（P3 白名单内）强制夹顶模型自设的 `timeout`（0 关闭） |
 | `TM_BASH_TIMEOUT_MAX_MS` | `0` | 其它 bash 命令的可选全局上限——默认关闭，真实构建保留它要的超时 |
 | `TM_PTY_MAX` | `4` | 本插件同时最多保持多少个 `tm_pty` 终端会话 |
-| `TM_DISPATCH_ASK` | `on` | `tm_dispatch` 在创建子代理前先开官方确认窗——与内置 `task` 工具同一道闸（按子代理类型 `ctx.ask`），这样"走插件"不会变成绕过用户规则的后门。没有 ask 桥就拒绝。`off` 跳过这道确认（仅 lead 可派发的锁始终生效） |
-| `TM_SUBAGENT_DEPTH` | `1` | 派发子代理的嵌套上限，与宿主 `subagent_depth` 同口径（1 = 子代理不得再生子代理）。必须插件侧自己执行，因为那道检查长在 task 工具里，不在 session API 上 |
-| `TM_PARALLEL_DISPATCH` | `on` | lead 能否同时跑多个子代理。`off` 时只要还有子代理在跑，第二次 `tm_dispatch` 就被拒绝（拒绝语点名在跑的是谁，并让你先 `tm_join`），团队变成串行：派发 → 回收 → 再派发。拒绝发生在确认窗之前，也写在工具描述里。给带不动 N 个会话的机器或额度用 |
-| `TM_DISPATCH_MAX` | `4` | 一个 lead 同时可跑几个子代理（1..8）。拒绝发生在确认窗之前，拒绝语点名当前在跑的是谁。实测依据：6 个并发 researcher 跑了 19 分钟以上且无一结算 |
 | `TM_JOIN_MAX_WAIT_MS` | `60000` | `tm_join { waitMs }` 的上限。过去是 300 000，于是有了一次"连续两次各等 5 分钟、期间 lead 什么都没做"的实测——等待不是并行，所以默认改成"看一眼就去干活"。上一次没等到任何结算时，第二次等待被截到 10 秒并附替代动作 |
 | `TM_TASK_OFFLOAD` | `on` | 把宿主的后台子代理压在 token 预算内：`task { background: true }` 完成时宿主会把子代理全文注入你的会话，这里把超限的正文换成预览 + 取回指针（`tm_join { ids: [...] }`）。**只碰**同时满足三条的 part：`synthetic === true`、正文精确匹配宿主自己的 `<task id=… state="completed">` 信封、且超过文本卸载阈值；任一不满足就原样放过。不往磁盘复制任何东西——全文本来就写在子会话里。`off` 恢复宿主原样注入 |
 | `TM_TOOL_HINTS` | `on` | 通过 `tool.definition` 把本插件的调用点纪律追加到内置 `bash` / `task` 的**描述**后面（只追加、幂等，绝不替换宿主原文） |

@@ -251,47 +251,55 @@ assert.ok(leadPrompt.includes("ANTI-SPLITTING"), "lead: anti-splitting rule")
 assert.ok(leadPrompt.includes("Discovery gate"), "lead: pre-implementation discovery (kept)")
 assert.ok(leadPrompt.includes("Brevity discipline"), "lead: <=5-line planning text")
 
-/* T3: dispatch-concurrency guidance + pre-commit hygiene (lead side) */
-assert.ok(leadPrompt.includes("## Dispatch concurrency"), "lead: dispatch concurrency section present")
+/* T3: delegation guidance + pre-commit hygiene (lead side) */
+assert.ok(leadPrompt.includes("## Delegation"), "lead: delegation section present")
 assert.ok(
-  leadPrompt.indexOf("## Routing table") < leadPrompt.indexOf("## Dispatch concurrency") &&
-    leadPrompt.indexOf("## Dispatch concurrency") < leadPrompt.indexOf("## Approval gate"),
-  "lead: dispatch concurrency section sits between routing table and approval gate",
+  leadPrompt.indexOf("## Routing table") < leadPrompt.indexOf("## Delegation") &&
+    leadPrompt.indexOf("## Delegation") < leadPrompt.indexOf("## Approval gate"),
+  "lead: delegation section sits between routing table and approval gate",
 )
-assert.ok(leadPrompt.includes("you and your team run AT THE SAME TIME"), "lead: concurrency section states the real-parallel contract")
-assert.ok(leadPrompt.includes("tm_dispatch is the parallel lever"), "lead: tm_dispatch taught as the non-blocking dispatch lever")
-assert.ok(leadPrompt.includes("blocks you until that child finishes"), "lead: WHY task is the serial path is stated, not just banned")
+// The removal itself has to be pinned: a model that remembers tm_dispatch from
+// a previous session must find the door closed in writing.
+assert.ok(leadPrompt.includes("You do not spawn sub-agents"), "lead: the plugin-side dispatcher is closed by rule, not left to preference")
+assert.ok(leadPrompt.includes("governed, visible, killable"), "lead: WHY the host's task is the only delegation channel")
+assert.ok(leadPrompt.includes("Pick the shape by rule"), "lead: background vs synchronous task is a rule, not a coin flip")
+assert.ok(
+  leadPrompt.includes("you would only park waiting for it"),
+  "lead: background is only for work the lead actually keeps following up on",
+)
+assert.ok(leadPrompt.includes("the host wakes you with the result"), "lead: the background contract says who delivers the answer")
 assert.ok(leadPrompt.includes("Write a SELF-CONTAINED brief"), "lead: dispatch briefs must stand alone (child sees no history)")
-assert.ok(leadPrompt.includes("quick / standard /\n  deep"), "lead: the brief carries an expected thoroughness level")
+assert.ok(leadPrompt.includes("quick / standard /"), "lead: the brief carries an expected thoroughness level")
 assert.ok(leadPrompt.includes("While they run, keep working — on lead work only"), "lead: the leader works during the wait, and only on lead work")
 assert.ok(leadPrompt.includes("Do NOT pull big payloads into your\n  own context while waiting"), "lead: leader context discipline — delegated bulk stays delegated")
+assert.ok(leadPrompt.includes("Slow shell work is parallel too"), "lead: tm_pty is named as the shell-side parallel lever")
 assert.ok(leadPrompt.includes("Collect with **tm_join**"), "lead: tm_join is the collection path")
-assert.ok(leadPrompt.includes("Never end a turn with a dispatched child uncollected"), "lead: no orphaned dispatches at end of turn")
+assert.ok(leadPrompt.includes("Never end a turn with a child still uncollected"), "lead: no orphaned children at end of turn")
 assert.ok(leadPrompt.includes("cancel: true"), "lead: a runaway child is abortable")
-assert.ok(leadPrompt.includes("Say who is running"), "lead: a dispatch is invisible in the tool card, so the reply must name the live children")
-assert.ok(leadPrompt.includes("one-line card nobody can expand"), "lead: WHY the card cannot be trusted to speak for itself")
+assert.ok(leadPrompt.includes("Say who is running"), "lead: a turn that ends with work open must name the live children")
 assert.ok(
-  leadPrompt.includes("TM_PARALLEL_DISPATCH=off"),
-  "lead: the serial-dispatch switch is a mode to announce, not a silent degradation",
+  leadPrompt.includes("line the user cannot expand"),
+  "lead: WHY the tool card cannot be trusted to speak for itself",
 )
 assert.ok(leadPrompt.includes("your context is the team's scarce"), "lead: division of labour framed as context economy")
-assert.ok(leadPrompt.includes("blocking on `task`"), "lead: blocking on task for independent work is named an anti-pattern")
 assert.ok(
   leadPrompt.includes("A wait is not\n  parallelism"),
   "lead: chained tm_join waits are named as the pattern that throws the parallelism away",
 )
 assert.ok(
   leadPrompt.includes("OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS=true"),
-  "lead: when the user cannot see sub-agents, the real options are named (session tree / tm_stats recent / the host's own background card)",
+  "lead: the host flag that decides whether background is real is named where the choice is made",
 )
 assert.ok(
-  leadPrompt.includes("Two dispatch channels"),
-  "lead: the host's watchable task{background} vs our collectable tm_dispatch is a routing rule, not an accident",
+  leadPrompt.includes("Say that you are waiting"),
+  "lead: a wait must be announced — the user cannot tell a blocked turn from a finished task",
 )
 assert.ok(
-  leadPrompt.includes("injects the") && leadPrompt.includes("FULL reply into your context"),
-  "lead: the token price of the host's background path is stated where the choice is made",
+  leadPrompt.includes("is NOT a finished task"),
+  "lead: the announcement says explicitly that the task is not finished",
 )
+assert.ok(leadPrompt.includes("Parallel-safe"), "lead: what may run at once stays enumerated")
+assert.ok(leadPrompt.includes("Must serialize"), "lead: what must not stays enumerated")
 // async dispatch makes multi-in_progress normal, and order is negotiable
 assert.ok(leadPrompt.includes("SEVERAL items"), "lead: parallel dispatch explicitly licenses several in_progress items")
 assert.ok(leadPrompt.includes("ORDER IS A DEFAULT, NOT A LAW"), "lead: todo-list order yields to parallelism")

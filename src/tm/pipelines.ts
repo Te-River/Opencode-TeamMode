@@ -357,6 +357,21 @@ export function buildPipelines(deps: TmDeps) {
       if (!unwrapped.ok) return tmError(tool, "client", unwrapped.message)
       const content = extractText(unwrapped.data)
       const matchLines = content ? content.split(/\r?\n/).filter((l) => l.trim()).length : 0
+      if (!matchLines) {
+        // A bare empty result reads as "the search is broken", and the agent
+        // then re-runs it a wider way or concludes the opposite of the truth
+        // (live: a 0-hit search the model called a tool failure).  0 is an
+        // ANSWER, so print it as one — with the scope it applies to.
+        // …and a widening hint ONLY when the caller narrowed it — telling a
+        // root-wide search to drop `path` is noise that costs a round.
+        const scopeNote = requested
+          ? `\n本次范围由 path="${shorten(requested, 80)}" 限定——要搜整个工作区就去掉 path 再试一次。`
+          : ""
+        return govern(stepId, tool, `（0 命中）pattern="${pattern}" · 范围=${shorten(scopeDir, 120)}${scopeNote}\n这只表示"在该目录及其子目录里没有匹配"，不证明整个仓库没有：这是正则，换写法常能救回来（[Aa]rk 同时命中 Ark/ark），或直接 tm_read 读你怀疑的那个文件。`, {
+          contentType: "text",
+          clue: `pattern=${shorten(pattern, 60)}, 命中 0 行, dir=${shorten(scopeDir, 80)}`,
+        })
+      }
       return govern(stepId, tool, content, {
         contentType: detectContentType(content),
         clue: `pattern=${shorten(pattern, 60)}, 命中 ${matchLines} 行, dir=${shorten(scopeDir, 80)}`,
@@ -395,8 +410,16 @@ export function buildPipelines(deps: TmDeps) {
       // workspace all session.
       const cwd = ctxDir(ctx)
       const output = await runShellCommand(deps.$, command, cwd)
-      return govern(stepId, tool, output, {
-        contentType: detectContentType(output),
+      // Empty stdout used to come back as an empty result — indistinguishable
+      // from "the tool never ran", so the model re-issued the command or
+      // concluded the tool was broken (live: a `-Skip 168` on a file PowerShell
+      // decodes as 168 lines, where the honest answer is "0 行输出").
+      const text =
+        output.trim() === ""
+          ? `（命令执行完成，stdout 为空 = 0 行输出 · cwd=${shorten(cwd, 120)}）\n空输出是命令给出的答案，不是工具失败。若你预期有内容：先核对相对路径是按上面的 cwd 解析的；读文件内容请用 tm_read——Windows PowerShell 5.1 的默认解码口径与 tm_read/tm_grep 不一致，含中文的 UTF-8 文件在它眼里行数可能更少，按行取片段时这会直接骗到你。`
+          : output
+      return govern(stepId, tool, text, {
+        contentType: detectContentType(text),
         clue: `cmd=${shorten(command, 60)}, dir=${shorten(cwd, 80)}`,
       })
     } catch (err) {

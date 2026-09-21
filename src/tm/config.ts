@@ -211,27 +211,6 @@ export interface TmConfig {
    *  entry is only ever consulted after the STATIC allowlist admits the hop
    *  (see cache.ts) — dialog consent is per-request and is never cached. */
   webCacheTtlSec: number
-  /** TM_DISPATCH_ASK (default on) — the built-in `task` tool asks the user
-   *  before spawning a sub-agent (`ctx.ask({permission:"task",
-   *  patterns:[subagent_type]})`, verified in the desktop binary). tm_dispatch
-   *  bypasses that tool, so it re-imposes the SAME gate on its own permission
-   *  name; `off` skips the dialog (the T3 lead-only lock still applies). */
-  dispatchAsk: "on" | "off"
-  /** TM_SUBAGENT_DEPTH (default 1) — mirrors the host's `subagent_depth`
-   *  config, which the task tool enforces by walking the parentID chain.
-   *  Because that check lives in the TOOL and not the session API, a
-   *  plugin-side dispatcher must enforce it itself or nesting silently
-   *  escapes the limit the user configured. */
-  subagentDepth: number
-  /** TM_PARALLEL_DISPATCH (default on) — whether the lead may have MORE THAN
-   *  ONE child running at a time.  On is the whole point of tm_dispatch (the
-   *  built-in task tool blocks, so a team that cannot overlap is a team that
-   *  runs serially).  `off` makes a second dispatch while any child is still
-   *  running a refusal that names the live children, so the lead collects
-   *  first: serial dispatch, same governance, no lost work.  This is the knob
-   *  for a user whose machine (or provider quota) cannot carry N sessions at
-   *  once — it is enforced in the dispatcher, not only in the prompt. */
-  parallelDispatch: "on" | "off"
   /** TM_JOIN_MAX_WAIT_MS (default 60 000) — the ceiling on tm_join's bounded
    *  wait.  It was 300 000, and a live session used exactly that twice in a
    *  row: ten minutes of a lead sitting inside a tool call while six
@@ -239,13 +218,6 @@ export interface TmConfig {
    *  blocked either way — so the default now says "check, then go do lead
    *  work" instead of "park here".  Raise it only deliberately. */
   joinMaxWaitMs: number
-  /** TM_DISPATCH_MAX (default 4) — how many children ONE lead may have
-   *  running at once.  A live session dispatched six researchers in 87
-   *  seconds and none of them settled inside 19 minutes: the ceiling is not
-   *  about taste, it is the provider quota and the machine.  Refused BEFORE
-   *  the consent dialog, same ordering as TM_PTY_MAX.  `TM_PARALLEL_DISPATCH=off`
-   *  is stricter (1). */
-  dispatchMax: number
   /** TM_TASK_OFFLOAD (default on) — keep the HOST's own background sub-agent
    *  (`task {background:true}`, needs OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS)
    *  inside our context budget: when the host injects the finished child's full
@@ -322,11 +294,7 @@ export const TM_CONFIG_DEFAULTS = {
   ptyMax: 4,
   ptcWebBridge: "on",
   webCacheTtlSec: 300,
-  dispatchAsk: "on",
-  subagentDepth: 1,
-  parallelDispatch: "on",
   joinMaxWaitMs: 60_000,
-  dispatchMax: 4,
   taskOffload: "on",
   // Consumed by approval-gate.ts resolveAskTimeoutMs (Math.max floor, Wave A).
   // 1 min since the T2 benign already-closed split (user directive).
@@ -464,11 +432,7 @@ export function resolveTmConfig(env: EnvLike = process.env): TmConfig {
     ptyMax: envInt(env, "TM_PTY_MAX", TM_CONFIG_DEFAULTS.ptyMax, 1, 16),
     ptcWebBridge: resolveOnOff(env.TM_PTC_WEB_BRIDGE),
     webCacheTtlSec: envInt(env, "TM_WEB_CACHE_TTL_SEC", TM_CONFIG_DEFAULTS.webCacheTtlSec, 0, 86_400),
-    dispatchAsk: resolveOnOff(env.TM_DISPATCH_ASK),
-    subagentDepth: envInt(env, "TM_SUBAGENT_DEPTH", TM_CONFIG_DEFAULTS.subagentDepth, 0, 8),
-    parallelDispatch: resolveOnOff(env.TM_PARALLEL_DISPATCH),
     joinMaxWaitMs: envInt(env, "TM_JOIN_MAX_WAIT_MS", TM_CONFIG_DEFAULTS.joinMaxWaitMs, 0, 600_000),
-    dispatchMax: envInt(env, "TM_DISPATCH_MAX", TM_CONFIG_DEFAULTS.dispatchMax, 1, 8),
     taskOffload: resolveOnOff(env.TM_TASK_OFFLOAD),
     askTimeoutFloorMin: envInt(env, "TM_ASK_TIMEOUT_FLOOR_MIN", TM_CONFIG_DEFAULTS.askTimeoutFloorMin, 1, 1440),
     bashTimeoutMaxMs: envInt(env, "TM_BASH_TIMEOUT_MAX_MS", TM_CONFIG_DEFAULTS.bashTimeoutMaxMs, 0, 3_600_000),

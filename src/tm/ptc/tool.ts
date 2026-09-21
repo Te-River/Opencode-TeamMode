@@ -12,7 +12,7 @@ import { detectContentType } from "../preview.js"
 import { buildRef } from "../refs.js"
 import type { RunStore } from "../store.js"
 import { tmError, type TmPhase } from "../result.js"
-import { askUserForTarget, type TmAskRequest } from "../perm-ask.js"
+import { askRefusalNote, askUserForTarget, type TmAskRequest } from "../perm-ask.js"
 import type { TmPipelines } from "../pipelines.js"
 import type { BridgeTool, PtcBridge, PtcCallResult, PtcEngine, PtcErrorBody } from "./contract.js"
 import { BRIDGE_ALLOW } from "./contract.js"
@@ -148,9 +148,7 @@ export function pipelineBridge(pipelines: TmPipelines, ctx: unknown, web?: PtcWe
             error: tmError(
               tool,
               "permission",
-              outcome === "rejected"
-                ? `角色无权通过 PTC 桥接使用 ${tool}（ruleset deny / 用户拒绝）；web 桥仅授予 lead/researcher。`
-                : `无法通过桥接校验 ${tool} 权限（ctx.ask 不可用）——已按最小权限拒绝。`,
+              `桥接调用 ${tool} 未获批准（web 桥只授予 lead/researcher）—— ${askRefusalNote(outcome)}`,
             ).error,
           }
         }

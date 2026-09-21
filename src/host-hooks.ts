@@ -63,21 +63,22 @@ export const TOOL_HINTS: Record<string, string> = {
   bash:
     "\n\n[OpenCode TeamMode] Time discipline: leave `timeout` out unless this step is genuinely slow — the default kill is 120 s and a bigger number only lengthens the silence, a read-only probe (ls/grep/rg/cat/Get-ChildItem) is never a 120-second command (values above the probe ceiling are clamped before the command runs). Independent steps do NOT belong chained with `;` into one call — separate calls, or one tm_ptc_run program.",
   task:
-    "\n\n[OpenCode TeamMode] This blocks your session until the child returns. For independent work that must overlap your own, prefer tm_dispatch (returns at once) + tm_join (collect) and keep the brief self-contained.",
+    "\n\n[OpenCode TeamMode] This blocks your session until the child returns — the right shape for one task whose answer you need next. For several independent tasks you will keep following up on, pass `background: true` (needs the operator flag OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS) so the user can watch the child and the host wakes you when it lands. Keep every brief self-contained: the child sees none of this conversation.",
 }
 
 /**
  * The `task` footer when the operator has the host's background sub-agents
- * enabled (OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS).  The default hint says
- * "prefer tm_dispatch" — with the host path available that is no longer the
- * right advice for watchable work: the host's own card links to the live child
- * session and it wakes the parent on completion, neither of which a plugin can
- * do.  TeamMode keeps the injected text out of the context window (see
- * src/task-offload.ts), so the two channels now differ by purpose, not cost.
+ * enabled (OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS).  Without the flag the
+ * hint above only explains the block; with it, `background:true` becomes the
+ * route for parallel work the lead will keep following up on — the host's own
+ * card links to the live child session and the host wakes the parent on
+ * completion, neither of which a plugin tool can do.  TeamMode keeps the
+ * injected text out of the context window (see src/task-offload.ts), so
+ * visibility no longer costs tokens.
  */
 export const TASK_HINT_BACKGROUND: Partial<typeof TOOL_HINTS> = {
   task:
-    "\n\n[OpenCode TeamMode] Delegating: `background:true` frees this session at once, the user can open the child's card to watch it, and the host wakes you with the result — TeamMode keeps that finished text OUT of your context (you get a preview; `tm_join { ids: [\"<child session>\"] }` pulls the whole reply when you actually need to merge it). Without `background` this call blocks. For a batch you want collected as skeletons in one go, tm_dispatch + tm_join is still the leaner shape.",
+    "\n\n[OpenCode TeamMode] Delegating: `background:true` frees this session at once, the user can open the child's card to watch it, and the host wakes you with the result — TeamMode keeps that finished text OUT of your context (you get a preview). Use it when several children run at once and you will keep working meanwhile; a plain `task` call is right when your very next step needs the answer in hand. To pull a finished child's whole reply back deliberately: `tm_join { ids: [\"<child session>\"] }` — it comes through the offload pipeline as a handle + preview instead of kilotokens inline.",
 }
 
 /**
@@ -180,7 +181,7 @@ export function applyChatParams(input: unknown, output: unknown, env: EnvLike = 
  *     lead's machine check fail for the rest of the session;
  *   - offload handles (ref/access_token/expire_at) — they are the ONLY
  *     window onto a payload that never entered context;
- *   - child session ids from tm_dispatch — an uncollected dispatch is
+ *   - sub-agent child session ids (host `task`, leftovers of the old
  *     running work, and after a summary it looks indistinguishably like done
  *     work;
  *   - provenance (file:line / URL + confidence) — without it a finding
@@ -191,7 +192,7 @@ export const COMPACTION_CONTEXT = [
   "The GOAL directive survives compaction: the user's own ask (GOAL + its ACCEPTANCE criteria) is the contract for this run — carry it verbatim, keep working while a criterion lacks EVIDENCE, and never let a summarized transcript quietly redefine or shrink what they asked for.",
   "OpenCode TeamMode contract survives compaction: every specialist reply keeps the STATUS / CHANGES / FINDINGS / EVIDENCE / HANDOFF skeleton and the lead machine-checks it — never summarize a reply into prose without those keys.",
   "Offloaded payloads are addressed by handle (ref + access_token + expire_at) from tm_* results. Carry the handles forward VERBATIM; never re-run a tool to rediscover a payload a handle already names.",
-  "Async dispatches (tm_dispatch) and their child session ids must survive: an uncollected child is still-running work, not finished work.",
+  "Sub-agent children (the host's task tool, including background tasks) must survive with their session ids: an uncollected child is still-running work, not finished work — and a turn that ends with children open does NOT mean the task is done. After this summary, keep waiting/collecting before reporting anything as delivered.",
   "Every finding keeps its source (file:line or URL) and confidence tag after compaction, otherwise it is unverifiable memory.",
   "The todo list and the blackboard files are the state, not the transcript: keep task items and board paths, drop chit-chat and raw command echo.",
 ]

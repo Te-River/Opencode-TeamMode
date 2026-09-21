@@ -104,6 +104,8 @@ export interface TmStats {
     settled: number
     failed: number
     adopted: number
+    /** Host `task` children tm_join claimed by explicit id (parentage checked). */
+    claims: number
     cancelled: number
     sumMs: number
     maxMs: number
@@ -157,7 +159,7 @@ export function summarizeEvents(events: readonly TrajEvent[]): TmStats {
   const stats: TmStats = {
     window: { runs: 0, events: events.length, wallMs: 0 },
     tools: [],
-    dispatch: { starts: 0, settled: 0, failed: 0, adopted: 0, cancelled: 0, sumMs: 0, maxMs: 0, overlapSavedMs: 0, waitMs: 0, waits: 0, repeatWaits: 0 },
+    dispatch: { starts: 0, settled: 0, failed: 0, adopted: 0, claims: 0, cancelled: 0, sumMs: 0, maxMs: 0, overlapSavedMs: 0, waitMs: 0, waits: 0, repeatWaits: 0 },
     ptc: { runs: 0, calls: 0, errors: 0, retries: 0, sumMs: 0 },
     governance: { blockedSubresources: 0, blockedHosts: [], ptyRefused: 0, clampedTimeouts: 0, clampSavedMs: 0, offloadDegraded: 0, webCacheHits: 0, evalMasks: 0, taskEnvelopes: 0, taskOffloads: 0, taskOffloadTokens: 0, argsCoerced: 0 },
     degrades: [],
@@ -224,8 +226,19 @@ export function summarizeEvents(events: readonly TrajEvent[]): TmStats {
       stats.dispatch.sumMs += dur
       stats.dispatch.maxMs = Math.max(stats.dispatch.maxMs, dur)
       if (at) dLastAt = Math.max(dLastAt, at)
+      // Since tm_dispatch is gone the only starts we ever see are the ones we
+      // DERIVE from a settle (`at - ms`) — a host `task` child we collect has
+      // no dispatch line, but its own duration says when it began. Without
+      // this the overlap row would read "—" forever and the throughput claim
+      // would lose its number.  A real start line always wins over the
+      // derivation (older trajectories recorded both, and it is the truth).
+      if (at && dur > 0 && started === undefined) {
+        const childStart = at - dur
+        if (!dFirstAt || childStart < dFirstAt) dFirstAt = childStart
+      }
     }
     if (tool === "tm_dispatch" && ev === "adopt") stats.dispatch.adopted++
+    if (tool === "tm_dispatch" && ev === "claim_host_task") stats.dispatch.claims++
     if (tool === "tm_dispatch" && ev === "cancel") stats.dispatch.cancelled++
     if (tool === "tm_dispatch" && ev === "wait") {
       // The cost the parallelism claim has to be netted against: every ms the
@@ -325,10 +338,10 @@ export function renderStats(
     "",
     "| 指标 | 值 |",
     "|---|---|",
-    `| 派发 / 完成 / 失败 / 取消 | ${d.starts} / ${d.settled} / ${d.failed} / ${d.cancelled} |`,
+    `| 子代理结算 / 失败 / 取消（派活走宿主 task） | ${d.settled} / ${d.failed} / ${d.cancelled}${d.starts ? ` · 旧版 tm_dispatch 派发 ${d.starts}` : ""} |`,
     `| 单个子代理耗时（最长 / 合计=串行代价） | ${d.maxMs ? secs(d.maxMs) : "—"} / ${d.sumMs ? secs(d.sumMs) : "—"} |`,
-    `| **重叠省下**（串行 − 实际墙钟） | ${d.overlapSavedMs ? `**${secs(d.overlapSavedMs)}**` : "—（不足两个已结算的派发，或它们本就串行）"} |`,
-    `| 重启后由宿主会话树接管 | ${d.adopted} |`,
+    `| **重叠省下**（串行 − 实际墙钟） | ${d.overlapSavedMs ? `**${secs(d.overlapSavedMs)}**` : "—（只看到一个子代理，或它们本就串行）"} |`,
+    `| 由宿主会话树接管 / 认领宿主 task 子会话 | ${d.adopted} / ${d.claims} |`,
     `| lead 在 tm_join 里干等 | ${d.waitMs ? `${secs(d.waitMs)}（${d.waits} 次等待${d.repeatWaits ? ` · 其中 ${d.repeatWaits} 次是连续等待——等待期间你没有产出` : ""}）` : "—"} |`,
   )
 

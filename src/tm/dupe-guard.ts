@@ -110,7 +110,7 @@ export function createDupeGuard(limit = 60): {
       if (collapse || irrelevant) {
         parts.push(
           repeats >= 3
-            ? `下一步：这类多概念关联查询已经在本进程失败 ${repeats} 次——用 tm_dispatch 派一份自包含的调研任务给 researcher（让它用自己的上下文去试错），或直接把不确定处报告给用户；不要在本会话里继续串行试。`
+            ? `下一步：这类多概念关联查询已经在本进程失败 ${repeats} 次——用内置 task 派一份自包含的调研任务给 researcher（多个且要持续跟进就加 background:true；让它用自己的上下文去试错），或直接把不确定处报告给用户；不要在本会话里继续串行试。`
             : `下一步：把一个概念拆成一次查询（先查 A 是什么，再查 A 与 B 的关联），或换 engine:"auto" 让多引擎投票。`,
         )
       }

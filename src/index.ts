@@ -53,7 +53,7 @@ import { createBashTimeoutHook } from "./tm/bash-timeout.js"
 import { createCapabilityProbe, type CapabilityProbe } from "./capabilities.js"
 import { createTaskOffload } from "./task-offload.js"
 import { coerceToolArgs } from "./tool-coerce.js"
-import { setAskBridgeObserver } from "./tm/perm-ask.js"
+import { ASK_GRACE_MS, setAskBridgeObserver, setAskWaitMs } from "./tm/perm-ask.js"
 import {
   applyToolDefinition,
   applyChatParams,
@@ -189,10 +189,11 @@ const plugin: OpenCodePlugin = {
       // store to log into), and tm_stats needs the probe back — a declaration
       // before construction breaks the cycle without weakening either side.
       capabilities: () => capabilityProbe?.snapshot() ?? [],
-      // A tm_dispatch child is registered the moment it is created (the
-      // message.updated route below re-confirms it): an exec-role sub-agent
-      // whose session were NOT registered would hard-throw its own protected
-      // reads instead of opening the dialog.
+      // A child session we take over (adopted from the host tree, or named to
+      // tm_join) is registered the moment it is recognised (the message.updated
+      // route below re-confirms it): an exec-role sub-agent whose session were
+      // NOT registered would hard-throw its own protected reads instead of
+      // opening the dialog.
       onChildSession: (sessionID, agent) => {
         if (approvalGate && injectedExecAgents.has(agent)) approvalGate.registerExecSession(sessionID)
       },
@@ -210,6 +211,11 @@ const plugin: OpenCodePlugin = {
     })
     // ctx.ask is only observable from inside a tool call — perm-ask reports
     // every lookup it makes, which is how this row ever reaches 已验证.
+    // The tool-side backstop for a dialog nobody answers.  It is deliberately
+    // LONGER than the gate's own auto-reject so the gate stays authoritative when it
+    // is armed; when it is not (R6 off, no reply capability) this is the only thing
+    // that keeps a governed call from hanging until the user interrupts the turn.
+    setAskWaitMs(resolveAskTimeoutMs(process.env) + ASK_GRACE_MS);
     setAskBridgeObserver((present) => capabilityProbe?.observeAskBridge(present))
     // Plan B's other half: keep the host's background-task result injection
     // inside the context budget. Built here because it needs the tm runtime's

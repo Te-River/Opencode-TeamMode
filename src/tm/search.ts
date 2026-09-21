@@ -40,7 +40,7 @@ import {
   type SearchHit,
 } from "./webfetch.js"
 import type { WebCache } from "./cache.js"
-import { askFnOf, askUserForTarget } from "./perm-ask.js"
+import { askFnOf, askRefusalNote, askUserForTarget } from "./perm-ask.js"
 import { createDupeGuard } from "./dupe-guard.js"
 import { shorten, type TmConfig } from "./config.js"
 import { detectContentType } from "./preview.js"
@@ -857,9 +857,7 @@ export function buildTmSearchTool(deps: {
               tmError(
                 tool,
                 "permission",
-                `主机 "${target.hostname}" 不在白名单内` +
-                  (outcome === "rejected" ? "，用户未批准。" : "，且宿主无法弹出确认窗口。") +
-                  `扩展: TM_WEBFETCH_ALLOWED_DOMAINS`,
+                `主机 "${target.hostname}" 不在白名单内 —— ${askRefusalNote(outcome)} 扩展白名单: TM_WEBFETCH_ALLOWED_DOMAINS`,
               ),
             )
           }

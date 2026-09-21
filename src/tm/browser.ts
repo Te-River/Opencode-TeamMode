@@ -67,7 +67,7 @@ import * as fs from "node:fs"
 import * as os from "node:os"
 import * as path from "node:path"
 import { checkWebUrl, seedWebfetchDomains } from "./webfetch.js"
-import { askUserForTarget } from "./perm-ask.js"
+import { askRefusalNote, askUserForTarget } from "./perm-ask.js"
 import { assertReadablePath } from "./guard.js"
 import { isEnvFilePath } from "../envprotect.js"
 import type { ToolAttachment, ToolResult } from "../types.js"
@@ -438,6 +438,39 @@ export function redactEvalResult(text: string): { text: string; masked: string[]
  *  decides to script the page, then the round stops paying for it. */
 export function needsEvalConsent(policy: "on" | "off", alreadyApproved: boolean | undefined): boolean {
   return policy !== "off" && !alreadyApproved
+}
+
+/** A function-shaped source has to be INVOKED.  Every browser MCP documents
+ *  `function: "() => …"`, but evaluate() treats a STRING as an expression: a
+ *  function source evaluates to a function object, which is not serializable,
+ *  so the call resolves to undefined and the agent reads "null" and goes
+ *  looking for a bug that is in our call rather than in the page (measured
+ *  live 2026-09-21 — six rounds lost this way).  An expression the model
+ *  already wrapped, or a bare `document.title`, passes through untouched. */
+export function evalExpression(src: string): string {
+  const t = src.trim()
+  if (!t) return t
+  const fnLike =
+    /^(async\s+)?function\b/.test(t) ||
+    /^(async\s+)?\(\s*[^()]*?\s*\)\s*=>/.test(t) ||
+    /^(async\s+)?[A-Za-z_$][\w$]*\s*=>/.test(t)
+  return fnLike ? `(${t})()` : t
+}
+
+/** `null` is not a diagnosis.  The render names the type, so "the page has no
+ *  such links" and "your function returned nothing" and "it was not called"
+ *  stop looking like the same answer. */
+export function renderEvalResult(value: unknown): string {
+  if (value === undefined) {
+    return (
+      "执行结果：undefined —— 函数没有 return 值（或返回了不可序列化的对象，比如 DOM 节点本身）。" +
+      "要拿数据就返回字符串或数组，例：() => [...document.querySelectorAll('a')].map(a => a.href)"
+    )
+  }
+  if (value === null) return "执行结果：null（页面确实返回了 null —— 这是成功执行，不是失败）"
+  const kind = Array.isArray(value) ? `array(${value.length})` : typeof value
+  const json = JSON.stringify(value) ?? String(value)
+  return `执行结果（${kind}）：${json}`
 }
 
 /** Host only — the consent line in the dialog and in the trajectory never
@@ -1179,10 +1212,24 @@ export function buildTmBrowserTool(deps: {
           const src = String(args.function ?? args.expression ?? "").trim()
           if (!src) throw new Error('缺少 expression/function 参数（evaluate_script 需要一个 JS 表达式）')
           traj({ step_id: stepId, event: "call", kind: "evaluate" })
-          const ev = await cdp.call("Runtime.evaluate", { expression: src, returnByValue: true }, sessionId)
-          const value = (ev.result as { value?: unknown })?.value
+          const ev = await cdp.call(
+            "Runtime.evaluate",
+            { expression: evalExpression(src), returnByValue: true, awaitPromise: true },
+            sessionId,
+          )
+          // A page-side throw used to render as "执行结果：null", which is how an
+          // agent spends six rounds wondering whether the selector was wrong.
+          const det = ev?.exceptionDetails as
+            | { exception?: { description?: unknown }; text?: unknown }
+            | undefined
+          if (det) {
+            const first = String(det.exception?.description ?? det.text ?? JSON.stringify(det))
+              .split("\n")[0]
+              .slice(0, 300)
+            throw new Error(`页面内抛出异常（不是"没找到"）：${first}`)
+          }
           return capTokens(
-            `执行结果：${JSON.stringify(value ?? null)}`,
+            renderEvalResult((ev.result as { value?: unknown })?.value),
             "…(结果超长已截断)",
           )
         }
@@ -1500,8 +1547,8 @@ export function buildTmBrowserTool(deps: {
           const src = String(args.function ?? args.expression ?? "").trim()
           if (!src) throw new Error('缺少 expression/function 参数（JS 函数源或表达式）')
           traj({ step_id: stepId, event: "call", kind: "evaluate" })
-          const value = await state.page.evaluate(src)
-          return capTokens(`执行结果：${JSON.stringify(value ?? null)}`, "…(结果超长已截断)")
+          const value = await state.page.evaluate(evalExpression(src))
+          return capTokens(renderEvalResult(value), "…(结果超长已截断)")
         }
         if (action === "list_pages") {
           const pages = context.pages()
@@ -1668,12 +1715,7 @@ export function buildTmBrowserTool(deps: {
           })
           if (outcome !== "approved") {
             return toToolResult(
-              tmError(
-                tool,
-                "permission",
-                verdict.message +
-                  (outcome === "rejected" ? "。用户未批准。" : "。宿主无法弹出确认窗口（旧版协议）。"),
-              ),
+              tmError(tool, "permission", verdict.message + " " + askRefusalNote(outcome)),
             )
           }
           approvedHosts.add(verdict.url.hostname)
@@ -1770,9 +1812,11 @@ export function buildTmBrowserTool(deps: {
             tmError(
               tool,
               "permission",
-              outcome === "unavailable"
+              (outcome === "unavailable"
                 ? `evaluate_script 需要官方确认窗授权，本宿主没有 ask 桥——已拒绝执行。TM_BROWSER_ASK_EVAL=off 可关掉这道确认（不建议：这个动词能在你已登录的浏览器里读任意页面数据）。`
-                : `evaluate_script 未获批准（目标站点 ${target}），已拒绝执行。改用 take_snapshot/read 的受治理读取，或让用户单独批准。`,
+                : `evaluate_script 未获批准（目标站点 ${target}），已拒绝执行。改用 take_snapshot/read 的受治理读取，或让用户单独批准。`) +
+                " " +
+                askRefusalNote(outcome),
             ),
           )
         }

@@ -552,6 +552,17 @@ async function main() {
     assert.equal(fx.__ctxPage.evals.length, evalsBefore, "a refused evaluate never reached the page")
     const evald = await mk.tool.execute({ action: "evaluate_script", function: "document.title" }, ctxApprove)
     assert.ok(o(evald).includes("EVAL"), "approved evaluate_script routes JS + returns the value")
+    assert.ok(o(evald).includes("string"), "and the result names its TYPE (null/undefined/empty must not look alike)")
+    // The function-source trap: evaluate("() => …") treats the STRING as an
+    // expression, gets a function object back, cannot serialize it, and
+    // resolves to undefined — which printed "执行结果：null" and sent the model
+    // hunting for a page bug that was actually in our call (live: 6 rounds).
+    await mk.tool.execute({ action: "evaluate_script", function: "() => document.title" }, ctxApprove)
+    assert.equal(fx.__ctxPage.evals.at(-1), "(() => document.title)()", "a function source is INVOKED, not merely evaluated")
+    await mk.tool.execute({ action: "evaluate_script", function: "document.title" }, ctxApprove)
+    assert.equal(fx.__ctxPage.evals.at(-1), "document.title", "a plain expression is passed through byte-exact")
+    await mk.tool.execute({ action: "evaluate_script", function: "(() => 3)()" }, ctxApprove)
+    assert.equal(fx.__ctxPage.evals.at(-1), "(() => 3)()", "an expression the model already invoked is NOT double-wrapped")
 
     // ---- tab management ----
     const listPages = await mk.tool.execute({ action: "list_pages" }, ctxNoAsk)
@@ -964,6 +975,22 @@ async function main() {
     assert.equal(br.needsEvalConsent("off", undefined), false, "TM_BROWSER_ASK_EVAL=off restores the old behaviour")
     assert.equal(br.hostOnly("https://site.test/private/path?token=abcdef"), "site.test", "the consent line + trajectory carry the HOST, never the query string")
     assert.equal(br.hostOnly("not a url at all……"), "not a url at all……", "an unparseable url degrades to a short prefix, never a throw")
+    // …and the two helpers that decide what the model's JS even MEANS.  A
+    // function source handed to evaluate() as a string is evaluated to a
+    // function object, which cannot be serialized, so the call resolves to
+    // undefined — "执行结果：null" for six wasted rounds in a live session.
+    assert.equal(br.evalExpression("() => 1"), "(() => 1)()", "an arrow function is invoked")
+    assert.equal(br.evalExpression("async () => { const r = await fetch('/x'); return r.status }"), "(async () => { const r = await fetch('/x'); return r.status })()", "an async arrow is invoked (and awaitPromise carries its result out)")
+    assert.equal(br.evalExpression("function () { return 2 }"), "(function () { return 2 })()", "the function keyword is invoked")
+    assert.equal(br.evalExpression("a => a.href"), "(a => a.href)()", "a bare-parameter arrow is invoked")
+    assert.equal(br.evalExpression("[1,2].map(x => x*2)"), "[1,2].map(x => x*2)", "an EXPRESSION that merely contains an arrow is left alone")
+    assert.equal(br.evalExpression("(() => 3)()"), "(() => 3)()", "an already-invoked source is never double-wrapped")
+    assert.equal(br.evalExpression("document.title"), "document.title", "a plain expression passes through byte-exact")
+    assert.ok(br.renderEvalResult(undefined).includes("没有 return"), "undefined says why, instead of posing as a null")
+    assert.ok(br.renderEvalResult(null).includes("成功执行"), "a real null is labelled a successful answer")
+    assert.ok(br.renderEvalResult([]).includes("array(0)"), "an empty list reads differently from null, '' and undefined")
+    assert.ok(br.renderEvalResult("").includes('""'), "an empty string shows its quotes")
+    assert.ok(br.renderEvalResult(["/a", "/b"]).includes("array(2)"), "a hit list reports its length so 'no matches' cannot be inferred from it")
 
     // one dialog per session, and the pattern is the host (verified end to end)
     const asked = []

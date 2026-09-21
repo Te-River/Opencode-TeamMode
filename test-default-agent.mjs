@@ -199,26 +199,27 @@ console.log("1. default_agent promotion matrix: OK (opt-out default; custom/plan
     expected["tm_webfetch"] = isWebRole ? { ...webAsk } : "deny"
     expected["tm_search"] = isWebRole ? { ...webAsk } : "deny"
     expected["tm_browser"] = isWebRole || isTester ? { ...webAsk } : "deny"
-    // issue #7: async dispatch is the LEAD's lever.  The tm_* wildcard would
-    // otherwise hand every specialist the power to spawn sub-agents — the
-    // nesting T3 closed — so both keys are explicit denies for the five.
-    expected["tm_dispatch"] = name === "team" ? "allow" : "deny"
+    // tm_dispatch is DENIED for every agent INCLUDING the lead: a child a
+    // plugin creates is a session the user can neither open nor stop from the
+    // interface, so delegation goes through the host's task tool.  The key
+    // stays in the matrix as an explicit deny so the tm_* wildcard can never
+    // hand the dispatcher back.  tm_join is the lead's collector.
+    expected["tm_dispatch"] = "deny"
     expected["tm_join"] = name === "team" ? "allow" : "deny"
     // tm_pty starts a real process: the lead carries the ASK-MAP (so every
     // start opens the official dialog instead of resolving silently under
     // the tm_* allow); the five specialists are denied outright.
     expected["tm_pty"] = name === "team" ? { ...webAsk } : "deny"
     const allowCount =
-      granted.length + tmTools.length + 2 + (name === "team" ? 3 : 0) // + wildcard + ptc (+ dispatch/join/pty)
+      granted.length + tmTools.length + 2 + (name === "team" ? 2 : 0) // + wildcard + ptc (+ join/pty)
     assert.deepStrictEqual(
       perm, expected,
       name + ": whitelist content exact (" + allowCount + " allow entries / " +
         Object.keys(expected).length + " keys)",
     )
-    assert.notEqual(
-      name === "team" ? "deny" : "allow",
-      perm["tm_dispatch"],
-      name + ": tm_dispatch grant matches the lead-only rule",
+    assert.equal(
+      perm["tm_dispatch"], "deny",
+      name + ": no agent gets a plugin-side sub-agent creator",
     )
 
     // dispatch-mandated explicit checks on top of deep-equality

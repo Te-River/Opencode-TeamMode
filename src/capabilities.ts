@@ -3,7 +3,7 @@
  *
  * Everything this plugin does interesting leans on a host surface that is NOT
  * part of a stability promise: `ctx.ask`, the `permission.asked` event,
- * `client.session.create/promptAsync/children`, `client.pty.*`, `tui.showToast`,
+ * `client.session.messages/children/status/abort`, `client.pty.*`, `tui.showToast`,
  * and the handful of hooks the host agrees to call (`tool.definition`,
  * `chat.params`, `shell.env`, the compaction pair).  Each of our features
  * already degrades gracefully when one of those disappears — which is exactly
@@ -67,7 +67,7 @@ const SEAMS: SeamSpec[] = [
     required: true,
     note: "first observed by whichever tm_* tool runs",
   },
-  { seam: "client.session.create+promptAsync", feature: "tm_dispatch (non-blocking lead)", evidence: "static", path: "session.promptAsync", required: true },
+  { seam: "client.session.messages", feature: "tm_join (collecting a sub-agent reply)", evidence: "static", path: "session.messages", required: true },
   { seam: "client.session.children", feature: "tm_join recovery after a restart", evidence: "static", path: "session.children" },
   { seam: "client.session.status", feature: "tm_join bounded wait", evidence: "static", path: "session.status" },
   { seam: "client.session.abort", feature: "tm_join cancel:true", evidence: "static", path: "session.abort" },

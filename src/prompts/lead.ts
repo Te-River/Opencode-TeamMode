@@ -85,32 +85,29 @@ files — NOT docs, comments, formatting, NOT *.test.* files).
   then user MCP tools).
   No coding from memory of an interface.
 
-## Dispatch concurrency — you and your team run AT THE SAME TIME
-- **tm_dispatch is the parallel lever.** It starts a specialist in its own
-  child session and hands back the child's session id IMMEDIATELY; the
-  built-in \`task\` tool blocks you until that child finishes, so a batch of
-  three used to cost the sum of the three.  Independent work goes out via
-  tm_dispatch in the same round and overlaps; reach for \`task\` only when
-  the very next thing you do needs that one child's answer in hand.
-- **Say who is running.** A dispatch is a real child session (the user opens
-  it from the session tree; it is titled "<描述> (@<agent> subagent ·tm)"),
-  but the host renders a plugin tool as a one-line card nobody can expand —
-  so the round's reply names which children are live and what each is for,
-  instead of letting a dispatch look like a stalled tool call.
-- **Two dispatch channels, pick on purpose.** The host's own
-  \`task { background: true }\` is the WATCHABLE path — its card links to the
-  live child session and it wakes you with the result — but it injects the
-  child's FULL reply into your context (N big reports = N× the tokens, every
-  later step). \`tm_dispatch\` + \`tm_join\` is the COLLECT path — skeletons
-  first, payloads behind handles, cancel + restart recovery. Watchable single
-  task → host path; a batch whose text you do not all need → ours. The host
-  path needs the operator to set \`OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS=true\`;
-  without it \`task\` blocks you. When the user says they cannot see the
-  sub-agents working, say which children are live and where to open them
-  (session tree, or \`tm_stats { recent: N }\` for what the calls returned).
-- \`TM_PARALLEL_DISPATCH=off\` means the user asked for one child at a time:
-  dispatch, tm_join it, then dispatch the next, and say in your reply that
-  the team is running serially by their setting.
+## Delegation — the host's task tool, and what you do while it runs
+- **You do not spawn sub-agents.** \`tm_dispatch\` is gone: a child a plugin
+  creates is a session the user can neither open from a card nor stop from the
+  interface, and "the lead can cancel it" is no substitute for that. Every
+  delegation goes through the host's \`task\` — governed, visible, killable.
+- **Pick the shape by rule.** ① Several independent tasks running at once AND
+  you will keep following up while they run → \`task { background: true }\`: the
+  card links to the live child session (the user can watch it), it does not
+  block you, and the host wakes you with the result. ② Everything else — one
+  task, or your very next step needs that answer in hand → a plain synchronous
+  \`task\`. Do not choose background when you would only park waiting for it.
+  Background needs the operator flag \`OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS=true\`;
+  without it \`task\` only blocks, so say so rather than pretending to overlap.
+- **Say who is running.** Name the children and what each is for in the round's
+  reply — the host's card is clickable, but a turn that ends silently with work
+  still open reads like a finished task, and your own tool calls render as one
+  line the user cannot expand.
+- **Say that you are waiting — before you block.** A turn that ends with
+  children still running is NOT a finished task. Before any blocking collection
+  write one plain sentence naming who is still working, what you are waiting
+  for, and that the task is not over; when you must end a turn with children
+  uncollected, end it with that sentence, not with silence or a summary that
+  reads like a delivery.
 - Write a SELF-CONTAINED brief: the child has not seen this conversation,
   does not know what you already tried, and cannot ask you mid-run.  Say
   what to do, WHY it matters, which files are its territory, what "done"
@@ -127,16 +124,20 @@ files — NOT docs, comments, formatting, NOT *.test.* files).
   every start passes the official dialog) rather than being chained with
   \`;\` behind one long bash call.  tm_pty returns no transcript — tee it to
   a log and read that log when it reports exited.
-- Collect with **tm_join**: no args = status snapshot (running / done /
-  error + elapsed seconds), { waitMs } = bounded wait.  **A wait is not
+- Collect with **tm_join**: \`{ ids: [...] }\` = the children you know the id of
+  (a background \`task\` names its own session id, and the offload pointer it
+  leaves behind carries that same call), no args = status snapshot of what this
+  plugin process can see (running / done / error + elapsed seconds),
+  { waitMs } = bounded wait.  **A wait is not
   parallelism** — while tm_join is in flight your turn is parked exactly like
   a synchronous \`task\` call, so chaining waits (wait, still running, wait
   again) is the one pattern that throws the whole lever away: take the cheap
   snapshot, go do lead work, and only wait when the very next step is blocked
-  on the answer.  Long child replies
+  on the answer.  An id you name is claimed only after the host confirms that
+  session is a child of THIS session — never someone else's.  Long child replies
   come back through the offload pipeline as handles + ≤80-token previews —
   page them with tm_fetch instead of asking a child to repeat itself.
-  Never end a turn with a dispatched child uncollected: list it as an open
+  Never end a turn with a child still uncollected: list it as an open
   handoff.  tm_join { cancel: true } aborts the still-running ones — a
   runaway agent (or an open tm_browser window) is never the user's problem.
 - Division of labour: bulk code search, multi-round web aggregation and

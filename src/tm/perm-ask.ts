@@ -50,18 +50,68 @@ export function askFnOf(ctx: unknown): TmAskFn | null {
   return present ? (ask as TmAskFn) : null
 }
 
-export type AskOutcome = "approved" | "rejected" | "unavailable"
+export type AskOutcome = "approved" | "rejected" | "timed-out" | "unavailable"
 
-/** Drive the official dialog for an out-of-allowlist target.  Never throws:
- *  a missing bridge maps to "unavailable", a rejected/failed ask maps to
- *  "rejected" — callers render their structured error either way. */
-export async function askUserForTarget(ctx: unknown, req: TmAskRequest): Promise<AskOutcome> {
+/** Our own reject sentinel — an `ask()` that never settles has to be told
+ *  apart from a dialog the user actually answered "no". */
+const TIMED_OUT = Symbol("ask-timed-out")
+
+/** The unified approval gate auto-rejects an unanswered dialog after
+ *  `TM_ASK_TIMEOUT_MIN`, but it is only ARMED when R6 is on and the client can
+ *  reply.  Where it is not armed, `await ask()` hung until the user interrupted
+ *  the whole turn — live evidence: an out-of-allowlist tm_webfetch that showed
+ *  as a spinning card and then `Tool execution aborted`.  A tool-side deadline
+ *  is the backstop, so no caller has to remember it. */
+export const ASK_GRACE_MS = 15_000
+const ASK_WAIT_FLOOR_MS = 5_000
+let askWaitMs = 75_000
+
+/** Wired once at boot from `resolveAskTimeoutMs() + ASK_GRACE_MS`, so the
+ *  gate's authoritative reject always wins when it is able to fire and this
+ *  timer only catches the un-armed case. */
+export function setAskWaitMs(ms: number): void {
+  if (Number.isFinite(ms) && ms >= ASK_WAIT_FLOOR_MS) askWaitMs = Math.round(ms)
+}
+export function getAskWaitMs(): number {
+  return askWaitMs
+}
+
+/** Drive the official dialog for an out-of-allowlist target.  Never throws: a
+ *  missing bridge is "unavailable", a refusal is "rejected", and a dialog
+ *  nobody answered is "timed-out" — three different answers that need three
+ *  different next moves. */
+export async function askUserForTarget(
+  ctx: unknown,
+  req: TmAskRequest,
+  waitMs?: number,
+): Promise<AskOutcome> {
   const ask = askFnOf(ctx)
   if (!ask) return "unavailable"
+  const budget = Math.max(ASK_WAIT_FLOOR_MS, Math.round(waitMs ?? askWaitMs))
+  let timer: ReturnType<typeof setTimeout> | null = null
   try {
-    await ask(req)
+    await new Promise<unknown>((resolve, reject) => {
+      timer = setTimeout(() => reject(TIMED_OUT), budget)
+      Promise.resolve(ask(req)).then(resolve, reject)
+    })
     return "approved"
-  } catch {
-    return "rejected"
+  } catch (err) {
+    return err === TIMED_OUT ? "timed-out" : "rejected"
+  } finally {
+    if (timer) clearTimeout(timer)
   }
+}
+
+/** One sentence naming WHY the dialog did not grant access.  This is not
+ *  cosmetic: "用户未批准" for a dialog nobody saw teaches the agent to give up
+ *  (or retry silently) instead of telling the human to look at the screen. */
+export function askRefusalNote(outcome: AskOutcome, waitMs = askWaitMs): string {
+  if (outcome === "rejected") return "用户未批准。"
+  if (outcome === "timed-out") {
+    return (
+      `确认窗 ${Math.round(waitMs / 1000)}s 内无人应答——这不是被拒绝，是没有人在界面上点它。` +
+      `请提醒用户查看待确认的对话框；如果确实不想开权限，就改用白名单内的源，不要重复调用。`
+    )
+  }
+  return "宿主无法弹出确认窗口（旧版协议）。"
 }

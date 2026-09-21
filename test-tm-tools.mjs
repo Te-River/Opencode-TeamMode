@@ -784,6 +784,34 @@ try {
   }
   console.log("6g. tm_bash execution: OK (offload round-trip, clue, structured shell error + line)")
 
+  // 6g2. An EMPTY result is an answer, not a mystery.  Live cost: a 0-line
+  // `Get-Content | Select-Object -Skip 168` and a 0-hit tm_grep both came back
+  // as nothing, and the model burned rounds deciding whether the tool had run
+  // at all — then wrote down the wrong conclusion ("output got swallowed").
+  {
+    const rtEmpty = await tm.createTmTools({ directory: mktmp("empty6"), client: fakeClient({}), $: fake$Ok("") })
+    const emptyBash = (await rtEmpty.tools.tm_bash.execute({ command: "ls" }, ctx)).output
+    assert.ok(emptyBash.includes("stdout 为空") && emptyBash.includes("0 行"), "empty bash output states that it produced 0 lines")
+    assert.ok(emptyBash.includes("cwd="), "…names the directory relative paths resolved against")
+    assert.ok(emptyBash.includes("tm_read"), "…and points at the tool that reads files without the shell's decoding")
+    const emptyGrep = (await rtEmpty.tools.tm_grep.execute({ pattern: "ArkType|ark_type" }, ctx)).output
+    assert.ok(emptyGrep.includes("0 命中"), "a 0-hit grep reports the count instead of returning nothing")
+    assert.ok(emptyGrep.includes("ArkType|ark_type"), "…echoes the pattern it judged")
+    assert.ok(emptyGrep.includes("不证明整个仓库没有"), "…and bounds the claim: 0 here is not 0 everywhere")
+    assert.ok(!emptyGrep.includes("去掉 path"), "a root-wide search is NOT told to widen a scope it never narrowed")
+    const narrowed = (await rtEmpty.tools.tm_grep.execute({ pattern: "nothing-here", path: "src" }, ctx)).output
+    assert.ok(narrowed.includes('path="src"'), "a narrowed search names the path that produced the 0, so the widening move is actionable")
+    const rtFull = await tm.createTmTools({
+      directory: mktmp("empty6b"),
+      client: fakeClient({ __grep: "src/a.ts:3:hello" }),
+      $: fake$Ok("one line"),
+    })
+    const fullBash = (await rtFull.tools.tm_bash.execute({ command: "ls" }, ctx)).output
+    assert.ok(fullBash.trim() === "one line" && !fullBash.includes("stdout 为空"), "a command that DID print is returned untouched — the note never rides along")
+    const fullGrep = (await rtFull.tools.tm_grep.execute({ pattern: "hello" }, ctx)).output
+    assert.ok(fullGrep.includes("src/a.ts:3:hello") && !fullGrep.includes("0 命中"), "and a real hit is not decorated either")
+  }
+
   // 6k. P0 regression: the shell-bridge fallback must reach the PTC pipeline
   // too.  v1.5.4 resolved the Bun-global $ fallback for the MAIN tm_bash
   // path only — PTC's pipeline instance got input.$ raw, so on desktops
@@ -931,6 +959,27 @@ try {
       const ctxDeny = { ...ctx, ask: async () => { throw new Error("rejected by user") } }
       const denied = await wf.execute({ url: "https://evil.example.com/x" }, ctxDeny)
       assert.ok(denied.output.includes("phase=permission") && denied.output.includes("用户未批准"), "rejected dialog → permission error (user's verdict)")
+      // A dialog NOBODY answers has to come back as an answer.  The live
+      // failure: an out-of-allowlist fetch spun until the user interrupted the
+      // turn ("Tool execution aborted"), because the approval gate's
+      // auto-reject is only armed when R6 is on AND the client can reply —
+      // with neither in play, only a tool-side deadline ends the wait.
+      {
+        const pa = await import("./dist/tm/perm-ask.js")
+        pa.setAskWaitMs(5_000)
+        try {
+          const t0 = Date.now()
+          const hung = await wf.execute(
+            { url: "https://evil.example.com/x" },
+            { ...ctx, ask: () => new Promise(() => {}) },
+          )
+          assert.ok(hung.output.includes("无人应答"), "an unanswered dialog is reported as a timeout")
+          assert.ok(!hung.output.includes("用户未批准"), "…and is NOT conflated with a refusal (a refusal means stop asking)")
+          assert.ok(Date.now() - t0 < 30_000, "the call ends on its own instead of hanging the session")
+        } finally {
+          pa.setAskWaitMs(75_000)
+        }
+      }
       // 403 after header disguise → DIRECTIVE: call tm_browser (not "try again")
       const forbidden = await wf.execute({ url: "https://baike.baidu.com/item/x" }, ctx)
       assert.ok(
@@ -1200,11 +1249,9 @@ try {
     delete process.env.TM_BLACKBOARD_DIR
     delete process.env.TM_WEB_CACHE_TTL_SEC
     assert.equal(rtW.config.webCacheTtlSec, 300, "TM_WEB_CACHE_TTL_SEC resolves through the config layer")
-    assert.equal(rtW.config.parallelDispatch, "on", "sub-agent parallelism is ON unless the user says otherwise (parallel is the team's whole point)")
-    process.env.TM_PARALLEL_DISPATCH = "0"
-    const rtSerial = await tm.createTmTools({ directory: mktmp("serial-cfg"), client: {}, $: () => ({}) }, {})
-    delete process.env.TM_PARALLEL_DISPATCH
-    assert.equal(rtSerial.config.parallelDispatch, "off", "TM_PARALLEL_DISPATCH=0/off/false all mean off, same 口径 as the other switches")
+    assert.equal(rtW.config.joinMaxWaitMs, 60_000, "the default bounded wait is 60 s — long enough for a real child, short enough that the lead notices")
+    assert.ok(!("tm_dispatch" in rtW.tools), "the runtime never registers a plugin-side dispatcher: the user cannot close a child we created")
+    assert.ok("tm_join" in rtW.tools, "tm_join stays, because collecting a HOST task child is what makes it safe")
     let hits = 0
     const realFetch = globalThis.fetch
     globalThis.fetch = async () => (hits++, res200("runtime cached page", "text/plain"))
@@ -1414,10 +1461,13 @@ try {
       const v2 = g.observe("bing", '"舞萌DX" "我的世界"', junk, ["舞萌", "我的世界"])
       assert.equal(v2.collapse, true, "the SAME set for a DIFFERENT query = the engine ignored the qualifiers")
       assert.ok(v2.note.includes("完全相同"), "the directive names the failure")
-      assert.ok(v2.note.includes("tm_dispatch") || v2.note.includes("拆成一次查询"), "and gives a next step, not a shrug")
+      assert.ok(v2.note.includes("拆成一次查询"), "and gives a next step, not a shrug")
       const v3 = g.observe("bing", "第三个问题", junk, ["第三个", "问题"])
       assert.equal(v3.repeats, 3, "the repeat count climbs so the escalation can trigger")
-      assert.ok(v3.note.includes("tm_dispatch"), "at 3 collapses the tool tells the lead to dispatch instead of serially retrying")
+      assert.ok(
+        v3.note.includes("内置 task") && v3.note.includes("background:true"),
+        "at 3 collapses the escalation names the host's task tool (and the background switch) — not a dispatcher that no longer exists",
+      )
       const g2 = dg.createDupeGuard()
       const good = [h("https://maimai.sega.com/", "maimai DX"), h("https://zhuanlan.zhihu.com/p/1", "舞萌DX 是什么")]
       assert.equal(g2.observe("bing", "舞萌DX", good, ["舞萌"]).note, "", "a normal, on-topic result set gets NO warning text")
@@ -2585,10 +2635,10 @@ try {
       assert.deepEqual(
         Object.keys(hooks.tool).sort(),
         [
-          "tm_bash", "tm_browser", "tm_dispatch", "tm_fetch", "tm_grep", "tm_join",
+          "tm_bash", "tm_browser", "tm_fetch", "tm_grep", "tm_join",
           "tm_memory", "tm_ptc_run", "tm_pty", "tm_read", "tm_search", "tm_stats", "tm_webfetch",
         ],
-        "registered tm_* set includes the async dispatcher (tm_dispatch + tm_join), tm_pty and tm_stats alongside the governed tools",
+        "registered tm_* set: tm_join collects host task children but tm_dispatch is gone (a plugin-spawned child is not closeable by the user)",
       )
       // program over the cap is rejected through the tool as an args error
       const big = await tool.execute({ program: "x".repeat(4001) }, { directory: process.cwd() })
@@ -2992,255 +3042,132 @@ try {
     const LEAD = { agent: "team", sessionID: "ses_lead", directory: ".", ask: async () => "once" }
     const BRIEF = "重构 tm_browser 的关闭路径：目标是 close 之后窗口必须真的消失，涉及 src/tm/browser.ts，完成判据是 npm test 全绿。"
 
-    // --- gates: who may dispatch, and what counts as a usable brief ---
+    // ── 10. tm_dispatch is GONE; tm_join is the collect side ────────────────
+    // A plugin-spawned child is a session the user can neither open from a card
+    // nor stop from the UI, so nothing here creates one any more — delegation
+    // belongs to the host's `task`. What stays under test: the tool is not
+    // registered and nobody holds it, and children that ALREADY EXIST in the
+    // host's tree (leftovers of the old dispatcher, plus host `task` children
+    // named explicitly) are still collectable, cancellable and governed.
+    // Seeding through `session.children` is not a shortcut — it is literally
+    // how a restarted plugin discovers work it never saw.
     {
-      const { client } = sessionFake()
-      const rt = await tm.createTmTools({ directory: mktmp("disp-gate"), client, $: fake$Ok("") })
-      const notLead = await rt.tools.tm_dispatch.execute({ agent: "implementer", task: BRIEF }, { agent: "implementer", sessionID: "ses_x" })
-      assert.ok(notLead.output.includes("phase=governance") && notLead.output.includes("只有 team"), "a specialist cannot dispatch (T3: no sub-agent spawns a sub-agent)")
-      const badTarget = await rt.tools.tm_dispatch.execute({ agent: "team", task: BRIEF }, LEAD)
-      assert.ok(badTarget.output.includes("phase=args") && badTarget.output.includes("未知派发目标"), "dispatching a TEAM (nested lead) is rejected by the roster")
-      const thin = await rt.tools.tm_dispatch.execute({ agent: "tester", task: "修一下" }, LEAD)
-      assert.ok(thin.output.includes("task 太短"), "a non-self-contained brief is refused before a child is spawned")
-      const joinNotLead = await rt.tools.tm_join.execute({}, { agent: "reviewer", sessionID: "ses_x" })
-      assert.ok(joinNotLead.output.includes("phase=governance"), "only the lead collects dispatch results")
-      const empty = await rt.tools.tm_join.execute({}, LEAD)
-      assert.ok(empty.output.includes("没有待收集的派发"), "join with nothing dispatched says so")
-      await rt.dispose()
-    }
-    // --- degrade: a host without the async session API ---
-    {
-      const { client } = sessionFake({ noApi: true })
-      const rt = await tm.createTmTools({ directory: mktmp("disp-degrade"), client, $: fake$Ok("") })
-      const res = await rt.tools.tm_dispatch.execute({ agent: "tester", task: BRIEF }, LEAD)
-      assert.ok(res.output.includes("phase=client") && res.output.includes("task 工具"), "no session API -> explicit 'use the built-in task' directive, never a silent hang")
-      await rt.dispose()
-    }
-    // --- happy path: fire, keep going, collect ---
-    {
-      const registered = []
-      const toasts = []
-      const { client, calls } = sessionFake()
-      const rt = await tm.createTmTools(
-        { directory: mktmp("disp-happy"), client, $: fake$Ok("") },
-        { onChildSession: (sid, agent) => registered.push([sid, agent]), notify: (m) => toasts.push(m) },
-      )
-      const fired = await rt.tools.tm_dispatch.execute({ agent: "implementer", task: BRIEF, description: "close-path" }, LEAD)
-      assert.ok(fired.output.includes("已派发（非阻塞）") && fired.output.includes("ses_child_1"), "dispatch returns the child id immediately")
-      assert.ok(fired.output.includes("你现在可以继续"), "dispatch tells the lead it keeps the round")
-      assert.equal(calls.create[0].body.parentID, "ses_lead", "the child session is PARENTED to the lead session")
-      // The host's OWN subagent title convention, plus our marker: this is what
-      // makes the child read as a sub-agent session in the desktop's sidebar.
-      assert.equal(calls.create[0].body.title, "close-path (@implementer subagent ·tm)", "the child is titled in the host's subagent shape with our marker")
-      assert.equal(toasts.length, 1, "one toast per dispatch")
-      assert.ok(toasts[0].includes("close-path") && toasts[0].includes("会话树"), "the toast names the child and points at where to watch it (its tool card cannot be opened)")
-      assert.equal(calls.promptAsync[0].path.id, "ses_child_1", "promptAsync targets the new child")
-      assert.equal(calls.promptAsync[0].body.agent, "implementer", "the child runs as the named specialist")
-      assert.equal(calls.promptAsync[0].body.parts[0].text, BRIEF, "the brief is delivered verbatim")
-      assert.deepEqual(registered, [["ses_child_1", "implementer"]], "the child session is handed to the approval gate for registration")
-      assert.deepEqual(rt.dispatches().map((d) => [d.agent, d.state]), [["implementer", "running"]], "the child starts as running")
-      // no wait + host says busy -> an honest snapshot, not a stall
-      const busy = await rt.tools.tm_join.execute({ waitMs: 0 }, LEAD)
-      assert.ok(busy.output.includes("0 完成 / 1 运行中"), "join reports the live state (idle child is still 'running' until the host settles it)")
-      assert.ok(busy.output.includes("implementer") && busy.output.includes("close-path"), "the status line names agent + label")
-      // the event bus settles it (push path — no polling needed)
-      rt.observeDispatchEvent({ type: "session.idle", properties: { sessionID: "ses_child_1" } })
-      const done = await rt.tools.tm_join.execute({}, LEAD)
-      assert.ok(done.output.includes("1 完成"), "session.idle settles the child without waiting")
-      assert.ok(done.output.includes("STATUS: done") && done.output.includes("tsc clean"), "the child's reply skeleton is collected")
-      assert.ok(done.output.includes("全部已结算"), "join states that everything settled")
-      // second dispatch + cancel of a child that never finished
-      const { client: c2, calls: calls2 } = sessionFake({ statusMap: { ses_child_1: { type: "busy" }, ses_child_2: { type: "busy" } } })
-      const rt2 = await tm.createTmTools({ directory: mktmp("disp-cancel"), client: c2, $: fake$Ok("") })
-      await rt2.tools.tm_dispatch.execute({ agent: "tester", task: BRIEF }, LEAD)
-      await rt2.tools.tm_dispatch.execute({ agent: "reviewer", task: BRIEF }, LEAD)
-      const cancelled = await rt2.tools.tm_join.execute({ cancel: true }, LEAD)
-      assert.equal(calls2.abort.length, 2, "cancel:true aborts every still-running child")
-      assert.ok(cancelled.output.includes("aborted on request"), "an aborted child reports why")
-      assert.ok(cancelled.output.includes("2 失败"), "aborted children are counted as failed, not silently dropped")
-      await rt.dispose()
-      await rt2.dispose()
-    }
-    // --- context economy: a fat child reply offloads instead of flooding ---
-    {
-      const fat = "详细发现".repeat(2500) // ~10k tokens, far past the prose threshold
-      const { client } = sessionFake({ statusMap: { ses_child_1: { type: "idle" } }, replies: { ses_child_1: fat } })
-      const rt = await tm.createTmTools({ directory: mktmp("disp-fat"), client, $: fake$Ok("") })
-      await rt.tools.tm_dispatch.execute({ agent: "researcher", task: BRIEF }, LEAD)
-      rt.observeDispatchEvent({ type: "session.idle", properties: { sessionID: "ses_child_1" } })
-      const joined = await rt.tools.tm_join.execute({}, LEAD)
-      assert.ok(joined.output.includes("已卸载到 run 存储"), "a long collected reply OFFLOADS (lead context stays bounded)")
-      assert.ok(joined.output.includes("access_token"), "the handle is visible so tm_fetch can page it")
-      const light = await rt.tools.tm_join.execute({ includeText: false }, LEAD)
-      assert.ok(!light.output.includes("详细发现"), "includeText:false returns the status table only")
-      await rt.dispose()
-    }
-    // --- restart recovery: the HOST's session tree is the authority, not our memory ---
-    {
-      const T = dmod.DISPATCH_TARGETS
-      assert.deepEqual(
-        dmod.parseDispatchTitle("tm:researcher:auth-bug", T),
-        { agent: "researcher", label: "auth-bug" },
-        "the title tm_dispatch writes is what identifies one of ours",
-      )
-      assert.equal(dmod.parseDispatchTitle("Explore the repo", T), null, "a task-tool child (free-form title) is NEVER claimed")
-      assert.equal(dmod.parseDispatchTitle("tm:team:hierarch", T), null, "a nested-lead title is not adoptable (T3 stays closed)")
-      assert.deepEqual(
-        dmod.lastAssistantMessage([
-          { info: { role: "assistant", time: { created: 1000, completed: 9000 } }, parts: [{ type: "text", text: "STATUS: done" }] },
-        ]),
-        { text: "STATUS: done", completedAt: 9000 },
-        "lastAssistantMessage surfaces time.completed — the settled verdict for a child nobody listened to",
-      )
-      assert.equal(
-        dmod.lastAssistantMessage([{ info: { role: "assistant", time: { created: 1000 } }, parts: [{ type: "text", text: "x" }] }])
-          .completedAt,
-        undefined,
-        "an unfinished reply has no completedAt -> stays running",
-      )
+      const seeded = async (name, over = {}, opts = {}) => {
+        const f = sessionFake(over)
+        const rt = await tm.createTmTools({ directory: mktmp(name), client: f.client, $: fake$Ok("") }, opts)
+        return { rt, calls: f.calls }
+      }
+      const leftover = (id, title) => ({ id, title, time: { created: 1000, updated: 9000 } })
 
-      const registered = []
-      const { client, calls } = sessionFake({
-        children: [
-          { id: "ses_orphan", title: "auth-bug (@researcher subagent ·tm)", time: { created: 1000, updated: 9000 } },
-          { id: "ses_legacy", title: "tm:researcher:auth-bug-legacy", time: { created: 1000, updated: 9000 } },
-          { id: "ses_taskchild", title: "Explore the repo (@tester subagent)", time: { created: 1 } },
-        ],
-        completedFor: ["ses_orphan"],
-        statusMap: {},
-      })
-      // a FRESH plugin instance: the in-process registry is empty, the child is not
-      const rt = await tm.createTmTools({ directory: mktmp("disp-adopt"), client, $: fake$Ok("") }, { onChildSession: (sid, a) => registered.push([sid, a]) })
-      const joined = await rt.tools.tm_join.execute({}, LEAD)
-      assert.equal(calls.children.length, 1, "tm_join asks the host for its children when its own memory is empty")
-      assert.equal(calls.children[0].path.id, "ses_lead", "…under the CALLING lead session")
-      assert.ok(joined.output.includes("ses_orphan"), "the orphaned dispatch is adopted and collected")
-      assert.ok(joined.output.includes("ses_legacy"), "…and so is a child titled in the PRE-1.5.15 shape (an upgrade must not orphan a live dispatch)")
-      assert.ok(!joined.output.includes("ses_taskchild"), "a task-tool child (host shape, no ·tm marker) is never claimed as ours")
-      assert.ok(joined.output.includes("接管"), "an adopted row says out loud that it was rebuilt from the host")
-      assert.ok(joined.output.includes("1 完成"), "answered-while-nobody-was-listening reports 完成, not 运行中")
-      assert.ok(joined.output.includes("已完成 8s"), "elapsed comes from the HOST's timestamps (9000-1000), not from this process")
-      assert.ok(joined.output.includes("STATUS: done"), "the adopted child's reply text is still collected")
-      assert.deepEqual(
-        registered,
-        [["ses_orphan", "researcher"], ["ses_legacy", "researcher"]],
-        "an adopted child is handed to the approval gate too",
-      )
-      await rt.dispose()
+      const { rt: surface } = await seeded("disp-surface", {})
+      assert.ok(!("tm_dispatch" in surface.tools), "tm_dispatch is NOT registered — the model cannot call what does not exist")
+      assert.ok("tm_join" in surface.tools, "tm_join stays: host background results are pulled back through it")
+      const denied = await surface.tools.tm_join.execute({}, { agent: "implementer", sessionID: "s", ask: async () => "once" })
+      assert.ok(denied.output.includes("只有 team"), "tm_join keeps the lead-only runtime lock (the second lock is agents.ts denying it)")
+      await surface.dispose()
 
-      // ids: [...] naming a child this process never saw still resolves
-      const viaIds = sessionFake({ children: [{ id: "ses_z", title: "tm:tester:login", time: { created: 5 } }], statusMap: { ses_z: { type: "idle" } } })
-      const rt2 = await tm.createTmTools({ directory: mktmp("disp-adopt-ids"), client: viaIds.client, $: fake$Ok("") })
-      const picked = await rt2.tools.tm_join.execute({ ids: ["ses_z"] }, LEAD)
-      assert.ok(picked.output.includes("ses_z") && picked.output.includes("1 完成"), "explicit ids recover through the session tree (status map settles it)")
-      const miss = await rt2.tools.tm_join.execute({ ids: ["ses_never_existed"] }, LEAD)
-      assert.ok(miss.output.includes("没有待收集的派发"), "an id the host does not list stays an honest miss, never a hang")
-      await rt2.dispose()
-
-      // plan B: an EXPLICITLY NAMED host `task` child is collectable — that is
-      // how the lead reads back a result our chat.message hook replaced with a
-      // preview + pointer. The tree walk above still never claims one on its
-      // own; here the lock is the host's own parentage, read back per id.
       {
-        const { client: cClaim } = sessionFake({
+        const registered = []
+        const { rt, calls } = await seeded(
+          "disp-adopt",
+          {
+            children: [
+              leftover("ses_orphan", "auth-bug (@researcher subagent ·tm)"),
+              leftover("ses_legacy", "tm:researcher:auth-bug-legacy"),
+              leftover("ses_taskchild", "Explore the repo (@tester subagent)"),
+            ],
+            completedFor: ["ses_orphan"],
+            statusMap: {},
+          },
+          { onChildSession: (sid, a) => registered.push([sid, a]) },
+        )
+        const joined = await rt.tools.tm_join.execute({}, LEAD)
+        assert.equal(calls.children.length, 1, "tm_join asks the host for its children when its own memory is empty")
+        assert.equal(calls.children[0].path.id, "ses_lead", "…under the CALLING lead session")
+        assert.ok(joined.output.includes("ses_orphan"), "a leftover dispatch is adopted and collected")
+        assert.ok(joined.output.includes("ses_legacy"), "…and so is one titled in the PRE-1.5.15 shape (an upgrade must not orphan live work)")
+        assert.ok(!joined.output.includes("ses_taskchild"), "a host task child is NOT ours to claim on speculation")
+        assert.ok(joined.output.includes("接管"), "an adopted row says out loud that it was rebuilt from the host")
+        assert.ok(joined.output.includes("1 完成"), "answered-while-nobody-was-listening reports 完成, not 运行中")
+        assert.ok(joined.output.includes("已完成 8s"), "elapsed comes from the HOST's timestamps (9000-1000), not from this process")
+        assert.ok(joined.output.includes("STATUS: done"), "the adopted child's reply text is still collected")
+        assert.deepEqual(registered, [["ses_orphan", "researcher"], ["ses_legacy", "researcher"]], "an adopted child is handed to the approval gate too")
+        await rt.dispose()
+      }
+
+      {
+        const { rt } = await seeded("disp-claim", {
           parents: { ses_hosttask: "ses_lead", ses_foreign: "ses_somebody_else" },
           replies: { ses_hosttask: "STATUS: done\nFINDINGS: 后台任务的结论" },
           completedFor: ["ses_hosttask"],
           children: [],
           statusMap: {},
         })
-        const rtClaim = await tm.createTmTools({ directory: mktmp("disp-claim"), client: cClaim, $: fake$Ok("") })
-        const got = await rtClaim.tools.tm_join.execute({ ids: ["ses_hosttask"] }, LEAD)
-        assert.ok(got.output.includes("STATUS: done"), "a named host task child is collected by explicit id")
-        assert.ok(got.output.includes("接管"), "…and the row says it was rebuilt from the host, not dispatched here")
-        const foreign = await rtClaim.tools.tm_join.execute({ ids: ["ses_foreign"] }, LEAD)
+        const got = await rt.tools.tm_join.execute({ ids: ["ses_hosttask"] }, LEAD)
+        assert.ok(got.output.includes("STATUS: done"), "a named host task child is collected — how an offloaded background result comes back")
+        assert.ok(got.output.includes("接管"), "…and the row says it was rebuilt from the host, not created here")
+        const foreign = await rt.tools.tm_join.execute({ ids: ["ses_foreign"] }, LEAD)
         assert.ok(foreign.output.includes("没有待收集的派发"), "a session the host does not parent to us stays a miss — parentage is read, never assumed")
-        await rtClaim.dispose()
+        await rt.dispose()
+
+        const { rt: noKids } = await seeded("disp-nochildren", { noChildren: true })
+        assert.ok((await noKids.tools.tm_join.execute({}, LEAD)).output.includes("没有待收集的派发"), "no children endpoint -> the same honest answer, no crash")
+        await noKids.dispose()
       }
 
-      // a host without the children endpoint: the old behaviour, still honest
-      const legacy = sessionFake({ noChildren: true })
-      const rt3 = await tm.createTmTools({ directory: mktmp("disp-adopt-none"), client: legacy.client, $: fake$Ok("") })
-      const none = await rt3.tools.tm_join.execute({}, LEAD)
-      assert.ok(none.output.includes("没有待收集的派发"), "no children endpoint -> the same 'nothing to collect' answer, no crash")
-      await rt3.dispose()
-    }
-    // --- 2026-09-19 live-host findings: model inheritance + readable errors ---
-    {
-      // describeHostError: the host nests its errors; String(obj) is
-      // "[object Object]", which is what a user was told about three dead
-      // children instead of the reason.
-      assert.equal(dmod.describeHostError("plain boom"), "plain boom", "a string error passes through")
-      assert.ok(dmod.describeHostError({ name: "ProviderAuthError", data: { message: "No API key for opencode", ref: "err_9f2" } }).includes("No API key for opencode"), "the nested data.message is extracted")
-      assert.ok(dmod.describeHostError({ name: "ProviderAuthError", data: { message: "no key", ref: "err_9f2" } }).includes("err_9f2"), "the host error REF survives (it is what support asks for)")
-      assert.ok(dmod.describeHostError({ error: { message: "inner level" } }).includes("inner level"), "an {error:{message}} envelope unwraps")
-      assert.ok(!dmod.describeHostError({ foo: 1, bar: { a: 2 } }).includes("[object Object]"), "an unrecognised object NEVER renders as [object Object]")
-      assert.ok(dmod.describeHostError({ foo: 1, bar: { a: 2 } }).includes("foo=1"), "…and still says something about its shape")
-      assert.equal(dmod.describeHostError(undefined), "session.error", "nothing at all still renders a label")
-
-      const { client, calls } = sessionFake()
-      const rt = await tm.createTmTools({ directory: mktmp("disp-model"), client, $: fake$Ok("") })
-      const fired = await rt.tools.tm_dispatch.execute({ agent: "researcher", task: BRIEF }, LEAD)
-      assert.deepEqual(
-        calls.promptAsync[0].body.model,
-        { providerID: "opencode", modelID: "deepseek-v4.1-flash" },
-        "the child inherits the lead's model — prompt_async accepts it and a child session has none of its own",
-      )
-      assert.ok(fired.output.includes("opencode/deepseek-v4.1-flash"), "the dispatch reply states WHICH model the child runs")
-      assert.ok(!fired.output.includes("未能从本会话记录里解析出模型"), "no false warning when the model WAS resolved")
-      await rt.dispose()
-
-      // spawn consent: the built-in task tool asks ctx.ask per subagent_type,
-      // so a plugin-side dispatcher must not be the way around that gate
-      const { client: cAsk, calls: callsAsk } = sessionFake()
-      const rtAsk = await tm.createTmTools({ directory: mktmp("disp-consent"), client: cAsk, $: fake$Ok("") })
-      const askedFor = []
-      const noBridge = await rtAsk.tools.tm_dispatch.execute({ agent: "researcher", task: BRIEF }, { agent: "team", sessionID: "ses_lead", directory: "." })
-      assert.ok(noBridge.output.includes("phase=permission") && noBridge.output.includes("ask 桥"), "no ask bridge -> tm_dispatch refuses instead of spawning ungoverned")
-      assert.equal(callsAsk.create.length, 0, "a refused dispatch never creates a child session")
-      const okConsent = await rtAsk.tools.tm_dispatch.execute({ agent: "researcher", task: BRIEF }, {
-        agent: "team", sessionID: "ses_lead", directory: ".", ask: async (req) => (askedFor.push([req.permission, req.patterns]), "once"),
-      })
-      assert.deepEqual(askedFor, [["tm_dispatch", ["researcher"]]], "the dialog names the tool and the sub-agent type, exactly like task's own ask")
-      assert.ok(okConsent.output.includes("已派发（非阻塞）"), "approved consent lets the dispatch through")
-      const denied = await rtAsk.tools.tm_dispatch.execute({ agent: "tester", task: BRIEF }, {
-        agent: "team", sessionID: "ses_lead", directory: ".", ask: async () => { throw new Error("user said no") },
-      })
-      assert.ok(denied.output.includes("派工未获批准"), "a rejected consent is a refusal, never a fall-through")
-      await rtAsk.dispose()
-
-      // nesting ceiling, same 口径 as the host's subagent_depth (default 1)
-      const { client: cDeep } = sessionFake({ parents: { ses_lead: "ses_parent", ses_parent: "ses_grandparent" } })
-      const rtDeep = await tm.createTmTools({ directory: mktmp("disp-depth"), client: cDeep, $: fake$Ok("") })
-      const tooDeep = await rtDeep.tools.tm_dispatch.execute({ agent: "researcher", task: BRIEF }, LEAD)
-      assert.ok(tooDeep.output.includes("嵌套上限") && tooDeep.output.includes("深度 2"), "a caller already nested past TM_SUBAGENT_DEPTH cannot spawn more")
-      const { client: cRoot } = sessionFake()
-      const rtRoot = await tm.createTmTools({ directory: mktmp("disp-root"), client: cRoot, $: fake$Ok("") })
-      const atRoot = await rtRoot.tools.tm_dispatch.execute({ agent: "researcher", task: BRIEF }, LEAD)
-      assert.ok(atRoot.output.includes("已派发（非阻塞）"), "an unnested lead (depth 0 < 1) dispatches normally")
-      await rtDeep.dispose()
-      await rtRoot.dispose()
-
-      // ids arrives as a JSON STRING from real models — it must not degrade
-      // into "return everything"
-      assert.deepEqual(dmod.parseIdList('["ses_a","ses_b"]'), ["ses_a", "ses_b"], "a JSON-array string parses")
-      assert.deepEqual(dmod.parseIdList(["ses_a", " ses_b "]), ["ses_a", "ses_b"], "a real array still parses (trimmed)")
-      assert.deepEqual(dmod.parseIdList("ses_a, ses_b"), ["ses_a", "ses_b"], "a comma list parses")
-      assert.equal(dmod.parseIdList(undefined), null, "absent ids = no filter")
       {
-        const { client: cIds } = sessionFake({ ids: ["ses_child_1", "ses_child_2"], statusMap: { ses_child_1: { type: "idle" }, ses_child_2: { type: "idle" } } })
-        const rtIds = await tm.createTmTools({ directory: mktmp("disp-ids"), client: cIds, $: fake$Ok("") })
-        await rtIds.tools.tm_dispatch.execute({ agent: "tester", task: BRIEF, description: "one" }, LEAD)
-        await rtIds.tools.tm_dispatch.execute({ agent: "reviewer", task: BRIEF, description: "two" }, LEAD)
-        const one = await rtIds.tools.tm_join.execute({ ids: '["ses_child_2"]' }, LEAD)
-        assert.ok(one.output.includes("ses_child_2"), "the requested child is reported")
-        assert.ok(!one.output.includes("ses_child_1"), "and the OTHER child is not smuggled in by a stringified ids arg")
-        assert.ok(one.output.includes("1 完成"), "the summary counts only the requested set")
-        await rtIds.dispose()
+        const { rt, calls } = await seeded("disp-cancel", {
+          children: [leftover("ses_r1", "一 (@tester subagent ·tm)"), leftover("ses_r2", "二 (@reviewer subagent ·tm)")],
+          statusMap: { ses_r1: { type: "idle" }, ses_r2: { type: "busy" } },
+        })
+        const snap = await rt.tools.tm_join.execute({ waitMs: 0 }, LEAD)
+        assert.ok(snap.output.includes("1 完成 / 1 运行中"), "the host status map settles what the event bus missed")
+        assert.ok(snap.output.includes("还有 1 个子代理在跑") && snap.output.includes("不是交付"), "an open child is announced as unfinished work, never as a wrap-up")
+        const cancelled = await rt.tools.tm_join.execute({ cancel: true }, LEAD)
+        assert.equal(calls.abort.length, 1, "cancel:true aborts the one still-running child")
+        assert.ok(cancelled.output.includes("aborted on request"), "an aborted child reports why")
+        await rt.dispose()
+
+        const fat = "FINDINGS:\n" + "长行 · evidence line with a source https://example.org/x\n".repeat(400)
+        const { rt: fatRt } = await seeded("disp-fat", {
+          children: [leftover("ses_fat", "胖 (@researcher subagent ·tm)")],
+          replies: { ses_fat: fat },
+          completedFor: ["ses_fat"],
+          statusMap: {},
+        })
+        const big = await fatRt.tools.tm_join.execute({}, LEAD)
+        assert.ok(big.output.includes("已卸载") && big.output.includes("ref: tm://runs/"), "a fat child reply arrives as a handle + preview, not inline")
+        await fatRt.dispose()
       }
 
-      // the goal tripwire: every child settled says nothing about the USER'S
-      // ask, and the host's own todo list does
+      // the wait budget, as pure arithmetic — the numbers a lead parks on
+      assert.deepEqual(dmod.joinBudget(300_000, 60_000, undefined), { budget: 60_000, repeat: false, streak: 1 }, "the first bounded wait is clamped to TM_JOIN_MAX_WAIT_MS")
+      assert.deepEqual(dmod.joinBudget(300_000, 60_000, { stillRunning: 2, streak: 1 }), { budget: 10_000, repeat: true, streak: 2 }, "a wait following a wait that settled nothing is cut to 10s")
+      assert.deepEqual(dmod.joinBudget(5_000, 60_000, { stillRunning: 0, streak: 1 }), { budget: 5_000, repeat: false, streak: 1 }, "once everything settled, the next wait is a fresh one")
+      assert.deepEqual(dmod.joinBudget(0, 60_000, { stillRunning: 3, streak: 4 }), { budget: 0, repeat: false, streak: 4 }, "a snapshot costs nothing and neither extends nor resets the streak")
+      assert.equal(dmod.REPEAT_WAIT_MS, 10_000, "the repeat budget is the number the description promises")
+      {
+        process.env.TM_JOIN_MAX_WAIT_MS = "300"
+        const keepAlive = setInterval(() => {}, 50)
+        try {
+          const { rt } = await seeded("join-wait", {
+            children: [leftover("ses_w", "等 (@tester subagent ·tm)")],
+            statusMap: { ses_w: { type: "busy" } },
+          })
+          assert.ok(rt.tools.tm_join.description.includes("A wait BLOCKS YOU") && rt.tools.tm_join.description.includes("capped at 300ms"), "the tool says waiting parks the lead, and never renders '0s'")
+          const first = await rt.tools.tm_join.execute({ waitMs: 300 }, LEAD)
+          assert.ok(!first.output.includes("连续第"), "the first wait is just a wait")
+          const again = await rt.tools.tm_join.execute({ waitMs: 300 }, LEAD)
+          assert.ok(again.output.includes("连续第 2 次等待"), "the second consecutive wait is named as such")
+          assert.ok(again.output.includes("别再等") && again.output.includes("open handoff"), "and answered with what to do instead of another park")
+          await rt.dispose()
+        } finally {
+          clearInterval(keepAlive)
+          delete process.env.TM_JOIN_MAX_WAIT_MS
+        }
+      }
+
+      // the goal tripwire, read off the host's own todo list
       assert.deepEqual(
         dmod.openHostTodos([
           { content: "跑通回归", status: "completed" },
@@ -3251,167 +3178,52 @@ try {
         "completed/cancelled items are not open work; pending and in_progress are",
       )
       assert.deepEqual(dmod.openHostTodos(undefined), [], "a missing todo payload is no open work, never a crash")
-      assert.deepEqual(dmod.openHostTodos([{ content: "", status: "pending" }]), [], "an empty item is not reported")
       {
-        const { client: cGoal, calls: callsGoal } = sessionFake({
-          statusMap: { ses_child_1: { type: "idle" } },
+        const { rt, calls } = await seeded("disp-goal", {
+          children: [leftover("ses_g", "目标 (@tester subagent ·tm)")],
+          completedFor: ["ses_g"],
+          statusMap: {},
           todos: [
             { content: "为 tm_pty 写清治理边界", status: "pending" },
             { content: "已完成的旧项", status: "completed" },
           ],
         })
-        const rtGoal = await tm.createTmTools({ directory: mktmp("disp-goal"), client: cGoal, $: fake$Ok("") })
-        await rtGoal.tools.tm_dispatch.execute({ agent: "tester", task: BRIEF }, LEAD)
-        rtGoal.observeDispatchEvent({ type: "session.idle", properties: { sessionID: "ses_child_1" } })
-        const withOpen = await rtGoal.tools.tm_join.execute({}, LEAD)
+        const withOpen = await rt.tools.tm_join.execute({}, LEAD)
         assert.ok(withOpen.output.includes("目标未达成"), "a settled round with open todos says the goal is NOT met")
         assert.ok(withOpen.output.includes("为 tm_pty 写清治理边界"), "and names the open item verbatim")
         assert.ok(!withOpen.output.includes("已完成的旧项"), "completed items are not thrown at the lead as unfinished")
-        assert.ok(withOpen.output.includes("不要把这轮当成收尾"), "the line tells it what to do instead of a status")
-        assert.deepEqual(callsGoal.todo, ["ses_lead"], "the todo read is scoped to the CALLING session")
-        await rtGoal.dispose()
+        assert.ok(withOpen.output.includes("先用 todowrite 更新状态"), "a stale list gets the one fix that resolves it, not another lap of waiting")
+        assert.deepEqual(calls.todo, ["ses_lead"], "the todo read is scoped to the CALLING session")
+        await rt.dispose()
 
-        // all todos done -> no warning, the round may legitimately close
-        const { client: cDone } = sessionFake({ statusMap: { ses_child_1: { type: "idle" } }, todos: [{ content: "全部做完", status: "completed" }] })
-        const rtDone = await tm.createTmTools({ directory: mktmp("disp-goal-done"), client: cDone, $: fake$Ok("") })
-        await rtDone.tools.tm_dispatch.execute({ agent: "tester", task: BRIEF }, LEAD)
-        rtDone.observeDispatchEvent({ type: "session.idle", properties: { sessionID: "ses_child_1" } })
-        const closed = await rtDone.tools.tm_join.execute({}, LEAD)
+        const { rt: doneRt } = await seeded("disp-goal-done", {
+          children: [leftover("ses_g2", "目标 (@tester subagent ·tm)")],
+          completedFor: ["ses_g2"],
+          statusMap: {},
+          todos: [{ content: "全部做完", status: "completed" }],
+        })
+        const closed = await doneRt.tools.tm_join.execute({}, LEAD)
         assert.ok(!closed.output.includes("目标未达成"), "a clean todo list adds no warning")
         assert.ok(closed.output.includes("全部已结算"), "and the round still reports its own state")
-        await rtDone.dispose()
+        await doneRt.dispose()
       }
 
-      // TM_PARALLEL_DISPATCH=off — the lead may still parallelise nothing:
-      // a second live child is refused by policy, BEFORE the consent dialog
-      // (same ordering as tm_pty's cap: never ask the user to approve a spawn
-      // the config has already declined).
-      {
-        process.env.TM_PARALLEL_DISPATCH = "off"
-        try {
-          const { client: cSer, calls: callsSer } = sessionFake()
-          const rtSer = await tm.createTmTools({ directory: mktmp("disp-serial"), client: cSer, $: fake$Ok("") })
-          assert.ok(/TM_PARALLEL_DISPATCH=off/.test(rtSer.tools.tm_dispatch.description), "off is visible in the tool description, not only at runtime")
-          let asks = 0
-          const serialCtx = { ...LEAD, ask: async () => (asks++, "once") }
-          const first = await rtSer.tools.tm_dispatch.execute({ agent: "tester", task: BRIEF, description: "第一步" }, serialCtx)
-          assert.ok(first.output.includes("已派发"), "the first dispatch still runs with parallel off")
-          const second = await rtSer.tools.tm_dispatch.execute({ agent: "reviewer", task: BRIEF, description: "第二步" }, serialCtx)
-          assert.ok(second.output.includes("TM_PARALLEL_DISPATCH=off"), "a second concurrent child is refused")
-          assert.ok(second.output.includes("tester「第一步」"), "the refusal names what is still running, so the lead knows what to collect")
-          assert.ok(second.output.includes("tm_join"), "and says what to do next")
-          assert.equal(callsSer.create.length, 1, "no second session was created")
-          assert.equal(asks, 1, "refused BEFORE the consent dialog — the user is never asked about a spawn policy declined")
-          rtSer.observeDispatchEvent({ type: "session.idle", properties: { sessionID: "ses_child_1" } })
-          const third = await rtSer.tools.tm_dispatch.execute({ agent: "reviewer", task: BRIEF, description: "第二步" }, serialCtx)
-          assert.ok(third.output.includes("已派发"), "after the child settles the next one goes out — serial, not stuck")
-          assert.equal(callsSer.create.length, 2, "the second child is created only once the first is done")
-          await rtSer.dispose()
-        } finally {
-          delete process.env.TM_PARALLEL_DISPATCH
-        }
-      }
-      // TM_DISPATCH_MAX — six concurrent researchers measured 19+ minutes with
-      // nothing settled, so the ceiling is a quota/machine guard, and it fires
-      // BEFORE the consent dialog like every other policy refusal.
-      {
-        const keepAlive = setInterval(() => {}, 50)
-        try {
-          const { client: cCap, calls: callsCap } = sessionFake({ ids: ["ses_c1", "ses_c2", "ses_c3"], statusMap: {} })
-          const rtCap = await tm.createTmTools({ directory: mktmp("disp-cap"), client: cCap, $: fake$Ok("") }, {})
-          assert.ok(/At most 4 children/.test(rtCap.tools.tm_dispatch.description), "the default ceiling is stated in the tool the model reads")
-          let asks = 0
-          const capCtx = { ...LEAD, ask: async () => (asks++, "once") }
-          const BRIEF2 = BRIEF + " 涉及 src/tm/dispatch.ts。"
-          await rtCap.tools.tm_dispatch.execute({ agent: "tester", task: BRIEF2, description: "一" }, capCtx)
-          await rtCap.tools.tm_dispatch.execute({ agent: "reviewer", task: BRIEF2, description: "二" }, capCtx)
-          await rtCap.tools.tm_dispatch.execute({ agent: "researcher", task: BRIEF2, description: "三" }, capCtx)
-          await rtCap.tools.tm_dispatch.execute({ agent: "architect", task: BRIEF2, description: "四" }, capCtx)
-          assert.equal(callsCap.create.length, 4, "four go out under the default ceiling")
-          const fifth = await rtCap.tools.tm_dispatch.execute({ agent: "implementer", task: BRIEF2, description: "五" }, capCtx)
-          assert.ok(fifth.output.includes("并发上限 4") && fifth.output.includes("TM_DISPATCH_MAX"), "the fifth is refused by policy and names the knob")
-          assert.ok(fifth.output.includes("tester「一」"), "the refusal lists what is already live")
-          assert.equal(callsCap.create.length, 4, "no session was created for the refused dispatch")
-          assert.equal(asks, 4, "the refusal happens BEFORE the consent dialog")
-          // collecting one frees a slot
-          rtCap.observeDispatchEvent({ type: "session.idle", properties: { sessionID: "ses_c1" } })
-          await rtCap.tools.tm_join.execute({ includeText: false }, LEAD)
-          await rtCap.tools.tm_dispatch.execute({ agent: "implementer", task: BRIEF2, description: "五" }, capCtx)
-          assert.equal(callsCap.create.length, 5, "after a child settles, the next dispatch goes through")
-          await rtCap.dispose()
-        } finally {
-          clearInterval(keepAlive)
-        }
-      }
-      // TM_JOIN_MAX_WAIT_MS + the chained-wait cut: a wait is NOT parallelism
-      // (the lead's turn is parked in the tool call), and a live session burned
-      // 2 × 300 s of it while six researchers ran.  First wait gets the budget,
-      // a second one after nothing settled gets 10 s and a directive.
-      assert.deepEqual(dmod.joinBudget(300_000, 60_000, undefined), { budget: 60_000, repeat: false, streak: 1 }, "the first bounded wait is clamped to TM_JOIN_MAX_WAIT_MS")
-      assert.deepEqual(dmod.joinBudget(300_000, 60_000, { stillRunning: 2, streak: 1 }), { budget: 10_000, repeat: true, streak: 2 }, "a wait following a wait that settled nothing is cut to 10s")
-      assert.deepEqual(dmod.joinBudget(5_000, 60_000, { stillRunning: 0, streak: 1 }), { budget: 5_000, repeat: false, streak: 1 }, "once everything settled, the next wait is a fresh one")
-      assert.deepEqual(dmod.joinBudget(0, 60_000, { stillRunning: 3, streak: 4 }), { budget: 0, repeat: false, streak: 4 }, "a snapshot costs nothing and neither extends nor resets the streak")
-      assert.equal(dmod.REPEAT_WAIT_MS, 10_000, "the repeat budget is the number the description promises")
-      {
-        process.env.TM_JOIN_MAX_WAIT_MS = "300"
-        // tm_join's poll timer is deliberately unref'd (the plugin must never
-        // keep the HOST alive), which lets a bare test process exit mid-wait —
-        // hold a ref'd timer for the duration of this block.
-        const keepAlive = setInterval(() => {}, 50)
-        try {
-          const { client: cW } = sessionFake({ statusMap: { ses_child_1: { type: "busy" } } })
-          const rtW = await tm.createTmTools({ directory: mktmp("join-wait"), client: cW, $: fake$Ok("") })
-          assert.ok(rtW.tools.tm_join.description.includes("A wait BLOCKS YOU") && rtW.tools.tm_join.description.includes("capped at 300ms"), "the tool says out loud that waiting parks the lead, and never renders '0s'")
-          await rtW.tools.tm_dispatch.execute({ agent: "tester", task: BRIEF }, LEAD)
-          const first = await rtW.tools.tm_join.execute({ waitMs: 300 }, LEAD)
-          assert.ok(!first.output.includes("连续第"), "the first wait is just a wait")
-          assert.ok(first.output.includes("未等到全部结算"), "and it honestly reports that it did not settle")
-          const again = await rtW.tools.tm_join.execute({ waitMs: 300 }, LEAD)
-          assert.ok(again.output.includes("连续第 2 次等待"), "the second consecutive wait is named as such")
-          assert.ok(again.output.includes("别再等"), "and answered with what to do instead of another park")
-          assert.ok(again.output.includes("open handoff"), "one of the three options is to end the turn honestly")
-          await rtW.dispose()
-        } finally {
-          clearInterval(keepAlive)
-          delete process.env.TM_JOIN_MAX_WAIT_MS
-        }
-      }
-      // the host's OWN visible sub-agent card is an env flag away, and we read
-      // the same env the host reads (the plugin runs in that process)
-      assert.equal(dmod.hostBackgroundSubagentsEnabled({}), false, "no flag -> the host's task card is the blocking kind")
+      // the pure helpers that outlived the dispatcher
+      assert.deepEqual(dmod.parseIdList('["ses_a","ses_b"]'), ["ses_a", "ses_b"], "a JSON-array string parses (real models send this)")
+      assert.deepEqual(dmod.parseIdList(["ses_a", " ses_b "]), ["ses_a", "ses_b"], "a real array still parses (trimmed)")
+      assert.equal(dmod.parseIdList(undefined), null, "absent ids = no filter")
+      assert.ok(dmod.describeHostError({ name: "ProviderAuthError", data: { message: "No API key for opencode", ref: "err_9f2" } }).includes("No API key for opencode"), "a nested host error stays readable — [object Object] destroyed the only diagnostic once")
+      assert.ok(!dmod.describeHostError({ foo: 1 }).includes("[object Object]"), "an unrecognised object never renders as [object Object]")
+      assert.equal(dmod.hostBackgroundSubagentsEnabled({}), false, "no flag -> the host has no visible background card to offer")
       assert.equal(dmod.hostBackgroundSubagentsEnabled({ OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS: "true" }), true, "the specific flag turns it on")
       assert.equal(dmod.hostBackgroundSubagentsEnabled({ OPENCODE_EXPERIMENTAL: "1" }), true, "the umbrella flag counts")
       assert.equal(dmod.hostBackgroundSubagentsEnabled({ OPENCODE_EXPERIMENTAL: "1", OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS: "false" }), false, "the specific value overrides the umbrella, both ways")
-      assert.equal(dmod.hostBackgroundSubagentsEnabled({ OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS: "" }), false, "an empty value is not a yes")
-      // a session.error whose payload is an OBJECT must reach tm_join readable
-      const { client: c2 } = sessionFake()
-      const rt2 = await tm.createTmTools({ directory: mktmp("disp-err"), client: c2, $: fake$Ok("") })
-      await rt2.tools.tm_dispatch.execute({ agent: "tester", task: BRIEF }, LEAD)
-      rt2.observeDispatchEvent({
-        type: "session.error",
-        properties: { sessionID: "ses_child_1", error: { name: "MessageAbortedError", data: { message: "user cancelled" } } },
-      })
-      const joined = await rt2.tools.tm_join.execute({}, LEAD)
-      assert.ok(joined.output.includes("user cancelled"), "the child's real failure reason reaches the lead")
-      assert.ok(!joined.output.includes("[object Object]"), "and nothing in the report is a stringified object")
-      await rt2.dispose()
-
-      // a child that died before writing anything: the collected block quotes
-      // the assistant message's own error field
-      const { client: c3 } = sessionFake({
-        statusMap: { ses_child_1: { type: "idle" } },
-        childErrors: { ses_child_1: { name: "ProviderAuthError", data: { message: "no model configured for researcher" } } },
-      })
-      const rt3 = await tm.createTmTools({ directory: mktmp("disp-nochild"), client: c3, $: fake$Ok("") })
-      await rt3.tools.tm_dispatch.execute({ agent: "researcher", task: BRIEF }, LEAD)
-      rt3.observeDispatchEvent({ type: "session.idle", properties: { sessionID: "ses_child_1" } })
-      const empty = await rt3.tools.tm_join.execute({}, LEAD)
-      assert.ok(empty.output.includes("没有可读的助手回复"), "an empty child reply is called out, not silently blank")
-      assert.ok(empty.output.includes("no model configured for researcher"), "with the host's reason attached")
-      assert.ok(empty.output.includes("task"), "and it points at the concrete fallback")
-      await rt3.dispose()
+      assert.deepEqual(dmod.parseDispatchTitle("修登录页 (@implementer subagent ·tm)", ["implementer"]), { agent: "implementer", label: "修登录页" }, "a leftover dispatch title parses")
+      assert.deepEqual(dmod.parseDispatchTitle("tm:researcher:auth-bug", ["researcher"]), { agent: "researcher", label: "auth-bug" }, "the pre-1.5.15 title still parses")
+      assert.equal(dmod.parseDispatchTitle("Explore the repo (@tester subagent)", ["tester"]), null, "a host task child's title never parses — that is what the marker is for")
+      assert.equal(dmod.parseDispatchTitle("随便一个会话", ["tester"]), null, "an ordinary session is not ours")
     }
-    console.log("10. tm_dispatch/tm_join: OK (lead-only gate + nested-team reject + self-contained brief, parentID + verbatim brief over the session API, host-convention child title (@<agent> subagent ·tm) with legacy titles adopted and task children never claimed, one notify toast per dispatch, TM_PARALLEL_DISPATCH=off refused before the dialog, event-driven settle + bounded wait, cancel, offloaded collection, graceful 'use task' degrade, RESTART RECOVERY via session.children + title discriminator + completedAt verdict, MODEL INHERITANCE from the parent transcript, describeHostError so a nested host error never renders as [object Object])")
+    console.log("10. tm_dispatch removed (not registered, lead denied) + tm_join as the collect side: adoption of leftovers (both title shapes) with a host task child never claimed on speculation, named-id claims verified against host parentage, status/event settle, cancel, offloaded fat replies, the wait budget and its chained-wait cut, the goal tripwire with the todowrite escape, and the pure helpers")
   }
 
   // ---------- 11. bash timeout clamp (tool.execute.before mutation) ----------

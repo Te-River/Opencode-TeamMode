@@ -131,9 +131,11 @@ const whitelist = (
   permission["tm_webfetch"] = "deny"
   permission["tm_search"] = "deny"
   permission["tm_browser"] = "deny"
-  // Async dispatch (tm_dispatch / tm_join) is the LEAD's lever — the tm_*
-  // wildcard would otherwise hand every specialist the ability to spawn
-  // sub-agents, which is exactly the nesting T3 closed.
+  // Nobody creates sub-agents through us any more: a tm_dispatch child is a
+  // session the user can neither open from a card nor stop from the UI, so
+  // delegation goes through the host's own `task` (governed, visible,
+  // killable). tm_join stays the lead's tool — it COLLECTS children (including
+  // host `task` children by id) and adopts leftovers from before the change.
   permission["tm_dispatch"] = "deny"
   permission["tm_join"] = "deny"
   // tm_pty starts a real process, so it must pop the OFFICIAL dialog on
@@ -144,11 +146,13 @@ const whitelist = (
   return permission
 }
 
-/** Grant the async levers to the lead only (issue #6 + #7).  A child cannot
- *  dispatch or spawn processes: these matrix entries and the tools' own
- *  runtime `ctx.agent` checks are two independent locks. */
+/** Grant the async COLLECT lever to the lead only (issue #6 + #7).  No agent
+ *  may spawn: `tm_dispatch` is denied unconditionally above and never
+ *  registered on the tool surface, so delegation has exactly one route — the
+ *  host's `task`. These matrix entries and the tools' own runtime `ctx.agent`
+ *  checks are two independent locks. */
 export function applyDispatcherPermission(permission: AgentPermission, isTeamLead: boolean): void {
-  permission["tm_dispatch"] = isTeamLead ? "allow" : "deny"
+  permission["tm_dispatch"] = "deny"
   permission["tm_join"] = isTeamLead ? "allow" : "deny"
   permission["tm_pty"] = isTeamLead ? { ...WEB_ASK_MAP } : "deny"
 }

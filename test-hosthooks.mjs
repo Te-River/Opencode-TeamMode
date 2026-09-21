@@ -26,6 +26,7 @@ import {
   hookSwitches,
   COMPACTION_CONTEXT,
   TOOL_HINTS,
+  TASK_HINT_BACKGROUND,
   AGENT_TEMPERATURES,
 } from "./dist/host-hooks.js"
 
@@ -54,8 +55,18 @@ console.log("hosthooks. tool.definition / chat.params / compaction / shell.env /
   eq(applyToolDefinition({ toolID: "bash" }, out, true), false, "idempotent: never appended twice")
   eq(out.description, before, "the second pass leaves the string byte-exact")
   const task = { description: "Launch a sub-agent to handle the task." }
-  eq(applyToolDefinition({ toolID: "task" }, task, true), true, "task gets the async-dispatch pointer")
-  ok(task.description.includes("tm_dispatch"), "task is steered to the non-blocking lever")
+  eq(applyToolDefinition({ toolID: "task" }, task, true), true, "task gets the delegation pointer")
+  ok(
+    task.description.includes("background: true") && task.description.includes("blocks your session"),
+    "task is told BOTH shapes: blocking for one answer, background for parallel follow-up",
+  )
+  ok(!task.description.includes("tm_dispatch"), "the hint never points back at the dispatcher we removed")
+  const bg = { description: "Launch a sub-agent to handle the task." }
+  eq(applyToolDefinition({ toolID: "task" }, bg, true, { task: TASK_HINT_BACKGROUND.task }), true, "the flag-on override appends")
+  ok(
+    bg.description.includes("tm_join") && bg.description.includes("OUT of your context"),
+    "with the host flag on the hint names the collect path and the offload that keeps it cheap",
+  )
   const unrelated = { description: "edit a file" }
   eq(applyToolDefinition({ toolID: "edit" }, unrelated, true), false, "unlisted tools untouched")
   eq(unrelated.description, "edit a file", "no mutation of an unlisted description")
@@ -94,9 +105,19 @@ console.log("hosthooks. tool.definition / chat.params / compaction / shell.env /
   eq(out.prompt, undefined, "output.prompt is NEVER replaced (the summarizer stays the host's)")
   ok(COMPACTION_CONTEXT.some((l) => l.includes("STATUS")), "the reply skeleton survives compaction")
   ok(COMPACTION_CONTEXT.some((l) => l.includes("access_token")), "offload handles are named as must-keep")
-  ok(COMPACTION_CONTEXT.some((l) => l.includes("tm_dispatch")), "uncollected children survive the summary")
+  ok(
+    COMPACTION_CONTEXT.some((l) => l.includes("Sub-agent children") && l.includes("host's task")),
+    "uncollected children survive the summary, named as the host's — not our removed dispatcher",
+  )
+  ok(
+    COMPACTION_CONTEXT.some((l) => l.includes("does NOT mean the task is done")),
+    "…and as a NOT-FINISHED state, so a compaction mid-wait cannot leave the lead believing it delivered",
+  )
   ok(COMPACTION_CONTEXT.some((l) => l.includes("GOAL")), "the goal directive survives the summary — a compressed transcript must not redefine the ask")
-  ok(COMPACTION_CONTEXT.every((l) => l.includes("OpenCode TeamMode") || l.startsWith("Offloaded") || l.startsWith("Async") || l.startsWith("Every") || l.startsWith("The")), "lines self-identify as ours")
+  ok(
+    COMPACTION_CONTEXT.every((l) => /survive|VERBATIM|keep|keeps|not the transcript/i.test(l)),
+    "every line is a carry-forward instruction, not commentary — that is the only thing a summarizer obeys",
+  )
   eq(applySessionCompacting(out, true), false, "idempotent: a second compaction adds nothing")
   eq(applySessionCompacting(out, false), false, "TM_COMPACTION_CONTEXT=off disables it")
   eq(applySessionCompacting(null, true), false, "garbage output cannot throw")
@@ -247,7 +268,7 @@ console.log("hosthooks. tool.definition / chat.params / compaction / shell.env /
   })
   const cRows = crippled.snapshot()
   eq(state(cRows, "client.pty.create"), "missing", "no pty namespace -> tm_pty's seam reads 缺失")
-  eq(state(cRows, "client.session.create+promptAsync"), "missing", "promptAsync absent -> the async dispatcher reads 缺失 (it degrades to task)")
+  eq(state(cRows, "client.session.messages"), "missing", "no transcript endpoint -> tm_join cannot collect anything, and the row says 缺失 (the lead still has the host's own task)")
   eq(state(cRows, "client.session.children"), "missing", "the restart-recovery seam is its OWN row (losing it must not look like losing dispatch)")
   eq(state(cRows, "input.$ (shell bridge)"), "missing", "no host shell bridge -> tm_bash falls back to spawn, and says so")
   eq(state(cRows, "hook tool.definition"), "not-seen", "an un-fired hook is 待观察, NOT a break — the distinction is the whole point")
@@ -356,6 +377,19 @@ console.log("hosthooks. tool.definition / chat.params / compaction / shell.env /
   eq(s.degrades, [{ seam: "tm_browser/playwright-core", reason: "playwright-core import failed" }], "an engine fallback is listed with its reason, not swallowed")
   // one child alone proves nothing
   eq(summarizeEvents([{ ts: iso(0), tool: "tm_dispatch", event: "start" }, { ts: iso(1000), tool: "tm_dispatch", event: "idle", ms: 1000 }]).dispatch.overlapSavedMs, 0, "a single dispatch claims no overlap saving")
+  // …and after tm_dispatch is GONE there is no start line at all: the number
+  // has to survive on what a collected host `task` child still reports — its
+  // own settle time plus its own duration.
+  {
+    const post = summarizeEvents([
+      { ts: iso(500), run_id: "rP", tool: "tm_dispatch", step_id: "join", event: "claim_host_task", child: "h1" },
+      { ts: iso(1_000), run_id: "rP", tool: "tm_dispatch", step_id: "join", event: "claim_host_task", child: "h2" },
+      { ts: iso(5_000), run_id: "rP", tool: "tm_dispatch", step_id: "events", event: "idle", child: "h1", ms: 4_500 },
+      { ts: iso(8_000), run_id: "rP", tool: "tm_dispatch", step_id: "events", event: "idle", child: "h2", ms: 7_000 },
+    ])
+    eq([post.dispatch.starts, post.dispatch.settled, post.dispatch.claims], [0, 2, 2], "no dispatch line exists any more, but the children we claimed are still counted")
+    eq(post.dispatch.overlapSavedMs, 11_500 - 7_500, "overlap saving is derived from each child's own (settle − duration) window")
+  }
 
   const runRoot = mktmp("stats-runs")
   for (const [i, id] of ["r1", "r2", "r3"].entries()) {
@@ -374,7 +408,7 @@ console.log("hosthooks. tool.definition / chat.params / compaction / shell.env /
   ok(md.includes("| 工具 | 调用 | 结果 | 卸载 | 原始 token | 省下 token（估算） |"), "the token table has stable columns")
   ok(md.includes("**口径**"), "the estimate is labelled as an estimate, in the first lines")
   ok(md.includes("重叠省下"), "the parallelism number is its own labelled row")
-  ok(md.includes("| 派发 / 完成 / 失败 / 取消 | 3 / 2 / 1 / 0 |"), "dispatch counts render")
+  ok(md.includes("子代理结算 / 失败 / 取消（派活走宿主 task） | 2 / 1 / 0"), "dispatch counts render")
   ok(md.includes("引擎降级"), "a degrade gets its own table")
   ok(!md.includes("undefined") && !md.includes("NaN"), "no placeholder leaked into a user-facing table")
 

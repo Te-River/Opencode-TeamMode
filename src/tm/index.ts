@@ -107,7 +107,8 @@ export interface CreateTmToolsOptions {
   /** Best-effort user notification (the host toast) — tm_browser's idle
    *  reaper uses it so an auto-closed window is announced, not silent. */
   notify?: (message: string) => void
-  /** A tm_dispatch child session was created — let the approval gate
+  /** A sub-agent child session entered our registry (adopted from the host's
+   *  session tree, or claimed by an id the lead named) — let the approval gate
    *  register it so the sub-agent's own protected read opens the official
    *  dialog instead of hard-throwing in an unregistered session. */
   onChildSession?: (sessionID: string, agent: string) => void
@@ -295,28 +296,19 @@ export async function createTmTools(
     webTools: ptcWebTools,
   })
   tools.tm_ptc_run = ptcTool
-  // tm_dispatch / tm_join — ASYNC sub-agent dispatch for the lead (issue #7:
-  // the host's `task` tool blocks the calling session, so "parallel team"
-  // really meant "serial with extra steps").  Built on the official client
-  // session API; both tools self-gate to the lead agent, and the five
-  // specialists carry an explicit deny in agents.ts.
+  // tm_join — the collect side of sub-agent work (see src/tm/dispatch.ts for
+  // the whole story).  tm_dispatch is NOT registered: a plugin-spawned child is
+  // a session the user can neither open from a card nor stop from the UI, so
+  // delegation has exactly one route left — the host's own `task` (governed,
+  // visible, killable).  The dispatcher object stays because tm_join needs its
+  // registry: children dispatched before the removal are still adopted,
+  // collected and cancelled through it, and it self-gates to the lead agent.
   const dispatch = buildDispatchTools({
     client: input?.client,
     pipelines,
     onChildSession: opts.onChildSession,
-    // the two guards the built-in task tool applies and a plugin-side
-    // dispatcher would otherwise skip: the user's spawn consent and the
-    // host's subagent_depth ceiling
-    askBeforeSpawn: cfg.dispatchAsk !== "off",
-    maxDepth: cfg.subagentDepth,
-    parallelDispatch: cfg.parallelDispatch,
-    maxConcurrent: cfg.dispatchMax,
     maxWaitMs: cfg.joinMaxWaitMs,
-    // a dispatch is invisible in the tool card (the host renders only its own
-    // built-in tools' bodies), so the toast carries "where to look"
-    notify: opts.notify,
   })
-  tools.tm_dispatch = dispatch.tm_dispatch
   tools.tm_join = dispatch.tm_join
   // tm_pty — non-blocking command execution on the host's own terminal
   // sessions (issue #6: three serial 120 s test suites are minutes of dead

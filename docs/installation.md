@@ -90,8 +90,8 @@ you:
 
 Skip it entirely: run `install.ps1 -NoBackgroundSubagents`, or set
 `TEAMMODE_SKIP_BACKGROUND_SUBAGENTS=1` for a piped install. Without the flag
-nothing breaks — `task` simply blocks the lead, and TeamMode's own
-`tm_dispatch` / `tm_join` remains the non-blocking batch path.
+nothing breaks — `task` simply blocks the lead, and `tm_join` still collects
+whatever children exist (snapshot, cancel, named-id read-back, restart recovery).
 
 Cost, stated plainly: each finished background task wakes the lead and costs a
 turn, and the host injects the child's reply verbatim until TeamMode replaces
@@ -334,7 +334,7 @@ OpenCode 自带的 `task { background: true }` 是唯一能在它界面上**看�
 
 不想开：`install.ps1 -NoBackgroundSubagents`，或管道式安装前设
 `TEAMMODE_SKIP_BACKGROUND_SUBAGENTS=1`。**不开也不会坏**——`task` 只是会阻塞 lead，
-TeamMode 自己的 `tm_dispatch` / `tm_join` 仍是非阻塞的批量路径。
+`tm_join` 照样负责回收（状态快照、取消、按 id 取回整篇回复、重启后接管）。
 
 代价说明白：每个后台任务完成都会唤醒 lead 一次、花一轮；而且在 TeamMode 把超限
 正文换成"预览 + 取回指针"之前，宿主注入的是全文。

@@ -33,7 +33,7 @@
 
 import { classifyBashCommand, R2_DANGER_BASH_ASK_PATTERNS } from "../envprotect.js"
 import type { EnvProtectMode } from "../envprotect.js"
-import { askUserForTarget } from "./perm-ask.js"
+import { askRefusalNote, askUserForTarget } from "./perm-ask.js"
 import type { ToolDefinition, ToolResult } from "../types.js"
 import { tmError, toToolResult } from "./result.js"
 import { unwrapClientResult } from "./client-unwrap.js"
@@ -231,13 +231,12 @@ export function buildTmPtyTool(deps: PtyDeps): ToolDefinition & { tracked: () =>
           metadata: { tool: name, command: shorten(line, 200), cwd: shorten(cwd, 120) },
         })
         if (outcome !== "approved") {
-          log({ step_id: "pty", event: outcome === "rejected" ? "dialog-rejected" : "no-dialog" })
+          log({
+            step_id: "pty",
+            event: outcome === "timed-out" ? "dialog-timeout" : outcome === "rejected" ? "dialog-rejected" : "no-dialog",
+          })
           return toToolResult(
-            tmError(
-              name,
-              "permission",
-              `后台执行需要用户批准：${outcome === "rejected" ? "用户未批准（或已超时自动拒绝）。" : "宿主无法弹出确认窗口。"}`,
-            ),
+            tmError(name, "permission", `后台执行需要用户批准：${askRefusalNote(outcome)}`),
           )
         }
 

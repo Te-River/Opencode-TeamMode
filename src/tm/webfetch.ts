@@ -24,7 +24,7 @@
  */
 
 import { isEnvFilePath } from "../envprotect.js"
-import { askFnOf, askUserForTarget, type TmAskFn } from "./perm-ask.js"
+import { askFnOf, askRefusalNote, askUserForTarget, type TmAskFn } from "./perm-ask.js"
 import type { ToolResult } from "../types.js"
 import { shorten, DEFAULT_WEBFETCH_DOMAINS, type TmConfig } from "./config.js"
 
@@ -446,7 +446,7 @@ export async function fetchWebText(
           patterns: [current.toString()],
           metadata: { source: "tm_webfetch redirect" },
         })
-        if (outcome !== "approved") throw new Error(verdict.message)
+        if (outcome !== "approved") throw new Error(verdict.message + " " + askRefusalNote(outcome))
         approvedHosts.add(host)
       }
     }
@@ -572,12 +572,7 @@ export function buildTmWebfetchTool(deps: {
           })
           if (outcome !== "approved") {
             return toToolResult(
-              tmError(
-                tool,
-                "permission",
-                verdict.message +
-                  (outcome === "rejected" ? "。用户未批准。" : "。宿主无法弹出确认窗口（旧版协议）。"),
-              ),
+              tmError(tool, "permission", verdict.message + " " + askRefusalNote(outcome)),
             )
           }
         }
