@@ -1383,6 +1383,44 @@ interface ActiveSession {
   close(): Promise<{ text: string; closed: boolean }>
 }
 
+/** Who is calling.  The host gives a tool ctx `{agent, sessionID, directory,
+ *  ask}`; sessionID is the identity a browser lease belongs to. */
+export interface BrowserCaller {
+  owner: string
+  agent: string
+}
+
+/** ONE BROWSER PER CALLER.
+ *
+ *  This tool used to hold a single session for the whole plugin process, and
+ *  three agents carry it (lead + researcher for the web, tester for UI
+ *  verification) — with host `task` children running in the SAME process.  So
+ *  they shared one window, one "current tab" and ONE uid registry: a
+ *  `take_snapshot` from A renumbered every uid B was holding (`SnapshotIndex
+ *  .annotate` clears and restarts at e1), and B's next `click {uid}` landed on
+ *  a different element while still reporting success.  Nothing in the reply
+ *  could show it, because the browser was the same browser.
+ *
+ *  A lease per owner removes the sharing: separate window, separate uid
+ *  namespace, separate dialog-approved hosts.  The `id` is what the model
+ *  carries, and it is checked against the owner — an id is not a capability
+ *  token, it is a name, so guessing `b1` must not let a second agent drive the
+ *  first one's window.
+ */
+export interface BrowserLease {
+  id: string
+  owner: string
+  agent: string
+  session: ActiveSession
+  at: number
+  lastActivity: number
+}
+
+export function callerOf(ctx: unknown): BrowserCaller {
+  const c = (ctx ?? {}) as { sessionID?: unknown; agent?: unknown }
+  return { owner: String(c.sessionID ?? "").trim(), agent: String(c.agent ?? "").trim() }
+}
+
 export function buildTmBrowserTool(deps: {
   pipelines: TmPipelines
   cfg: TmConfig
@@ -1438,7 +1476,33 @@ export function buildTmBrowserTool(deps: {
     const r = reapOrphanBrowsers(ledgerFile)
     if (r.reaped.length) traj({ step_id: "browser", event: "orphans_reaped", count: r.reaped.length, pids: r.reaped.join(",") })
   }
-  let session: ActiveSession | null = null
+  /** Live browser leases by id — ONE browser per caller (see BrowserLease). */
+  const leases = new Map<string, BrowserLease>()
+  let leaseSeq = 0
+  const liveLeases = (): BrowserLease[] => [...leases.values()]
+  const ownedBy = (owner: string): BrowserLease[] => liveLeases().filter((l) => l.owner === owner)
+  const leaseTable = (): string =>
+    liveLeases()
+      .map((l) => `${l.id} · ${l.agent || "未知角色"} · ${String(l.session.currentUrl || "").slice(0, 80) || "空白页"}`)
+      .join("\n  ")
+  /** Idle-reaper timers, one per lease: a forgotten window belongs to its
+   *  owner, so B's activity must not keep A's browser alive (or reap it). */
+  const idleTimers = new Map<string, ReturnType<typeof setTimeout>>()
+  function clearIdle(id: string): void {
+    const t = idleTimers.get(id)
+    if (t) clearTimeout(t)
+    idleTimers.delete(id)
+  }
+  /** Drop the lease whose session died on its own (a cdp-legacy child exiting,
+   *  a browser the user closed) so a corpse is never handed back out. */
+  const dropSession = (sess: ActiveSession): void => {
+    for (const [id, l] of leases) {
+      if (l.session === sess) {
+        leases.delete(id)
+        clearIdle(id)
+      }
+    }
+  }
   // m2 (fix round): SAME seed policy as tm_webfetch / tm_search — the
   // built-in default list gains the T4 engine home hosts (api.stackexchange
   // .com, hn.algolia.com) so jump-reading a search hit stops re-popping the
@@ -1446,9 +1510,75 @@ export function buildTmBrowserTool(deps: {
   const allowlist = seedWebfetchDomains(
     (deps.cfg as { webfetchAllowedDomains?: readonly string[] }).webfetchAllowedDomains ?? ["*"],
   )
-  // hosts approved through the OFFICIAL dialog this plugin lifetime — the
-  // network layer (both engines) consults this in addition to the static allowlist
-  const approvedHosts = new Set<string>()
+  /** Hosts approved through the OFFICIAL dialog, keyed by the CALLER's session.
+   *  It used to be one process-wide set, which meant a host the lead approved
+   *  became a silent pass for the researcher's browser too — consent given to
+   *  one agent is not a pass for another.  The network layer (both engines)
+   *  consults the caller's set in addition to the static allowlist. */
+  const approvedBy = new Map<string, Set<string>>()
+  const approvedFor = (owner: string): Set<string> => {
+    let s = approvedBy.get(owner)
+    if (!s) {
+      s = new Set<string>()
+      approvedBy.set(owner, s)
+    }
+    return s
+  }
+
+  /** Which browser an action may drive.
+   *
+   *  The id is REQUIRED as soon as it could mean more than one thing: with a
+   *  single live browser that belongs to the caller, omitting it is unambiguous
+   *  and allowed (and every reply echoes the id back); the moment a second
+   *  agent opens one, every call must name its own.  An id belonging to somebody
+   *  else is refused WITH the owner named, because `b1` is guessable and the
+   *  whole point is that guessing must not work. */
+  function resolveLease(
+    args: Record<string, unknown>,
+    caller: BrowserCaller,
+  ): { lease: BrowserLease } | { error: string } {
+    const want = String(args.id ?? "").trim()
+    const all = liveLeases()
+    const mine = ownedBy(caller.owner)
+    if (want) {
+      const hit = all.find((l) => l.id === want)
+      if (!hit) {
+        return {
+          error: all.length
+            ? `没有 id 为 "${want}" 的浏览器。活着的：\n  ${leaseTable()}`
+            : `没有 id 为 "${want}" 的浏览器——现在一个都没开，先用 action:"open"。`,
+        }
+      }
+      if (hit.owner !== caller.owner) {
+        return {
+          error:
+            `${hit.id} 是 ${hit.agent || "另一个会话"} 的浏览器，不是你的——两个 agent 共用一个窗口会互相踩当前标签和 uid 编号，` +
+            `而你看到的每一次"成功"都可能是对方的页面。` +
+            (mine.length
+              ? `你自己的是 ${mine.map((l) => l.id).join(" / ")}。`
+              : `你还没有浏览器：用 action:"open" 开一个，它会给你自己的 id。`),
+        }
+      }
+      hit.lastActivity = Date.now()
+      return { lease: hit }
+    }
+    if (all.length === 1 && mine.length === 1) {
+      mine[0].lastActivity = Date.now()
+      return { lease: mine[0] }
+    }
+    if (!mine.length) {
+      return {
+        error: all.length
+          ? `你还没有浏览器（活着的：\n  ${leaseTable()}）——先用 action:"open" 开一个，之后带上它给你的 id。`
+          : '没有打开的浏览器会话——先用 action:"open"',
+      }
+    }
+    return {
+      error:
+        `现在有 ${all.length} 个浏览器在跑，动作必须写明 id（你自己的：${mine.map((l) => l.id).join(" / ")}）——` +
+        `省略 id 只在"全场只有一个、且是你的"时才安全。\n  ${leaseTable()}`,
+    }
+  }
   const snapshotBudget = Math.max(10, Number(deps.cfg?.browserSnapshotMaxTokens) || 1200)
   const subPolicy = deps.cfg?.browserSubresource ?? "same-site"
   const evalAskPolicy = deps.cfg?.browserAskEval ?? "on"
@@ -1622,6 +1752,7 @@ export function buildTmBrowserTool(deps: {
     st: { allowedSites: Set<string>; blocked: { count: number; hosts: Set<string> } },
     url: string,
     resourceType: unknown,
+    approvedHosts: Set<string>,
   ): { pass: boolean; via: string } {
     const verdict = checkWebUrl(url, allowlist as readonly string[])
     if (!verdict.ok && !verdict.askable) return { pass: false, via: "red-line" }
@@ -1655,7 +1786,7 @@ export function buildTmBrowserTool(deps: {
     return v
   }
 
-  async function openLegacySession(headless: boolean): Promise<ActiveSession> {
+  async function openLegacySession(headless: boolean, approvedHosts: Set<string>): Promise<ActiveSession> {
     const executable = discover(env)
     if (!executable) throw discoveryError()
     const profileDir = fs.mkdtempSync(path.join(os.tmpdir(), "tm-browser-"))
@@ -1706,7 +1837,7 @@ export function buildTmBrowserTool(deps: {
       const requestId = String((m.params as { requestId?: string }).requestId ?? "")
       const p = (m.params as { request?: { url?: string; resourceType?: string } }).request ?? {}
       const url = String(p.url ?? "")
-      const { pass } = gateDecide({ allowedSites, blocked }, url, p.resourceType)
+      const { pass } = gateDecide({ allowedSites, blocked }, url, p.resourceType, approvedHosts)
       if (pass) {
         void cdp.call("Fetch.continueRequest", { requestId }, sessionId, 5000).catch(() => {})
       } else {
@@ -1822,7 +1953,7 @@ export function buildTmBrowserTool(deps: {
       },
     }
     const onExit = () => {
-      if (session === sess) session = null
+      dropSession(sess)
       // best-effort: the profile may still be file-locked during shutdown —
       // a leftover temp dir is reclaimed by the OS, never an error for the task
       try {
@@ -1837,7 +1968,7 @@ export function buildTmBrowserTool(deps: {
 
   // ================= playwright engine (primary) ==============================
 
-  async function openPlaywrightSession(pw: PwModule, headless: boolean): Promise<ActiveSession> {
+  async function openPlaywrightSession(pw: PwModule, headless: boolean, approvedHosts: Set<string>): Promise<ActiveSession> {
     const executable = discover(env)
     if (!executable) throw discoveryError()
     const launchArgs = [
@@ -1971,7 +2102,7 @@ export function buildTmBrowserTool(deps: {
         await route.continue().catch(() => {})
         return
       }
-      const { pass } = gateDecide(state, u, request.resourceType?.())
+      const { pass } = gateDecide(state, u, request.resourceType?.(), approvedHosts)
       if (pass) {
         await route.continue().catch(() => {})
       } else {
@@ -2310,51 +2441,61 @@ export function buildTmBrowserTool(deps: {
 
   // ---------- engine-neutral session lifecycle ----------
 
-  /** Idle reaper.  The pre-v1.5.13 layer had NO cleanup path other than the
-   *  agent remembering to call `close` — and an agent that believes it
-   *  closed the window (issue #3) leaves the user staring at a Chromium
-   *  window nobody owns.  An untouched session now closes itself and tells
-   *  the user it did. */
-  let idleTimer: ReturnType<typeof setTimeout> | null = null
-  const armIdle = (): void => {
-    if (idleTimer) clearTimeout(idleTimer)
-    idleTimer = null
-    if (!idleCloseMs || !session) return
-    idleTimer = setTimeout(() => {
-      idleTimer = null
-      if (!session) return
-      traj({ step_id: "browser", event: "idle_close", idle_ms: idleCloseMs })
-      void closeActive()
+  /** Idle reaper, PER LEASE.  The pre-v1.5.13 layer had NO cleanup path other
+   *  than the agent remembering to call `close` — and an agent that believes it
+   *  closed the window (issue #3) leaves the user staring at a Chromium window
+   *  nobody owns.  With one browser per caller the timer belongs to the lease:
+   *  one agent going quiet must not keep another's window alive, and a reap must
+   *  never touch a browser somebody is still driving. */
+  function armIdle(lease: BrowserLease): void {
+    clearIdle(lease.id)
+    if (!idleCloseMs) return
+    const t = setTimeout(() => {
+      idleTimers.delete(lease.id)
+      if (!leases.has(lease.id)) return
+      traj({ step_id: "browser", event: "idle_close", idle_ms: idleCloseMs, id: lease.id, agent: lease.agent })
+      void closeLease(lease)
         .then((r) =>
           notify?.(
-            `tm_browser 空闲 ${Math.round(idleCloseMs / 1000)}s，会话已自动关闭${r.closed ? "（窗口应已消失）" : "——但窗口可能仍需手动关闭"}`,
+            `tm_browser ${lease.id}（${lease.agent || "agent"} 的浏览器）空闲 ${Math.round(idleCloseMs / 1000)}s，已自动关闭${r.closed ? "（窗口应已消失）" : "——但窗口可能仍需手动关闭"}`,
           ),
         )
         .catch(() => {})
     }, idleCloseMs)
     // never hold the event loop open for a reaper
-    ;(idleTimer as { unref?: () => void }).unref?.()
+    ;(t as { unref?: () => void }).unref?.()
+    idleTimers.set(lease.id, t)
   }
 
-  async function ensureSession(headless: boolean): Promise<ActiveSession> {
-    if (session) return session
+  /** The caller's browser, launched on first use.  `open` on an existing lease
+   *  navigates that window instead of spawning a second one. */
+  async function ensureLease(headless: boolean, caller: BrowserCaller): Promise<BrowserLease> {
+    const mine = ownedBy(caller.owner)
+    if (mine.length) return mine[0]
     const sel = await selection()
-    session =
+    const approved = approvedFor(caller.owner)
+    const session =
       sel.kind === "playwright" && sel.pw
-        ? await openPlaywrightSession(sel.pw, headless)
-        : await openLegacySession(headless)
-    return session
+        ? await openPlaywrightSession(sel.pw, headless, approved)
+        : await openLegacySession(headless, approved)
+    const lease: BrowserLease = {
+      id: `b${++leaseSeq}`,
+      owner: caller.owner,
+      agent: caller.agent,
+      session,
+      at: Date.now(),
+      lastActivity: Date.now(),
+    }
+    leases.set(lease.id, lease)
+    traj({ step_id: "browser", event: "lease", id: lease.id, agent: lease.agent, live: leases.size })
+    return lease
   }
 
-  async function closeActive(): Promise<{ text: string; closed: boolean }> {
-    const s = session
-    if (!s) return { text: "没有打开的浏览器会话。", closed: true }
-    session = null
-    if (idleTimer) {
-      clearTimeout(idleTimer)
-      idleTimer = null
-    }
-    return s.close()
+  async function closeLease(lease: BrowserLease | null): Promise<{ text: string; closed: boolean }> {
+    if (!lease) return { text: "没有打开的浏览器会话。", closed: true }
+    leases.delete(lease.id)
+    clearIdle(lease.id)
+    return lease.session.close()
   }
 
   /** Move any screenshot pixels act() produced out of the session and onto
@@ -2375,10 +2516,18 @@ export function buildTmBrowserTool(deps: {
   const ACTION_MENU = [...ALL_ACTIONS].join(" | ")
 
   const execute = async (rawArgs: Record<string, unknown>, ctx: unknown): Promise<ToolResult> => {
+    // Set once a lease is resolved, so the catch below knows WHICH browser died
+    // — with one browser per caller, dropping the wrong lease would kill an
+    // agent that was working fine.
+    let activeLease: BrowserLease | null = null
     try {
       const args = rawArgs ?? {}
       const action = String(args.action ?? "").trim()
       const url = String(args.url ?? "").trim()
+      // Whose browser this is.  The host hands every tool ctx a sessionID, and
+      // a lease is keyed by it; without one (an older host, a test harness) all
+      // callers share the single anonymous bucket, which is the old behaviour.
+      const caller = callerOf(ctx)
       // allowlist FIRST — an out-of-allowlist URL only proceeds after the
       // OFFICIAL dialog approves it (then the host passes the network layer
       // too); hard red lines (scheme / env-file) reject with no dialog.
@@ -2402,23 +2551,27 @@ export function buildTmBrowserTool(deps: {
               tmError(tool, "permission", verdict.message + " " + askRefusalNote(outcome)),
             )
           }
-          approvedHosts.add(verdict.url.hostname)
+          approvedFor(caller.owner).add(verdict.url.hostname)
         }
       }
       if (action === "open") {
         if (!url) return toToolResult(tmError(tool, "args", "缺少 url 参数"))
-        if (session) {
+        const existing = ownedBy(caller.owner)[0]
+        if (existing) {
           // already open: navigate instead of spawning a second browser.
           // Report the mode the RUNNING instance is actually in — the old
           // code echoed the REQUESTED mode, so a sticky session could be
           // described as headful while it was a headless leftover.
-          const out = await session.act("navigate", { url }, "browser")
-          armIdle()
+          // Tracked as the active lease: a browser that dies HERE must be
+          // dropped too, or the next open hands back the same corpse.
+          activeLease = existing
+          const out = await existing.session.act("navigate", { url }, "browser")
+          armIdle(existing)
           return withAttachments(
             toToolResult(
-              `复用已运行的会话（${session.headless ? "无头" : "有头窗口"} · ${session.label}）。${out}`,
+              `[${existing.id}] 复用你自己的浏览器（${existing.session.headless ? "无头" : "有头窗口"} · ${existing.session.label}）。${out}`,
             ),
-            session,
+            existing.session,
           )
         }
         // Mode is an OPERATOR decision (TM_BROWSER_HEADLESS), never a model
@@ -2426,9 +2579,11 @@ export function buildTmBrowserTool(deps: {
         // under Boolean()) pinned the whole process to headless and every
         // anti-bot gate in the run failed.
         const headless = resolveHeadless(env)
-        const s = await ensureSession(headless)
+        const lease = await ensureLease(headless, caller)
+        activeLease = lease
+        const s = lease.session
         const out = await s.act("navigate", { url }, "browser")
-        traj({ step_id: "browser", event: "open", headless, label: s.label })
+        traj({ step_id: "browser", event: "open", headless, label: s.label, id: lease.id, agent: lease.agent })
         const mode = s.headless ? "无头" : "有头窗口"
         const profile = String(env.TM_BROWSER_USER_DATA_DIR ?? "").trim() ? "持久登录配置" : "隔离临时配置"
         const note =
@@ -2439,20 +2594,44 @@ export function buildTmBrowserTool(deps: {
           subPolicy === "off"
             ? `\n（子资源策略=off：跨域图片/脚本一律拦截，页面可能显示不全——TM_BROWSER_SUBRESOURCE=same-site 可恢复）`
             : ""
-        armIdle()
-        return withAttachments(toToolResult(`浏览器已启动（${mode}，${profile} · ${s.label}）。${out}${note}${guard}`), s)
+        const others = liveLeases().length - 1
+        armIdle(lease)
+        return withAttachments(
+          toToolResult(
+            `[${lease.id}] 浏览器已启动（${mode}，${profile} · ${s.label}）。${out}${note}${guard}` +
+              `\n这个窗口的 id 是 ${lease.id}，归你（${lease.agent || "本会话"}）：后续动作带 id:"${lease.id}"。` +
+              (others > 0
+                ? `现在共有 ${others + 1} 个浏览器在跑（别的 agent 各有各的窗口），省略 id 会被拒绝。`
+                : ""),
+          ),
+          s,
+        )
       }
       if (action === "navigate" || action === "navigate_page") {
         if (!url) return toToolResult(tmError(tool, "args", "缺少 url 参数"))
-        if (!session) return toToolResult(tmError(tool, "args", '没有打开的浏览器会话——先用 action:"open"'))
-        const out = await session.act(action, { url }, "browser")
-        armIdle()
-        return withAttachments(toToolResult(out), session)
+        const got = resolveLease(args, caller)
+        if ("error" in got) return toToolResult(tmError(tool, "args", got.error))
+        activeLease = got.lease
+        const out = await got.lease.session.act(action, { url }, "browser")
+        armIdle(got.lease)
+        return withAttachments(toToolResult(`[${got.lease.id}] ${out}`), got.lease.session)
       }
       if (action === "close") {
-        traj({ step_id: "browser", event: "close" })
-        const r = await closeActive()
-        return toToolResult(r.text)
+        // `id:"all"` closes every browser the CALLER owns — never anybody
+        // else's, which is the one thing a shared kill switch would get wrong.
+        const mine = ownedBy(caller.owner)
+        if (String(args.id ?? "").trim().toLowerCase() === "all") {
+          if (!mine.length) return toToolResult(tmError(tool, "args", "你没有打开的浏览器。"))
+          traj({ step_id: "browser", event: "close", id: "all", count: mine.length, agent: caller.agent })
+          const parts: string[] = []
+          for (const l of mine) parts.push(`[${l.id}] ${(await closeLease(l)).text}`)
+          return toToolResult(parts.join("\n"))
+        }
+        const got = resolveLease(args, caller)
+        if ("error" in got) return toToolResult(tmError(tool, "args", got.error))
+        traj({ step_id: "browser", event: "close", id: got.lease.id, agent: caller.agent })
+        const r = await closeLease(got.lease)
+        return toToolResult(`[${got.lease.id}] ${r.text}`)
       }
       if (!ALL_ACTIONS.has(action)) {
         return toToolResult(
@@ -2463,7 +2642,15 @@ export function buildTmBrowserTool(deps: {
           ),
         )
       }
-      if (!session) return toToolResult(tmError(tool, "args", '没有打开的浏览器会话——先用 action:"open"'))
+      const got = resolveLease(args, caller)
+      if ("error" in got) return toToolResult(tmError(tool, "args", got.error))
+      const lease = got.lease
+      // Bound locally so the dispatch below reads the way it did when the whole
+      // process had one browser — except `session` now means "the CALLER's
+      // browser", never "the browser".
+      const session = lease.session
+      activeLease = lease
+      armIdle(lease)
       // M1: upload_file SOURCE containment runs at the execute layer — the
       // engine act() has no host ctx. Out-of-P2 paths and R6 env files are
       // refused before setInputFiles can move any bytes.
@@ -2525,8 +2712,7 @@ export function buildTmBrowserTool(deps: {
       const stepId = pipelines.nextStepId()
       const out = await session.act(action, args, stepId)
       if (action !== "evaluate_script") {
-        armIdle()
-        return withAttachments(toToolResult(out), session)
+        return withAttachments(toToolResult(`[${lease.id}] ${out}`), session)
       }
       // The value is masked BEFORE it can reach the context window, the run
       // store or the trajectory; the agent is told a mask happened (a silent
@@ -2534,16 +2720,14 @@ export function buildTmBrowserTool(deps: {
       const red = redactEvalResult(out)
       if (red.masked.length) {
         traj({ step_id: "browser", event: "eval_redacted", kinds: red.masked.join(",") })
-        armIdle()
         return withAttachments(
           toToolResult(
-            `${red.text}\n注意：结果里有 ${red.masked.join("、")} 被识别为密钥形状并已脱敏——不是页面没有这些值，是插件不把它们送进上下文。需要它们请让用户自己在浏览器里看。`,
+            `[${lease.id}] ${red.text}\n注意：结果里有 ${red.masked.join("、")} 被识别为密钥形状并已脱敏——不是页面没有这些值，是插件不把它们送进上下文。需要它们请让用户自己在浏览器里看。`,
           ),
           session,
         )
       }
-      armIdle()
-      return withAttachments(toToolResult(red.text), session)
+      return withAttachments(toToolResult(`[${lease.id}] ${red.text}`), session)
     } catch (err) {
       const e = err as { name?: string; message?: unknown }
       const msg = String(e?.message ?? err ?? "browser 操作失败")
@@ -2551,20 +2735,21 @@ export function buildTmBrowserTool(deps: {
       // already-running Edge and exited — leaves a cached session whose every
       // action throws the SAME line. Live session: three identical failures,
       // then a fourth, with no way out except our own bookkeeping. Drop the
-      // corpse, say that we did, and name the one move that works.
+      // corpse, say that we did, and name the one move that works.  With one
+      // browser per caller, only THAT lease is dropped: another agent's window
+      // is not ours to declare dead.
       if (/has been closed|Target closed|Browser closed|browser has been closed/i.test(msg)) {
-        const had = Boolean(session)
-        session = null
-        if (idleTimer) {
-          clearTimeout(idleTimer)
-          idleTimer = null
+        const dead = activeLease
+        if (dead) {
+          leases.delete(dead.id)
+          clearIdle(dead.id)
         }
-        traj({ step_id: "browser", event: "session_dead", cleared: had, reason: msg.slice(0, 160) })
+        traj({ step_id: "browser", event: "session_dead", cleared: Boolean(dead), id: dead?.id ?? "", reason: msg.slice(0, 160) })
         return toToolResult(
           tmError(
             tool,
             "execute",
-            `${msg.slice(0, 200)}\n浏览器实例已失效${had ? "，我已丢弃这个会话：下一次 action:\"open\" 会真的重启一个新实例" : "，当前没有可复用的会话"}。` +
+            `${msg.slice(0, 200)}\n浏览器实例已失效${dead ? `（${dead.id}，${dead.agent || "本会话"} 的窗口）：我已丢弃它，下一次 action:"open" 会真的重启一个新实例` : "，当前没有可复用的会话"}。` +
               `连着两次都这样，通常是本机已有同品牌浏览器在跑、新进程把请求移交给旧实例后退掉了——请用户关掉那个窗口再 open，或设 TM_BROWSER_ENGINE=cdp-legacy 换一条传输。` +
               `不要第三次重复同一个动作。`,
           ),
@@ -2576,6 +2761,7 @@ export function buildTmBrowserTool(deps: {
 
   const DESCRIPTION = `Interactive browser (governed, Plan C): drives the user's own Chromium-family browser HEADFUL — playwright-core engine primary (npm install + node>=20; auto-degrades to the zero-dep CDP pipe when absent, snapshot actions then unavailable). Snapshot-first flow: open → take_snapshot → act by [uid] → observe again.
 - MULTI-TAB is a first-class flow: new_page { url? } opens a tab and makes it current (its url clears the SAME allowlist gate and dialog as navigate_page), list_pages numbers them, select_page { index } switches, close_page { index? } closes one and moves you to a survivor — closing the LAST tab does NOT close the browser, and the reply says so. Compare two pages without losing either.
+- ONE BROWSER PER AGENT: open returns an id ("b1") and that window is YOURS — its own uid numbering, its own current tab, its own dialog-approved hosts. Every reply is prefixed with the id it ran on. Pass id on every action once more than one browser is live (omitting it is only unambiguous while exactly one exists and it is yours); another agent's id is refused with the owner named, because sharing one window means your take_snapshot renumbers the uids they are holding and their next click lands somewhere else while STILL reporting success. close { id: "all" } closes all of yours — never anybody else's.
 - 18 actions (chrome-devtools-mcp aligned): navigate_page { url } · take_snapshot { } → ariaSnapshot YAML with injected [uid=eN] · click/fill{text}/hover { uid|selector } · drag { uid, targetUid } · press_key { key } · select_page { index } · upload_file { uid, filePath } (filePath must live INSIDE the workspace/blackboard scope — .env & shell-rc files are refused) · wait_for { text|uid, timeoutMs<=3000 default } · evaluate_script { function } (arbitrary JS in YOUR browser: needs one official-dialog consent per browser session, and the result is scanned so JWT/bearer/cookie/api-key shapes never enter the context) · list_console_messages · list_network_requests · list_pages · take_screenshot { fullPage?, image? } → the PNG always lands in the run store (path in the reply); with image:true a quality-70 JPEG of the same view is attached to THIS result so a vision model can actually see it (opt-in: pixels cost context, so ask only when the screenshot is the evidence) · handle_dialog { dialogAction: accept|dismiss, promptText }.
 - Compat actions: open { url } — launch/reuse + navigate (TM_BROWSER_PATH override → DEFAULT browser, Chromium-family only; the registry ProgId decides the CHANNEL, so an Edge Beta default opens Edge Beta, not stable). Isolated temp profile by default; persistent login ONLY via TM_BROWSER_USER_DATA_DIR (the real profile is never touched). navigate / read (page text) / screenshot / close also work.
 - Lifecycle (the user SEES this window): headful by default — headless is an operator setting (TM_BROWSER_HEADLESS), not a parameter you can pass. An idle session closes itself (TM_BROWSER_IDLE_MS, default 180s) and the user is told. ALWAYS action:"close" when your browser work is done, and quote the tool's own close line — "已确认关闭" vs "警告：关闭未完全成功" — instead of asserting the window is gone.
@@ -2587,6 +2773,7 @@ export function buildTmBrowserTool(deps: {
     description: DESCRIPTION,
     args: deps.args ?? {
       action: { descriptor: "action: take_snapshot|click|fill|navigate_page|... (18 playwright verbs + open/navigate/read/screenshot/close)" },
+      id: { descriptor: 'id: which browser — the id open gave you ("b1"). One browser per agent: required once more than one is live, and it must be YOURS (another agent\'s id is refused). close {id:"all"} closes all of yours' },
       url: { descriptor: "url: string (open/navigate/navigate_page, allowlisted https)" },
       image: { descriptor: "image: true (take_screenshot only — attach the PNG pixels to this result; default is path-only)" },
       uid: { descriptor: "uid: snapshot [uid=eN] token (click/fill/hover/drag/upload_file/wait_for)" },
@@ -2606,13 +2793,14 @@ export function buildTmBrowserTool(deps: {
     },
     execute,
     dispose: async () => {
-      if (idleTimer) {
-        clearTimeout(idleTimer)
-        idleTimer = null
-      }
+      for (const t of idleTimers.values()) clearTimeout(t)
+      idleTimers.clear()
       // AWAITED: the host's dispose hook is Promise-returning, and tearing
       // down while a close was still in flight left the window on screen.
-      await closeActive().catch(() => {})
+      // EVERY lease, not just one caller's: plugin unload owns all of them.
+      for (const l of liveLeases()) {
+        await closeLease(l).catch(() => {})
+      }
     },
     engineInfo: () => ({
       kind: lastSel?.kind ?? null,

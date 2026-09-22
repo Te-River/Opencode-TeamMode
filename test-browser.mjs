@@ -688,7 +688,10 @@ async function main() {
     const legacyNamed = await mk2.tool.execute({ action: "screenshot" }, ctxNoAsk)
     assert.ok(o(legacyNamed).includes("截图已保存"), "compat `screenshot` verb maps to take_screenshot")
     const read = await mk2.tool.execute({ action: "read" }, ctxNoAsk)
-    assert.ok(o(read).startsWith("页面文本（"), "compat `read` keeps the page-text header")
+    assert.ok(
+      /^\[b\d+\] 页面文本（/.test(o(read)),
+      `compat \`read\` keeps the page-text header, tagged with the browser id it ran on — got: ${o(read).slice(0, 80)}`,
+    )
 
     // ---- close: a VERIFIED verdict, quoted verbatim by the agent ----
     const closed = await mk2.tool.execute({ action: "close" }, ctxNoAsk)
@@ -1018,6 +1021,17 @@ async function main() {
         }
         return out
       }
+      /** Children outlive the root by a few hundred ms while they tear down, so
+       *  "the tree is gone" is polled, not sampled once.  The budget only buys
+       *  time — a survivor at the end still fails the assertion. */
+      const survivorsAfter = async (pids, budgetMs = 4000) => {
+        const deadline = Date.now() + budgetMs
+        for (;;) {
+          const left = pids.filter((p) => br.pidAlive(p))
+          if (!left.length || Date.now() >= deadline) return left
+          await new Promise((r) => setTimeout(r, 150))
+        }
+      }
       try {
         const open = await mk.tool.execute({ action: "open", url: "https://cn.bing.com" }, ctxNoAsk)
         assert.ok(o(open).includes("浏览器已启动"), `real playwright open — got: ${o(open).slice(0, 160)}`)
@@ -1057,7 +1071,7 @@ async function main() {
           )
           assert.ok(!br.pidAlive(browserPid), `pid ${browserPid} survived 已确认关闭`)
           if (rowsAtClose) {
-            const survivors = kids.filter((p) => br.pidAlive(p))
+            const survivors = await survivorsAfter(kids)
             assert.equal(survivors.length, 0, `已确认关闭 but ${survivors.length} descendant(s) of ${browserPid} survived: ${survivors.join(",")}`)
             console.log(`  (real close took pid ${browserPid} and its ${kids.length} descendant process(es))`)
           } else {
@@ -1116,7 +1130,7 @@ async function main() {
           const r = br.reapOrphanBrowsers(ledgerOf(store2))
           assert.ok(r.reaped.includes(victim), `the reaper did not claim pid ${victim} — got ${JSON.stringify(r)}`)
           assert.ok(await br.waitForPidExit(victim, 5000), `the default kill path left pid ${victim} alive`)
-          const survivors = kids.filter((p) => br.pidAlive(p))
+          const survivors = await survivorsAfter(kids)
           assert.equal(survivors.length, 0, `reaped the browser but ${survivors.length} descendant(s) survived: ${survivors.join(",")}`)
           assert.ok(!fs.existsSync(ledgerOf(store2)), "an emptied ledger removes itself")
           console.log(`  (real reaper killed orphan pid ${victim} + ${kids.length} descendant(s), default kill path)`)
@@ -1583,7 +1597,80 @@ async function main() {
     log("click reports the page's response: a change is named, a no-op is named, and a pre-hydration click gets ONE bounded retry")
   }
 
-  console.log("browser: OK (engine select/degrade matrix, 18-verb playwright mapping + uid registry on mock pw, route()-based allowlist, persistent-profile policy, prompt pins, evaluate_script consent + redaction, dead-session rebuild, hostless-page refusal, multi-tab new_page/close_page, process-verified close, orphan ledger reaper, launch-pid scan + identity gate + tree kill, unverified-close honesty, click effect verification, full args-schema param surface; real-playwright smoke gated on npm install)")
+  // ---------- 27. one browser per caller: ids are names, and names are checked ----------
+  {
+    // Three agents carry this tool (lead + researcher for the web, tester for UI
+    // verification) and host `task` children run in the SAME plugin process, so
+    // they used to share one window, one "current tab" and ONE uid registry:
+    // A's take_snapshot renumbered every uid B was holding, and B's next click
+    // landed on a different element while still reporting success.
+    const tester = { directory: root, sessionID: "ses_tester", agent: "tester" }
+    const researcher = { directory: root, sessionID: "ses_researcher", agent: "researcher" }
+    const fx = makeFakePw()
+    const mk = makeTool({ importPlaywright: async () => fx.pw, nodeMajor: 22 })
+
+    const a = o(await mk.tool.execute({ action: "open", url: "https://cn.bing.com" }, tester))
+    assert.ok(/^\[b1\] 浏览器已启动/.test(a), `open tags the reply with the id it minted — got: ${a.slice(0, 120)}`)
+    assert.ok(a.includes("这个窗口的 id 是 b1") && a.includes("tester"), "…and says whose window it is")
+    const b = o(await mk.tool.execute({ action: "open", url: "https://cn.bing.com" }, researcher))
+    assert.ok(/^\[b2\] /.test(b), `a second caller gets a SECOND browser — got: ${b.slice(0, 120)}`)
+    assert.equal(fx.calls.launch.length, 2, "two callers = two launches, not one shared window")
+    assert.ok(b.includes("现在共有 2 个浏览器在跑"), "…and is told the id stopped being optional")
+
+    // with two live, an omitted id is ambiguous -> refused, naming the caller's own
+    const noId = o(await mk.tool.execute({ action: "take_snapshot" }, tester))
+    assert.ok(noId.includes("必须写明 id") && noId.includes("b1"), `an omitted id is refused once it is ambiguous — got: ${noId.slice(0, 220)}`)
+    // an id is a NAME, not a capability token: guessing somebody else's is refused
+    const stolen = o(await mk.tool.execute({ action: "take_snapshot", id: "b2" }, tester))
+    assert.ok(stolen.includes("researcher") && stolen.includes("不是你的"), `another agent's browser is refused WITH the owner named — got: ${stolen.slice(0, 220)}`)
+    assert.ok(stolen.includes("b1"), "…and the caller is pointed at its own id")
+    const ghost = o(await mk.tool.execute({ action: "take_snapshot", id: "b9" }, tester))
+    assert.ok(ghost.includes('没有 id 为 "b9"') && ghost.includes("b1") && ghost.includes("b2"), `an unknown id lists what is actually live — got: ${ghost.slice(0, 220)}`)
+
+    // the uid namespace is per browser: B's snapshot must not invalidate A's uids
+    const snapA = o(await mk.tool.execute({ action: "take_snapshot", id: "b1" }, tester))
+    assert.ok(snapA.startsWith("[b1]") && /\[uid=e\d+\]/.test(snapA), "A snapshots its own browser")
+    const snapB = o(await mk.tool.execute({ action: "take_snapshot", id: "b2" }, researcher))
+    assert.ok(snapB.startsWith("[b2]") && /\[uid=e\d+\]/.test(snapB), "B snapshots its own browser")
+    const clickA = o(await mk.tool.execute({ action: "click", id: "b1", uid: "e1" }, tester))
+    assert.ok(clickA.startsWith("[b1] 已点击"), `A can still act on its own uid AFTER B snapshotted — got: ${clickA.slice(0, 140)}`)
+    assert.ok(fx.calls.acted.some((x) => x[0] === "click"), "…and the click really reached the engine")
+
+    // close is per caller: A closing must leave B's window alone
+    const closeA = o(await mk.tool.execute({ action: "close", id: "b1" }, tester))
+    assert.ok(closeA.startsWith("[b1]"), "close says which browser it closed")
+    assert.ok(o(await mk.tool.execute({ action: "take_snapshot", id: "b2" }, researcher)).startsWith("[b2]"), "B's browser survived A's close")
+    assert.ok(o(await mk.tool.execute({ action: "take_snapshot", id: "b1" }, tester)).includes('没有 id 为 "b1"'), "…and A's id is really gone")
+    // back to one live browser -> the id is unambiguous again and may be omitted
+    assert.ok(o(await mk.tool.execute({ action: "list_pages" }, researcher)).startsWith("[b2]"), "with one live browser the id may be omitted again")
+    // close {id:"all"} closes the CALLER's own, never anybody else's
+    assert.ok(/^\[b3\]/.test(o(await mk.tool.execute({ action: "open", url: "https://cn.bing.com" }, tester))), "a caller that closed its browser gets a fresh id")
+    const all = o(await mk.tool.execute({ action: "close", id: "all" }, tester))
+    assert.ok(all.includes("[b3]"), `close all names what it closed — got: ${all.slice(0, 160)}`)
+    assert.ok(o(await mk.tool.execute({ action: "list_pages" }, researcher)).startsWith("[b2]"), "close all never touches another caller's browser")
+    assert.ok(mk.events.some((e) => e.event === "lease" && e.id === "b3"), "each lease is audited with its owner")
+    await mk.tool.dispose()
+
+    // Consent is per caller too: a host the tester approved through the OFFICIAL
+    // dialog must not become a silent pass for the researcher's browser.
+    const fxC = makeFakePw()
+    const mkC = makeTool({ importPlaywright: async () => fxC.pw, nodeMajor: 22, cfgDomains: ["cn.bing.com"] })
+    const askTester = { directory: root, sessionID: "ses_t2", agent: "tester", ask: async () => "once" }
+    const plainResearcher = { directory: root, sessionID: "ses_r2", agent: "researcher" }
+    await mkC.tool.execute({ action: "open", url: "https://cn.bing.com" }, askTester)
+    await mkC.tool.execute({ action: "open", url: "https://cn.bing.com" }, plainResearcher)
+    await mkC.tool.execute({ action: "navigate_page", url: "https://approved.test/doc", id: "b1" }, askTester)
+    const dec = []
+    const rr = () => ({ continue: async () => dec.push("continue"), abort: async () => dec.push("abort") })
+    const doc = { url: () => "https://approved.test/doc", method: () => "GET", resourceType: () => "document" }
+    await fxC.calls.route[0].handler(rr(), doc) // the tester's browser: approved through its own dialog
+    await fxC.calls.route[1].handler(rr(), doc) // the researcher's: never asked, never approved
+    assert.deepEqual(dec, ["continue", "abort"], "dialog consent belongs to the caller who earned it — the other agent's browser still blocks that host")
+    await mkC.tool.dispose()
+    log("one browser per caller: ids minted, echoed, required once ambiguous, checked against the owner, and consent not shared")
+  }
+
+  console.log("browser: OK (engine select/degrade matrix, 18-verb playwright mapping + uid registry on mock pw, route()-based allowlist, persistent-profile policy, prompt pins, evaluate_script consent + redaction, dead-session rebuild, hostless-page refusal, multi-tab new_page/close_page, process-verified close, orphan ledger reaper, launch-pid scan + identity gate + tree kill, unverified-close honesty, click effect verification, per-caller browser leases, full args-schema param surface; real-playwright smoke gated on npm install)")
 }
 
 main().then(

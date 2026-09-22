@@ -380,6 +380,7 @@ export async function buildBrowserArgsSchema(): Promise<Record<string, unknown>>
   if (!z) {
     return {
       action: { descriptor: `action: ${ACTION_LIST} (required)` },
+      id: { descriptor: 'id: which browser ("b1" from open) — one per agent; required once more than one is live, another agent\'s id is refused' },
       url: { descriptor: "url: string (open/navigate/navigate_page/new_page, allowlisted https)" },
       image: { descriptor: "image: true with take_screenshot — inline the PNG pixels in this result" },
       uid: { descriptor: "uid: snapshot [uid=eN] token (click/fill/hover/drag/upload_file/wait_for)" },
@@ -419,6 +420,7 @@ export async function buildBrowserArgsSchema(): Promise<Record<string, unknown>>
   const bool = (d: string) => zz.boolean().optional().describe(d)
   return {
     action: zz.string().describe(ACTION_LIST),
+    id: str('Which browser to drive — the id `open` returned ("b1"). Each agent gets its OWN browser: the id is required as soon as more than one is live, another agent\'s id is refused with the owner named, and close {id:"all"} closes all of yours.'),
     url: str("Absolute https URL on an allowlisted host (open/navigate/navigate_page). URL-encode the query (CJK terms too)."),
     image: bool("take_screenshot only: inline the PNG pixels into this tool result (default false = path only; pixels cost context, so ask only when the screenshot IS the evidence)."),
     uid: str("Snapshot [uid=eN] token from the LATEST take_snapshot (click/fill/hover/drag source/upload_file/wait_for)."),

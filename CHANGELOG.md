@@ -85,7 +85,30 @@ registry saw 1.5.0 as the install-script fix release).
   clears the SAME allowlist gate and official dialog as any navigation, so a
   second tab cannot become a way around consent, and closing the LAST tab says
   the browser is still running instead of implying the session ended. Both are
-  playwright-only and say so on the legacy engine.
+- **One browser per agent, addressed by an id.** Three agents carry
+  `tm_browser` (lead and researcher for the web, tester for UI verification) and
+  host `task` children run in the SAME plugin process — so they shared one
+  window, one "current tab" and one uid registry. `SnapshotIndex.annotate`
+  clears and renumbers from `e1` on every snapshot, which means A's
+  `take_snapshot` invalidated every uid B was holding, and B's next
+  `click { uid }` landed on a different element while still reporting 已点击.
+  Nothing in the reply could show it, because it was the same browser and the
+  same page. Each caller now holds a LEASE: `open` returns an id (`b1`) and that
+  window — its own uid numbering, its own current tab, its own dialog-approved
+  hosts — belongs to that caller's session. Every reply is prefixed with the id
+  it ran on, so the model is never without it. The id is required as soon as it
+  could mean more than one thing (a single live browser that is yours may be
+  omitted), and an id is a NAME, not a capability token: another agent's is
+  refused with the owner named, because `b1` is guessable and guessing is
+  exactly what must not work. `close { id: "all" }` closes every browser the
+  CALLER owns and never anybody else's; the idle reaper is per lease, so one
+  agent going quiet neither keeps another's window alive nor closes it mid-flow;
+  a dead instance drops only its own lease; `dispose` closes all of them.
+  Dialog-approved hosts moved from one process-wide set to per-caller — consent
+  the user gave one agent is not a pass for another (pinned: the same document
+  request continues for the approver and aborts for everyone else). A host that
+  passes no sessionID keeps the old single-shared-browser behaviour, because
+  then there is only one caller to confuse.
 
 
 ### Changed

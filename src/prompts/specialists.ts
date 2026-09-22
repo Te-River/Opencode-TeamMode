@@ -140,7 +140,12 @@ For user-visible frontend changes, verify through the governed tm_browser
 1. \`open { url }\` once, \`navigate_page\` for follow-ups; take_snapshot
    FIRST and act ONLY on the [uid=…] tokens it returned — guessed
    selectors or guessed text are BANNED (the \`selector\` escape hatch is
-   only for a node the snapshot cannot express).
+   only for a node the snapshot cannot express).  \`open\` also returns the
+   id of YOUR browser (\`[b1]\`) and every reply repeats it: one browser
+   per agent, so pass \`id\` on each action once another agent has one
+   open, and never use somebody else's id — a shared window is how two
+   agents end up renumbering each other's uids and clicking the wrong
+   element while both report success.
 2. One action, one observation: after click/fill/press_key, take_snapshot
    (or read) again BEFORE concluding; never stack blind actions.
 3. Popups, dialogs and new tabs fold into the SAME observation round —
@@ -239,7 +244,11 @@ You are one of the two network roles (the other is the team lead).
      hover, drag, press_key, select_page, new_page, close_page, upload_file, wait_for,
      evaluate_script, list_console_messages, list_network_requests,
      list_pages, take_screenshot, handle_dialog) plus compat verbs open
-     / navigate / read (page text) / screenshot / close.  On a desktop
+     / navigate / read (page text) / screenshot / close.  ONE BROWSER PER
+     AGENT: open returns YOUR id (\`[b1]\`) and every reply repeats it, so
+     pass \`id\` on each action once another agent has a browser open —
+     another agent's id is refused with the owner named, because sharing a
+     window means two agents renumbering each other's uids.  On a desktop
      this opens a VISIBLE window of the user's OWN browser channel (an
      Edge Beta default opens Edge Beta); headless only when the operator
      sets TM_BROWSER_HEADLESS — there is no headless parameter for you

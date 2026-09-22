@@ -464,6 +464,20 @@ assert.ok(
   /Only the first may become "浏览器已关闭"/.test(cfg2.agent["researcher"].prompt),
   "researcher: an unverified close may not be reported to the user as closed",
 )
+// One browser per agent.  Three agents carry tm_browser and host `task`
+// children run in the same plugin process, so a shared window meant one
+// agent's take_snapshot renumbered the uids another was holding — and the
+// click still reported success.  The id is the fix, so the prompt has to say
+// it exists and that it must be passed.
+assert.ok(/ONE BROWSER PER\s+AGENT/.test(cfg2.agent["researcher"].prompt), "researcher: the browser is leased per agent and the id addresses yours")
+assert.ok(
+  cfg2.agent["researcher"].prompt.includes("another agent's id is refused"),
+  "researcher: an id is a name, not a capability token — the refusal is stated up front",
+)
+assert.ok(
+  cfg2.agent["tester"].prompt.includes("id of YOUR browser"),
+  "tester: open returns the id of the caller's own browser",
+)
 assert.ok(cfg2.agent["researcher"].prompt.includes("there is no headless parameter for you"), "researcher: headless is an operator setting, not a model arg")
 assert.ok(/independent web calls: two unrelated tm_search queries belong in/.test(cfg2.agent["researcher"].prompt), "researcher: independent web calls batch into one round")
 assert.ok(cfg2.agent["researcher"].prompt.includes("Command time budget"), "researcher: command time budget section present")
