@@ -63,7 +63,16 @@ if (!suites.length) {
 const run = (file) =>
   new Promise((resolve) => {
     const started = Date.now()
-    const child = spawn(process.execPath, [file], { cwd: REPO, windowsHide: true })
+    // TM_STORE_RECLAIM=off: a suite that builds a runtime in a temp dir would
+    // otherwise run the boot-time store reclamation against the DEVELOPER'S
+    // real tmpdir bucket (it did — 503 MB of expired runs vanished mid-test).
+    // Cleanup is product behaviour for the user's machine, not a test fixture;
+    // the reclamation itself is covered by calling its functions directly.
+    const child = spawn(process.execPath, [file], {
+      cwd: REPO,
+      windowsHide: true,
+      env: { ...process.env, TM_STORE_RECLAIM: "off" },
+    })
     let out = ""
     let err = ""
     child.stdout.on("data", (d) => (out += String(d)))

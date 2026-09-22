@@ -1892,6 +1892,37 @@ try {
       assert.ok(fs.existsSync(path.join(base, "memories")), "non-shard siblings (the memory tree) are none of its business")
       assert.deepEqual(tm.pruneStaleStoreShards(path.join(base, "nope"), path.join(base, "w-0000000002"), 1), [], "a missing base is a no-op, never a throw")
     }
+    // …and the UPGRADE orphan: sharding left the pre-shard blackboard/ (runs +
+    // webcache) and trajectory/ at the shared base with no sweeper pointed at
+    // them — 503 MB and 2654 run dirs on one real machine.
+    {
+      const base = path.join(mktmp("legacy"), "opencode-team")
+      const stale = new Date(Date.now() - 30 * 24 * 3600 * 1000)
+      const mk = (rel, when) => {
+        const p = path.join(base, rel)
+        fs.mkdirSync(path.dirname(p), { recursive: true })
+        fs.writeFileSync(p, "x")
+        fs.utimesSync(p, when, when)
+        fs.utimesSync(path.dirname(p), when, when)
+      }
+      mk(path.join("trajectory", "runs", "r-old", "steps.jsonl"), stale)
+      mk(path.join("blackboard", "runs", "r-old2", "steps.jsonl"), stale)
+      mk(path.join("blackboard", "webcache", "deadbeef"), stale)
+      mk(path.join("blackboard", "runs", "r-fresh", "steps.jsonl"), new Date())
+      mk(path.join("memories", "projects", "keep.md"), stale)
+      fs.mkdirSync(path.join(base, "20260916-211828", "career-report-rewrite"), { recursive: true })
+      const gone = tm.reclaimLegacyStoreBuckets(base, 5 * 24 * 3600 * 1000)
+      assert.ok(!fs.existsSync(path.join(base, "trajectory", "runs", "r-old")), "the expired legacy trajectory run is gone")
+      assert.ok(!fs.existsSync(path.join(base, "blackboard", "runs", "r-old2")), "…and the expired legacy blackboard run")
+      assert.ok(!fs.existsSync(path.join(base, "blackboard", "webcache", "deadbeef")), "…and the unreachable web cache")
+      assert.ok(!fs.existsSync(path.join(base, "trajectory")), "an emptied shell is removed, not left as a tombstone")
+      assert.ok(fs.existsSync(path.join(base, "blackboard", "runs", "r-fresh")), "a run that has not aged out survives — a pre-upgrade session may still be writing")
+      assert.ok(fs.existsSync(path.join(base, "memories", "projects", "keep.md")), "memories are none of its business, expired or not")
+      assert.ok(fs.existsSync(path.join(base, "20260916-211828")), "the team blackboard's date dirs are none of its business either")
+      assert.ok(gone.some((x) => x.startsWith("trajectory/runs/")), "it reports what it removed")
+      assert.deepEqual(tm.reclaimLegacyStoreBuckets(path.join(base, "nope"), 1), [], "a missing base is a no-op, never a throw")
+      assert.deepEqual(tm.reclaimLegacyStoreBuckets(base, 5 * 24 * 3600 * 1000), [], "a second pass finds nothing left to do (idempotent)")
+    }
     await rA.dispose()
     await rB.dispose()
   }

@@ -174,6 +174,19 @@ broken" and "the answer is not what I expected" must not be conflated.
   one — without it the fix itself leaks a directory per throwaway workspace,
   which is exactly what 64 of them in the user's Temp after one dev session
   were made of.
+- **An upgrade no longer leaves 503 MB behind.** Sharding the store moved the
+  run/trajectory trees, which silently orphaned the pre-shard `blackboard/`
+  (runs + webcache) and `trajectory/` at the temp-dir fallback — no code reads
+  them and no sweeper points at them, so they would have sat there forever.
+  `reclaimLegacyStoreBuckets()` drains them at boot under the same TTL rule as
+  the live store: expired is deletable, fresh survives (a session that started
+  before the upgrade may still be writing), and the shell goes only once
+  nothing lives under it. `memories/` and the team blackboard are still live at
+  that base and are explicitly out of scope. Both sweeps sit behind
+  `TM_STORE_RECLAIM` (default on), which the test runner now sets to `off` —
+  before that knob existed, running the suite reclaimed 503 MB of the
+  developer's real Temp mid-test, which is correct product behaviour and
+  entirely wrong as a test side effect.
 - **tm_join now counts as a call.** The token table reads calls off
   `event:"call"`, and tm_join only ever wrote its governed result — so the row
   read "0 调用 / 2 结果", which looks like a broken counter rather than a tool

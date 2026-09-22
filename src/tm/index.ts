@@ -176,6 +176,80 @@ export function pruneStaleStoreShards(
   return removed
 }
 
+/** A layout nothing reads is still a layout the user paid disk for.  Sharding
+ *  moved the run/trajectory trees under `w-<hash>/`, which silently orphaned
+ *  the pre-shard `blackboard/` (runs + webcache) and `trajectory/` at the
+ *  shared tmpdir base — measured 503 MB and 2654 run dirs on one machine, and
+ *  no sweeper points there any more, so an upgrade would never reclaim it.
+ *  Drain them under the SAME TTL rule the live store uses: expired is
+ *  deletable, fresh is not (a session started before the upgrade may still be
+ *  writing there), and the empty shells go last.  `memories/` and the team
+ *  blackboard's date-named dirs are still live at that base and are not
+ *  touched here. */
+export function reclaimLegacyStoreBuckets(
+  base: string,
+  ttlMs: number,
+  now: number = Date.now(),
+): string[] {
+  const removed: string[] = []
+  const emptyTree = (dir: string): boolean => {
+    // A FILE is not "empty" — it is an entry that exists.  Treating the
+    // readdir throw as true once deleted a live run dir along with its shell.
+    if (!fs.existsSync(dir)) return true
+    let names: string[]
+    try {
+      names = fs.readdirSync(dir)
+    } catch {
+      return false
+    }
+    return names.every((n) => emptyTree(path.join(dir, n)))
+  }
+  let top: string[]
+  try {
+    top = fs.readdirSync(base)
+  } catch {
+    return removed
+  }
+  if (!top.includes("blackboard") && !top.includes("trajectory")) return removed
+  for (const name of ["blackboard", "trajectory"]) {
+    const dir = path.join(base, name)
+    let containers: string[]
+    try {
+      containers = fs.readdirSync(dir)
+    } catch {
+      continue
+    }
+    for (const container of containers) {
+      if (container !== "runs" && container !== "webcache") continue
+      const cdir = path.join(dir, container)
+      let kids: string[]
+      try {
+        kids = fs.readdirSync(cdir)
+      } catch {
+        continue
+      }
+      for (const kid of kids) {
+        const p = path.join(cdir, kid)
+        let mtime = 0
+        try {
+          mtime = fs.statSync(p).mtimeMs
+        } catch {
+          continue
+        }
+        if (now - mtime > ttlMs) {
+          rmForceSafe(p, { recursive: true })
+          if (!fs.existsSync(p)) removed.push(`${name}/${container}/${kid}`)
+        }
+      }
+    }
+    if (emptyTree(dir)) {
+      rmForceSafe(dir, { recursive: true })
+      if (!fs.existsSync(dir)) removed.push(name)
+    }
+  }
+  return removed
+}
+
 export async function createTmTools(
   input: PluginInput,
   opts: CreateTmToolsOptions = {},
@@ -218,11 +292,25 @@ export async function createTmTools(
   // shared base — its project tier is already keyed by project slug, and
   // moving it would strand memories the user already wrote.
   const storeBase = gitUsable ? sharedBase : path.join(sharedBase, `w-${workspaceStoreKey(directory)}`)
-  if (!gitUsable) {
+  // Boot-time reclamation of what an upgrade leaves behind.  Both passes are
+  // TTL-gated (expired is deletable, fresh is not — a session started before
+  // the upgrade may still be writing), and TM_STORE_RECLAIM=off exists so the
+  // test runner never reaches into the developer's real Temp.
+  if (cfg.storeReclaim !== "off") {
+    const ttlMs = cfg.blackboardTtlDays * 24 * 60 * 60 * 1000
+    if (!gitUsable) {
+      try {
+        pruneStaleStoreShards(sharedBase, storeBase, ttlMs)
+      } catch {
+        /* cleanup only — a failed prune must never cost the session its tools */
+      }
+    }
+    // The pre-shard layout lives at the TMPDIR base and nowhere else: inside a
+    // repo, `blackboard/`+`trajectory/` ARE the live store.
     try {
-      pruneStaleStoreShards(sharedBase, storeBase, cfg.blackboardTtlDays * 24 * 60 * 60 * 1000)
+      reclaimLegacyStoreBuckets(path.join(os.tmpdir(), "opencode-team"), ttlMs)
     } catch {
-      /* cleanup only — a failed prune must never cost the session its tools */
+      /* same: reclamation is never worth failing a session over */
     }
   }
   // User-level global memory root — OUTSIDE any repo, so "global" scope

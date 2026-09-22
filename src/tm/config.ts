@@ -226,6 +226,12 @@ export interface TmConfig {
    *  host's own task envelope ONLY — never a message the user typed, and no
    *  disk copy. `off` restores the host's verbatim injection. */
   taskOffload: "on" | "off"
+  /** Reclaim the store layout an upgrade left behind: a sibling `w-*` shard
+   *  idle past the TTL, and the pre-shard `blackboard/`+`trajectory/` at the
+   *  shared tmpdir base (which no sweeper points at any more).  Only ever
+   *  TTL-expired entries — never a live run.  `off` keeps the disk as is; the
+   *  test runner sets it so a suite cannot mutate the developer's real Temp. */
+  storeReclaim: "on" | "off"
   /** Floor (minutes) for the approval-gate ask timeout.  LIVE (Wave A/T2):
    *  approval-gate.ts `resolveAskTimeoutMs` clamps the reply with
    *  `Math.max(min, resolveTmConfig(env).askTimeoutFloorMin)` — this knob
@@ -296,6 +302,7 @@ export const TM_CONFIG_DEFAULTS = {
   webCacheTtlSec: 300,
   joinMaxWaitMs: 60_000,
   taskOffload: "on",
+  storeReclaim: "on",
   // Consumed by approval-gate.ts resolveAskTimeoutMs (Math.max floor, Wave A).
   // 1 min since the T2 benign already-closed split (user directive).
   askTimeoutFloorMin: 1,
@@ -434,6 +441,7 @@ export function resolveTmConfig(env: EnvLike = process.env): TmConfig {
     webCacheTtlSec: envInt(env, "TM_WEB_CACHE_TTL_SEC", TM_CONFIG_DEFAULTS.webCacheTtlSec, 0, 86_400),
     joinMaxWaitMs: envInt(env, "TM_JOIN_MAX_WAIT_MS", TM_CONFIG_DEFAULTS.joinMaxWaitMs, 0, 600_000),
     taskOffload: resolveOnOff(env.TM_TASK_OFFLOAD),
+    storeReclaim: resolveOnOff(env.TM_STORE_RECLAIM),
     askTimeoutFloorMin: envInt(env, "TM_ASK_TIMEOUT_FLOOR_MIN", TM_CONFIG_DEFAULTS.askTimeoutFloorMin, 1, 1440),
     bashTimeoutMaxMs: envInt(env, "TM_BASH_TIMEOUT_MAX_MS", TM_CONFIG_DEFAULTS.bashTimeoutMaxMs, 0, 3_600_000),
     bashTimeoutProbeMs: envInt(env, "TM_BASH_TIMEOUT_PROBE_MS", TM_CONFIG_DEFAULTS.bashTimeoutProbeMs, 0, 600_000),
