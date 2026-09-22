@@ -5,9 +5,14 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 versioning is semver (the 1.4.x train shipped under working labels; the
 registry saw 1.5.0 as the install-script fix release).
 
-## [Unreleased]
+## [1.6.0] - 2026-09-23
+
+> The architectural change 1.5.13 held `1.6.0` back for: the plugin-side
+> dispatcher is gone, and delegation belongs to the host. Everything merged on
+> `main` since 1.5.15 ships in this release.
 
 ### Added
+
 - **A wait has to be said out loud.** From the outside, a lead parked in
   `tm_join` and a lead that finished look identical — the tool call is one line
   the user cannot open. So the lead must now state, before any blocking
@@ -44,24 +49,7 @@ registry saw 1.5.0 as the install-script fix release).
   routing injections through `chat.message`" — and the second is the one that
   would otherwise go unnoticed.
 
-### Added
-- **tm_browser can hold several tabs.** `new_page { url? }` opens a tab and
-  makes it current; `close_page { index? }` closes one and moves you to a
-  survivor; `list_pages` numbers them and `select_page` switches. The new tab
-  clears the SAME allowlist gate and official dialog as any navigation, so a
-  second tab cannot become a way around consent, and closing the LAST tab says
-  the browser is still running instead of implying the session ended. Both are
-  playwright-only and say so on the legacy engine.
 
-### Fixed
-- **`docs/installation.md` said the cache was authoritative but not where inside
-  it.** The scoped cache directory is a *wrapper* whose `package.json` only
-  declares the dependency; the executed code is the nested
-  `…@latest/node_modules/@te-river/opencode-team-mode/dist`. Documented, with
-  `tm_stats` as the definitive "which build is running" probe (registry
-  `npm view` and a `package.json` read both prove less than they look).
-
-### Added
 - **The host's own visible sub-agent, inside our token budget.** OpenCode's
   built-in `task { background: true }` is the only delegation the interface can
   SHOW — its card links to the live child session, it does not block the lead,
@@ -91,8 +79,33 @@ registry saw 1.5.0 as the install-script fix release).
   The same split now decides which `task` footer the host shows the model
   (`tool.definition` reads `OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS` the way
   the host does, so the hint cannot advertise a shape the host would reject).
+- **tm_browser can hold several tabs.** `new_page { url? }` opens a tab and
+  makes it current; `close_page { index? }` closes one and moves you to a
+  survivor; `list_pages` numbers them and `select_page` switches. The new tab
+  clears the SAME allowlist gate and official dialog as any navigation, so a
+  second tab cannot become a way around consent, and closing the LAST tab says
+  the browser is still running instead of implying the session ended. Both are
+  playwright-only and say so on the legacy engine.
+
+
+### Changed
+
+- **`TM_JOIN_MAX_WAIT_MS` default 300 000 → 60 000, and chained waits are cut
+  short.** A live session parked twice in a row for five minutes each — 19 of
+  its 26 minutes spent inside `tm_join` with zero output — while the tool's own
+  closing line ("可再次 tm_join") invited the next park. Waiting is not
+  parallelism: your turn is blocked either way. A second wait after nothing
+  settled now costs 10 s and is answered with the three things worth doing
+  instead, and the lead's total blocked time became a measured row in tm_stats.
+- **The goal tripwire no longer traps a lead that has finished.** It fires when
+  the host's todo list still has open items, which is right — but a lead that
+  just collected every child and has not re-marked its list got "不要把这轮当成收尾"
+  for a stale list. The line now says to update `todowrite` first if the items
+  really are done.
+
 
 ### Removed
+
 - **`tm_dispatch` is gone; every agent is denied it and the tool is not
   registered.** It existed because the host's `task` blocks the lead, and it
   bought real overlap — but the children it created were sessions the user could
@@ -113,30 +126,17 @@ registry saw 1.5.0 as the install-script fix release).
   that remembers the old tool from a previous session finds the door closed in
   writing rather than by trial.
 
-### Changed
-- **`TM_JOIN_MAX_WAIT_MS` default 300 000 → 60 000, and chained waits are cut
-  short.** A live session parked twice in a row for five minutes each — 19 of
-  its 26 minutes spent inside `tm_join` with zero output — while the tool's own
-  closing line ("可再次 tm_join") invited the next park. Waiting is not
-  parallelism: your turn is blocked either way. A second wait after nothing
-  settled now costs 10 s and is answered with the three things worth doing
-  instead, and the lead's total blocked time became a measured row in tm_stats.
-- **The goal tripwire no longer traps a lead that has finished.** It fires when
-  the host's todo list still has open items, which is right — but a lead that
-  just collected every child and has not re-marked its list got "不要把这轮当成收尾"
-  for a stale list. The line now says to update `todowrite` first if the items
-  really are done.
-
-### Added
-- **tm_browser can hold several tabs.** `new_page { url? }` opens a tab and
-  makes it current; `close_page { index? }` closes one and moves you to a
-  survivor; `list_pages` numbers them and `select_page` switches. The new tab
-  clears the SAME allowlist gate and official dialog as any navigation, so a
-  second tab cannot become a way around consent, and closing the LAST tab says
-  the browser is still running instead of implying the session ended. Both are
-  playwright-only and say so on the legacy engine.
 
 ### Fixed
+
+- **`docs/installation.md` said the cache was authoritative but not where inside
+  it.** The scoped cache directory is a *wrapper* whose `package.json` only
+  declares the dependency; the executed code is the nested
+  `…@latest/node_modules/@te-river/opencode-team-mode/dist`. Documented, with
+  `tm_stats` as the definitive "which build is running" probe (registry
+  `npm view` and a `package.json` read both prove less than they look).
+
+
 Three defects from one real session (a Go repo, 2026-09-21), each reproduced
 before it was changed — and two of the session's five complaints turned out to
 be the tools answering correctly, which is recorded here because "the tool is
@@ -237,17 +237,44 @@ broken" and "the answer is not what I expected" must not be conflated.
 - **`close` no longer lies about the browser being gone.** It verified
   `pages === 0 && !isConnected()` and printed 已确认关闭 — while an msedge
   process tree was measurably still running under OpenCode.exe. A dropped CDP
-  connection is not an exited process. It now captures the pid at launch,
-  waits for it, terminates once if it lingers, and names the pid in the verdict
-  either way.
+  connection is not an exited process. The first fix read the pid from
+  `browser.process()`, and the real-host test written for it proved that
+  accessor **does not exist** on playwright-core 1.63's `Browser` (it belongs to
+  `ElectronApplication` and `BrowserServer`): `typeof browser.process` measured
+  `undefined`, so the pid had been `0` on every real session, the orphan ledger
+  had never recorded a launch, and 已确认关闭 had never checked a process at all.
+  A mock that faked the accessor is what let that ship as fixed. The pid now
+  comes from the OS — the browser is a child of this process and runs the
+  executable we resolved — and which route answered (`playwright` /
+  `child-scan` / `none`) is written to the trajectory, because a silent `0` is
+  what hid this for a release. With no pid there is now a THIRD verdict,
+  `进程未核验`, which says nothing was checked instead of borrowing the verified
+  sentence; the researcher/tester prompt names all three, since a model that
+  only knows two turns "unverified" into "浏览器已关闭".
 - **Orphan browsers are reclaimed.** A plugin process that dies leaves its
   browser running (nine msedge processes under a scoped temp profile, parent
   pid long gone, on the machine this was found on). Each launch now records
-  `{pid, ownerPid}` in a per-workspace ledger and the next boot terminates
+  `{pid, ownerPid, exe}` in a per-workspace ledger and the next boot terminates
   only entries whose owner is dead while the browser lives — so a second
   OpenCode window's tabs are never ours to kill. Nothing scans the system by
-  process name or profile prefix; `TM_BROWSER_REAP=off` turns it off.
+  process name or profile prefix; `TM_BROWSER_REAP=off` turns it off. The kill
+  is a TREE kill: `process.kill(pid)` signals the root only, and the real-host
+  test measured exactly that — the browser went down and all nine children
+  stayed up, which is the leftover the reaper exists to remove. win32 runs
+  `taskkill /PID n /T /F`, POSIX enumerates descendants and signals
+  deepest-first. Because this force-kills a whole tree and an OS pid is a
+  recyclable number, the recorded `exe` is checked against what that pid
+  actually is before anything is signalled, and a line written before the `exe`
+  column existed is still reclaimed — an upgrade must not strand the browsers a
+  user already orphaned.
+- **A mistyped browser verb offered a menu that had not heard of the new verbs.**
+  The unknown-action list was a hand-written copy of the action table, so it
+  never gained `new_page`/`close_page` — and that refusal line is the only place
+  an agent that forgot a verb can find it. It is derived from the same table the
+  gate reads now (pinned: all 23 registered verbs, exactly once each).
+
 ### Known gap (found while fixing the above, deliberately NOT changed)
+
 - `projectSlug()` — the tier that names a tm_memory `project` directory —
   lowercases and strips every non-ASCII character, so `D:\扒取数据` and
   `D:\文档` both resolve to `d`, and two CJK-named workspaces can share one
@@ -261,6 +288,20 @@ broken" and "the answer is not what I expected" must not be conflated.
   own (settle − duration) window instead of a dispatch line that no longer
   exists — a dead row is worse than a narrower one, because the throughput
   claim is the only reason this team exists.
+- **`click` says 已点击 without evidence that anything happened.** Measured on a
+  Next.js documentation site: the same locator, clicked through playwright
+  directly, expands the disclosure; through `tm_browser` it is a no-op at
+  `document.readyState === "interactive"` (300 ms and 1500 ms after `open`) and
+  works at `"complete"` (4 s, once the framework's own globals exist). Every
+  actionability check playwright makes — visible, stable, enabled, receives
+  events — passes on a button whose bundle has not run yet, so the click is
+  delivered to a node with no handler and the tool still reports success.
+  Diagnosed, deliberately NOT changed here: the honest fix is to verify the
+  effect (the target's `aria-expanded`/`aria-checked`, the URL, a DOM
+  fingerprint before and after, one bounded retry once the page settles) rather
+  than to make every navigation wait for `load`, and that deserves its own
+  change with its own tests. Until then the workaround is a prompt-side one:
+  after `open`, `wait_for` the text you are about to act on.
 
 ## [1.5.15] - 2026-09-20
 
@@ -345,14 +386,6 @@ broken" and "the answer is not what I expected" must not be conflated.
   修登录页" instead of a raw argument chip.
 
 ### Added
-- **tm_browser can hold several tabs.** `new_page { url? }` opens a tab and
-  makes it current; `close_page { index? }` closes one and moves you to a
-  survivor; `list_pages` numbers them and `select_page` switches. The new tab
-  clears the SAME allowlist gate and official dialog as any navigation, so a
-  second tab cannot become a way around consent, and closing the LAST tab says
-  the browser is still running instead of implying the session ended. Both are
-  playwright-only and say so on the legacy engine.
-
 ### Fixed
 - **A host error never renders as `[object Object]` again.** `session.error`
   payloads are nested (`{name, data:{message, ref}}`), and the old rendering
@@ -380,14 +413,6 @@ broken" and "the answer is not what I expected" must not be conflated.
 ## [1.5.14] - 2026-09-19
 
 ### Added
-- **tm_browser can hold several tabs.** `new_page { url? }` opens a tab and
-  makes it current; `close_page { index? }` closes one and moves you to a
-  survivor; `list_pages` numbers them and `select_page` switches. The new tab
-  clears the SAME allowlist gate and official dialog as any navigation, so a
-  second tab cannot become a way around consent, and closing the LAST tab says
-  the browser is still running instead of implying the session ended. Both are
-  playwright-only and say so on the legacy engine.
-
 ### Fixed
 - **tm_dispatch crashed on the live host: `Cannot read properties of undefined
   (reading 'client')`.** Every `client.session.*` endpoint was captured as a
@@ -507,14 +532,6 @@ broken" and "the answer is not what I expected" must not be conflated.
 - **Presentation discipline in the prompts** (the audit found what the desktop actually renders): GFM tables for per-file/per-case/per-finding results, fenced code for transcripts, KaTeX for math, `tm_browser take_screenshot { image:true }` or a real artifact path for anything visual — and an explicit rule that mermaid is NOT drawn by this host (only syntax-highlighted), so a diagram block can never be passed off as a picture.
 
 ### Added
-- **tm_browser can hold several tabs.** `new_page { url? }` opens a tab and
-  makes it current; `close_page { index? }` closes one and moves you to a
-  survivor; `list_pages` numbers them and `select_page` switches. The new tab
-  clears the SAME allowlist gate and official dialog as any navigation, so a
-  second tab cannot become a way around consent, and closing the LAST tab says
-  the browser is still running instead of implying the session ended. Both are
-  playwright-only and say so on the legacy engine.
-
 ### Fixed
 - **tm_browser rendered pages WITHOUT images, CSS or JS.** The network gate
   ran `checkWebUrl` over *every* request, and the 21-host content allowlist
@@ -717,14 +734,6 @@ broken" and "the answer is not what I expected" must not be conflated.
 ## [1.5.11] - 2026-09-13
 
 ### Added
-- **tm_browser can hold several tabs.** `new_page { url? }` opens a tab and
-  makes it current; `close_page { index? }` closes one and moves you to a
-  survivor; `list_pages` numbers them and `select_page` switches. The new tab
-  clears the SAME allowlist gate and official dialog as any navigation, so a
-  second tab cannot become a way around consent, and closing the LAST tab says
-  the browser is still running instead of implying the session ended. Both are
-  playwright-only and say so on the legacy engine.
-
 ### Fixed
 - **tm_browser drives the user's DEFAULT browser**: discovery order was
   TM_BROWSER_PATH -> Edge-first probe list; it now resolves the system
@@ -748,14 +757,6 @@ broken" and "the answer is not what I expected" must not be conflated.
 ## [1.5.10] - 2026-09-13
 
 ### Added
-- **tm_browser can hold several tabs.** `new_page { url? }` opens a tab and
-  makes it current; `close_page { index? }` closes one and moves you to a
-  survivor; `list_pages` numbers them and `select_page` switches. The new tab
-  clears the SAME allowlist gate and official dialog as any navigation, so a
-  second tab cannot become a way around consent, and closing the LAST tab says
-  the browser is still running instead of implying the session ended. Both are
-  playwright-only and say so on the legacy engine.
-
 ### Fixed
 - **All web channels send real-browser headers**: tm_webfetch / tm_search
   (via the shared fetch) now send a mainstream Chrome UA + Accept +
@@ -782,14 +783,6 @@ broken" and "the answer is not what I expected" must not be conflated.
 ## [1.5.9] - 2026-09-13
 
 ### Added
-- **tm_browser can hold several tabs.** `new_page { url? }` opens a tab and
-  makes it current; `close_page { index? }` closes one and moves you to a
-  survivor; `list_pages` numbers them and `select_page` switches. The new tab
-  clears the SAME allowlist gate and official dialog as any navigation, so a
-  second tab cannot become a way around consent, and closing the LAST tab says
-  the browser is still running instead of implying the session ended. Both are
-  playwright-only and say so on the legacy engine.
-
 ### Fixed
 - **Seed allowlist grows to 21 hosts** (13 -> 21): adds zhihu.com, juejin.cn,
   csdn.net, cnblogs.com, gitee.com (CN sources) and stackoverflow.com,
@@ -811,14 +804,6 @@ broken" and "the answer is not what I expected" must not be conflated.
   bing/baidu URLs through tm_webfetch
 
 ### Added
-- **tm_browser can hold several tabs.** `new_page { url? }` opens a tab and
-  makes it current; `close_page { index? }` closes one and moves you to a
-  survivor; `list_pages` numbers them and `select_page` switches. The new tab
-  clears the SAME allowlist gate and official dialog as any navigation, so a
-  second tab cannot become a way around consent, and closing the LAST tab says
-  the browser is still running instead of implying the session ended. Both are
-  playwright-only and say so on the legacy engine.
-
 ### Fixed
 - **Installers + agent guide target `opencode.jsonc` first**: the .jsonc is
   the canonical name and OVERRIDES opencode.json when both exist — patching
@@ -854,14 +839,6 @@ broken" and "the answer is not what I expected" must not be conflated.
   timeout, deduped by request id (pinned in test-envprotect §7)
 
 ### Added
-- **tm_browser can hold several tabs.** `new_page { url? }` opens a tab and
-  makes it current; `close_page { index? }` closes one and moves you to a
-  survivor; `list_pages` numbers them and `select_page` switches. The new tab
-  clears the SAME allowlist gate and official dialog as any navigation, so a
-  second tab cannot become a way around consent, and closing the LAST tab says
-  the browser is still running instead of implying the session ended. Both are
-  playwright-only and say so on the legacy engine.
-
 ### Fixed
 - **The agent-install flow could not fetch its own installation guide**: the
   READMEs point agents at
@@ -991,14 +968,6 @@ broken" and "the answer is not what I expected" must not be conflated.
     test-default-agent §6, test-blackboard)
 
 ### Added
-- **tm_browser can hold several tabs.** `new_page { url? }` opens a tab and
-  makes it current; `close_page { index? }` closes one and moves you to a
-  survivor; `list_pages` numbers them and `select_page` switches. The new tab
-  clears the SAME allowlist gate and official dialog as any navigation, so a
-  second tab cannot become a way around consent, and closing the LAST tab says
-  the browser is still running instead of implying the session ended. Both are
-  playwright-only and say so on the legacy engine.
-
 ### Fixed
 - **win32 fs.rmSync silently no-ops on non-ASCII paths** (observed Node
   24.12: CJK-named files survive `fs.rmSync` with no throw, while
@@ -1126,14 +1095,6 @@ broken" and "the answer is not what I expected" must not be conflated.
 ## [1.5.3] - 2026-09-10
 
 ### Added
-- **tm_browser can hold several tabs.** `new_page { url? }` opens a tab and
-  makes it current; `close_page { index? }` closes one and moves you to a
-  survivor; `list_pages` numbers them and `select_page` switches. The new tab
-  clears the SAME allowlist gate and official dialog as any navigation, so a
-  second tab cannot become a way around consent, and closing the LAST tab says
-  the browser is still running instead of implying the session ended. Both are
-  playwright-only and say so on the legacy engine.
-
 ### Fixed
 - SHARED_RULES: agents now use built-in bash for R6 protected reads (approval dialog triggers)
 
@@ -1387,14 +1348,6 @@ broken" and "the answer is not what I expected" must not be conflated.
   `test-envprotect.mjs` (now part of `npm test`).
 
 ### Added
-- **tm_browser can hold several tabs.** `new_page { url? }` opens a tab and
-  makes it current; `close_page { index? }` closes one and moves you to a
-  survivor; `list_pages` numbers them and `select_page` switches. The new tab
-  clears the SAME allowlist gate and official dialog as any navigation, so a
-  second tab cannot become a way around consent, and closing the LAST tab says
-  the browser is still running instead of implying the session ended. Both are
-  playwright-only and say so on the legacy engine.
-
 ### Fixed
 - **Installer scripts hardened** (`scripts/install.sh` /
   `scripts/install.ps1`; shared embedded-Node core is now string- and
@@ -1417,14 +1370,6 @@ broken" and "the answer is not what I expected" must not be conflated.
 ## [1.4.9] — 2026-09-06
 
 ### Added
-- **tm_browser can hold several tabs.** `new_page { url? }` opens a tab and
-  makes it current; `close_page { index? }` closes one and moves you to a
-  survivor; `list_pages` numbers them and `select_page` switches. The new tab
-  clears the SAME allowlist gate and official dialog as any navigation, so a
-  second tab cannot become a way around consent, and closing the LAST tab says
-  the browser is still running instead of implying the session ended. Both are
-  playwright-only and say so on the legacy engine.
-
 ### Fixed
 - **Install scripts pin actual version**: `install.sh` and `install.ps1` now
   resolve the real latest version from the npm registry (`npm view`) and
@@ -1572,14 +1517,6 @@ keep the lead coordinating instead of drifting into hand execution.
   dimension with a correctness default.
 
 ### Added
-- **tm_browser can hold several tabs.** `new_page { url? }` opens a tab and
-  makes it current; `close_page { index? }` closes one and moves you to a
-  survivor; `list_pages` numbers them and `select_page` switches. The new tab
-  clears the SAME allowlist gate and official dialog as any navigation, so a
-  second tab cannot become a way around consent, and closing the LAST tab says
-  the browser is still running instead of implying the session ended. Both are
-  playwright-only and say so on the legacy engine.
-
 ### Fixed
 - **Implementer fix-mode contradiction resolved:** the fix-mode instruction
   said "append to the same file" while the blackboard guarantee forbids
@@ -1634,14 +1571,6 @@ keep the lead coordinating instead of drifting into hand execution.
   Chinese README, scoped package rename.
 
 ### Added
-- **tm_browser can hold several tabs.** `new_page { url? }` opens a tab and
-  makes it current; `close_page { index? }` closes one and moves you to a
-  survivor; `list_pages` numbers them and `select_page` switches. The new tab
-  clears the SAME allowlist gate and official dialog as any navigation, so a
-  second tab cannot become a way around consent, and closing the LAST tab says
-  the browser is still running instead of implying the session ended. Both are
-  playwright-only and say so on the legacy engine.
-
 ### Fixed
 - **Preview could HANG on huge single-line payloads (O(n²) regex)**: the
   path:line ref collector ran a global regex whose `(?:X+[\/])*` group
