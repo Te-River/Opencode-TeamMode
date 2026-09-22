@@ -398,8 +398,9 @@ env 文件 URL 和非 http(s) 协议保持硬拦截、无弹窗——R6 红线�
 
 ### 仓库卫生
 
-卸载/轨迹/记忆存储都在 `<repo>/.git/opencode-team/`（非 git 目录则用系统
-临时目录）——**永不进工作树**。每个 agent 被要求完工前删掉自己的临时文件，
+卸载/轨迹/记忆存储都在 `<repo>/.git/opencode-team/`（非 git 目录则进系统临时
+目录，并按工作区路径哈希分片成 `opencode-team/w-<hash>/`，一个项目读不到另一个
+项目的产物）——**永不进工作树**。每个 agent 被要求完工前删掉自己的临时文件，
 一次性产物进系统临时目录。TTL 清扫器在启动时 + 每小时回收过期任务目录；
 Team Lead 自己从不删黑板，你可以随时审计任何一次运行。
 
@@ -450,7 +451,7 @@ Team Lead 自己从不删黑板，你可以随时审计任何一次运行。
 | `TM_OFFLOAD_THRESHOLD_DATA` | `2000` | 结构化载荷（json / csv / code / binary）卸载阈值 |
 | `TM_PREVIEW_MAX_TOKENS` | `80` | 预览硬顶 |
 | `TM_FETCH_MAX_LINES` | `2000` | tm_fetch 单页行数上限 |
-| `TM_BLACKBOARD_DIR` / `TM_TRAJECTORY_DIR` | `<repo>/.git/opencode-team/…` | 卸载存储 / 轨迹账本（tmpdir 回退；显式值 = 绝对或项目相对） |
+| `TM_BLACKBOARD_DIR` / `TM_TRAJECTORY_DIR` | `<repo>/.git/opencode-team/…` | 卸载存储 / 轨迹账本（tmpdir 回退按工作区路径哈希分片，所以 `tm_stats` 的窗口只含本工作区流量；显式值 = 绝对或项目相对） |
 | `TM_BLACKBOARD_TTL` | `7` | 存储保留天数 |
 | `TM_BASH_READONLY_ALLOWED` | 内置表 | tm_bash 白名单 |
 | `TM_SEARCH_DEFAULT_ENGINE` | `auto` | tm_search 未显式给 `engine` 时的默认引擎（`auto` = 分类 + 并行扇出 + RRF 融合；也可钉表中任一引擎） |

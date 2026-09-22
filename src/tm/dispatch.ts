@@ -534,6 +534,10 @@ export function buildDispatchTools(deps: DispatchDeps): {
           return toToolResult(tmError(tool, "governance", `只有 ${leadAgent} 能收集派发结果。`))
         }
         const parent = String(c.sessionID ?? "").trim()
+        // tm_stats counts calls from `event:"call"`, and tm_join only ever
+        // wrote its governed result — so the token table read "0 调用 / 2 结果",
+        // which looks like a broken counter rather than a tool that ran.
+        store.appendTrajectory({ tool, step_id: "join", event: "call" })
         const directory = typeof c.directory === "string" && c.directory ? c.directory : undefined
         const idList = parseIdList(args.ids)
         const idFilter = idList && idList.length ? new Set(idList) : null

@@ -118,6 +118,18 @@ export interface CreateTmToolsOptions {
   capabilities?: () => CapabilityRow[]
 }
 
+/** Collision-free shard key for a workspace path.  It is a HASH rather than a
+ *  sanitized basename because the CJK paths this plugin actually meets strip
+ *  to nothing useful — `D:\扒取数据` and `D:\文档` both slug to "d", and a store
+ *  shard that collides is the exact bug this exists to kill. */
+export function workspaceStoreKey(directory: string): string {
+  const norm = path
+    .resolve(String(directory ?? "").trim() || process.cwd())
+    .replace(/[\\/]+$/g, "")
+    .toLowerCase()
+  return crypto.createHash("sha256").update(path.normalize(norm)).digest("hex").slice(0, 10)
+}
+
 export async function createTmTools(
   input: PluginInput,
   opts: CreateTmToolsOptions = {},
@@ -148,9 +160,18 @@ export async function createTmTools(
         return false
       }
     })()
-  const storeBase = gitUsable
+  const sharedBase = gitUsable
     ? path.join(gitDir as string, "opencode-team")
     : path.join(os.tmpdir(), "opencode-team")
+  // A non-git workspace used to share ONE tmpdir bucket with every other
+  // non-git workspace — and with this plugin's own test runs.  tm_stats then
+  // reported somebody else's session: a user's read-only self-check printed
+  // "窗口 10 个 run · 墙钟 81370s" of traffic that belonged to neither their
+  // session nor their project.  The run/trajectory/blackboard trees are
+  // therefore sharded per workspace.  `memories/` deliberately stays on the
+  // shared base — its project tier is already keyed by project slug, and
+  // moving it would strand memories the user already wrote.
+  const storeBase = gitUsable ? sharedBase : path.join(sharedBase, `w-${workspaceStoreKey(directory)}`)
   // User-level global memory root — OUTSIDE any repo, so "global" scope
   // really follows the user across projects (repo scope stays in .git).
   const globalMemoriesDir = cfg.memoryGlobalDir || path.join(os.homedir(), ".opencode-team", "memories", "global")
@@ -220,7 +241,7 @@ export async function createTmTools(
   // a network channel, it is shared project knowledge.
   const memoryArgs = await buildMemoryArgsSchema()
   tools.tm_memory = buildTmMemoryTool({
-    storeBase,
+    storeBase: sharedBase,
     globalRoot: globalMemoriesDir,
     directory,
     cfg,

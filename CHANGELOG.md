@@ -156,6 +156,35 @@ broken" and "the answer is not what I expected" must not be conflated.
   says `（0 命中）pattern=… · 范围=…` and states that 0 in that directory does not
   prove absence, with the widening moves. Non-empty results are returned
   byte-exact — the note never rides along.
+- **tm_stats' window is now THIS workspace's window.** Outside a git repo the
+  store falls back to the OS temp dir — and that fallback was ONE global
+  bucket, so every non-git workspace shared a trajectory ledger with every
+  other one, including the plugin's own test runs. A user's read-only
+  self-check printed "窗口 10 个 run · 墙钟 81370s" of traffic that belonged to
+  neither their session nor their project, which makes the one number that
+  justifies Team unreadable. The run/trajectory/blackboard trees are now
+  sharded per workspace (`opencode-team/w-<hash>`). The key is a hash, not a
+  slug: `projectSlug` strips non-ASCII, so `D:\扒取数据` and `D:\文档` both
+  collapse to `d` and would share a shard — the same collision still exists
+  for the memory tier's project slug and is called out rather than papered
+  over. `memories/` deliberately did NOT move: its project tier is already
+  slug-keyed, and relocating it would strand memories the user already wrote.
+- **tm_join now counts as a call.** The token table reads calls off
+  `event:"call"`, and tm_join only ever wrote its governed result — so the row
+  read "0 调用 / 2 结果", which looks like a broken counter rather than a tool
+  that ran. It now logs one call at entry, after the lead lock, so a
+  governance-refused call is still not counted.
+
+
+
+### Known gap (found while fixing the above, deliberately NOT changed)
+- `projectSlug()` — the tier that names a tm_memory `project` directory —
+  lowercases and strips every non-ASCII character, so `D:\扒取数据` and
+  `D:\文档` both resolve to `d`, and two CJK-named workspaces can share one
+  project memory folder. The new store shard avoids this by hashing the path;
+  the memory tier still has it. It is left alone because fixing it changes
+  where existing memories are read from — that is a migration the user should
+  decide on, not a side effect of a bug fix.
 - **tm_stats' parallelism table survived the removal by measuring what is still
   observable.** "派发 / 完成" became "子代理结算 / 失败 / 取消（派活走宿主 task）"
   plus a claim count, and the overlap number is now derived from each child's

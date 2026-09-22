@@ -1852,6 +1852,32 @@ try {
   }
   console.log("6p. parallel safety: OK (4 concurrent searches → isolated hit lists; 2 concurrent offloads → distinct step ids + isolated payloads; concurrent tm_fetch page-ins)")
 
+  // 6q. AUTO store isolation.  The tmpdir fallback used to be ONE global
+  // bucket, so a non-git workspace's tm_stats reported every other non-git
+  // workspace's traffic — measured live: a user's read-only self-check printed
+  // "窗口 10 个 run · 墙钟 81370s" of events belonging to neither their session
+  // nor their project (it was this repo's own test runs).
+  {
+    const dirA = mktmp("iso-a")
+    const dirB = mktmp("iso-b")
+    const rA = await tm.createTmTools({ directory: dirA, client: {}, $: () => ({}) }, {})
+    const rB = await tm.createTmTools({ directory: dirB, client: {}, $: () => ({}) }, {})
+    assert.notEqual(rA.store.trajectoryRoot, rB.store.trajectoryRoot, "two non-git workspaces get DIFFERENT trajectory roots")
+    assert.notEqual(rA.store.blackboardRoot, rB.store.blackboardRoot, "…and different run stores, so no payload can be read across them")
+    assert.ok(rA.store.trajectoryRoot.includes(path.join("opencode-team", "w-")), "the shard sits under the tmpdir fallback as opencode-team/w-<hash>")
+    assert.equal(tm.workspaceStoreKey(dirA), tm.workspaceStoreKey(dirA + path.sep), "a trailing separator is the same workspace, not a second shard")
+    assert.equal(tm.workspaceStoreKey("D:\\project\\docs"), tm.workspaceStoreKey("D:/project/docs"), "slash style never forks a shard")
+    assert.notEqual(tm.workspaceStoreKey("D:\\扒取数据"), tm.workspaceStoreKey("D:\\文档"), "CJK paths do not collide — the old slug rules stripped both to one letter")
+    // memories deliberately stay on the SHARED base: their project tier is
+    // already keyed by project slug, and relocating it would strand what the
+    // user already wrote.
+    assert.ok(!rA.store.trajectoryRoot.includes(path.join("opencode-team", "memories")), "the run store moved; the memory tree did not")
+    assert.ok(rA.store.trajectoryRoot.startsWith(path.join(os.tmpdir(), "opencode-team")), "…and the run store still lives under the same tmpdir base, just sharded")
+    await rA.dispose()
+    await rB.dispose()
+  }
+  console.log("6q. AUTO store isolation: OK (per-workspace tmpdir shard, CJK-safe key, memories left on the shared base)")
+
   // 6n. tm_memory — project (repo .git) + GLOBAL (user profile) memory
   // mirror (Markdown + frontmatter, Qoder-style: write side = files,
   // retrieval = deterministic scoring).  Standalone build with an isolated
@@ -3065,6 +3091,32 @@ try {
       const denied = await surface.tools.tm_join.execute({}, { agent: "implementer", sessionID: "s", ask: async () => "once" })
       assert.ok(denied.output.includes("只有 team"), "tm_join keeps the lead-only runtime lock (the second lock is agents.ts denying it)")
       await surface.dispose()
+
+      // tm_stats counts calls from `event:"call"`, and tm_join only ever wrote
+      // its governed result — so a live session's table read "0 调用 / 2 结果",
+      // which looks like a broken counter rather than a tool that ran.
+      {
+        const { rt } = await seeded("disp-calls", {})
+        await rt.tools.tm_join.execute({}, { agent: "team", sessionID: "ses_no_children_here" })
+        const evs = fs
+          .readFileSync(rt.store.trajectoryFile(), "utf8")
+          .split("\n")
+          .filter(Boolean)
+          .map((l) => JSON.parse(l))
+        assert.equal(evs.filter((e) => e.tool === "tm_join" && e.event === "call").length, 1, "a tm_join call writes its call event")
+        const refused = await seeded("disp-calls2", {})
+        await refused.rt.tools.tm_join.execute({}, { agent: "reviewer", sessionID: "s" })
+        const evs2 = fs.existsSync(refused.rt.store.trajectoryFile())
+          ? fs
+              .readFileSync(refused.rt.store.trajectoryFile(), "utf8")
+              .split("\n")
+              .filter(Boolean)
+              .map((l) => JSON.parse(l))
+          : []
+        assert.equal(evs2.filter((e) => e.tool === "tm_join" && e.event === "call").length, 0, "a governance-refused call is never counted")
+        await rt.dispose()
+        await refused.rt.dispose()
+      }
 
       {
         const registered = []

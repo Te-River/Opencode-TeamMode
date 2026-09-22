@@ -447,7 +447,9 @@ silently allowed. The normal verification stack (`npm test`, `tsc`,
 ### Repo hygiene
 
 The offload/trajectory/memory stores live under `<repo>/.git/opencode-team/`
-(or the OS temp dir outside a git repo) — **never your working tree**. Every
+(outside a git repo: the OS temp dir, sharded per workspace as
+`opencode-team/w-<hash>/`, so one project never reads another's payloads) —
+**never your working tree**. Every
 agent is instructed to delete scratch files before reporting done and to keep
 throwaway work in the OS temp dir. A TTL sweeper reclaims old task dirs at
 startup + hourly; the Team Lead never deletes boards itself, so you can audit
@@ -502,7 +504,7 @@ for overrides, extra agents and disabling roles.
 | `TM_OFFLOAD_THRESHOLD_DATA` | `2000` | offload boundary for structured payloads (json / csv / code / binary) |
 | `TM_PREVIEW_MAX_TOKENS` | `80` | preview hard cap |
 | `TM_FETCH_MAX_LINES` | `2000` | tm_fetch page cap |
-| `TM_BLACKBOARD_DIR` / `TM_TRAJECTORY_DIR` | `<repo>/.git/opencode-team/…` | offload store / trajectory ledger (tmpdir fallback; explicit = absolute or project-relative) |
+| `TM_BLACKBOARD_DIR` / `TM_TRAJECTORY_DIR` | `<repo>/.git/opencode-team/…` | offload store / trajectory ledger (tmpdir fallback, sharded per workspace by a path hash so `tm_stats's window is only THIS workspace's traffic; explicit = absolute or project-relative) |
 | `TM_BLACKBOARD_TTL` | `7` | store retention (days) |
 | `TM_BASH_READONLY_ALLOWED` | built-in table | tm_bash allowlist |
 | `TM_SEARCH_DEFAULT_ENGINE` | `auto` | tm_search engine when no `engine` arg is given (`auto` = classify + parallel fan-out + RRF fusion; any table name also pins a manual default) |
