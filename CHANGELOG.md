@@ -169,6 +169,11 @@ broken" and "the answer is not what I expected" must not be conflated.
   for the memory tier's project slug and is called out rather than papered
   over. `memories/` deliberately did NOT move: its project tier is already
   slug-keyed, and relocating it would strand memories the user already wrote.
+  Shards are reclaimed at boot: `pruneStaleStoreShards()` removes a sibling
+  `w-*` that has produced nothing inside the TTL and never touches the live
+  one — without it the fix itself leaks a directory per throwaway workspace,
+  which is exactly what 64 of them in the user's Temp after one dev session
+  were made of.
 - **tm_join now counts as a call.** The token table reads calls off
   `event:"call"`, and tm_join only ever wrote its governed result — so the row
   read "0 调用 / 2 结果", which looks like a broken counter rather than a tool

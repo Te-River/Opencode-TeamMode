@@ -1873,6 +1873,25 @@ try {
     // user already wrote.
     assert.ok(!rA.store.trajectoryRoot.includes(path.join("opencode-team", "memories")), "the run store moved; the memory tree did not")
     assert.ok(rA.store.trajectoryRoot.startsWith(path.join(os.tmpdir(), "opencode-team")), "…and the run store still lives under the same tmpdir base, just sharded")
+    // …and the shards get reclaimed.  Without this every throwaway temp
+    // workspace (i.e. every test runtime) leaves a permanent w-* directory —
+    // 64 of them appeared in the user's Temp after a single dev session.
+    {
+      const base = path.join(mktmp("shardbase"), "opencode-team")
+      const stale = new Date(Date.now() - 30 * 24 * 3600 * 1000)
+      for (const d of ["w-0000000001", "w-0000000002"]) {
+        const p = path.join(base, d)
+        fs.mkdirSync(path.join(p, "trajectory", "runs"), { recursive: true })
+        fs.utimesSync(path.join(p, "trajectory", "runs"), stale, stale)
+        fs.utimesSync(p, stale, stale)
+      }
+      fs.mkdirSync(path.join(base, "memories"), { recursive: true })
+      const gone = tm.pruneStaleStoreShards(base, path.join(base, "w-0000000002"), 5 * 24 * 3600 * 1000)
+      assert.deepEqual(gone, ["w-0000000001"], "only the inactive shard is reclaimed, and it says what it removed")
+      assert.ok(fs.existsSync(path.join(base, "w-0000000002")), "the LIVE shard survives even when its mtimes are old")
+      assert.ok(fs.existsSync(path.join(base, "memories")), "non-shard siblings (the memory tree) are none of its business")
+      assert.deepEqual(tm.pruneStaleStoreShards(path.join(base, "nope"), path.join(base, "w-0000000002"), 1), [], "a missing base is a no-op, never a throw")
+    }
     await rA.dispose()
     await rB.dispose()
   }

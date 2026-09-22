@@ -38,7 +38,8 @@ import { createWebCache } from "./cache.js"
 import type { CapabilityRow } from "../capabilities.js"
 import { buildTmWebfetchTool } from "./webfetch.js"
 import { buildTmSearchTool, SEARCH_ENGINES, SEARCH_ENGINE_NAMES } from "./search.js"
-export { rmForceSafe } from "../fs-safe.js"
+import { rmForceSafe } from "../fs-safe.js"
+export { rmForceSafe }
 export {
   buildTmMemoryTool,
   MEMORY_CATEGORIES,
@@ -130,6 +131,51 @@ export function workspaceStoreKey(directory: string): string {
   return crypto.createHash("sha256").update(path.normalize(norm)).digest("hex").slice(0, 10)
 }
 
+/** The shard dir is created lazily, one per non-git workspace — so a machine
+ *  that runs this plugin's own test suite a hundred times grows a `w-*`
+ *  directory per throwaway temp dir (64 after a single dev session).  Prune
+ *  the siblings that have produced nothing inside the TTL, never the live
+ *  one, and never with a bare rmSync (win32 silently no-ops on non-ASCII
+ *  paths, which would leave the directory in place and the loop lying about
+ *  what it removed). */
+export function pruneStaleStoreShards(
+  base: string,
+  keep: string,
+  ttlMs: number,
+  now: number = Date.now(),
+): string[] {
+  const removed: string[] = []
+  let names: string[]
+  try {
+    names = fs.readdirSync(base)
+  } catch {
+    return removed
+  }
+  const keepName = path.basename(keep)
+  for (const name of names) {
+    if (!/^w-[0-9a-f]{10}$/.test(name) || name === keepName) continue
+    const dir = path.join(base, name)
+    let newest = 0
+    try {
+      newest = fs.statSync(dir).mtimeMs
+    } catch {
+      continue
+    }
+    for (const sub of ["trajectory/runs", "blackboard/runs"]) {
+      try {
+        newest = Math.max(newest, fs.statSync(path.join(dir, sub)).mtimeMs)
+      } catch {
+        /* absent — no evidence of life either way */
+      }
+    }
+    if (now - newest > ttlMs) {
+      rmForceSafe(dir, { recursive: true })
+      if (!fs.existsSync(dir)) removed.push(name)
+    }
+  }
+  return removed
+}
+
 export async function createTmTools(
   input: PluginInput,
   opts: CreateTmToolsOptions = {},
@@ -172,6 +218,13 @@ export async function createTmTools(
   // shared base — its project tier is already keyed by project slug, and
   // moving it would strand memories the user already wrote.
   const storeBase = gitUsable ? sharedBase : path.join(sharedBase, `w-${workspaceStoreKey(directory)}`)
+  if (!gitUsable) {
+    try {
+      pruneStaleStoreShards(sharedBase, storeBase, cfg.blackboardTtlDays * 24 * 60 * 60 * 1000)
+    } catch {
+      /* cleanup only — a failed prune must never cost the session its tools */
+    }
+  }
   // User-level global memory root — OUTSIDE any repo, so "global" scope
   // really follows the user across projects (repo scope stays in .git).
   const globalMemoriesDir = cfg.memoryGlobalDir || path.join(os.homedir(), ".opencode-team", "memories", "global")
