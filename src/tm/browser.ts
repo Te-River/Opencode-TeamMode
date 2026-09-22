@@ -1796,6 +1796,22 @@ export function buildTmBrowserTool(deps: {
       // cannot drift from the other.
       if (action === "evaluate_script" && needsEvalConsent(evalAskPolicy, session.evalApproved)) {
         const target = hostOnly(session.currentUrl)
+        // An error page or a blank tab has no host to consent to. Asking the
+        // official dialog about `evaluate_script:` with an EMPTY pattern gives
+        // the user a prompt they cannot judge, and the refusal then reads
+        // "未获批准（目标站点 ）" — seen live on a chrome-error:// tab.
+        if (!/^[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)+$/.test(target)) {
+          const where = String(session.currentUrl ?? "").slice(0, 80) || "空白页"
+          traj({ step_id: "browser", event: "eval_refused_no_host", where })
+          return toToolResult(
+            tmError(
+              tool,
+              "permission",
+              `evaluate_script 被拒绝：当前页面不是可识别的 http(s) 站点（${where}），没有可批准的主机。` +
+                `先 open/navigate 到一个真实页面再执行 JS——对着错误页要权限，用户无法判断该不该批。`,
+            ),
+          )
+        }
         const outcome = await askUserForTarget(ctx, {
           permission: tool,
           patterns: [`evaluate_script:${target}`],
@@ -1846,7 +1862,31 @@ export function buildTmBrowserTool(deps: {
       return withAttachments(toToolResult(red.text), session)
     } catch (err) {
       const e = err as { name?: string; message?: unknown }
-      return toToolResult(tmError(tool, "execute", String(e?.message ?? err ?? "browser 操作失败")))
+      const msg = String(e?.message ?? err ?? "browser 操作失败")
+      // A browser the user closed — or a launch that handed its request to an
+      // already-running Edge and exited — leaves a cached session whose every
+      // action throws the SAME line. Live session: three identical failures,
+      // then a fourth, with no way out except our own bookkeeping. Drop the
+      // corpse, say that we did, and name the one move that works.
+      if (/has been closed|Target closed|Browser closed|browser has been closed/i.test(msg)) {
+        const had = Boolean(session)
+        session = null
+        if (idleTimer) {
+          clearTimeout(idleTimer)
+          idleTimer = null
+        }
+        traj({ step_id: "browser", event: "session_dead", cleared: had, reason: msg.slice(0, 160) })
+        return toToolResult(
+          tmError(
+            tool,
+            "execute",
+            `${msg.slice(0, 200)}\n浏览器实例已失效${had ? "，我已丢弃这个会话：下一次 action:\"open\" 会真的重启一个新实例" : "，当前没有可复用的会话"}。` +
+              `连着两次都这样，通常是本机已有同品牌浏览器在跑、新进程把请求移交给旧实例后退掉了——请用户关掉那个窗口再 open，或设 TM_BROWSER_ENGINE=cdp-legacy 换一条传输。` +
+              `不要第三次重复同一个动作。`,
+          ),
+        )
+      }
+      return toToolResult(tmError(tool, "execute", msg))
     }
   }
 
@@ -1856,7 +1896,7 @@ export function buildTmBrowserTool(deps: {
 - Lifecycle (the user SEES this window): headful by default — headless is an operator setting (TM_BROWSER_HEADLESS), not a parameter you can pass. An idle session closes itself (TM_BROWSER_IDLE_MS, default 180s) and the user is told. ALWAYS action:"close" when your browser work is done, and quote the tool's own close line — "已确认关闭" vs "警告：关闭未完全成功" — instead of asserting the window is gone.
 - Discipline (enforced by defaults): act ONLY on uids from the latest take_snapshot — no guessed locators; one action then one observation; fold dialogs into the same round (snapshot header warns while a dialog is held); 3000 ms action budget; networkidle is never waited on; screenshots are the visual-last-resort, not the primary read.
 - Network: the top-level navigation must clear the domain allowlist (seeded = tm_webfetch's hosts; out-of-allowlist open/navigate asks the user through the OFFICIAL confirmation dialog BEFORE any spawn). SUBRESOURCES then follow TM_BROWSER_SUBRESOURCE (default same-site): images/media/fonts/stylesheets load, a script/XHR loads when it belongs to a site this session actually opened, anything else is blocked and reported as a "N 个子资源被拦截" note on the next snapshot — that note means the gate trimmed the page, NOT that the site has no images. env-file URLs and non-http(s) schemes hard-reject under every policy.
-- Fixed priority ladder: ① tm_* governed tools → ② user MCP/plugin tools → ③ reasoning (never fabricate).  No browser installed → structured error, fall back to tm_webfetch / MCP.  Role grant: team + researcher full, tester browser-only (UI verification).`
+- A dead instance is never retried: if an action reports the browser/page "has been closed", the cached session is dropped, the reply says the next open really rebuilds, and the trajectory records session_dead — do NOT repeat the same open a third time (close the competing browser window, or set TM_BROWSER_ENGINE=cdp-legacy). evaluate_script on a hostless page (chrome-error://, about:blank) is refused outright: an empty dialog pattern is something no user can judge.  No browser installed → structured error, fall back to tm_webfetch / MCP.  Role grant: team + researcher full, tester browser-only (UI verification).`
 
   return {
     description: DESCRIPTION,

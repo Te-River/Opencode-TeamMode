@@ -195,6 +195,27 @@ broken" and "the answer is not what I expected" must not be conflated.
 
 
 
+- **A dead browser is no longer retried forever.** A live session hit
+  `page.goto: Target page, context or browser has been closed` three times
+  in a row on `action:"open"`, while `close` and `evaluate_script` each
+  insisted there was no session at all — the cached instance was never
+  dropped, so the agent had no way out except repeating itself. An action
+  that reports a closed browser now clears the session, logs `session_dead`,
+  and says so: the next `open` really launches a new instance, and the
+  reply names the two ways out (close the competing browser window, or
+  `TM_BROWSER_ENGINE=cdp-legacy`) plus the instruction not to try a third
+  time. An ordinary navigation timeout is still reported as itself — the
+  label is not applied to every failure.
+- **`evaluate_script` no longer asks about an empty host.** On a
+  `chrome-error://` tab the consent pattern became `evaluate_script:` with
+  nothing after the colon, and the refusal read 未获批准（目标站点 ）— a
+  dialog no user can judge. A hostless current page is now refused outright
+  with the reason and the way out, and no dialog is opened for it.
+- **The timeout note now reads as a measurement.** It said
+  "确认窗 75s 内无人应答", which is the configured cap, and the agent
+  reasonably doubted whether it had waited at all — then spent a round on
+  `Get-Date`. It now says 等满了 N 秒（本机 ask 的等待上限）, which answers
+  the question the model was actually asking.
 ### Known gap (found while fixing the above, deliberately NOT changed)
 - `projectSlug()` — the tier that names a tm_memory `project` directory —
   lowercases and strips every non-ASCII character, so `D:\扒取数据` and

@@ -1030,7 +1030,61 @@ async function main() {
     log("M5: evaluate_script consent (once per session, host-only pattern, refuse on no-bridge/reject) + non-switchable result redaction")
   }
 
-  console.log("browser: OK (engine select/degrade matrix, 16-verb playwright mapping + uid registry on mock pw, route()-based allowlist, persistent-profile policy, prompt pins, evaluate_script consent + redaction, full args-schema param surface; real-playwright smoke gated on npm install)")
+  // ---------- 19. a dead browser is DROPPED, not retried forever ----------
+  // Live session: `open` failed three times with the same
+  // "Target page, context or browser has been closed", while `close` and
+  // `evaluate_script` each insisted there was no session at all. The cached
+  // instance was never cleared, so the agent had no way out but to repeat.
+  {
+    const DEAD = "page.goto: Target page, context or browser has been closed"
+    const fx = makeFakePw()
+    const mk = makeTool({ importPlaywright: async () => fx.pw, nodeMajor: 22 })
+    await mk.tool.execute({ action: "open", url: "https://cn.bing.com" }, ctxNoAsk)
+    // now make the LIVE page die: every action against it throws the same line
+    fx.__ctxPage.goto = () => Promise.reject(new Error(DEAD))
+    const dead = await mk.tool.execute({ action: "open", url: "https://cn.bing.com" }, ctxNoAsk)
+    assert.ok(o(dead).includes("浏览器实例已失效"), "a dead instance is named as dead")
+    assert.ok(o(dead).includes('下一次 action:"open"'), "…and says the next open really rebuilds")
+    assert.ok(o(dead).includes("不要第三次重复同一个动作"), "…including the anti-loop instruction")
+    assert.ok(mk.events.some((e) => e.event === "session_dead"), "the death is on the trajectory")
+    const again = await mk.tool.execute({ action: "open", url: "https://cn.bing.com" }, ctxNoAsk)
+    assert.equal(fx.calls.launch.length, 2, "the second open LAUNCHED again — the corpse was cleared, not reused")
+    assert.ok(!o(again).includes("已失效"), "and against the fresh instance it simply works (no phantom failure)")
+    // an ordinary failure must NOT be dressed up as a dead session
+    const fxN = makeFakePw()
+    const mkN = makeTool({ importPlaywright: async () => fxN.pw, nodeMajor: 22 })
+    await mkN.tool.execute({ action: "open", url: "https://cn.bing.com" }, ctxNoAsk)
+    fxN.__ctxPage.goto = () => Promise.reject(new Error("page.goto: Timeout 20000ms exceeded"))
+    const nav = await mkN.tool.execute({ action: "navigate_page", url: "https://cn.bing.com/x" }, ctxNoAsk)
+    assert.ok(o(nav).includes("Timeout 20000ms"), "a navigation timeout keeps its own message")
+    assert.ok(!o(nav).includes("已失效"), "…and is not mislabelled as a dead instance")
+    assert.equal(fxN.calls.launch.length, 1, "…and the live session is kept")
+    log("dead browser: session cleared + rebuild stated, ordinary failures untouched")
+  }
+
+  // ---------- 20. no host, no dialog ----------
+  // `evaluate_script:` with an EMPTY pattern is a prompt the user cannot judge,
+  // and the refusal came back as "未获批准（目标站点 ）" on a chrome-error:// tab.
+  {
+    const asked = []
+    const fx = makeFakePw()
+    const mk = makeTool({ importPlaywright: async () => fx.pw, nodeMajor: 22 })
+    await mk.tool.execute({ action: "open", url: "https://cn.bing.com" }, ctxNoAsk)
+    fx.__ctxPage.goto = (u) => {
+      fx.__ctxPage._url = "chrome-error://chromewebdata/"
+      return Promise.resolve()
+    }
+    await mk.tool.execute({ action: "navigate_page", url: "https://cn.bing.com/x" }, ctxNoAsk)
+    const ask = { directory: root, ask: async (r) => (asked.push(r.patterns.slice()), "once") }
+    const refused = await mk.tool.execute({ action: "evaluate_script", function: "() => 1" }, ask)
+    assert.ok(o(refused).includes("不是可识别的 http(s) 站点"), "an error page is refused by name")
+    assert.equal(asked.length, 0, "and NO dialog is opened for a pattern the user cannot judge")
+    assert.ok(o(refused).includes("open/navigate"), "…with the way out named")
+    assert.ok(mk.events.some((e) => e.event === "eval_refused_no_host"), "the refusal is on the trajectory")
+    log("evaluate_script on a hostless page: refused without a dialog")
+  }
+
+  console.log("browser: OK (engine select/degrade matrix, 16-verb playwright mapping + uid registry on mock pw, route()-based allowlist, persistent-profile policy, prompt pins, evaluate_script consent + redaction, dead-session rebuild, hostless-page refusal, full args-schema param surface; real-playwright smoke gated on npm install)")
 }
 
 main().then(

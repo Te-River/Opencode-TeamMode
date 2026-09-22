@@ -109,8 +109,9 @@ export function askRefusalNote(outcome: AskOutcome, waitMs = askWaitMs): string 
   if (outcome === "rejected") return "用户未批准。"
   if (outcome === "timed-out") {
     return (
-      `确认窗 ${Math.round(waitMs / 1000)}s 内无人应答——这不是被拒绝，是没有人在界面上点它。` +
-      `请提醒用户查看待确认的对话框；如果确实不想开权限，就改用白名单内的源，不要重复调用。`
+      `确认窗无人应答——我等满了 ${Math.round(waitMs / 1000)} 秒（本机 ask 的等待上限）才放弃，` +
+      `所以这不是被拒绝，是没有人在界面上点它。请提醒用户查看待确认的对话框；` +
+      `如果确实不想开权限，就改用白名单内的源，不要重复调用。`
     )
   }
   return "宿主无法弹出确认窗口（旧版协议）。"

@@ -973,7 +973,7 @@ try {
             { url: "https://evil.example.com/x" },
             { ...ctx, ask: () => new Promise(() => {}) },
           )
-          assert.ok(hung.output.includes("无人应答"), "an unanswered dialog is reported as a timeout")
+          assert.ok(hung.output.includes("无人应答") && hung.output.includes("等满"), "an unanswered dialog is reported as a MEASURED wait, not a refusal")
           assert.ok(!hung.output.includes("用户未批准"), "…and is NOT conflated with a refusal (a refusal means stop asking)")
           assert.ok(Date.now() - t0 < 30_000, "the call ends on its own instead of hanging the session")
         } finally {
