@@ -10,13 +10,18 @@
  *       allowlist gate, discovery error, §6o-verbatim output shapes) — the
  *       live §6o round-trip in test-tm-tools.mjs is the browser-running
  *       counterpart, re-verified separately by this package's run;
- *   (c) the 16 chrome-devtools-mcp verb mappings + ariaSnapshot handling
+ *   (c) the 18 chrome-devtools-mcp verb mappings + ariaSnapshot handling
  *       against a MOCK playwright module (fake chromium/locator objects —
- *       playwright-core is NOT installed and this suite must not require
- *       it to be);
+ *       the suite must not REQUIRE playwright to be installed, because
+ *       installing it is a release/user action);
  *   (d) the REAL playwright smoke is explicitly gated behind
  *       `npm install` — skipped (never failed) while playwright-core is
- *       absent, since installing it is a release/user action.
+ *       absent.  When it DOES run it is not a smoke: it asserts the three
+ *       claims the mock groups can only approximate — that `close`'s
+ *       已确认关闭 is true for the OS process AND its whole child tree
+ *       (issue: close printed success over a live msedge tree), that
+ *       new_page/list_pages/close_page work on a real context, and that the
+ *       orphan reaper's DEFAULT kill path really takes a browser down.
  *
  * Runs against ./dist (build first: npm run build).
  */
@@ -24,6 +29,7 @@ import assert from "node:assert"
 import * as fs from "node:fs"
 import * as os from "node:os"
 import * as path from "node:path"
+import { spawnSync } from "node:child_process"
 import { createRequire } from "node:module"
 
 const br = await import("./dist/tm/browser.js")
@@ -44,6 +50,9 @@ const fakeExe = path.join(root, "msedge.exe")
 fs.writeFileSync(fakeExe, "MZ")
 
 let stepSeq = 0
+/** Beyond any pid the OS will hand out, so `pidAlive()` is false for it — the
+ *  fake browser pid every mock test uses.  Nothing real is ever signalled. */
+const NO_PID = 0x7fffffe0
 function makeTool(over = {}) {
   const events = []
   const stepsRoot = path.join(root, `steps-${++stepSeq}`)
@@ -52,6 +61,10 @@ function makeTool(over = {}) {
     nextStepId: () => `s9${String(++stepSeq).padStart(3, "0")}`,
     store: { appendTrajectory: (e) => events.push(e), stepsRoot: () => stepsRoot },
   }
+  // The real smoke passes a store root so the ORPHAN LEDGER is written for
+  // real — that file is the only independent record of which OS pid this
+  // session launched, which is what a close verdict has to be checked against.
+  if (over.blackboardRoot) pipelines.store.blackboardRoot = over.blackboardRoot
   const cfg = {
     browserEngine: over.browserEngine ?? "playwright",
     browserSnapshotMaxTokens: over.snapshotMaxTokens ?? 1200,
@@ -69,6 +82,16 @@ function makeTool(over = {}) {
     over.discovered || over.realDiscovery
       ? { TM_BROWSER_HEADLESS: "1", ...over.env }
       : { TM_BROWSER_PATH: over.executablePath ?? fakeExe, TM_BROWSER_HEADLESS: "1", ...over.env }
+  // The default mock mirrors playwright-core 1.63, which has NO
+  // Browser.process(): the product must fall through to the OS child scan.  So
+  // the scan is fed one row for the executable THIS tool will launch, keeping
+  // every mock test on the real code path instead of a legacy accessor.  The
+  // real-discovery leg deliberately passes nothing, so it exercises the real
+  // query.  A test that wants "no pid found" passes listChildren: () => [].
+  const scanExe = over.executablePath ?? fakeExe
+  const listChildren = over.realDiscovery
+    ? undefined
+    : over.listChildren ?? (() => [{ pid: NO_PID, name: path.basename(scanExe), cmdline: `"${scanExe}" --remote-debugging-pipe` }])
   const tool = br.buildTmBrowserTool({
     pipelines,
     cfg,
@@ -76,6 +99,7 @@ function makeTool(over = {}) {
     importPlaywright: over.importPlaywright,
     nodeMajor: over.nodeMajor,
     findExecutable: over.discovered ? () => over.executablePath : undefined,
+    listChildren,
     notify: over.notify,
   })
   return { tool, events, stepsRoot }
@@ -220,9 +244,11 @@ function makeFakePw(opts = {}) {
             if (browser._context) browser._context._pages = []
           },
           isConnected: () => !browser._closed,
-          // playwright exposes the OS process here — the ONLY thing that can
-          // prove the browser is really gone (the connection can drop first)
-          process: () => ({ pid: opts.browserPid ?? 0 }),
+          // `process()` is NOT part of playwright-core's Browser — measured on
+          // 1.63 it is `undefined` (that accessor lives on ElectronApplication
+          // and BrowserServer).  The fake mirrors the real shape by default;
+          // tests that want the legacy accessor opt in with `browserPid`.
+          ...(opts.browserPid === undefined ? {} : { process: () => ({ pid: opts.browserPid }) }),
         }
         calls.launchBrowser = browser
         return browser
@@ -388,6 +414,11 @@ async function main() {
     // unknown action -> full verb list
     const unknown = await mk.tool.execute({ action: "teleport" }, ctxNoAsk)
     assert.ok(o(unknown).includes("未知 action") && o(unknown).includes("take_snapshot"), "unknown action lists the snapshot-first surface")
+    // The menu is now DERIVED from the same table the gate reads, because the
+    // hand-written copy did not gain new_page when new_page shipped — and this
+    // refusal line is the only place an agent that forgot the verb can find it.
+    assert.ok(o(unknown).includes("new_page") && o(unknown).includes("close_page"), "unknown action names the multi-tab verbs")
+    assert.equal((o(unknown).match(/ \| /g) ?? []).length + 1, 23, "the derived menu lists every registered verb exactly once")
     // cdp-legacy preference -> import NEVER called
     let legacyToolImports = 0
     const legacyTool = makeTool({
@@ -925,20 +956,171 @@ async function main() {
       // REAL discovery (registry default browser on Windows) — no
       // TM_BROWSER_PATH, no seam: this is the path issue #5 (Edge Beta)
       // actually took, and it must not be propped up by a channel fallback.
-      const mk = makeTool({ realDiscovery: true })
+      const store1 = path.join(root, "real-ledger-1")
+      const mk = makeTool({ realDiscovery: true, blackboardRoot: store1 })
+      const ledgerOf = (dir) => br.browserLedgerFile(dir)
+      /** The pid THIS tool instance launched, read off the ledger — an
+       *  independent witness, so a close verdict cannot be graded against the
+       *  same number it printed. */
+      const launchedPid = (dir) => {
+        try {
+          const lines = fs.readFileSync(ledgerOf(dir), "utf8").split("\n").filter((l) => l.trim())
+          return Number(JSON.parse(lines[lines.length - 1]).pid) || 0
+        } catch {
+          return 0
+        }
+      }
+      // Walking the OS process table is a win32 capability; elsewhere the
+      // caller only asserts the root pid and says so out loud.
+      const winRows = () => {
+        if (process.platform !== "win32") return null
+        const r = spawnSync(
+          "powershell.exe",
+          [
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            "(Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId | ConvertTo-Json -Compress)",
+          ],
+          { encoding: "utf8", windowsHide: true, maxBuffer: 64 * 1024 * 1024 },
+        )
+        if (r.status !== 0 || !String(r.stdout || "").trim()) return null
+        let rows = JSON.parse(r.stdout)
+        if (!Array.isArray(rows)) rows = [rows]
+        return rows
+      }
+      const descendants = (rows, rootPid) => {
+        if (!rows) return []
+        const byParent = new Map()
+        for (const row of rows) {
+          const ppid = Number(row.ParentProcessId)
+          if (!byParent.has(ppid)) byParent.set(ppid, [])
+          byParent.get(ppid).push(Number(row.ProcessId))
+        }
+        const out = []
+        const queue = [rootPid]
+        while (queue.length) {
+          for (const kid of byParent.get(queue.shift()) ?? []) {
+            out.push(kid)
+            queue.push(kid)
+          }
+        }
+        return out
+      }
       try {
         const open = await mk.tool.execute({ action: "open", url: "https://cn.bing.com" }, ctxNoAsk)
         assert.ok(o(open).includes("浏览器已启动"), `real playwright open — got: ${o(open).slice(0, 160)}`)
         console.log(`  (real smoke launched: ${/· (playwright\/[^）]*)/.exec(o(open))?.[1] ?? "n/a"})`)
+        const browserPid = launchedPid(store1)
+        assert.ok(browserPid > 0, "the orphan ledger recorded the pid this session launched")
         if (mk.tool.engineInfo().kind === "playwright") {
           const snap = await mk.tool.execute({ action: "take_snapshot" }, ctxNoAsk)
           assert.ok(/\[uid=e\d+\]/.test(o(snap)), "real ariaSnapshot + uid registry round-trip")
+
+          // (1) multi-tab against a REAL context.  The extra tabs are blank, so
+          //     this leg costs no network and cannot flake on a remote page.
+          const np = o(await mk.tool.execute({ action: "new_page" }, ctxNoAsk))
+          assert.ok(/已新建空白标签页 1（共 2 个/.test(np), `real new_page — got: ${np.slice(0, 200)}`)
+          const lp = o(await mk.tool.execute({ action: "list_pages" }, ctxNoAsk))
+          assert.ok(lp.includes("标签页（2）") && (lp.match(/（当前）/g) ?? []).length === 1, `real list_pages — got: ${lp.slice(0, 240)}`)
+          const cp = o(await mk.tool.execute({ action: "close_page" }, ctxNoAsk))
+          assert.ok(/已关闭，剩 1 个，当前在 0/.test(cp), `real close_page — got: ${cp.slice(0, 200)}`)
+          const last = o(await mk.tool.execute({ action: "close_page" }, ctxNoAsk))
+          assert.ok(/这是最后一个——浏览器仍在运行/.test(last), `closing the last tab must not fake a session end — got: ${last.slice(0, 200)}`)
+          const re = o(await mk.tool.execute({ action: "new_page" }, ctxNoAsk))
+          assert.ok(/共 1 个/.test(re), `a context whose last tab closed must still take a new one — got: ${re.slice(0, 200)}`)
+
+          // (2) the sentence the user caught us getting wrong: 已确认关闭 has to
+          //     mean the OS process is gone, and not just its root pid.
+          const rowsAtClose = winRows()
+          const kids = descendants(rowsAtClose, browserPid)
+          const cl = o(await mk.tool.execute({ action: "close" }, ctxNoAsk))
+          assert.ok(cl.includes("浏览器会话已确认关闭"), `close must EARN 已确认关闭 — got: ${cl.slice(0, 240)}`)
+          assert.ok(cl.includes("浏览器会话已确认关闭"), `close must EARN 已确认关闭 — got: ${cl.slice(0, 240)}`)
+          // playwright's own close() takes the process down before the note is
+          // written, so "早已不在" is the NORMAL honest branch; both wordings
+          // mean the same verified thing, and neither is allowed to be a guess.
+          assert.ok(
+            new RegExp(`进程 ${browserPid} (已退出|早已不在)`).test(cl),
+            `the verdict must name the pid that died — got: ${cl.slice(0, 240)}`,
+          )
+          assert.ok(!br.pidAlive(browserPid), `pid ${browserPid} survived 已确认关闭`)
+          if (rowsAtClose) {
+            const survivors = kids.filter((p) => br.pidAlive(p))
+            assert.equal(survivors.length, 0, `已确认关闭 but ${survivors.length} descendant(s) of ${browserPid} survived: ${survivors.join(",")}`)
+            console.log(`  (real close took pid ${browserPid} and its ${kids.length} descendant process(es))`)
+          } else {
+            console.log(`  (real close took pid ${browserPid}; descendant tree not enumerable on ${process.platform})`)
+          }
         } else {
           console.log(`  (real playwright present but degraded: ${mk.tool.engineInfo().reason})`)
         }
       } finally {
-        await mk.tool.execute({ action: "close" }, ctxNoAsk)
-        await mk.tool.dispose()
+        try {
+          await mk.tool.execute({ action: "close" }, ctxNoAsk)
+        } catch {
+          /* the legs above already graded close */
+        }
+        try {
+          await mk.tool.dispose()
+        } catch {
+          /* teardown best-effort */
+        }
+      }
+
+      // (3) the orphan reaper exactly as the boot path calls it — NO injected
+      //     `alive`, NO injected `kill`.  §23 pins the decision; only a real
+      //     Chromium proves that the default `process.kill` is enough.
+      {
+        const store2 = path.join(root, "real-ledger-2")
+        const mk2 = makeTool({ realDiscovery: true, blackboardRoot: store2 })
+        let victim = 0
+        try {
+          const second = o(await mk2.tool.execute({ action: "open", url: "https://cn.bing.com" }, ctxNoAsk))
+          assert.ok(second.includes("浏览器已启动"), `second real launch — got: ${second.slice(0, 160)}`)
+          victim = launchedPid(store2)
+          assert.ok(victim > 0, "the second session recorded its own pid")
+          const kids = descendants(winRows(), victim)
+          // Now pretend THIS process died while that browser kept living: the
+          // owner is pointed at a pid the OS has already released.  Rewriting
+          // the file (not appending) is what a stale line looks like on disk —
+          // the reaper dedupes by pid, so an appended second line would be
+          // dropped rather than reaped.
+          const deadOwner = spawnSync(process.execPath, ["-e", "0"]).pid
+          assert.ok(deadOwner > 0 && !br.pidAlive(deadOwner), `no released pid to play the dead owner (got ${deadOwner})`)
+          fs.writeFileSync(
+            ledgerOf(store2),
+            JSON.stringify({
+              pid: victim,
+              ownerPid: deadOwner,
+              engine: "playwright",
+              at: Date.now(),
+              // recorded WITH the exe on purpose: the reaper force-kills a whole
+              // tree, so it first proves this pid is still that executable —
+              // against a real msedge, not a stub.
+              exe: br.findBrowserExecutable() ?? "",
+            }) + "\n",
+            "utf8",
+          )
+          const r = br.reapOrphanBrowsers(ledgerOf(store2))
+          assert.ok(r.reaped.includes(victim), `the reaper did not claim pid ${victim} — got ${JSON.stringify(r)}`)
+          assert.ok(await br.waitForPidExit(victim, 5000), `the default kill path left pid ${victim} alive`)
+          const survivors = kids.filter((p) => br.pidAlive(p))
+          assert.equal(survivors.length, 0, `reaped the browser but ${survivors.length} descendant(s) survived: ${survivors.join(",")}`)
+          assert.ok(!fs.existsSync(ledgerOf(store2)), "an emptied ledger removes itself")
+          console.log(`  (real reaper killed orphan pid ${victim} + ${kids.length} descendant(s), default kill path)`)
+        } finally {
+          try {
+            await mk2.tool.execute({ action: "close" }, ctxNoAsk)
+          } catch {
+            /* the victim is already reaped — its verdict is not graded */
+          }
+          try {
+            await mk2.tool.dispose()
+          } catch {
+            /* teardown best-effort */
+          }
+        }
       }
       console.log("  real playwright-core smoke: OK")
     }
@@ -1144,7 +1326,6 @@ async function main() {
   // was still running under OpenCode.exe — pages gone and connection dropped
   // are NOT the same fact as "the process exited".
   {
-    const NO_PID = 0x7fffffe0 // beyond any real pid: pidAlive() is false
     const fx = makeFakePw({ browserPid: NO_PID })
     const mk = makeTool({ importPlaywright: async () => fx.pw, nodeMajor: 22 })
     await mk.tool.execute({ action: "open", url: "https://cn.bing.com" }, ctxNoAsk)
@@ -1191,7 +1372,122 @@ async function main() {
     log("orphan reaper: owner-dead + browser-alive only, ledger rewritten to survivors")
   }
 
-  console.log("browser: OK (engine select/degrade matrix, 18-verb playwright mapping + uid registry on mock pw, route()-based allowlist, persistent-profile policy, prompt pins, evaluate_script consent + redaction, dead-session rebuild, hostless-page refusal, multi-tab new_page/close_page, process-verified close, orphan ledger reaper, full args-schema param surface; real-playwright smoke gated on npm install)")
+  // ---------- 24. the pid route playwright-core does NOT provide ----------
+  {
+    // Measured on the desktop host: `typeof browser.process === "undefined"` —
+    // that accessor is on ElectronApplication / BrowserServer, not Browser.  So
+    // the pid has to come from the OS, anchored on two facts we own: the browser
+    // is OUR child, and it runs the executable WE resolved.  Matching by process
+    // name alone is not allowed — this machine runs a dozen unrelated msedge
+    // trees (the user's own windows, msedgewebview2 under SearchHost.exe and
+    // under a vendor utility).
+    const EXE =
+      process.platform === "win32"
+        ? "C:\\Program Files (x86)\\Microsoft\\Edge Beta\\Application\\msedge.exe"
+        : "/opt/microsoft/msedge"
+    const base = EXE.split(/[\\/]/).pop()
+    const row = (pid, cmdline, name = base) => ({ pid, name, cmdline })
+
+    assert.equal(br.launchedBrowserPid("", { rows: [row(7, `"${EXE}" --x`)] }), 0, "no executable -> no pid (never guess)")
+    assert.equal(br.launchedBrowserPid(EXE, { rows: [] }), 0, "no children -> 0")
+    assert.equal(br.launchedBrowserPid(EXE, { rows: [row(4242, `"${EXE}" --remote-debugging-pipe`)] }), 4242, "our child running our executable IS the browser")
+    assert.equal(
+      br.launchedBrowserPid(EXE, {
+        rows: [row(11, "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe -NoProfile"), row(4242, `"${EXE}" --x`)],
+      }),
+      4242,
+      "another child we spawned (a shell probe) is not mistaken for the browser",
+    )
+    assert.equal(
+      br.launchedBrowserPid(EXE, { rows: [row(10, `"${EXE}" --first`), row(20, `"${EXE}" --second`)] }),
+      20,
+      "two of our browsers (an unreaped session): pids climb, so the highest is this launch",
+    )
+    assert.equal(
+      br.launchedBrowserPid(EXE, { rows: [row(9, "C:\\other\\chrome.exe --x")] }),
+      0,
+      "a row whose command line is a DIFFERENT executable is never adopted, even when its image name matches (the name fallback needs an absent command line)",
+    )
+    assert.equal(br.launchedBrowserPid(EXE, { rows: [row(31, "")] }), 31, "a bare image-name match is accepted when it is the ONLY candidate")
+    assert.equal(br.launchedBrowserPid(EXE, { rows: [row(31, ""), row(32, "")] }), 0, "two name-only candidates: ambiguous -> 0, not a coin flip")
+    assert.equal(br.launchedBrowserPid(EXE.toUpperCase(), { rows: [row(4242, `"${EXE}" --x`)] }), 4242, "the comparison is case-insensitive (Windows paths)")
+
+    // The identity gate: the kill below is a FORCE kill of a whole tree, and an
+    // OS pid is a recyclable number.
+    assert.equal(br.identityMatchesExecutable(EXE, { name: base, cmdline: "" }), true, "same image name -> ours")
+    assert.equal(br.identityMatchesExecutable(EXE, { name: "notepad.exe", cmdline: `"${EXE}" --x` }), true, "the command line still names it -> ours")
+    assert.equal(br.identityMatchesExecutable(EXE, { name: "notepad.exe", cmdline: "notepad.exe notes.txt" }), false, "a recycled pid running something else is NOT ours")
+    assert.equal(br.identityMatchesExecutable(EXE, null), false, "a pid we cannot identify is not ours to kill")
+    assert.equal(br.identityMatchesExecutable("", { name: base, cmdline: base }), false, "no recorded executable -> no match -> no kill")
+
+    // The tree kill: signalling only the root is what left nine msedge
+    // processes behind after the reaper "succeeded".
+    const win = []
+    br.killBrowserTree(4242, { platform: "win32", run: (cmd, a) => win.push([cmd, ...a]) })
+    assert.deepEqual(win, [["taskkill.exe", "/PID", "4242", "/T", "/F"]], "win32 kills the TREE (/T), not just the root")
+    const posix = []
+    br.killBrowserTree(100, {
+      platform: "linux",
+      children: (p) => (p === 100 ? [row(200, ""), row(201, "")] : p === 200 ? [row(300, "")] : []),
+      signal: (p) => posix.push(p),
+    })
+    assert.deepEqual(posix, [300, 201, 200, 100], "POSIX enumerates the tree and signals deepest-first, root last")
+    const none = []
+    br.killBrowserTree(0, { platform: "win32", run: (c, a) => none.push([c, ...a]) })
+    br.killBrowserTree(-1, { platform: "win32", run: (c, a) => none.push([c, ...a]) })
+    br.killBrowserTree(Number.NaN, { platform: "win32", run: (c, a) => none.push([c, ...a]) })
+    assert.equal(none.length, 0, "an unknown/invalid pid is never signalled")
+
+    // …and the reaper honours the gate.
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ident-"))
+    const file = br.browserLedgerFile(dir)
+    const rec = (pid, owner, exe) => JSON.stringify({ pid, ownerPid: owner, engine: "playwright", at: 1, exe })
+    fs.writeFileSync(file, [rec(111, 999, EXE), rec(222, 999, EXE)].join("\n") + "\n")
+    const killed = []
+    const r = br.reapOrphanBrowsers(file, {
+      alive: (p) => p === 111 || p === 222,
+      kill: (p) => killed.push(p),
+      identity: (p) => (p === 111 ? { name: "notepad.exe", cmdline: "notepad.exe notes.txt" } : { name: base, cmdline: `"${EXE}" --x` }),
+    })
+    assert.deepEqual(killed, [222], "the pid that no longer IS our browser is dropped, not force-killed")
+    assert.equal(r.dropped, 1, "…and counted as dropped")
+    // A line written by an older version (no exe column) must still be reaped,
+    // or an upgrade would strand every browser the user already orphaned.
+    fs.writeFileSync(file, JSON.stringify({ pid: 333, ownerPid: 999, engine: "playwright", at: 1 }) + "\n")
+    const killed2 = []
+    br.reapOrphanBrowsers(file, { alive: (p) => p === 333, kill: (p) => killed2.push(p), identity: () => null })
+    assert.deepEqual(killed2, [333], "a legacy ledger line without the exe column is still reclaimed")
+    fs.rmSync(dir, { recursive: true, force: true })
+    log("launch pid without Browser.process(): our child + our executable, identity-checked before a tree kill")
+  }
+
+  // ---------- 25. close may not claim a verification it did not do ----------
+  {
+    const fx = makeFakePw() // no process() — the shape playwright-core 1.63 really has
+    const mk = makeTool({ importPlaywright: async () => fx.pw, nodeMajor: 22, listChildren: () => [] })
+    await mk.tool.execute({ action: "open", url: "https://cn.bing.com" }, ctxNoAsk)
+    const done = o(await mk.tool.execute({ action: "close" }, ctxNoAsk))
+    // The VERIFIED sentence is `浏览器会话已确认关闭（…）`.  The unverified
+    // branch quotes the phrase only to deny it, so the invariant is about that
+    // sentence, not about the substring.
+    assert.ok(!done.includes("浏览器会话已确认关闭"), `an unverifiable close must not borrow the verified sentence — got: ${done.slice(0, 220)}`)
+    assert.ok(done.includes("进程未核验"), "…and it says out loud that the process was never checked")
+    assert.ok(mk.events.some((e) => e.event === "launch_pid" && e.via === "none"), "the pid route is audited, so 'none' shows up in tm_stats")
+
+    const fx2 = makeFakePw()
+    const mk2 = makeTool({ importPlaywright: async () => fx2.pw, nodeMajor: 22 }) // default scan row -> NO_PID
+    await mk2.tool.execute({ action: "open", url: "https://cn.bing.com" }, ctxNoAsk)
+    const done2 = o(await mk2.tool.execute({ action: "close" }, ctxNoAsk))
+    assert.ok(done2.includes("浏览器会话已确认关闭"), `a pid found by the scan earns the verified sentence — got: ${done2.slice(0, 240)}`)
+    assert.ok(done2.includes(`进程 ${NO_PID} 早已不在`), `…and names the pid it checked — got: ${done2.slice(0, 240)}`)
+    assert.ok(
+      mk2.events.some((e) => e.event === "launch_pid" && e.via === "child-scan" && e.pid === NO_PID),
+      "the audit names the route that found the pid",
+    )
+    log("close: 已确认关闭 only when a pid was actually checked; the unverified case says so")
+  }
+
+  console.log("browser: OK (engine select/degrade matrix, 18-verb playwright mapping + uid registry on mock pw, route()-based allowlist, persistent-profile policy, prompt pins, evaluate_script consent + redaction, dead-session rebuild, hostless-page refusal, multi-tab new_page/close_page, process-verified close, orphan ledger reaper, launch-pid scan + identity gate + tree kill, unverified-close honesty, full args-schema param surface; real-playwright smoke gated on npm install)")
 }
 
 main().then(

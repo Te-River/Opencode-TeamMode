@@ -450,7 +450,20 @@ for (const dead of ["bing-int", "sogou", "baidu", "360"]) {
 assert.ok(cfg2.agent["researcher"].prompt.includes("never build a search URL there"), "researcher: dead CN SERPs are named as dead ends, not options")
 assert.ok(cfg2.agent["researcher"].prompt.includes("ONE SEARCH IS A SAMPLE, NOT A SEARCH"), "researcher: multi-query refinement loop is mandatory (no one-shot search)")
 assert.ok(cfg2.agent["researcher"].prompt.includes("个子资源请求被拦截"), "researcher: a trimmed page is reported as gate action, not 'the site has no images'")
-assert.ok(cfg2.agent["researcher"].prompt.includes("已确认关闭 vs 警告：关闭未完全成功"), "researcher: close claims must quote the tool's verified verdict")
+// close now has THREE verdicts, and the third is the one that used to be
+// reported to the user as a success: the tool could not find a pid, so nothing
+// was verified.  A prompt that only knows two of them turns 进程未核验 into
+// "浏览器已关闭".
+assert.ok(
+  cfg2.agent["researcher"].prompt.includes("已确认关闭") &&
+    cfg2.agent["researcher"].prompt.includes("进程未核验") &&
+    cfg2.agent["researcher"].prompt.includes("警告：关闭未完全成功"),
+  "researcher: all three close verdicts are named",
+)
+assert.ok(
+  /Only the first may become "浏览器已关闭"/.test(cfg2.agent["researcher"].prompt),
+  "researcher: an unverified close may not be reported to the user as closed",
+)
 assert.ok(cfg2.agent["researcher"].prompt.includes("there is no headless parameter for you"), "researcher: headless is an operator setting, not a model arg")
 assert.ok(/independent web calls: two unrelated tm_search queries belong in/.test(cfg2.agent["researcher"].prompt), "researcher: independent web calls batch into one round")
 assert.ok(cfg2.agent["researcher"].prompt.includes("Command time budget"), "researcher: command time budget section present")

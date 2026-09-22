@@ -62,7 +62,7 @@
  * tester browser-only (UI verification).
  */
 
-import { execFileSync, spawn, type ChildProcess } from "node:child_process"
+import { execFileSync, spawn, spawnSync, type ChildProcess } from "node:child_process"
 import * as fs from "node:fs"
 import * as os from "node:os"
 import * as path from "node:path"
@@ -454,6 +454,9 @@ export interface BrowserLedgerEntry {
   ownerPid: number
   engine: string
   at: number
+  /** The executable we launched, recorded so a pid that has been recycled to
+   *  an unrelated program is never force-killed. */
+  exe?: string
 }
 
 export function browserLedgerFile(storeRoot: string): string {
@@ -479,10 +482,13 @@ export function reapOrphanBrowsers(
     now?: number
     alive?: (pid: number) => boolean
     kill?: (pid: number) => void
+    /** seam for tests — what a pid currently IS (name + command line) */
+    identity?: (pid: number) => { name: string; cmdline: string } | null
   } = {},
 ): { reaped: number[]; kept: number; dropped: number } {
   const alive = opts.alive ?? pidAlive
-  const kill = opts.kill ?? ((p: number) => process.kill(p))
+  const kill = opts.kill ?? ((p: number) => killBrowserTree(p))
+  const identity = opts.identity ?? procIdentity
   const out = { reaped: [] as number[], kept: 0, dropped: 0 }
   let raw: string
   try {
@@ -512,6 +518,15 @@ export function reapOrphanBrowsers(
       continue
     }
     if (owner > 0 && !alive(owner)) {
+      // An OS pid is a recyclable number, and the kill below is a FORCE kill of
+      // a whole process tree.  So the entry has to still describe the
+      // executable we launched: if it does not, that pid belongs to an
+      // unrelated program now and killing it would be our bug, not our job.
+      const exe = String(e?.exe ?? "").trim()
+      if (exe && !identityMatchesExecutable(exe, identity(pid))) {
+        out.dropped++
+        continue
+      }
       try {
         kill(pid)
         out.reaped.push(pid)
@@ -548,7 +563,11 @@ export function pidAlive(pid: number): boolean {
 /** Wait up to `ms` for a pid to disappear, then terminate it once and give it
  *  a short grace. Returns whether the process is GONE — the only honest basis
  *  for a "已确认关闭" claim. */
-export async function waitForPidExit(pid: number, ms = 3000, kill: (p: number) => void = (p) => process.kill(p)): Promise<boolean> {
+export async function waitForPidExit(
+  pid: number,
+  ms = 3000,
+  kill: (p: number) => void = (p) => killBrowserTree(p),
+): Promise<boolean> {
   if (!pidAlive(pid)) return true
   const deadline = Date.now() + Math.max(0, ms)
   while (Date.now() < deadline && pidAlive(pid)) {
@@ -562,6 +581,232 @@ export async function waitForPidExit(pid: number, ms = 3000, kill: (p: number) =
   }
   await new Promise<void>((r) => setTimeout(r, 250))
   return !pidAlive(pid)
+}
+
+/** One row of the OS process table, as far as the pid lookup below needs it. */
+export interface ChildProcRow {
+  pid: number
+  name: string
+  cmdline: string
+}
+
+/** What a pid actually is right now — its image name and command line, or null
+ *  when the pid is gone.  Used to prove a recorded pid is still the browser we
+ *  launched before anything force-kills it (see reapOrphanBrowsers). */
+function procIdentity(pid: number): { name: string; cmdline: string } | null {
+  const p = Number(pid)
+  if (!Number.isInteger(p) || p <= 0) return null
+  if (process.platform === "win32") {
+    const script = `Get-CimInstance Win32_Process -Filter 'ProcessId=${p}' | Select-Object Name,CommandLine | ConvertTo-Json -Compress`
+    const r = spawnSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", script], {
+      encoding: "utf8",
+      windowsHide: true,
+      timeout: 6000,
+      maxBuffer: 4 * 1024 * 1024,
+    })
+    if (r.status !== 0) return null
+    const text = String(r.stdout ?? "").trim()
+    if (!text) return null
+    try {
+      const row = JSON.parse(text) as Record<string, unknown> | Array<Record<string, unknown>>
+      const one = (Array.isArray(row) ? row[0] : row) ?? {}
+      return { name: String(one?.Name ?? ""), cmdline: String(one?.CommandLine ?? "") }
+    } catch {
+      return null
+    }
+  }
+  try {
+    const raw = fs.readFileSync(`/proc/${p}/cmdline`)
+    const parts = String(raw).split("\0").filter((s) => s !== "")
+    if (!parts.length) return null
+    return { name: path.basename(parts[0]), cmdline: parts.join(" ") }
+  } catch {
+    return null
+  }
+}
+
+/** Does this identity look like the executable we launched?  Compared on the
+ *  file NAME: the command line's quoting and path form can differ from ours
+ *  (8.3-short vs long path, escaped quotes), while a pid recycled by an
+ *  unrelated program almost never carries the same image name.  A missing
+ *  identity counts as NO — the safe answer before a force-kill. */
+export function identityMatchesExecutable(
+  exePath: string,
+  ident: { name: string; cmdline: string } | null,
+): boolean {
+  const want = path.basename(String(exePath ?? "")).toLowerCase()
+  if (!want || !ident) return false
+  const name = String(ident.name ?? "").toLowerCase()
+  const cmd = String(ident.cmdline ?? "").toLowerCase()
+  return name === want || cmd.includes(want)
+}
+
+/** The same question asked of a live pid (see identityMatchesExecutable). */
+export function pidMatchesExecutable(pid: number, exePath: string): boolean {
+  return identityMatchesExecutable(exePath, procIdentity(pid))
+}
+
+export interface KillTreeOpts {
+  platform?: NodeJS.Platform
+  /** seam for tests — how the platform tool gets invoked */
+  run?: (cmd: string, args: string[]) => void
+  /** seam for tests — the POSIX child enumeration */
+  children?: (pid: number) => ChildProcRow[]
+  /** seam for tests — how a single process gets signalled */
+  signal?: (pid: number) => void
+}
+
+/** Terminate a browser process AND everything it spawned.
+ *
+ *  `process.kill(pid)` signals the ROOT only.  Measured on the desktop host the
+ *  day this was written: the orphan reaper's default kill took the msedge root
+ *  down and left all NINE of its child processes running — which is exactly the
+ *  leftover the reaper exists to remove.  The graceful path does not have this
+ *  problem (playwright's `browser.close()` shuts its children down first, and
+ *  the real-host leg verifies it), so this is the fallback's job.
+ *
+ *  win32: `taskkill /T /F` walks the tree for us.
+ *  POSIX: no tree flag, so descendants are enumerated and killed deepest-first.
+ *  Best-effort throughout: a process that vanishes mid-walk is not an error.
+ */
+export function killBrowserTree(pid: number, opts: KillTreeOpts = {}): void {
+  const p = Number(pid)
+  if (!Number.isInteger(p) || p <= 0) return
+  const run = opts.run ?? ((cmd: string, args: string[]) => {
+    spawnSync(cmd, args, { windowsHide: true, timeout: 8000 })
+  })
+  if ((opts.platform ?? process.platform) === "win32") {
+    try {
+      run("taskkill.exe", ["/PID", String(p), "/T", "/F"])
+    } catch {
+      /* gone already, or not ours to signal */
+    }
+    return
+  }
+  const children = opts.children ?? childProcRows
+  const order: number[] = []
+  const queue: number[] = [p]
+  while (queue.length) {
+    const cur = queue.shift() as number
+    let kids: ChildProcRow[] = []
+    try {
+      kids = children(cur) ?? []
+    } catch {
+      kids = []
+    }
+    for (const k of kids) {
+      const kid = Number(k?.pid)
+      if (Number.isInteger(kid) && kid > 0 && kid !== p && !order.includes(kid)) {
+        order.push(kid)
+        queue.push(kid)
+      }
+    }
+  }
+  const signal = opts.signal ?? ((p: number) => process.kill(p))
+  for (const kid of order.reverse()) {
+    try {
+      signal(kid)
+    } catch {
+      /* racy by design — the re-check above is what decides */
+    }
+  }
+  try {
+    signal(p)
+  } catch {
+    /* already gone */
+  }
+}
+
+/** Children of `ppid`, straight from the OS.  Best-effort by design: a host
+ *  without PowerShell/CIM or a refused query returns [], and the caller then
+ *  reports that the process could not be verified rather than guessing. */
+function childProcRows(ppid: number): ChildProcRow[] {
+  if (process.platform === "win32") {
+    // The filter runs server-side, so the reply holds ONLY our own children —
+    // never a full-table scan, never a name match on someone else's browser.
+    const script =
+      `Get-CimInstance Win32_Process -Filter 'ParentProcessId=${ppid}' | ` +
+      "Select-Object ProcessId,Name,CommandLine | ConvertTo-Json -Compress"
+    const r = spawnSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", script], {
+      encoding: "utf8",
+      windowsHide: true,
+      timeout: 6000,
+      maxBuffer: 8 * 1024 * 1024,
+    })
+    if (r.status !== 0) return []
+    const text = String(r.stdout ?? "").trim()
+    if (!text) return []
+    let rows: unknown
+    try {
+      rows = JSON.parse(text)
+    } catch {
+      return []
+    }
+    const list = Array.isArray(rows) ? rows : [rows]
+    return list
+      .map((x) => ({
+        pid: Number((x as { ProcessId?: unknown })?.ProcessId) || 0,
+        name: String((x as { Name?: unknown })?.Name ?? ""),
+        cmdline: String((x as { CommandLine?: unknown })?.CommandLine ?? ""),
+      }))
+      .filter((x) => x.pid > 0)
+  }
+  const r = spawnSync("ps", ["-eo", "pid=,ppid=,args="], { encoding: "utf8", timeout: 4000 })
+  if (r.status !== 0) return []
+  const out: ChildProcRow[] = []
+  for (const line of String(r.stdout ?? "").split("\n")) {
+    const m = /^\s*(\d+)\s+(\d+)\s+(.+)$/.exec(line)
+    if (!m || Number(m[2]) !== ppid) continue
+    const cmdline = m[3].trim()
+    out.push({ pid: Number(m[1]), name: path.basename(cmdline.split(/\s+/)[0] ?? ""), cmdline })
+  }
+  return out
+}
+
+/** The OS pid behind a playwright-launched browser.
+ *
+ *  playwright-core has NO `Browser.process()` — that accessor belongs to
+ *  ElectronApplication and BrowserServer.  Measured on the desktop host with a
+ *  real 1.63 session: `typeof browser.process === "undefined"`, so the pid
+ *  stayed 0, the orphan ledger recorded nothing, and close printed 已确认关闭
+ *  over a browser process it had never checked.
+ *
+ *  The only exact anchor available is that the browser is a DIRECT CHILD of
+ *  this process, started from the executable WE resolved.  That matters: this
+ *  machine carries a dozen unrelated msedge trees (the user's own windows,
+ *  msedgewebview2 under SearchHost.exe and under a vendor utility), so matching
+ *  by process name would be a loaded gun pointed at them.
+ *
+ *  0 = not found, and every caller treats 0 as "no verification" — never as
+ *  "verified gone".
+ */
+export function launchedBrowserPid(
+  executablePath: string,
+  opts: { ppid?: number; rows?: ChildProcRow[] } = {},
+): number {
+  const exe = String(executablePath ?? "").trim()
+  const base = path.basename(exe).toLowerCase()
+  if (!base) return 0
+  let rows: ChildProcRow[]
+  try {
+    rows = opts.rows ?? childProcRows(opts.ppid ?? process.pid)
+  } catch {
+    return 0
+  }
+  const mine = (rows ?? []).filter((r) => Number.isFinite(Number(r?.pid)) && Number(r.pid) > 0)
+  const byPath = mine.filter((r) => String(r.cmdline ?? "").toLowerCase().includes(exe.toLowerCase()))
+  if (byPath.length === 1) return Number(byPath[0].pid)
+  // More than one of OUR children from the same executable = an older session
+  // that has not been reaped yet.  pids climb, so the highest is this launch.
+  if (byPath.length > 1) return Math.max(...byPath.map((r) => Number(r.pid)))
+  // Name fallback, and only for rows where the OS gave us NO command line at
+  // all.  A row that carries a command line for some OTHER executable is
+  // evidence against, not a missing clue — adopting it would mean signalling a
+  // browser we never launched.
+  const byName = mine.filter(
+    (r) => String(r.cmdline ?? "").trim() === "" && String(r.name ?? "").toLowerCase() === base,
+  )
+  return byName.length === 1 ? Number(byName[0].pid) : 0
 }
 /** Consent is per BROWSER SESSION, not per call: one dialog when the lead
  *  decides to script the page, then the round stops paying for it. */
@@ -931,7 +1176,7 @@ export const BROWSER_PLAYWRIGHT_ACTIONS = [
   "handle_dialog",
 ] as const
 
-/** Legacy compat verbs that ride on top of the 16 (both engines). */
+/** Legacy compat verbs that ride on top of the 18 (both engines). */
 export const BROWSER_COMPAT_ACTIONS = ["open", "navigate", "read", "screenshot", "close"] as const
 
 /** What the cdp-legacy fallback can still do (R2: degradation must keep the
@@ -1006,6 +1251,11 @@ export function buildTmBrowserTool(deps: {
    *  the override is read from env so the channel-substitution rule stays
    *  honest in tests too). */
   findExecutable?: (env: Record<string, string | undefined>) => string | null
+  /** seam for tests — the OS child listing the launch-pid scan reads.  Without
+   *  it a mocked playwright (which has no `process()` accessor, exactly like
+   *  the real 1.63) would make every unit test scan the developer's real
+   *  process table and possibly adopt a live browser's pid. */
+  listChildren?: (ppid: number) => ChildProcRow[]
 }): {
   description: string
   args: Record<string, unknown>
@@ -1032,9 +1282,9 @@ export function buildTmBrowserTool(deps: {
     // throw on the way to opening a browser.
     return typeof root === "string" && root ? browserLedgerFile(root) : ""
   })()
-  const recordBrowser = (pid: number, engine: string): void => {
+  const recordBrowser = (pid: number, engine: string, exe: string): void => {
     if (!ledgerFile || !Number.isFinite(pid) || pid <= 0) return
-    appendBrowserLedger(ledgerFile, { pid, ownerPid: process.pid, engine, at: Date.now() })
+    appendBrowserLedger(ledgerFile, { pid, ownerPid: process.pid, engine, at: Date.now(), exe })
   }
   if (ledgerFile && String(env.TM_BROWSER_REAP ?? "on").trim().toLowerCase() !== "off") {
     const r = reapOrphanBrowsers(ledgerFile)
@@ -1316,7 +1566,7 @@ export function buildTmBrowserTool(deps: {
       }
     })
 
-    recordBrowser(Number(child.pid ?? 0), "cdp-legacy")
+    recordBrowser(Number(child.pid ?? 0), "cdp-legacy", executable)
     const sess: ActiveSession = {
       kind: "cdp-legacy",
       currentUrl: "about:blank",
@@ -1503,11 +1753,22 @@ export function buildTmBrowserTool(deps: {
           return null
         }
       })()
-    const browserPid =
-      Number(
+    const { pid: browserPid, via: pidRoute } = (() => {
+      // playwright's own accessor first — it does not exist on 1.63, so the OS
+      // scan is what answers today.  Which route replied is AUDITED: a silent
+      // fall-back to 0 would put us straight back to printing 已确认关闭 about a
+      // process nobody looked at.
+      const pwPid = Number(
         (owningBrowser as { process?: () => { pid?: unknown } } | null | undefined)?.process?.()?.pid ?? 0,
       ) || 0
-    recordBrowser(browserPid, persistentDir ? "playwright-persistent" : "playwright")
+      if (pwPid > 0) return { pid: pwPid, via: "playwright" }
+      const scan = launchedBrowserPid(target.executablePath ?? executable, {
+        rows: deps.listChildren ? deps.listChildren(process.pid) : undefined,
+      })
+      return { pid: scan, via: scan > 0 ? "child-scan" : "none" }
+    })()
+    traj({ step_id: "browser", event: "launch_pid", via: pidRoute, pid: browserPid })
+    recordBrowser(browserPid, persistentDir ? "playwright-persistent" : "playwright", executable)
     const state = {
       page: context.pages()[0] ?? (await context.newPage()),
       dialogs: [] as PwDialog[],
@@ -1845,12 +2106,24 @@ export function buildTmBrowserTool(deps: {
                 ? `进程 ${browserPid} 已退出`
                 : `进程 ${browserPid} 早已不在`
               : `进程 ${browserPid} 仍在（已尝试终止但系统未放行）`
-            : "未能取得浏览器 pid"
+            : "未取得浏览器 pid，进程未核验"
+        // The pid check is what makes the word 确认 mean anything.  An
+        // unverifiable close must not borrow the verified sentence, because an
+        // agent quotes this line to the user as proof the window is gone.
+        const verified = browserPid > 0 && processGone
         const closed = errs.length === 0 && alivePages === 0 && !connected && processGone
         const profile = persistentDir
           ? `持久配置目录已保留（下次 open 复用登录态）：${persistentDir}`
           : "临时配置目录由 playwright 自行回收"
-        if (closed) return { closed: true, text: `浏览器会话已确认关闭（${sess.label} · ${pidNote}）；${profile}。` }
+        if (closed && verified) return { closed: true, text: `浏览器会话已确认关闭（${sess.label} · ${pidNote}）；${profile}。` }
+        if (closed) {
+          return {
+            closed: false,
+            text:
+              `连接与窗口已释放，但进程未核验（${sess.label} · ${pidNote}）——这次没拿到浏览器 pid，` +
+              `所以这句不是"已确认关闭"。若桌面上窗口仍在请手动关闭；反复出现可换 TM_BROWSER_ENGINE=cdp-legacy 试一次。${profile}。`,
+          }
+        }
         return {
           closed: false,
           text:
@@ -1924,6 +2197,10 @@ export function buildTmBrowserTool(deps: {
   }
 
   const ALL_ACTIONS = new Set<string>([...BROWSER_PLAYWRIGHT_ACTIONS, ...BROWSER_COMPAT_ACTIONS, "navigate_page"])
+  // The menu is derived from the SAME table the gate below reads.  A
+  // hand-written copy drifted the day `new_page` landed: an agent that mistyped
+  // a verb was shown a list that did not contain the capability it wanted.
+  const ACTION_MENU = [...ALL_ACTIONS].join(" | ")
 
   const execute = async (rawArgs: Record<string, unknown>, ctx: unknown): Promise<ToolResult> => {
     try {
@@ -2010,7 +2287,7 @@ export function buildTmBrowserTool(deps: {
           tmError(
             tool,
             "args",
-            `未知 action "${String(action).slice(0, 30)}"——可用: open | navigate | take_snapshot | click | fill | hover | drag | press_key | select_page | upload_file | wait_for | evaluate_script | list_console_messages | list_network_requests | list_pages | take_screenshot | handle_dialog | read | screenshot | close（快照优先：先 take_snapshot，按 [uid=…] 寻址）`,
+            `未知 action "${String(action).slice(0, 30)}"——可用: ${ACTION_MENU}（快照优先：先 take_snapshot，按 [uid=…] 寻址）`,
           ),
         )
       }
