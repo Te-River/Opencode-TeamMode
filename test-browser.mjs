@@ -156,6 +156,11 @@ function makeFakePw(opts = {}) {
       url: () => p._url,
       title: () => Promise.resolve(`title<${p._url}>`),
       bringToFront: () => (p.brought++, Promise.resolve()),
+      // close_page needs a faithful tab: it leaves the context's list
+      close: async () => {
+        p._closed = true
+        if (p._ctx) p._ctx._pages = p._ctx._pages.filter((x) => x !== p)
+      },
     }
     return p
   }
@@ -170,7 +175,15 @@ function makeFakePw(opts = {}) {
         if (opts.routeThrows) throw new Error("route registration refused (fake)")
       },
       pages: () => context._pages,
-      newPage: async () => page0,
+      newPage: async () => {
+        // a faithful new tab: a distinct page appended to the context, which is
+        // exactly what new_page has to be for multi-tab to mean anything
+        const p = mkPage("about:blank", `p${context._pages.length}`)
+        p._ctx = context
+        context._pages.push(p)
+        calls.newPage = (calls.newPage ?? 0) + 1
+        return p
+      },
       // a faithful close: the real context drops its pages AND reports
       // disconnected — tm_browser's verified close verdict reads that state
       close: async () => {
@@ -180,6 +193,8 @@ function makeFakePw(opts = {}) {
         return true
       },
     }
+    page0._ctx = context
+    page1._ctx = context
     ctxRef = context
     return context
   }
@@ -205,6 +220,9 @@ function makeFakePw(opts = {}) {
             if (browser._context) browser._context._pages = []
           },
           isConnected: () => !browser._closed,
+          // playwright exposes the OS process here — the ONLY thing that can
+          // prove the browser is really gone (the connection can drop first)
+          process: () => ({ pid: opts.browserPid ?? 0 }),
         }
         calls.launchBrowser = browser
         return browser
@@ -283,15 +301,18 @@ async function main() {
     log("discovery layer intact: Chromium-family filter + registry/desktop template stripping + override + headless matrix")
   }
 
-  // ---------- 3. 16-verb alignment (R2 mapping table) ----------
+  // ---------- 3. 18-verb alignment (R2 mapping table) ----------
   {
-    const R2_16 = [
+    const R2_18 = [
       "navigate_page", "take_snapshot", "click", "fill", "hover", "drag", "press_key",
-      "select_page", "upload_file", "wait_for", "evaluate_script", "list_console_messages",
-      "list_network_requests", "list_pages", "take_screenshot", "handle_dialog",
+      "select_page", "new_page", "close_page", "upload_file", "wait_for", "evaluate_script",
+      "list_console_messages", "list_network_requests", "list_pages", "take_screenshot", "handle_dialog",
     ]
-    assert.deepEqual([...br.BROWSER_PLAYWRIGHT_ACTIONS].sort(), [...R2_16].sort(), "chrome-devtools-mcp 16 verbs, byte-identical names")
+    assert.deepEqual([...br.BROWSER_PLAYWRIGHT_ACTIONS].sort(), [...R2_18].sort(), "chrome-devtools-mcp 18 verbs, byte-identical names")
     const legacy = new Set(br.BROWSER_LEGACY_ACTIONS)
+    for (const v of ["new_page", "close_page"]) {
+      assert.ok(!legacy.has(v), `${v} is playwright-only — cdp-legacy has no target create/close path, and it must say so rather than half-work`)
+    }
     for (const v of ["navigate_page", "take_screenshot", "list_pages", "evaluate_script"]) {
       assert.ok(legacy.has(v), `cdp-legacy keeps the ${v} alias (no §6o regression surface shrinks)`)
     }
@@ -1084,7 +1105,93 @@ async function main() {
     log("evaluate_script on a hostless page: refused without a dialog")
   }
 
-  console.log("browser: OK (engine select/degrade matrix, 16-verb playwright mapping + uid registry on mock pw, route()-based allowlist, persistent-profile policy, prompt pins, evaluate_script consent + redaction, dead-session rebuild, hostless-page refusal, full args-schema param surface; real-playwright smoke gated on npm install)")
+  // ---------- 21. multi-tab: new_page / close_page ----------
+  // The user asked for it directly: `open` on a live session only navigates
+  // the CURRENT tab, so holding two pages at once was impossible.
+  {
+    const fx = makeFakePw()
+    const mk = makeTool({ importPlaywright: async () => fx.pw, nodeMajor: 22 })
+    await mk.tool.execute({ action: "open", url: "https://cn.bing.com" }, ctxNoAsk)
+    const before = fx.__ctx._pages.length
+    const t2 = await mk.tool.execute({ action: "new_page", url: "https://cn.bing.com/x" }, ctxNoAsk)
+    assert.equal(fx.__ctx._pages.length, before + 1, "new_page adds a DISTINCT tab (the mock used to hand back page0)")
+    assert.ok(o(t2).includes("已新建标签页") && o(t2).includes("并导航"), "…and reports create + navigate")
+    assert.ok(o(t2).includes("当前在它上面"), "…and the new tab is the current one")
+    const blank = await mk.tool.execute({ action: "new_page" }, ctxNoAsk)
+    assert.ok(o(blank).includes("空白标签页"), "new_page without a url is a blank tab, not an args error")
+    const listed = await mk.tool.execute({ action: "list_pages" }, ctxNoAsk)
+    assert.ok(o(listed).includes(`标签页（${before + 2}）`), "list_pages counts the tabs")
+    const closedOne = await mk.tool.execute({ action: "close_page", index: 0 }, ctxNoAsk)
+    assert.ok(o(closedOne).includes("已关闭，剩"), "close_page reports the remainder")
+    assert.equal(fx.__ctx._pages.length, before + 1, "…and the tab really left the context")
+    assert.ok(o(closedOne).includes("当前在"), "…and names which tab is current now")
+    const oob = await mk.tool.execute({ action: "close_page", index: 99 }, ctxNoAsk)
+    assert.ok(o(oob).includes("越界"), "an out-of-range index is refused, never silently ignored")
+    // closing the LAST tab must not claim the browser closed
+    let guard = 0
+    while (fx.__ctx._pages.length > 1 && guard++ < 10) await mk.tool.execute({ action: "close_page", index: 0 }, ctxNoAsk)
+    assert.equal(fx.__ctx._pages.length, 1, "down to exactly one tab")
+    const last = await mk.tool.execute({ action: "close_page", index: 0 }, ctxNoAsk)
+    assert.ok(o(last).includes("这是最后一个") && o(last).includes("浏览器仍在运行"), "the last tab says the browser is still up — close is a different verb")
+    assert.ok(o(last).includes('action:"close"'), "…and points at the verb that ends the session")
+    const empty = await mk.tool.execute({ action: "close_page", index: 0 }, ctxNoAsk)
+    assert.ok(o(empty).includes("越界"), "with no tabs left, close_page says so instead of inventing a success")
+    log("multi-tab: new_page/close_page with honest current-tab and last-tab semantics")
+  }
+
+  // ---------- 22. close verifies the PROCESS, not just the connection ----------
+  // Live proof this was needed: close printed 已确认关闭 while an msedge tree
+  // was still running under OpenCode.exe — pages gone and connection dropped
+  // are NOT the same fact as "the process exited".
+  {
+    const NO_PID = 0x7fffffe0 // beyond any real pid: pidAlive() is false
+    const fx = makeFakePw({ browserPid: NO_PID })
+    const mk = makeTool({ importPlaywright: async () => fx.pw, nodeMajor: 22 })
+    await mk.tool.execute({ action: "open", url: "https://cn.bing.com" }, ctxNoAsk)
+    const done = await mk.tool.execute({ action: "close" }, ctxNoAsk)
+    assert.ok(o(done).includes("已确认关闭"), "with the process gone the verdict is a real confirmation")
+    assert.ok(new RegExp(`进程 ${NO_PID} 早已不在`).test(o(done)), "…and it names the pid it actually checked")
+    assert.equal(br.pidAlive(NO_PID), false, "pidAlive: a bogus pid is dead, not 'unknown'")
+    assert.equal(br.pidAlive(process.pid), true, "pidAlive: our own pid is alive")
+    assert.equal(br.pidAlive(0), false, "pidAlive: pid 0 is never a browser")
+    assert.equal(await br.waitForPidExit(NO_PID), true, "a pid that is not there needs no waiting")
+    let killed = 0
+    const still = await br.waitForPidExit(process.pid, 150, () => {
+      killed++
+    })
+    assert.equal(still, false, "a live pid that survives the wait is NOT reported as exited")
+    assert.equal(killed, 1, "…and exactly one terminate was attempted (never a retry storm)")
+    log("close verifies the OS process: pid named in the verdict, live pid never declared gone")
+  }
+
+  // ---------- 23. orphan browsers: reclaimed by OUR ledger, never by name ----------
+  {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "reap-"))
+    const file = br.browserLedgerFile(dir)
+    const rec = (pid, owner) => JSON.stringify({ pid, ownerPid: owner, engine: "playwright", at: 1 })
+    fs.writeFileSync(
+      file,
+      [rec(111, 999), rec(222, process.pid), rec(333, 999), "torn-line", rec(222, process.pid)].join("\n") + "\n",
+    )
+    const alive = new Set([111, 222, process.pid]) // 333 already exited, 999 is gone
+    const killed = []
+    const r = br.reapOrphanBrowsers(file, { alive: (p) => alive.has(p), kill: (p) => killed.push(p) })
+    assert.deepEqual(killed, [111], "only the entry whose OWNER process is dead is terminated")
+    assert.equal(r.kept, 1, "a browser owned by a LIVE process is left alone (two windows, one workspace)")
+    assert.equal(r.dropped, 2, "an exited browser and a duplicate pid are dropped from the ledger, not killed")
+    const left = fs.readFileSync(file, "utf8").trim().split("\n")
+    assert.equal(left.length, 1, "the rewritten ledger holds only what is still live")
+    assert.ok(left[0].includes('"pid":222'), "…and it is the survivor")
+    assert.deepEqual(br.reapOrphanBrowsers(path.join(dir, "nope.jsonl"), {}), { reaped: [], kept: 0, dropped: 0 }, "no ledger is a no-op, never a throw")
+    // all dead → the file goes away instead of accumulating
+    fs.writeFileSync(file, rec(444, 999) + "\n")
+    const r2 = br.reapOrphanBrowsers(file, { alive: () => false, kill: () => {} })
+    assert.equal(r2.dropped, 1, "an already-exited browser is dropped")
+    assert.ok(!fs.existsSync(file), "an empty ledger is removed rather than left as a tombstone")
+    log("orphan reaper: owner-dead + browser-alive only, ledger rewritten to survivors")
+  }
+
+  console.log("browser: OK (engine select/degrade matrix, 18-verb playwright mapping + uid registry on mock pw, route()-based allowlist, persistent-profile policy, prompt pins, evaluate_script consent + redaction, dead-session rebuild, hostless-page refusal, multi-tab new_page/close_page, process-verified close, orphan ledger reaper, full args-schema param surface; real-playwright smoke gated on npm install)")
 }
 
 main().then(

@@ -376,11 +376,11 @@ export async function buildMemoryArgsSchema(): Promise<Record<string, unknown>> 
 export async function buildBrowserArgsSchema(): Promise<Record<string, unknown>> {
   const z = await loadZod()
   const ACTION_LIST =
-    "navigate_page | take_snapshot | click | fill | hover | drag | press_key | select_page | upload_file | wait_for | evaluate_script | list_console_messages | list_network_requests | list_pages | take_screenshot | handle_dialog (16 playwright verbs) | open | navigate | read | screenshot | close (compat verbs)."
+    "navigate_page | take_snapshot | click | fill | hover | drag | press_key | select_page | new_page | close_page | upload_file | wait_for | evaluate_script | list_console_messages | list_network_requests | list_pages | take_screenshot | handle_dialog (18 playwright verbs) | open | navigate | read | screenshot | close (compat verbs)."
   if (!z) {
     return {
       action: { descriptor: `action: ${ACTION_LIST} (required)` },
-      url: { descriptor: "url: string (open/navigate/navigate_page, allowlisted https)" },
+      url: { descriptor: "url: string (open/navigate/navigate_page/new_page, allowlisted https)" },
       image: { descriptor: "image: true with take_screenshot — inline the PNG pixels in this result" },
       uid: { descriptor: "uid: snapshot [uid=eN] token (click/fill/hover/drag/upload_file/wait_for)" },
       selector: { descriptor: "selector: CSS/text locator escape hatch (only when a snapshot cannot express the node)" },

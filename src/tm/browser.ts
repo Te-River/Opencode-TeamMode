@@ -12,10 +12,10 @@
  *     verbatim as the fallback.  On cdp-legacy only the core subset works
  *     (open/navigate/read/screenshot/close + navigate_page/take_screenshot/
  *     list_pages/evaluate_script aliases); the snapshot-first actions
- *     (take_snapshot + uid addressing, 16-verb chrome-devtools-mcp surface)
+ *     (take_snapshot + uid addressing, 18-verb chrome-devtools-mcp surface)
  *     require the playwright engine.
  *
- * Action surface aligns with chrome-devtools-mcp's 16 verbs (R2 mapping):
+ * Action surface aligns with chrome-devtools-mcp's 18 verbs (R2 mapping):
  *   navigate_page · take_snapshot · click · fill · hover · drag ·
  *   press_key · select_page · upload_file · wait_for · evaluate_script ·
  *   list_console_messages · list_network_requests · list_pages ·
@@ -434,6 +434,135 @@ export function redactEvalResult(text: string): { text: string; masked: string[]
   return { text: out, masked: kinds }
 }
 
+// ---------- orphan browsers ------------------------------------------------
+//
+// A plugin process that dies (host restart, crash, the "browser has been
+// closed" class of failure) leaves the browser it launched RUNNING: measured on
+// a real machine, nine msedge processes under a scoped temp profile whose
+// parent pid no longer existed. Nothing reaped them, and the user is left with
+// invisible browsers holding RAM.
+//
+// The ledger is deliberately narrow: WE record the pid WE launched together
+// with OUR process pid, and a boot pass may only terminate an entry whose
+// OWNER pid is dead while its BROWSER pid is alive. That is the definition of
+// an orphan, and it is safe when two OpenCode windows share one workspace —
+// the other process is alive, so its browsers are not ours to touch. Nothing
+// here ever scans the system by process name or profile prefix.
+
+export interface BrowserLedgerEntry {
+  pid: number
+  ownerPid: number
+  engine: string
+  at: number
+}
+
+export function browserLedgerFile(storeRoot: string): string {
+  return path.join(storeRoot, "browsers.jsonl")
+}
+
+/** Best-effort append: a ledger that cannot be written must never cost the
+ *  user their browser session. */
+export function appendBrowserLedger(file: string, rec: BrowserLedgerEntry): void {
+  try {
+    fs.mkdirSync(path.dirname(file), { recursive: true })
+    fs.appendFileSync(file, JSON.stringify(rec) + "\n", "utf8")
+  } catch {
+    /* observability + reclamation only */
+  }
+}
+
+/** Read the ledger, terminate the orphans, and rewrite what is still live.
+ *  Returns the counts so the caller can log them; never throws. */
+export function reapOrphanBrowsers(
+  file: string,
+  opts: {
+    now?: number
+    alive?: (pid: number) => boolean
+    kill?: (pid: number) => void
+  } = {},
+): { reaped: number[]; kept: number; dropped: number } {
+  const alive = opts.alive ?? pidAlive
+  const kill = opts.kill ?? ((p: number) => process.kill(p))
+  const out = { reaped: [] as number[], kept: 0, dropped: 0 }
+  let raw: string
+  try {
+    raw = fs.readFileSync(file, "utf8")
+  } catch {
+    return out
+  }
+  const survivors: BrowserLedgerEntry[] = []
+  const seen = new Set<number>()
+  for (const line of raw.split("\n")) {
+    if (!line.trim()) continue
+    let e: BrowserLedgerEntry
+    try {
+      e = JSON.parse(line) as BrowserLedgerEntry
+    } catch {
+      continue // a torn line is not an instruction to kill anything
+    }
+    const pid = Number(e?.pid)
+    const owner = Number(e?.ownerPid)
+    if (!Number.isFinite(pid) || pid <= 0 || seen.has(pid)) {
+      out.dropped++
+      continue
+    }
+    seen.add(pid)
+    if (!alive(pid)) {
+      out.dropped++ // browser exited on its own — the entry is history
+      continue
+    }
+    if (owner > 0 && !alive(owner)) {
+      try {
+        kill(pid)
+        out.reaped.push(pid)
+      } catch {
+        survivors.push(e) // not ours to signal (or already gone) — keep the record, say nothing false
+      }
+      continue
+    }
+    survivors.push(e)
+  }
+  out.kept = survivors.length
+  try {
+    if (survivors.length) fs.writeFileSync(file, survivors.map((s) => JSON.stringify(s) + "\n").join(""), "utf8")
+    else fs.rmSync(file, { force: true })
+  } catch {
+    /* the next boot retries */
+  }
+  return out
+}
+
+/** Is this OS pid still alive? `process.kill(pid, 0)` is the portable probe:
+ *  ESRCH means gone, EPERM means alive but owned by someone else — both are
+ *  answers, and "no answer" is never one of them. */
+export function pidAlive(pid: number): boolean {
+  if (!Number.isFinite(pid) || pid <= 0) return false
+  try {
+    process.kill(pid, 0)
+    return true
+  } catch (err) {
+    return (err as { code?: string })?.code === "EPERM"
+  }
+}
+
+/** Wait up to `ms` for a pid to disappear, then terminate it once and give it
+ *  a short grace. Returns whether the process is GONE — the only honest basis
+ *  for a "已确认关闭" claim. */
+export async function waitForPidExit(pid: number, ms = 3000, kill: (p: number) => void = (p) => process.kill(p)): Promise<boolean> {
+  if (!pidAlive(pid)) return true
+  const deadline = Date.now() + Math.max(0, ms)
+  while (Date.now() < deadline && pidAlive(pid)) {
+    await new Promise<void>((r) => setTimeout(r, 100))
+  }
+  if (!pidAlive(pid)) return true
+  try {
+    kill(pid)
+  } catch {
+    /* already gone, or not ours to signal — the re-check below decides */
+  }
+  await new Promise<void>((r) => setTimeout(r, 250))
+  return !pidAlive(pid)
+}
 /** Consent is per BROWSER SESSION, not per call: one dialog when the lead
  *  decides to script the page, then the round stops paying for it. */
 export function needsEvalConsent(policy: "on" | "off", alreadyApproved: boolean | undefined): boolean {
@@ -657,6 +786,8 @@ export interface PwPage {
   url(): string
   title?(): Promise<string>
   bringToFront?(): Promise<void>
+  /** close_page — the tab only; the browser session survives it. */
+  close?(): Promise<unknown>
 }
 export interface PwLocator {
   ariaSnapshot(): Promise<string>
@@ -776,9 +907,9 @@ export function unescapeAriaName(raw: string): string {
   return String(raw).replace(/\\(.)/g, (_, c: string) => (c === "s" ? " " : c === "n" ? "\n" : c === "t" ? "\t" : c))
 }
 
-// ---------- action surface (R2: chrome-devtools-mcp 16-verb alignment) --------
+// ---------- action surface (R2: chrome-devtools-mcp 18-verb alignment) --------
 
-/** The 16 canonical verbs, named byte-identical to chrome-devtools-mcp. */
+/** The 18 canonical verbs, named byte-identical to chrome-devtools-mcp. */
 export const BROWSER_PLAYWRIGHT_ACTIONS = [
   "navigate_page",
   "take_snapshot",
@@ -788,6 +919,8 @@ export const BROWSER_PLAYWRIGHT_ACTIONS = [
   "drag",
   "press_key",
   "select_page",
+  "new_page",
+  "close_page",
   "upload_file",
   "wait_for",
   "evaluate_script",
@@ -888,6 +1021,25 @@ export function buildTmBrowserTool(deps: {
   const notify = typeof deps.notify === "function" ? deps.notify : undefined
   const tool = "tm_browser"
   const traj = (e: Record<string, unknown>) => pipelines.store.appendTrajectory({ tool, ...e })
+  // The orphan ledger lives beside the run store (per workspace since the
+  // tmpdir sharding), so a crash in one project can never reap another's
+  // browser — and a test run, which gets its own store dir, never reaches a
+  // real one either.
+  const ledgerFile = (() => {
+    const root = (pipelines.store as { blackboardRoot?: unknown } | undefined)?.blackboardRoot
+    // No store root (a test double, or a host that never gave us one) means no
+    // ledger — and then nothing is recorded and nothing is reaped. It must not
+    // throw on the way to opening a browser.
+    return typeof root === "string" && root ? browserLedgerFile(root) : ""
+  })()
+  const recordBrowser = (pid: number, engine: string): void => {
+    if (!ledgerFile || !Number.isFinite(pid) || pid <= 0) return
+    appendBrowserLedger(ledgerFile, { pid, ownerPid: process.pid, engine, at: Date.now() })
+  }
+  if (ledgerFile && String(env.TM_BROWSER_REAP ?? "on").trim().toLowerCase() !== "off") {
+    const r = reapOrphanBrowsers(ledgerFile)
+    if (r.reaped.length) traj({ step_id: "browser", event: "orphans_reaped", count: r.reaped.length, pids: r.reaped.join(",") })
+  }
   let session: ActiveSession | null = null
   // m2 (fix round): SAME seed policy as tm_webfetch / tm_search — the
   // built-in default list gains the T4 engine home hosts (api.stackexchange
@@ -1164,6 +1316,7 @@ export function buildTmBrowserTool(deps: {
       }
     })
 
+    recordBrowser(Number(child.pid ?? 0), "cdp-legacy")
     const sess: ActiveSession = {
       kind: "cdp-legacy",
       currentUrl: "about:blank",
@@ -1335,6 +1488,26 @@ export function buildTmBrowserTool(deps: {
     }
 
     const snapIndex = new SnapshotIndex()
+    // The OS process behind the connection. playwright exposes it as
+    // browser.process(); on the persistent path the browser is reached through
+    // the context. Without a pid there is no way to tell "the CDP connection
+    // dropped" apart from "the browser is gone" — and they are NOT the same
+    // thing (measured: close printed 已确认关闭 while the msedge tree was still
+    // alive under OpenCode.exe).
+    const owningBrowser =
+      browser ??
+      (() => {
+        try {
+          return (context as { browser?: () => unknown }).browser?.() ?? null
+        } catch {
+          return null
+        }
+      })()
+    const browserPid =
+      Number(
+        (owningBrowser as { process?: () => { pid?: unknown } } | null | undefined)?.process?.()?.pid ?? 0,
+      ) || 0
+    recordBrowser(browserPid, persistentDir ? "playwright-persistent" : "playwright")
     const state = {
       page: context.pages()[0] ?? (await context.newPage()),
       dialogs: [] as PwDialog[],
@@ -1572,6 +1745,52 @@ export function buildTmBrowserTool(deps: {
           sess.currentUrl = String(state.page.url?.() ?? "")
           return `已切换到标签页 ${idx}：${sess.currentUrl}`
         }
+        if (action === "new_page") {
+          // Multi-tab is an operator need, not a nicety: comparing two pages,
+          // or reading a doc while keeping the first open, was impossible
+          // because `open` on a live session only navigates the CURRENT tab.
+          const p = await context.newPage()
+          state.page = p
+          attach(p)
+          const url = String(args.url ?? "").trim()
+          const index = context.pages().indexOf(p)
+          if (!url) {
+            sess.currentUrl = String(p.url?.() ?? "about:blank")
+            traj({ step_id: stepId, event: "call", kind: "new_page", url: "" })
+            return `已新建空白标签页 ${index}（共 ${context.pages().length} 个，当前在它上面）：${sess.currentUrl || "about:blank"}\n后续动作按 [uid] 寻址前请先 take_snapshot；切回去用 select_page { index }。`
+          }
+          // The URL cleared the allowlist at the execute layer (that is where
+          // the official dialog lives), exactly like navigate_page does.
+          rememberSite(state.allowedSites, url)
+          traj({ step_id: stepId, event: "call", kind: "new_page", url: url.slice(0, 200) })
+          await p.goto(url, { waitUntil: "domcontentloaded", timeout: 20_000 })
+          sess.currentUrl = p.url?.() || url
+          rememberSite(state.allowedSites, sess.currentUrl)
+          return `已新建标签页 ${index} 并导航（共 ${context.pages().length} 个，当前在它上面）：${url}${blockedNote(sess)}`
+        }
+        if (action === "close_page") {
+          const pages = context.pages()
+          const raw = args.index
+          const idx = raw === undefined || raw === "" ? pages.indexOf(state.page) : Number(raw)
+          if (!Number.isInteger(idx) || idx < 0 || idx >= pages.length) {
+            throw new Error(`index 越界（0..${pages.length - 1}）——先 list_pages`)
+          }
+          const victim = pages[idx]
+          await Promise.resolve(victim.close?.()).catch(() => {})
+          const rest = context.pages()
+          const closedIndex = idx
+          if (!rest.length) {
+            state.page = victim
+            sess.currentUrl = ""
+            return `标签页 ${closedIndex} 已关闭，这是最后一个——浏览器仍在运行。` +
+              `要结束整个会话用 action:"close"（它会验进程真的退出）；要继续就用 new_page 再开一个。`
+          }
+          state.page = rest.includes(state.page) ? state.page : rest[rest.length - 1]
+          attach(state.page)
+          const nextIdx = rest.indexOf(state.page)
+          sess.currentUrl = String(state.page.url?.() ?? "")
+          return `标签页 ${closedIndex} 已关闭，剩 ${rest.length} 个，当前在 ${nextIdx}：${sess.currentUrl}`
+        }
         if (action === "list_console_messages") {
           const lines = state.consoleBuf.map((m, i) => `${i + 1}. [${m.type}] ${m.text.slice(0, 300)}`)
           if (args.clear) state.consoleBuf.length = 0
@@ -1613,17 +1832,31 @@ export function buildTmBrowserTool(deps: {
           alivePages = 0
         }
         const connected = browser ? Boolean((browser as { isConnected?: () => boolean }).isConnected?.()) : false
-        const closed = errs.length === 0 && alivePages === 0 && !connected
+        // The connection is NOT the process. Wait for the pid to actually
+        // disappear; if it refuses, terminate it once and re-check. Only then
+        // may this line say 已确认关闭 — an agent quotes it to the user as
+        // proof the window is gone, and a lingering msedge tree is not gone.
+        const pidWasThere = pidAlive(browserPid)
+        const processGone = browserPid > 0 ? await waitForPidExit(browserPid) : true
+        const pidNote =
+          browserPid > 0
+            ? processGone
+              ? pidWasThere
+                ? `进程 ${browserPid} 已退出`
+                : `进程 ${browserPid} 早已不在`
+              : `进程 ${browserPid} 仍在（已尝试终止但系统未放行）`
+            : "未能取得浏览器 pid"
+        const closed = errs.length === 0 && alivePages === 0 && !connected && processGone
         const profile = persistentDir
           ? `持久配置目录已保留（下次 open 复用登录态）：${persistentDir}`
           : "临时配置目录由 playwright 自行回收"
-        if (closed) return { closed: true, text: `浏览器会话已确认关闭（${sess.label}）；${profile}。` }
+        if (closed) return { closed: true, text: `浏览器会话已确认关闭（${sess.label} · ${pidNote}）；${profile}。` }
         return {
           closed: false,
           text:
             `警告：关闭未完全成功（${sess.label}${errs.length ? `：${errs.join("; ")}` : ""}）——` +
-            `残留标签页 ${alivePages} 个${connected ? "，浏览器进程仍处于连接状态" : ""}。` +
-            `窗口可能仍在前台，需要用户手动关闭。${profile}。`,
+            `残留标签页 ${alivePages} 个${connected ? "，浏览器进程仍处于连接状态" : ""} · ${pidNote}。` +
+            `窗口很可能仍在前台，请用户手动关闭该浏览器窗口${browserPid > 0 ? `（pid ${browserPid}）` : ""}。${profile}。`,
         }
       },
     }
@@ -1702,7 +1935,9 @@ export function buildTmBrowserTool(deps: {
       // too); hard red lines (scheme / env-file) reject with no dialog.
       // NOTE: this gate runs BEFORE engine selection — a blocked target
       // never touches playwright nor spawns anything (§6o invariant).
-      if ((action === "open" || action === "navigate" || action === "navigate_page") && url) {
+      // new_page carries a URL too — it must clear the SAME allowlist gate, or
+      // "open a second tab" becomes a way around the official dialog.
+      if ((action === "open" || action === "navigate" || action === "navigate_page" || action === "new_page") && url) {
         const verdict = checkWebUrl(url, allowlist as readonly string[])
         if (!verdict.ok) {
           if (!verdict.askable || !verdict.url) {
@@ -1891,7 +2126,8 @@ export function buildTmBrowserTool(deps: {
   }
 
   const DESCRIPTION = `Interactive browser (governed, Plan C): drives the user's own Chromium-family browser HEADFUL — playwright-core engine primary (npm install + node>=20; auto-degrades to the zero-dep CDP pipe when absent, snapshot actions then unavailable). Snapshot-first flow: open → take_snapshot → act by [uid] → observe again.
-- 16 actions (chrome-devtools-mcp aligned): navigate_page { url } · take_snapshot { } → ariaSnapshot YAML with injected [uid=eN] · click/fill{text}/hover { uid|selector } · drag { uid, targetUid } · press_key { key } · select_page { index } · upload_file { uid, filePath } (filePath must live INSIDE the workspace/blackboard scope — .env & shell-rc files are refused) · wait_for { text|uid, timeoutMs<=3000 default } · evaluate_script { function } (arbitrary JS in YOUR browser: needs one official-dialog consent per browser session, and the result is scanned so JWT/bearer/cookie/api-key shapes never enter the context) · list_console_messages · list_network_requests · list_pages · take_screenshot { fullPage?, image? } → the PNG always lands in the run store (path in the reply); with image:true a quality-70 JPEG of the same view is attached to THIS result so a vision model can actually see it (opt-in: pixels cost context, so ask only when the screenshot is the evidence) · handle_dialog { dialogAction: accept|dismiss, promptText }.
+- MULTI-TAB is a first-class flow: new_page { url? } opens a tab and makes it current (its url clears the SAME allowlist gate and dialog as navigate_page), list_pages numbers them, select_page { index } switches, close_page { index? } closes one and moves you to a survivor — closing the LAST tab does NOT close the browser, and the reply says so. Compare two pages without losing either.
+- 18 actions (chrome-devtools-mcp aligned): navigate_page { url } · take_snapshot { } → ariaSnapshot YAML with injected [uid=eN] · click/fill{text}/hover { uid|selector } · drag { uid, targetUid } · press_key { key } · select_page { index } · upload_file { uid, filePath } (filePath must live INSIDE the workspace/blackboard scope — .env & shell-rc files are refused) · wait_for { text|uid, timeoutMs<=3000 default } · evaluate_script { function } (arbitrary JS in YOUR browser: needs one official-dialog consent per browser session, and the result is scanned so JWT/bearer/cookie/api-key shapes never enter the context) · list_console_messages · list_network_requests · list_pages · take_screenshot { fullPage?, image? } → the PNG always lands in the run store (path in the reply); with image:true a quality-70 JPEG of the same view is attached to THIS result so a vision model can actually see it (opt-in: pixels cost context, so ask only when the screenshot is the evidence) · handle_dialog { dialogAction: accept|dismiss, promptText }.
 - Compat actions: open { url } — launch/reuse + navigate (TM_BROWSER_PATH override → DEFAULT browser, Chromium-family only; the registry ProgId decides the CHANNEL, so an Edge Beta default opens Edge Beta, not stable). Isolated temp profile by default; persistent login ONLY via TM_BROWSER_USER_DATA_DIR (the real profile is never touched). navigate / read (page text) / screenshot / close also work.
 - Lifecycle (the user SEES this window): headful by default — headless is an operator setting (TM_BROWSER_HEADLESS), not a parameter you can pass. An idle session closes itself (TM_BROWSER_IDLE_MS, default 180s) and the user is told. ALWAYS action:"close" when your browser work is done, and quote the tool's own close line — "已确认关闭" vs "警告：关闭未完全成功" — instead of asserting the window is gone.
 - Discipline (enforced by defaults): act ONLY on uids from the latest take_snapshot — no guessed locators; one action then one observation; fold dialogs into the same round (snapshot header warns while a dialog is held); 3000 ms action budget; networkidle is never waited on; screenshots are the visual-last-resort, not the primary read.
@@ -1901,7 +2137,7 @@ export function buildTmBrowserTool(deps: {
   return {
     description: DESCRIPTION,
     args: deps.args ?? {
-      action: { descriptor: "action: take_snapshot|click|fill|navigate_page|... (16 playwright verbs + open/navigate/read/screenshot/close)" },
+      action: { descriptor: "action: take_snapshot|click|fill|navigate_page|... (18 playwright verbs + open/navigate/read/screenshot/close)" },
       url: { descriptor: "url: string (open/navigate/navigate_page, allowlisted https)" },
       image: { descriptor: "image: true (take_screenshot only — attach the PNG pixels to this result; default is path-only)" },
       uid: { descriptor: "uid: snapshot [uid=eN] token (click/fill/hover/drag/upload_file/wait_for)" },

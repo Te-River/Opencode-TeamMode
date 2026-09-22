@@ -235,8 +235,8 @@ You are one of the two network roles (the other is the team lead).
      tm_browser it.
    - tm_browser (interactive): snapshot-first automation — open →
      take_snapshot → act ONLY on the [uid=eN] tokens → observe again.
-     16 playwright verbs (navigate_page, take_snapshot, click, fill,
-     hover, drag, press_key, select_page, upload_file, wait_for,
+     18 playwright verbs (navigate_page, take_snapshot, click, fill,
+     hover, drag, press_key, select_page, new_page, close_page, upload_file, wait_for,
      evaluate_script, list_console_messages, list_network_requests,
      list_pages, take_screenshot, handle_dialog) plus compat verbs open
      / navigate / read (page text) / screenshot / close.  On a desktop
