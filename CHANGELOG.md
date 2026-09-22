@@ -272,6 +272,30 @@ broken" and "the answer is not what I expected" must not be conflated.
   never gained `new_page`/`close_page` — and that refusal line is the only place
   an agent that forgot a verb can find it. It is derived from the same table the
   gate reads now (pinned: all 23 registered verbs, exactly once each).
+- **`click` no longer reports a success the page did not have.** It answered
+  `已点击 uid "e33"` on the strength of "playwright delivered a mouse event",
+  which is not the same fact as "the page did something". Measured on a Next.js
+  documentation site: the same locator, clicked through playwright directly,
+  expands the disclosure; through `tm_browser` it is a no-op at
+  `document.readyState === "interactive"` (300 ms and 1500 ms after `open`) and
+  works at `"complete"` (4 s, once the framework's own globals exist). Every
+  actionability check playwright makes — visible, stable, enabled, receives
+  events — passes on a button whose bundle has not run yet, so the event lands
+  on a node with no handler and the tool used to say it clicked. `click` now
+  reads the target's observable state in ONE round-trip before and after
+  (`aria-expanded`/`-checked`/`-selected`/`-pressed`, `disabled`, `value`, the
+  URL, a DOM node count, `readyState`) and reports the delta:
+  `已点击 … · aria-expanded: false → true`, `… · 已跳转 → <url>`, `… · DOM 节点
+  1200 → 1290`. Nothing changed earns ONE bounded retry after the page settles —
+  safe precisely because nothing changed, so a toggle is never flipped twice,
+  and never retried when the click opened a dialog, which is proof it landed.
+  Still nothing: the reply says 页面没有任何可观测变化 with the `readyState`
+  that explains it, and names the next move (`wait_for` the text you meant to
+  click, or re-snapshot) instead of leaving the agent to reason from a state
+  change that never happened. Every outcome is audited as
+  `click_verified {effective, retried, probed, ready}`. A detached element is
+  not treated as a failure either — a navigating click is recognised from the
+  URL independently of the probe.
 
 ### Known gap (found while fixing the above, deliberately NOT changed)
 
@@ -288,20 +312,6 @@ broken" and "the answer is not what I expected" must not be conflated.
   own (settle − duration) window instead of a dispatch line that no longer
   exists — a dead row is worse than a narrower one, because the throughput
   claim is the only reason this team exists.
-- **`click` says 已点击 without evidence that anything happened.** Measured on a
-  Next.js documentation site: the same locator, clicked through playwright
-  directly, expands the disclosure; through `tm_browser` it is a no-op at
-  `document.readyState === "interactive"` (300 ms and 1500 ms after `open`) and
-  works at `"complete"` (4 s, once the framework's own globals exist). Every
-  actionability check playwright makes — visible, stable, enabled, receives
-  events — passes on a button whose bundle has not run yet, so the click is
-  delivered to a node with no handler and the tool still reports success.
-  Diagnosed, deliberately NOT changed here: the honest fix is to verify the
-  effect (the target's `aria-expanded`/`aria-checked`, the URL, a DOM
-  fingerprint before and after, one bounded retry once the page settles) rather
-  than to make every navigation wait for `load`, and that deserves its own
-  change with its own tests. Until then the workaround is a prompt-side one:
-  after `open`, `wait_for` the text you are about to act on.
 
 ## [1.5.15] - 2026-09-20
 

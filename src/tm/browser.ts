@@ -857,6 +857,148 @@ export function hostOnly(url: string): string {
   }
 }
 
+// ---------- click effect verification ---------------------------------------
+//
+// "已点击" used to mean "playwright delivered a mouse event".  That is not the
+// same fact as "the page did something", and on a modern SPA the gap is wide:
+// measured on a Next.js documentation site, the same locator clicked at
+// document.readyState === "interactive" (300 ms and 1500 ms after open) was a
+// no-op, and at "complete" — once the framework's own globals existed — it
+// worked.  Every actionability check playwright performs (visible, stable,
+// enabled, receives events) passes on a button whose bundle has not run, so the
+// event lands on a node with no handler and nothing happens.  An agent that is
+// told 已点击 then reasons from a state change that never occurred.
+
+/** What a click can be observed to change, read in ONE round-trip. */
+export interface ClickProbe {
+  attrs: Record<string, string>
+  url: string
+  ready: string
+  nodes: number
+}
+
+const CLICK_EFFECT_BUDGET_MS = 900
+const CLICK_POLL_MS = 150
+const CLICK_SETTLE_MS = 5000
+
+/** Runs in the page.  Kept free of TS annotations and outer-scope references
+ *  because playwright serializes it. */
+const clickProbeFn = (el: {
+  getAttribute?: (n: string) => string | null
+  value?: unknown
+  tagName?: unknown
+}): ClickProbe => {
+  const attrs: Record<string, string> = {}
+  for (const a of ["aria-expanded", "aria-checked", "aria-selected", "aria-pressed", "disabled"]) {
+    const v = el.getAttribute ? el.getAttribute(a) : null
+    if (v !== null && v !== undefined) attrs[a] = String(v)
+  }
+  if (typeof el.value === "string") attrs.value = el.value
+  return {
+    attrs,
+    url: String(location.href || ""),
+    ready: String(document.readyState || ""),
+    nodes: document.getElementsByTagName("*").length,
+  }
+}
+
+async function probeClickTarget(loc: PwLocator): Promise<ClickProbe | null> {
+  if (typeof loc.evaluate !== "function") return null
+  try {
+    const raw = (await loc.evaluate(clickProbeFn)) as Partial<ClickProbe> | null
+    if (!raw || typeof raw !== "object") return null
+    return {
+      attrs: (raw.attrs ?? {}) as Record<string, string>,
+      url: String(raw.url ?? ""),
+      ready: String(raw.ready ?? ""),
+      nodes: Number(raw.nodes ?? 0),
+    }
+  } catch {
+    return null // a detached element is an answer, not a crash
+  }
+}
+
+/** Bounded settle.  `open` deliberately returns at domcontentloaded — reading a
+ *  page must not wait for analytics — so the wait belongs to the action that
+ *  needs a handler attached, not to every navigation. */
+async function settlePage(page: PwPage, timeoutMs = CLICK_SETTLE_MS): Promise<void> {
+  const waiting = typeof page.waitForLoadState === "function" ? page.waitForLoadState("load", { timeout: timeoutMs }) : null
+  if (waiting) {
+    await Promise.race([
+      Promise.resolve(waiting).catch(() => undefined),
+      new Promise((r) => setTimeout(r, timeoutMs)),
+    ])
+  }
+  await new Promise((r) => setTimeout(r, 250))
+}
+
+/** What differs between two probes, in the order a reader cares about. */
+export function describeClickChange(before: ClickProbe, after: ClickProbe): string[] {
+  const out: string[] = []
+  const attrsBefore = before.attrs ?? {}
+  const attrsAfter = after.attrs ?? {}
+  for (const k of Object.keys(attrsBefore)) {
+    if (attrsAfter[k] !== attrsBefore[k]) out.push(`${k}: ${attrsBefore[k]} → ${attrsAfter[k] ?? "（消失）"}`)
+  }
+  for (const k of Object.keys(attrsAfter)) {
+    if (!(k in attrsBefore)) out.push(`${k}: → ${attrsAfter[k]}`)
+  }
+  if (before.url && after.url && before.url !== after.url) out.push(`已跳转 → ${after.url.slice(0, 120)}`)
+  if (before.nodes && after.nodes !== before.nodes) out.push(`DOM 节点 ${before.nodes} → ${after.nodes}`)
+  return out
+}
+
+/** Poll until something changed or the budget runs out.  A navigating click can
+ *  detach the element, so the URL is checked independently of the probe. */
+async function observeClickEffect(
+  loc: PwLocator,
+  page: PwPage,
+  before: ClickProbe,
+  budgetMs = CLICK_EFFECT_BUDGET_MS,
+): Promise<{ changed: string[]; after: ClickProbe | null }> {
+  const deadline = Date.now() + Math.max(0, budgetMs)
+  for (;;) {
+    const after = await probeClickTarget(loc)
+    if (after) {
+      const changed = describeClickChange(before, after)
+      if (changed.length) return { changed, after }
+    } else {
+      const urlNow = typeof page.url === "function" ? String(page.url() ?? "") : ""
+      if (urlNow && before.url && urlNow !== before.url) return { changed: [`已跳转 → ${urlNow.slice(0, 120)}`], after: null }
+    }
+    if (Date.now() >= deadline) return { changed: [], after }
+    await new Promise((r) => setTimeout(r, CLICK_POLL_MS))
+  }
+}
+
+/** The reply.  Pure, so the wording is pinnable without a browser: a click that
+ *  observably did something says what changed; one that did not says so and
+ *  names the next move instead of reporting success. */
+export function clickVerdict(
+  target: string,
+  before: ClickProbe | null,
+  changed: string[],
+  opts: { retried: boolean; dialog: boolean },
+): string {
+  const head = `已点击 ${target}`
+  const dialogNote = opts.dialog ? "；有未处理对话框——handle_dialog（同轮观察，勿另起动作）" : ""
+  if (!before) return head + dialogNote // nothing could be probed: claim no more than we know
+  if (changed.length) {
+    const retryNote = opts.retried
+      ? `（第一次点击落在页面还没就绪时 readyState=${before.ready || "?"}，未观测到变化；等加载完重试才生效）`
+      : ""
+    return `${head} · ${changed.join(" · ")}${retryNote}${dialogNote}`
+  }
+  const watched = Object.keys(before.attrs).length
+    ? Object.entries(before.attrs).map(([k, v]) => `${k}=${v}`).join(" ")
+    : "无可观测状态属性"
+  return (
+    `${head}，但页面没有任何可观测变化（${watched} · URL 未变 · DOM 节点 ${before.nodes} 未变 · readyState=${before.ready || "?"}）。` +
+    `点击送达了，可是没有 handler 响应——最常见的原因是页面脚本还没跑完，而 playwright 的可见/稳定/可点检查在这种情况下全部通过。` +
+    `下一步：wait_for 你要点的文字，或重新 take_snapshot 再点一次；不要把这次点击当成成功。${dialogNote}`
+  )
+}
+
 // ---------- pipe CDP client (JSON + NUL framing over fds 3/4) ----------------
 
 interface CdpMessage {
@@ -1031,6 +1173,8 @@ export interface PwPage {
   url(): string
   title?(): Promise<string>
   bringToFront?(): Promise<void>
+  /** Bounded settle before retrying an action that changed nothing. */
+  waitForLoadState?(state: string, opts?: Record<string, unknown>): Promise<unknown>
   /** close_page — the tab only; the browser session survives it. */
   close?(): Promise<unknown>
 }
@@ -1044,6 +1188,10 @@ export interface PwLocator {
   waitFor(opts?: Record<string, unknown>): Promise<unknown>
   nth(index: number): PwLocator
   dragTo(target: PwLocator): Promise<unknown>
+  /** Read the element's own state in ONE round-trip, so verifying an action
+   *  costs less than the action.  Optional: a locator without it cannot be
+   *  verified, and then the reply must claim no more than it knows. */
+  evaluate?(fn: unknown): Promise<unknown>
 }
 export interface PwRoute {
   continue(): Promise<unknown>
@@ -1930,8 +2078,32 @@ export function buildTmBrowserTool(deps: {
         }
         if (action === "click") {
           const loc = targetOf("uid", "selector", args)
+          const target = describeTarget(args)
+          const before = await probeClickTarget(loc)
           await loc.click()
-          return `已点击 ${describeTarget(args)}${state.dialogs.length ? "；有未处理对话框——handle_dialog（同轮观察，勿另起动作）" : ""}`
+          const dialogOpen = state.dialogs.length > 0
+          let seen = before ? await observeClickEffect(loc, state.page, before) : { changed: [] as string[], after: null }
+          let retried = false
+          // A delivered click that changed NOTHING is the SPA hazard this
+          // verification exists for.  Retrying is safe precisely BECAUSE nothing
+          // changed — a toggle that worked is never clicked twice — and a dialog
+          // is open means the click did land, so it is never retried.
+          if (before && !seen.changed.length && !dialogOpen) {
+            await settlePage(state.page)
+            const again = await probeClickTarget(loc)
+            await loc.click().catch(() => {})
+            retried = true
+            seen = await observeClickEffect(loc, state.page, again ?? before)
+          }
+          traj({
+            step_id: stepId,
+            event: "click_verified",
+            effective: seen.changed.length > 0,
+            retried,
+            probed: Boolean(before),
+            ready: String(before?.ready ?? ""),
+          })
+          return clickVerdict(target, before, seen.changed, { retried, dialog: state.dialogs.length > 0 })
         }
         if (action === "fill") {
           const loc = targetOf("uid", "selector", args)

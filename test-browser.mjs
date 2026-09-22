@@ -143,7 +143,14 @@ function makeFakePw(opts = {}) {
       if (opts.ariaThrows) throw new Error("locator.ariaSnapshot is not a function")
       return opts.ariaYaml ?? ARIA_YAML
     },
-    click: async () => calls.acted.push(["click", desc]),
+    click: async () => {
+      calls.clicks = (calls.clicks ?? 0) + 1
+      calls.acted.push(["click", desc])
+      opts.onClick?.(calls.clicks)
+    },
+    // the click-effect probe reads the element in ONE round-trip; a mock with no
+    // `probe` returns undefined, which the product must treat as "cannot verify"
+    evaluate: async () => (typeof opts.probe === "function" ? opts.probe() : undefined),
     fill: async (t) => calls.acted.push(["fill", desc, t]),
     hover: async () => calls.acted.push(["hover", desc]),
     pressKey: async (k) => calls.acted.push(["pressKey", desc, k]),
@@ -169,6 +176,10 @@ function makeFakePw(opts = {}) {
       getByRole: (role, x) => makeLocator(`${label}:getByRole(${role},${JSON.stringify(x ?? null)})`),
       getByText: (t) => makeLocator(`${label}:getByText(${t})`),
       keyboard: { press: (k) => (p.keys.push(k), Promise.resolve()) },
+      waitForLoadState: async () => {
+        calls.settled = (calls.settled ?? 0) + 1
+        opts.onSettle?.()
+      },
       evaluate: (src) => (p.evals.push(src), Promise.resolve(opts.evalValue ?? "EVAL")),
       screenshot: (x) => (p._shotOpts = x, Promise.resolve(calls.pngBytes)),
       on(ev, cb) {
@@ -1487,7 +1498,92 @@ async function main() {
     log("close: 已确认关闭 only when a pid was actually checked; the unverified case says so")
   }
 
-  console.log("browser: OK (engine select/degrade matrix, 18-verb playwright mapping + uid registry on mock pw, route()-based allowlist, persistent-profile policy, prompt pins, evaluate_script consent + redaction, dead-session rebuild, hostless-page refusal, multi-tab new_page/close_page, process-verified close, orphan ledger reaper, launch-pid scan + identity gate + tree kill, unverified-close honesty, full args-schema param surface; real-playwright smoke gated on npm install)")
+  // ---------- 26. click reports what the PAGE did, not what we sent ----------
+  {
+    const probe = (attrs, extra = {}) => ({ attrs, url: "https://cn.bing.com/", ready: "complete", nodes: 1200, ...extra })
+
+    // pure: what counts as an effect
+    assert.deepEqual(br.describeClickChange(probe({ "aria-expanded": "false" }), probe({ "aria-expanded": "true" })), ["aria-expanded: false → true"], "a disclosure flip is named")
+    assert.deepEqual(br.describeClickChange(probe({}), probe({}, { url: "https://cn.bing.com/next" })), ["已跳转 → https://cn.bing.com/next"], "a navigation is named")
+    assert.deepEqual(br.describeClickChange(probe({}), probe({}, { nodes: 1290 })), ["DOM 节点 1200 → 1290"], "a DOM delta is named")
+    assert.deepEqual(br.describeClickChange(probe({ "aria-expanded": "false" }), probe({ "aria-expanded": "false" })), [], "an unchanged page yields no claim")
+    assert.deepEqual(br.describeClickChange(probe({}), probe({ "aria-checked": "true" })), ["aria-checked: → true"], "an attribute that appeared is named")
+
+    // pure: the wordings
+    const effective = br.clickVerdict('uid "e7"', probe({ "aria-expanded": "false" }), ["aria-expanded: false → true"], { retried: false, dialog: false })
+    assert.ok(effective.startsWith('已点击 uid "e7" · aria-expanded: false → true'), `an effective click names the change — got: ${effective}`)
+    const dead = br.clickVerdict('uid "e7"', probe({ "aria-expanded": "false" }, { ready: "interactive" }), [], { retried: true, dialog: false })
+    assert.ok(
+      dead.includes("没有任何可观测变化") && dead.includes("readyState=interactive") && dead.includes("wait_for") && dead.includes("不要把这次点击当成成功"),
+      `an ineffective click must not read as success — got: ${dead}`,
+    )
+    const late = br.clickVerdict('uid "e7"', probe({}, { ready: "interactive" }), ["aria-expanded: false → true"], { retried: true, dialog: false })
+    assert.ok(late.includes("第一次点击落在页面还没就绪时"), `a retry that worked says why it needed two tries — got: ${late}`)
+    assert.equal(br.clickVerdict('uid "e7"', null, [], { retried: false, dialog: false }), '已点击 uid "e7"', "with nothing probeable the reply claims no more than the click")
+    assert.ok(br.clickVerdict('uid "e7"', probe({}), [], { retried: false, dialog: true }).includes("handle_dialog"), "an open dialog still gets its note")
+
+    // A: the first click works -> ONE click, no settle wait
+    {
+      let expanded = false
+      const fx = makeFakePw({ probe: () => probe({ "aria-expanded": String(expanded) }), onClick: () => { expanded = true } })
+      const mk = makeTool({ importPlaywright: async () => fx.pw, nodeMajor: 22 })
+      await mk.tool.execute({ action: "open", url: "https://cn.bing.com" }, ctxNoAsk)
+      const r = o(await mk.tool.execute({ action: "click", selector: "#go" }, ctxNoAsk))
+      assert.ok(r.includes("aria-expanded: false → true"), `A: the flip is reported — got: ${r.slice(0, 160)}`)
+      assert.equal(fx.calls.clicks, 1, "A: an effective click is not repeated")
+      assert.equal(fx.calls.settled ?? 0, 0, "A: no settle wait when the click landed")
+      assert.ok(mk.events.some((e) => e.event === "click_verified" && e.effective === true && e.retried === false), "A: the verdict is audited")
+      await mk.tool.dispose()
+    }
+    // B: the page never reacts -> exactly ONE bounded retry, then the honest answer
+    {
+      const fx = makeFakePw({ probe: () => probe({ "aria-expanded": "false" }, { ready: "interactive" }) })
+      const mk = makeTool({ importPlaywright: async () => fx.pw, nodeMajor: 22 })
+      await mk.tool.execute({ action: "open", url: "https://cn.bing.com" }, ctxNoAsk)
+      const r = o(await mk.tool.execute({ action: "click", selector: "#go" }, ctxNoAsk))
+      assert.equal(fx.calls.clicks, 2, "B: one retry only — a loop would toggle a switch back")
+      assert.ok((fx.calls.settled ?? 0) >= 1, "B: the retry waits for the page to settle first")
+      assert.ok(r.includes("没有任何可观测变化"), `B: an inert page is reported as inert — got: ${r.slice(0, 200)}`)
+      assert.ok(mk.events.some((e) => e.event === "click_verified" && e.effective === false && e.retried === true), "B: audited as ineffective")
+      await mk.tool.dispose()
+    }
+    // C: a click that opened a dialog DID land — it must never be retried
+    {
+      const fx = makeFakePw({
+        probe: () => probe({ "aria-expanded": "false" }),
+        onClick: () => fx.__ctxPage.fire("dialog", { type: () => "confirm", message: () => "删除？", accept: async () => {}, dismiss: async () => {} }),
+      })
+      const mk = makeTool({ importPlaywright: async () => fx.pw, nodeMajor: 22 })
+      await mk.tool.execute({ action: "open", url: "https://cn.bing.com" }, ctxNoAsk)
+      const r = o(await mk.tool.execute({ action: "click", selector: "#go" }, ctxNoAsk))
+      assert.equal(fx.calls.clicks, 1, "C: an open dialog proves the click landed — no retry")
+      assert.ok(r.includes("handle_dialog"), `C: the dialog is surfaced — got: ${r.slice(0, 160)}`)
+      await mk.tool.dispose()
+    }
+    // D: a navigating click detaches the element — the URL still proves the effect
+    {
+      let navigated = false
+      const fx = makeFakePw({
+        probe: () => {
+          if (navigated) throw new Error("Element is not attached to the DOM")
+          return probe({})
+        },
+        onClick: () => {
+          navigated = true
+          fx.__ctxPage._url = "https://cn.bing.com/next"
+        },
+      })
+      const mk = makeTool({ importPlaywright: async () => fx.pw, nodeMajor: 22 })
+      await mk.tool.execute({ action: "open", url: "https://cn.bing.com" }, ctxNoAsk)
+      const r = o(await mk.tool.execute({ action: "click", selector: "#go" }, ctxNoAsk))
+      assert.equal(fx.calls.clicks, 1, "D: a navigation is an effect — no retry")
+      assert.ok(r.includes("已跳转 → https://cn.bing.com/next"), `D: the navigation is named even though the element is gone — got: ${r.slice(0, 160)}`)
+      await mk.tool.dispose()
+    }
+    log("click reports the page's response: a change is named, a no-op is named, and a pre-hydration click gets ONE bounded retry")
+  }
+
+  console.log("browser: OK (engine select/degrade matrix, 18-verb playwright mapping + uid registry on mock pw, route()-based allowlist, persistent-profile policy, prompt pins, evaluate_script consent + redaction, dead-session rebuild, hostless-page refusal, multi-tab new_page/close_page, process-verified close, orphan ledger reaper, launch-pid scan + identity gate + tree kill, unverified-close honesty, click effect verification, full args-schema param surface; real-playwright smoke gated on npm install)")
 }
 
 main().then(
