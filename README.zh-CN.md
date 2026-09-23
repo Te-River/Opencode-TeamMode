@@ -251,6 +251,7 @@ HMAC 句柄，agent 真需要 payload 时用 `tm_fetch` 分页取。
 |---|---|---|
 | `tm_read` / `tm_grep` / `tm_bash` / `tm_fetch` | 受治理的文件读 / 正则搜索 / 只读 shell（白名单）/ 句柄分页（JSON 句柄支持 `fields` 点路径投影——刻意小的 jq 子集，如 `items[].name`） | 全部六个 agent |
 | `tm_memory` | 会话 + 项目 + 全局三层记忆库（Markdown + frontmatter）：add / search / list / forget / compact | 全部六个 agent |
+| `tm_board_write` | **黑板的写入侧**：只在 `<board-root>/<session-key>/<task-slug>/NN-<role>-<topic>[-rN].md` 放下一个**新**的 Markdown 文件，文件名由工具自己决定——修订是一个带 `-rN` 的新文件，绝不覆写；回复只给路径和字节数，绝不回传正文。它存在的理由是：落黑板原本需要一个文件工具，而 `architect` / `researcher` 一个都没有（没有 `write`、没有 `edit`、连用来给会话目录打时间戳的 `bash` 都没有），于是这两类角色的超长交付每次都以 `BLACKBOARD WRITE FAILED` + 整篇文档内联回来收场——本项目最看重的那个回复形态，恰恰在最需要的角色身上无法执行。范围是强制的：路径段做规整、目标用 realpath 对齐黑板根（符号链接的任务目录直接拒写）、文件名永远以 `.md` 结尾（所以造不出 `.env`/rc 文件）、正文受 `TM_BOARD_MAX_CHARS` 与会话文件数上限约束 | 全部六个 agent |
 | `tm_ptc_run` | 批量编排：一个程序、N 次受治理调用、零 LLM 回合；联网角色还能在程序里调 `tm.search` / `tm.webfetch` | 全部六个 agent |
 | `tm_search` | 多引擎网络搜索，返回提取、去重、RRF 融合后的命中列表 | Lead + Researcher |
 | `tm_webfetch` | 白名单页面的单次受治理 GET（搜索页自动提取） | Lead + Researcher |
@@ -494,6 +495,8 @@ Team Lead 自己从不删黑板，你可以随时审计任何一次运行。
 | `TM_FETCH_MAX_LINES` | `2000` | tm_fetch 单页行数上限 |
 | `TM_BLACKBOARD_DIR` / `TM_TRAJECTORY_DIR` | `<repo>/.git/opencode-team/…` | 卸载存储 / 轨迹账本（tmpdir 回退按工作区路径哈希分片，所以 `tm_stats` 的窗口只含本工作区流量；显式值 = 绝对或项目相对） |
 | `TM_BLACKBOARD_TTL` | `7` | 存储保留天数 |
+| `TM_BOARD_MAX_CHARS` | `200000` | tm_board_write：单个黑板文件的字符上限——超了就拒写并提示拆 topic，而不是把交付物截断 |
+| `TM_BOARD_MAX_FILES` | `200` | tm_board_write：一个会话目录允许的 markdown 文件数；回收只由 TTL 清扫负责，所以拒绝文案会点出 `ttlDays` |
 | `TM_BASH_READONLY_ALLOWED` | 内置表 | tm_bash 白名单 |
 | `TM_SEARCH_DEFAULT_ENGINE` | `auto` | tm_search 未显式给 `engine` 时的默认引擎（`auto` = 分类 + 并行扇出 + RRF 融合；也可钉表中任一引擎） |
 | `TM_SEARCH_WEIGHTS` | 未设 | 按引擎覆盖融合权重，如 `bing=0.3,hn=0.25`；未列出的沿用内置表 |

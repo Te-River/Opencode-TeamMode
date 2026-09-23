@@ -450,3 +450,27 @@ export async function buildBrowserArgsSchema(): Promise<Record<string, unknown>>
     fullPage: bool("take_screenshot captures the full page (default: viewport only)."),
   }
 }
+/** tm_board_write — four strings, and the shape of the PATH is the tool's
+ *  business, not the model's (that is what makes it safe to hand a writer to a
+ *  role that owns no file tool). */
+export async function buildBoardArgsSchema(): Promise<Record<string, unknown>> {
+  const z = await loadZod()
+  if (!z) {
+    return {
+      task: { descriptor: "task: task-slug folder (required)" },
+      topic: { descriptor: "topic: file topic (required)" },
+      content: { descriptor: "content: the deliverable text (required)" },
+      session: { descriptor: "session: existing session-key folder (optional; stamped when omitted)" },
+    }
+  }
+  const zz = z as unknown as {
+    string: () => { describe: (d: string) => unknown; optional: () => { describe: (d: string) => unknown } }
+  }
+  const str = (d: string) => zz.string().optional().describe(d)
+  return {
+    task: zz.string().describe("Task-slug folder under the session — use the one the dispatch named (a new slug creates it). Path separators collapse to '-', so 'auth/design' becomes 'auth-design'."),
+    topic: zz.string().describe("What this file IS (design / report / findings). It becomes NN-<your-role>-<topic>.md; the NN and any -rN revision suffix are chosen here and a revision NEVER overwrites."),
+    content: zz.string().describe("The deliverable itself. It goes to disk and is NOT echoed back — after the write, the report carries the path this tool returns, never the text."),
+    session: str("The conversation's session-key folder. Pass the one the lead's dispatch named so every role writes into the same folder; omit it and this tool stamps yyyyMMdd-HHmmss for you."),
+  }
+}

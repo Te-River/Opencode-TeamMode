@@ -31,9 +31,10 @@ import { hmacToken, newRunId } from "./refs.js"
 import { RunStore } from "./store.js"
 import { buildTmTools } from "./tools.js"
 import { buildPipelines } from "./pipelines.js"
-import { buildPtcArgsSchema, buildWebfetchArgsSchema, buildMemoryArgsSchema, buildBrowserArgsSchema, buildSearchArgsSchema } from "./args-schema.js"
+import { buildPtcArgsSchema, buildWebfetchArgsSchema, buildMemoryArgsSchema, buildBrowserArgsSchema, buildSearchArgsSchema, buildBoardArgsSchema } from "./args-schema.js"
 import { buildPtcRunTool } from "./ptc/index.js"
 import { buildStatsTool } from "./stats.js"
+import { buildBoardWriteTool } from "./board.js"
 import { createWebCache } from "./cache.js"
 import type { CapabilityRow } from "../capabilities.js"
 import { buildTmWebfetchTool } from "./webfetch.js"
@@ -482,6 +483,20 @@ export async function createTmTools(
   // with a number behind it instead of a vibe, and what names the surface an
   // OpenCode upgrade removed.
   tools.tm_stats = buildStatsTool({ store, capabilities: opts.capabilities })
+  // tm_board_write — the blackboard's write side.  The board layout the
+  // workspace note publishes is <root>/<session-key>/<task>/NN-<role>-<topic>,
+  // and reaching it used to require a file tool: architect and researcher carry
+  // none (no write, no edit, not even bash to stamp the session folder), so
+  // every oversized deliverable from those roles came back as
+  // BLACKBOARD WRITE FAILED + the whole document pasted inline.  This writer is
+  // scoped to that one path shape under the SAME root the note advertises —
+  // sharedBase, which is teamRootFor(directory) in every mode.
+  tools.tm_board_write = buildBoardWriteTool({
+    pipelines,
+    boardRoot: sharedBase,
+    cfg: { boardMaxChars: cfg.boardMaxChars, boardMaxFiles: cfg.boardMaxFiles },
+    args: await buildBoardArgsSchema(),
+  })
   return {
     runId,
     config: cfg,

@@ -260,6 +260,7 @@ through with `tm_fetch` when it genuinely needs the payload.
 |---|---|---|
 | `tm_read` / `tm_grep` / `tm_bash` / `tm_fetch` | Governed file read / regex search / read-only shell (allowlist) / paged handle retrieval (JSON handles take a `fields` dot-path projection — a deliberately small jq subset like `items[].name`) | all six agents |
 | `tm_memory` | Session + project + global memory store (Markdown + frontmatter): add / search / list / forget / compact | all six agents |
+| `tm_board_write` | **The blackboard's write side**: places ONE new Markdown file at `<board-root>/<session-key>/<task-slug>/NN-<role>-<topic>[-rN].md` and chooses the name itself — a revision is a new round-suffixed file, never an overwrite, and the reply carries the path plus the byte count, never the content. It exists because the board used to need a file tool, and `architect` / `researcher` own none (no `write`, no `edit`, no `bash` even to stamp the session folder), so every oversized deliverable from those roles came back as `BLACKBOARD WRITE FAILED` plus the whole document pasted inline — the reply shape this team mandates was un-followable exactly where it mattered. Scope is enforced rather than asked: segments sanitized, target realpath-verified against the board root (a symlinked task dir is refused), the name always ends in `.md` so no `.env`/rc file can be produced, caps via `TM_BOARD_MAX_CHARS` + a per-session file limit | All six agents |
 | `tm_ptc_run` | Batch orchestration: one program, N governed calls, zero LLM round-trips; web roles also get `tm.search` / `tm.webfetch` inside the program | all six agents |
 | `tm_search` | Multi-engine web search with extracted, deduplicated, RRF-fused hit lists | Lead + Researcher |
 | `tm_webfetch` | Single governed GET of an allowlisted page (search pages auto-extracted) | Lead + Researcher |
@@ -552,6 +553,8 @@ for overrides, extra agents and disabling roles.
 | `TM_FETCH_MAX_LINES` | `2000` | tm_fetch page cap |
 | `TM_BLACKBOARD_DIR` / `TM_TRAJECTORY_DIR` | `<repo>/.git/opencode-team/…` | offload store / trajectory ledger (tmpdir fallback, sharded per workspace by a path hash so `tm_stats's window is only THIS workspace's traffic; explicit = absolute or project-relative) |
 | `TM_BLACKBOARD_TTL` | `7` | store retention (days) |
+| `TM_BOARD_MAX_CHARS` | `200000` | tm_board_write: one board file's character cap — over it the write refuses (with a "split the topic" hint) instead of truncating a deliverable |
+| `TM_BOARD_MAX_FILES` | `200` | tm_board_write: markdown files allowed per session folder; the TTL sweeper is the only reclaim path, so the refusal names it and the `ttlDays` option |
 | `TM_BASH_READONLY_ALLOWED` | built-in table | tm_bash allowlist |
 | `TM_SEARCH_DEFAULT_ENGINE` | `auto` | tm_search engine when no `engine` arg is given (`auto` = classify + parallel fan-out + RRF fusion; any table name also pins a manual default) |
 | `TM_WEBFETCH_ALLOWED_DOMAINS` | the 24 seeded hosts | tm_webfetch / tm_search / tm_browser allowlist (`"*"` opens all; empty = deny all; a custom list REPLACES the seed — keep the engine hosts). A site's own asset CDN has to be seeded or `tm_browser` renders it blank — `bdimg.com` is there for exactly that reason; per-session gaps go through `tm_browser { action:"allow_host", host }` instead of an env edit |

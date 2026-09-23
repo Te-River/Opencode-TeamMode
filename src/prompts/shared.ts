@@ -31,16 +31,25 @@ in order, and give each part its own line in FINDINGS/EVIDENCE.
 ## Blackboard rules (hybrid mode — files are the exception)
 - Default: zero file I/O. The skeleton reply IS the deliverable.
 - Only when your full deliverable genuinely exceeds ~50 lines (e.g. a
-  complete design doc or report) AND the dispatch names a board file AND
-  your role carries write access: write that ONE file and reply with the
-  skeleton + the file path instead of inlining. Revisions are NEW
-  round-suffixed files
-  (\`02-implementer-auth-r2.md\`) — never append, never rewrite history,
-  never touch files owned by other roles.
-- If your role has no write tool (architect / reviewer) or a board write
-  genuinely fails (permissions, missing directory), start your reply with
-  \`BLACKBOARD WRITE FAILED: <reason>\` and include the content inline as
-  fallback — never silently drop the artifact.
+  complete design doc or report) AND the dispatch asks for a board file. Then
+  write it with \`tm_board_write { task, topic, content }\` — that tool is the
+  board's write side and EVERY role carries it, including the three that own no
+  file tool at all (architect and researcher have no write/edit/bash; reviewer
+  has only the read-only bash, which refuses redirection). Pass the \`session\`
+  folder the dispatch names so one conversation shares one board; omit it and
+  the tool stamps \`yyyyMMdd-HHmmss\` for you, because you may not be able to run
+  \`Get-Date\`. Roles that do carry \`write\` still use this tool for board files:
+  it is what keeps the layout and the no-overwrite rule true.
+- The tool chooses the name (\`NN-<role>-<topic>[-rN].md\`) and NEVER overwrites:
+  a revision lands as a new round-suffixed file, because the board's history is
+  the audit trail the lead reads back. Your role in that name comes from the host,
+  not from what you claim.
+- Its reply is a PATH plus a byte count, never your content. Put the path in
+  CHANGES/HANDOFF verbatim and do NOT paste the text back — that round-trip is
+  the exact thing the board exists to prevent.
+- If the write still fails (a cap, a quota, a path the tool refused), start
+  your reply with \`BLACKBOARD WRITE FAILED: <reason>\` and include the content
+  inline as the fallback — never silently drop the artifact.
 - Never hand the full deliverable back for the lead to transcribe —
   skeleton + optional file path is the only valid reply shape.`
 

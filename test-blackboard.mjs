@@ -163,13 +163,18 @@ for (const expert of EXPERTS) {
   const a = cfg.agent[expert]
   assert.equal(a.mode, "subagent", expert + " is subagent")
   assert.ok(a.prompt.includes("## Blackboard rules"), expert + " has blackboard rules")
+  // The board used to require a file tool, so for architect/researcher (no
+  // write, no edit, not even bash) every oversized deliverable was forced
+  // inline.  The writer is now named in every role's own rules.
+  assert.ok(a.prompt.includes("tm_board_write"), expert + " is told how to reach the board without a file tool")
+  assert.ok(!a.prompt.includes("(architect / reviewer)"), expert + ": the stale 'who cannot write' list is gone — it named the wrong roles")
   assert.ok(a.prompt.includes("STATUS:"), expert + " reply skeleton opener")
   assert.ok(a.prompt.includes("HANDOFF:"), expert + " handoff field")
   assert.ok(a.prompt.includes("Never hand the full deliverable back"), expert + " blocks transcribe-escape")
   assert.equal(
     a.permission.edit,
     EDIT_GRANTED.includes(expert) ? "allow" : "deny",
-    expert + " edit slot matches whitelist (board writes only where granted)",
+    expert + " edit slot matches whitelist (WORKSPACE edits only where granted; the board has its own writer)",
   )
   assert.deepStrictEqual(
     a.permission.bash,
@@ -356,6 +361,13 @@ assert.ok(leadPrompt.includes("Relay the HANDOFF content verbatim"), "lead: hand
 assert.ok(leadPrompt.includes("NO MANIFEST"), "lead: MANIFEST.md removed")
 assert.ok(!leadPrompt.includes("MANIFEST.md is"), "lead: no MANIFEST state board")
 assert.ok(leadPrompt.includes("<session-key>"), "lead: session layer in board paths")
+// The lead names the session folder and the task; the WRITER chooses the file.
+// Passing the folder down is load-bearing, because a bash-less role cannot
+// invent a timestamp of its own.
+assert.ok(
+  leadPrompt.includes("tm_board_write") && /PASS IT in every\s+dispatch/.test(leadPrompt),
+  "lead: dispatches carry the session folder to the roles that cannot stamp one",
+)
 assert.ok(!leadPrompt.includes("DELETE the task directory"), "lead: no manual-delete instruction left")
 assert.ok(leadPrompt.includes("TTL sweeper"), "lead: TTL sweeper is sole cleanup path")
 assert.ok(leadPrompt.includes("VERBATIM CONTRACTS"), "lead: api-contract verbatim rule (kept)")

@@ -103,7 +103,14 @@ const PER_AGENT_TOOLS = ["edit", "write", "task", "bash", "todowrite", "question
  *  not a network channel, available to all six agents.  tm_stats reads this
  *  plugin's own trajectory (no network, no shell, no secrets) so any role can
  *  answer "what did we spend" — and after a host upgrade, "what broke". */
-const TM_TOOLS = ["tm_read", "tm_grep", "tm_bash", "tm_fetch", "tm_memory", "tm_stats"] as const
+/** tm_board_write is in this set on purpose.  The blackboard is the ONLY
+ *  oversized-deliverable channel, and two roles (architect, researcher) own no
+ *  write/edit/bash at all — so a board write through the host's file tools is
+ *  impossible for them by construction, and the rule that keeps a report from
+ *  becoming a wall of text was un-followable exactly where it mattered.  A
+ *  governed writer scoped to <board-root>/<session>/<task>/ is the small fix;
+ *  it is not a file tool, because it can neither overwrite nor leave the board. */
+const TM_TOOLS = ["tm_read", "tm_grep", "tm_bash", "tm_fetch", "tm_memory", "tm_stats", "tm_board_write"] as const
 
 /** M3: tm_ptc_run — explicit per-agent grant.  v1.5.4 revised the original
  *  M3 ruling (five specialists = allow, team = deny): ALL SIX agents now

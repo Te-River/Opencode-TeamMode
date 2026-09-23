@@ -233,6 +233,12 @@ export interface TmConfig {
    *  blocked either way — so the default now says "check, then go do lead
    *  work" instead of "park here".  Raise it only deliberately. */
   joinMaxWaitMs: number
+  /** tm_board_write: one board file's character cap and one session folder's file cap.
+   *  The board is the ONLY oversized-deliverable channel, and the roles that
+   *  need it most (architect / researcher) own no file tool at all, so the caps
+   *  are what keeps a governed writer from becoming a disk leak. */
+  boardMaxChars: number
+  boardMaxFiles: number
   /** TM_TASK_OFFLOAD (default on) — keep the HOST's own background sub-agent
    *  (`task {background:true}`, needs OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS)
    *  inside our context budget: when the host injects the finished child's full
@@ -316,6 +322,8 @@ export const TM_CONFIG_DEFAULTS = {
   ptcWebBridge: "on",
   webCacheTtlSec: 300,
   joinMaxWaitMs: 60_000,
+  boardMaxChars: 200_000,
+  boardMaxFiles: 200,
   taskOffload: "on",
   storeReclaim: "on",
   // Consumed by approval-gate.ts resolveAskTimeoutMs (Math.max floor, Wave A).
@@ -455,6 +463,8 @@ export function resolveTmConfig(env: EnvLike = process.env): TmConfig {
     ptcWebBridge: resolveOnOff(env.TM_PTC_WEB_BRIDGE),
     webCacheTtlSec: envInt(env, "TM_WEB_CACHE_TTL_SEC", TM_CONFIG_DEFAULTS.webCacheTtlSec, 0, 86_400),
     joinMaxWaitMs: envInt(env, "TM_JOIN_MAX_WAIT_MS", TM_CONFIG_DEFAULTS.joinMaxWaitMs, 0, 600_000),
+    boardMaxChars: envInt(env, "TM_BOARD_MAX_CHARS", TM_CONFIG_DEFAULTS.boardMaxChars, 1_000, 2_000_000),
+    boardMaxFiles: envInt(env, "TM_BOARD_MAX_FILES", TM_CONFIG_DEFAULTS.boardMaxFiles, 4, 2_000),
     taskOffload: resolveOnOff(env.TM_TASK_OFFLOAD),
     storeReclaim: resolveOnOff(env.TM_STORE_RECLAIM),
     askTimeoutFloorMin: envInt(env, "TM_ASK_TIMEOUT_FLOOR_MIN", TM_CONFIG_DEFAULTS.askTimeoutFloorMin, 1, 1440),

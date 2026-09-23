@@ -109,6 +109,26 @@ registry saw 1.5.0 as the install-script fix release).
   request continues for the approver and aborts for everyone else). A host that
   passes no sessionID keeps the old single-shared-browser behaviour, because
   then there is only one caller to confuse.
+- **The blackboard finally has a write side: `tm_board_write`.** The board is
+  where an oversized deliverable is supposed to go, and reaching it required a
+  file tool — which `architect` and `researcher` do not have: no `write`, no
+  `edit`, and no `bash` even to create the session folder the documented layout
+  needs. So every "write the design doc to the board" dispatch from those two
+  roles ended the same way, `BLACKBOARD WRITE FAILED` followed by the whole
+  document pasted inline — the reply shape this team exists to enforce was
+  un-followable for exactly the roles that produce the longest artifacts. The
+  tool places ONE new Markdown file under the board root, chooses
+  `NN-<role>-<topic>[-rN].md` itself, and NEVER overwrites: a revision is a new
+  round-suffixed file, because the board's history is the audit trail the lead
+  reads back. The role in that name comes from the host's `ctx`, not from what
+  the caller claims, and the reply is a path plus a byte count — the content
+  does not ride back through the context window, which is the point. It is
+  scoped rather than polite: segments sanitized, target realpath-verified
+  against the root (a symlinked task dir is refused before a byte moves), the
+  name always ends in `.md` so no `.env`/rc file can be produced,
+  `TM_BOARD_MAX_CHARS` refuses instead of truncating, and `TM_BOARD_MAX_FILES`
+  caps a session folder with a refusal that names the TTL sweeper as the only
+  reclaim path. All six roles carry it.
 - **A blocked script host now has a way out that is not an env edit.**
   `tm_browser { action: "allow_host", host }` takes ONE bare domain (a wildcard, a
   URL, a path or a port is refused as an argument error before any dialog), puts it
@@ -388,6 +408,14 @@ broken" and "the answer is not what I expected" must not be conflated.
   we do not own: with every resource allowed they still serve 安全验证 to an
   automated client, which is their anti-bot policy rather than our defect (plain
   playwright measures 0 characters there too).
+
+- **The blackboard rule named the wrong roles as the ones that could not
+  write.** It said "(architect / reviewer)" and omitted `researcher` — the role
+  that actually hit the failure — while `reviewer`'s only theoretical route
+  (`bash` with a redirect) was refused by the read-only gate anyway. A rule about
+  who can write is only as good as the permission matrix behind it, so the
+  rewritten rule names `tm_board_write` as the channel every role has and states
+  the three that own no file tool at all.
 
 ### Known gap (found while fixing the above, deliberately NOT changed)
 

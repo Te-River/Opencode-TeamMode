@@ -2726,10 +2726,10 @@ try {
       assert.deepEqual(
         Object.keys(hooks.tool).sort(),
         [
-          "tm_bash", "tm_browser", "tm_fetch", "tm_grep", "tm_join",
+          "tm_bash", "tm_board_write", "tm_browser", "tm_fetch", "tm_grep", "tm_join",
           "tm_memory", "tm_ptc_run", "tm_pty", "tm_read", "tm_search", "tm_stats", "tm_webfetch",
         ],
-        "registered tm_* set: tm_join collects host task children but tm_dispatch is gone (a plugin-spawned child is not closeable by the user)",
+        "registered tm_* set: tm_join collects host task children but tm_dispatch is gone (a plugin-spawned child is not closeable by the user), and tm_board_write is the board's write side",
       )
       // program over the cap is rejected through the tool as an args error
       const big = await tool.execute({ program: "x".repeat(4001) }, { directory: process.cwd() })
@@ -3403,6 +3403,105 @@ try {
     }
     console.log("11. bash timeout clamp: OK (probe-only ceiling by default, opt-in global cap, never invents a timeout, never widens the allowlist, string args tolerated, composed with R6)")
   }
+    // ---------- 12. tm_board_write — the board's write side (a role with no file tool) ----------
+    {
+      const bd = await import("./dist/tm/board.js")
+      const root = mktmp("board")
+      const events = []
+      const pipes = {
+        nextStepId: () => "s0120",
+        store: { appendTrajectory: (e) => events.push(e), blackboardRoot: root, trajectoryRoot: root },
+      }
+      const mk = (over = {}) =>
+        bd.buildBoardWriteTool({
+          pipelines: pipes,
+          boardRoot: root,
+          stamp: () => "20260101-000000",
+          ...over,
+        })
+      const arch = { agent: "architect", sessionID: "ses_arch" }
+
+      // ---- pure: the path pieces are chosen here, not by the model ----
+      assert.equal(bd.sessionKeyStamp(new Date(2026, 0, 2, 3, 4, 5)), "20260102-030405", "session key = the yyyyMMdd-HHmmss shape the board note advertises (a role with no bash cannot run Get-Date)")
+      assert.equal(bd.sanitizeSlug("auth/design"), "auth-design", "a separator inside a segment becomes a dash, never a directory hop")
+      assert.equal(bd.sanitizeSlug("../../etc/passwd"), "etc-passwd", "dot-dot pairs cannot escape a segment")
+      assert.equal(bd.sanitizeSlug(".env"), "env", "leading dots go, so the .env / shell-rc family cannot be produced")
+      assert.equal(bd.sanitizeSlug("认证 设计"), "认证-设计", "CJK survives — these users write CJK")
+      assert.equal(bd.sanitizeSlug("   "), "", "whitespace is not a name")
+      assert.equal(bd.nextOrdinal(["01-architect-design.md", "07-team-plan.md"]), 8, "a hand-written ordinal the lead created is counted")
+      assert.equal(bd.nextOrdinal([]), 1, "the first file of a task is 01")
+      assert.equal(bd.roundSuffix(["01-x.md"], "01-x"), "-r2", "a revision is a NEW file, never a rewrite")
+      assert.equal(bd.roundSuffix(["01-x.md", "01-x-r2.md"], "01-x"), "-r3")
+      assert.equal(bd.roundSuffix(["01-x.md"], "02-y"), "", "a free name needs no round")
+      assert.deepEqual(
+        bd.findFamily(["01-architect-design.md"], "architect", "design"),
+        { base: "01-architect-design", round: "-r2" },
+        "a revision keeps the family's NN and adds the round — the pairing has to be visible in a listing",
+      )
+      assert.deepEqual(
+        bd.findFamily(["01-x-design.md", "01-x-design-r3.md"], "x", "design"),
+        { base: "01-x-design", round: "-r4" },
+        "the round advances past the highest existing one, not past the count",
+      )
+      assert.equal(bd.findFamily(["01-architect-design.md"], "architect", "risks"), null, "another topic is not this family")
+
+      // ---- end to end: write, revise, join the lead's folder ----
+      const tool = mk()
+      const body = "设计说明：".repeat(40)
+      const out1 = String((await tool.execute({ task: "auth", topic: "design", content: body }, arch)).output ?? "")
+      const f1 = path.join(root, "20260101-000000", "auth", "01-architect-design.md")
+      assert.ok(out1.includes(f1), `the reply carries the absolute path — got: ${out1.slice(0, 200)}`)
+      assert.ok(fs.existsSync(f1) && fs.readFileSync(f1, "utf8").includes(body), "the bytes are ON DISK (the role that wrote them owns no file tool)")
+      assert.ok(!out1.includes("设计说明"), "…and the content is NOT echoed back — that round-trip is what the board exists to prevent")
+      assert.ok(
+        events.some((e) => e.event === "board_write" && Number(e.bytes) > 0 && e.file === "01-architect-design.md"),
+        "the write is trajectory-audited with its byte count",
+      )
+      const out2 = String((await tool.execute({ task: "auth", topic: "design", content: "第二版" }, arch)).output ?? "")
+      assert.ok(out2.includes("01-architect-design-r2.md"), `a revision lands as a new round — got: ${out2.slice(0, 180)}`)
+      assert.ok(fs.readFileSync(f1, "utf8").includes(body), "the first version is untouched — the board's history IS the audit trail")
+      const out3 = String((await tool.execute({ task: "auth", topic: "risks", content: "风险清单" }, arch)).output ?? "")
+      assert.ok(out3.includes("02-architect-risks.md"), "the ordinal advances per task dir")
+      // The role comes from the host's ctx: a child that files a report under a
+      // borrowed name would corrupt the lead's view of who did what.
+      const spoof = String((await tool.execute({ task: "auth", topic: "claim", content: "x", role: "implementer" }, arch)).output ?? "")
+      assert.ok(spoof.includes("03-architect-claim.md"), "the filename role is the CALLER's role, not an argument")
+      const joined = String((await tool.execute({ task: "auth", topic: "note", session: "20260915-101010", content: "x" }, arch)).output ?? "")
+      assert.ok(joined.includes(path.join("20260915-101010", "auth")), "passing the lead's session folder joins it instead of forking a second board")
+
+      // ---- refusals write nothing ----
+      const empty = String((await tool.execute({ task: "auth", topic: "x", content: "   " }, arch)).output ?? "")
+      assert.ok(empty.includes("phase=args") && empty.includes("缺少 content"), "an empty deliverable is an args error")
+      const capped = mk({ cfg: { boardMaxChars: 1500 } })
+      const big = String((await capped.execute({ task: "auth", topic: "huge", content: "字".repeat(2000) }, arch)).output ?? "")
+      assert.ok(big.includes("超过上限"), "content over the cap refuses instead of truncating")
+      assert.equal(fs.existsSync(path.join(root, "20260101-000000", "auth", "04-architect-huge.md")), false, "…and no partial file is left behind")
+      const escape = String((await tool.execute({ task: "../../../escape", topic: "x", content: "y" }, arch)).output ?? "")
+      const within = path.resolve(root)
+      assert.ok(escape.includes(within), `even a traversal-shaped task stays under the board root — got: ${escape.slice(0, 160)}`)
+      assert.equal(fs.existsSync(path.join(os.tmpdir(), "escape")), false, "…and nothing is created outside it")
+      const tiny = mk({ cfg: { boardMaxFiles: 4 } })
+      for (const t of ["a", "b", "c", "d"]) await tiny.execute({ task: "quota", topic: t, content: "x" }, arch)
+      const over = String((await tiny.execute({ task: "quota", topic: "e", content: "x" }, arch)).output ?? "")
+      assert.ok(over.includes("上限") && over.includes("ttlDays"), "the per-session file cap names the reclaim path (TTL), not a magic delete")
+
+      // ---- a symlinked task dir is not a way out ----
+      try {
+        const outside = mktmp("board-outside")
+        const linkRoot = mktmp("board-link")
+        fs.mkdirSync(path.join(linkRoot, "sess"), { recursive: true })
+        fs.symlinkSync(outside, path.join(linkRoot, "sess", "task"), "dir")
+        const lk = bd.buildBoardWriteTool({ pipelines: pipes, boardRoot: linkRoot, stamp: () => "s" })
+        const out = String((await lk.execute({ task: "task", topic: "x", session: "sess", content: "y" }, arch)).output ?? "")
+        assert.ok(out.includes("符号链接") || out.includes("越出"), `a symlinked task dir is refused — got: ${out.slice(0, 180)}`)
+        assert.equal(fs.readdirSync(outside).length, 0, "…and nothing landed on the other side of it")
+      } catch (e) {
+        if (!/EPERM|eperm|operation not permitted/i.test(String(e && e.message))) throw e
+        console.log("  (symlink refusal skipped: this Windows account cannot create directory symlinks)")
+      }
+      console.log("12. tm_board_write: OK (board-scoped writer for roles with no file tool — path chosen by the tool, revisions never overwrite, content never echoed, traversal/symlink/quota/cap refusals write nothing)")
+    }
+
 } finally {
   restoreEnv()
   for (const dir of tmpDirs) fs.rmSync(dir, { recursive: true, force: true })
