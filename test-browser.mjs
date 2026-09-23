@@ -141,8 +141,13 @@ function makeFakePw(opts = {}) {
     desc,
     ariaSnapshot: async () => {
       if (opts.ariaThrows) throw new Error("locator.ariaSnapshot is not a function")
+      if (opts.ariaErr) throw new Error(opts.ariaErr)
       return opts.ariaYaml ?? ARIA_YAML
     },
+    // wait_for's text path asks how many nodes matched before it decides to
+    // take the first one, so the mock has to be able to answer "several"
+    count: async () => opts.textHits ?? 1,
+    first: () => makeLocator(`${desc}#first`),
     click: async () => {
       calls.clicks = (calls.clicks ?? 0) + 1
       calls.acted.push(["click", desc])
@@ -189,7 +194,7 @@ function makeFakePw(opts = {}) {
         for (const cb of p._events[ev] ?? []) cb(arg)
       },
       url: () => p._url,
-      title: () => Promise.resolve(`title<${p._url}>`),
+      title: () => Promise.resolve(opts.pageTitle ?? `title<${p._url}>`),
       bringToFront: () => (p.brought++, Promise.resolve()),
       // close_page needs a faithful tab: it leaves the context's list
       close: async () => {
@@ -429,7 +434,9 @@ async function main() {
     // hand-written copy did not gain new_page when new_page shipped — and this
     // refusal line is the only place an agent that forgot the verb can find it.
     assert.ok(o(unknown).includes("new_page") && o(unknown).includes("close_page"), "unknown action names the multi-tab verbs")
-    assert.equal((o(unknown).match(/ \| /g) ?? []).length + 1, 23, "the derived menu lists every registered verb exactly once")
+    assert.equal((o(unknown).match(/ \| /g) ?? []).length + 1, 24, "the derived menu lists every registered verb exactly once (18 + 5 compat + allow_host)")
+    assert.ok(o(unknown).includes("allow_host"), "…including the gate verb, or no agent would ever find it")
+    assert.equal(new Set(br.ALL_BROWSER_ACTIONS).size, br.ALL_BROWSER_ACTIONS.length, "the verb table itself has no duplicates to hide a count")
     // cdp-legacy preference -> import NEVER called
     let legacyToolImports = 0
     const legacyTool = makeTool({
@@ -1268,8 +1275,13 @@ async function main() {
     const fx = makeFakePw()
     const mk = makeTool({ importPlaywright: async () => fx.pw, nodeMajor: 22 })
     await mk.tool.execute({ action: "open", url: "https://cn.bing.com" }, ctxNoAsk)
-    // now make the LIVE page die: every action against it throws the same line
+    // Now make the instance really die: every action against it throws the same
+    // line AND the browser reports itself disconnected. The second half matters —
+    // `alive()` is what separates "your tab closed" (keep the lease) from "your
+    // browser died" (drop it), so a mock that only throws the string is not this
+    // bug any more.
     fx.__ctxPage.goto = () => Promise.reject(new Error(DEAD))
+    fx.calls.launchBrowser._closed = true
     const dead = await mk.tool.execute({ action: "open", url: "https://cn.bing.com" }, ctxNoAsk)
     assert.ok(o(dead).includes("浏览器实例已失效"), "a dead instance is named as dead")
     assert.ok(o(dead).includes('下一次 action:"open"'), "…and says the next open really rebuilds")
@@ -1670,7 +1682,185 @@ async function main() {
     log("one browser per caller: ids minted, echoed, required once ambiguous, checked against the owner, and consent not shared")
   }
 
-  console.log("browser: OK (engine select/degrade matrix, 18-verb playwright mapping + uid registry on mock pw, route()-based allowlist, persistent-profile policy, prompt pins, evaluate_script consent + redaction, dead-session rebuild, hostless-page refusal, multi-tab new_page/close_page, process-verified close, orphan ledger reaper, launch-pid scan + identity gate + tree kill, unverified-close honesty, click effect verification, per-caller browser leases, full args-schema param surface; real-playwright smoke gated on npm install)")
+  // ---------- 28. the five defects one real session exported ----------
+  {
+    // #59 — closing the LAST tab must not cost the caller their lease. Measured
+    // live: the next take_snapshot threw "…has been closed", the recovery read
+    // that as a dead BROWSER, dropped b1, and `close` then reported "no browser
+    // open" over a window still on the user's screen.
+    {
+      const fx = makeFakePw()
+      const mk = makeTool({ importPlaywright: async () => fx.pw, nodeMajor: 22 })
+      const ctxT = { directory: root, sessionID: "ses_t28", agent: "tester" }
+      await mk.tool.execute({ action: "open", url: "https://cn.bing.com" }, ctxT)
+      let drain = 0
+      while (fx.__ctx._pages.length && drain++ < 6) await mk.tool.execute({ action: "close_page", index: 0 }, ctxT)
+      const empty = o(await mk.tool.execute({ action: "take_snapshot" }, ctxT))
+      assert.ok(empty.includes("已经没有标签页"), `an empty window gets its own answer — got: ${empty.slice(0, 200)}`)
+      assert.ok(!/has been closed/i.test(empty), "…and it is NOT the dead-instance sentence (that sentence costs leases)")
+      const re = o(await mk.tool.execute({ action: "new_page" }, ctxT))
+      assert.ok(/已新建空白标签页 0/.test(re), `new_page is the way back out — got: ${re.slice(0, 160)}`)
+      const closed28 = o(await mk.tool.execute({ action: "close" }, ctxT))
+      assert.ok(!closed28.includes("没有 id 为"), `the lease was never dropped, so close can still give a verdict — got: ${closed28.slice(0, 160)}`)
+      await mk.tool.dispose()
+    }
+    // #59b — a PAGE that dies while the browser is connected must not drop the
+    // lease either. That is the difference between "your tab closed" and "your
+    // browser died", and only the second one may take the id away.
+    {
+      const fx = makeFakePw({ ariaErr: "locator.ariaSnapshot: Target page, context or browser has been closed" })
+      const mk = makeTool({ importPlaywright: async () => fx.pw, nodeMajor: 22 })
+      await mk.tool.execute({ action: "open", url: "https://cn.bing.com" }, ctxNoAsk)
+      const snap = o(await mk.tool.execute({ action: "take_snapshot" }, ctxNoAsk))
+      assert.ok(snap.includes("浏览器本身还连着"), `a closed page is not a dead browser — got: ${snap.slice(0, 260)}`)
+      assert.ok(snap.includes("我保留") && snap.includes("list_pages"), "…and it says the lease is kept and names the next move")
+      const after = o(await mk.tool.execute({ action: "list_pages" }, ctxNoAsk))
+      assert.ok(after.startsWith("[b1]"), "…so the same id still addresses the same window")
+      assert.ok(mk.events.some((e) => e.event === "page_dead_browser_alive"), "…and the two facts are audited apart")
+      await mk.tool.dispose()
+    }
+    // #63 — blame a version only when the accessor is actually missing
+    {
+      const fx = makeFakePw({ ariaErr: "locator.ariaSnapshot: element is not attached to the DOM" })
+      const mk = makeTool({ importPlaywright: async () => fx.pw, nodeMajor: 22 })
+      await mk.tool.execute({ action: "open", url: "https://cn.bing.com" }, ctxNoAsk)
+      const snap = o(await mk.tool.execute({ action: "take_snapshot" }, ctxNoAsk))
+      assert.ok(
+        snap.includes("快照读取失败") && !snap.includes("playwright-core ≥1.49"),
+        `a non-version failure must not blame versions — got: ${snap.slice(0, 240)}`,
+      )
+      await mk.tool.dispose()
+      const fx2 = makeFakePw({ ariaThrows: true })
+      const mk2 = makeTool({ importPlaywright: async () => fx2.pw, nodeMajor: 22 })
+      await mk2.tool.execute({ action: "open", url: "https://cn.bing.com" }, ctxNoAsk)
+      assert.ok(o(await mk2.tool.execute({ action: "take_snapshot" }, ctxNoAsk)).includes("playwright-core ≥1.49"), "a missing accessor DOES get the version sentence")
+      await mk2.tool.dispose()
+    }
+    // #60 — a text that matches several nodes is waited for, not thrown over.
+    // Measured live: `wait_for` answered with playwright's strict-mode report
+    // (two <span>s + a Call log) on the very recovery step our click message had
+    // just recommended.
+    {
+      const fx = makeFakePw({ textHits: 3 })
+      const mk = makeTool({ importPlaywright: async () => fx.pw, nodeMajor: 22 })
+      await mk.tool.execute({ action: "open", url: "https://cn.bing.com" }, ctxNoAsk)
+      const w = o(await mk.tool.execute({ action: "wait_for", text: "图像与视频" }, ctxNoAsk))
+      assert.ok(w.includes("等待命中") && w.includes("命中 3 个元素"), `multi-match is reported, not thrown — got: ${w.slice(0, 200)}`)
+      const acted = fx.calls.acted.filter((x) => x[0] === "waitFor")
+      assert.equal(acted.length, 1, "…and exactly one node was waited on")
+      assert.ok(String(acted[0][1]).includes("#first"), "…the first match, not the strict multi-match set")
+      await mk.tool.dispose()
+    }
+    // #61 — three causes of "nothing changed" get three different next moves
+    {
+      const p = (ready) => ({ attrs: { "aria-expanded": "false" }, url: "https://cn.bing.com/", ready, nodes: 4079 })
+      const trimmed = br.clickVerdict('uid "e33"', p("complete"), [], { retried: true, dialog: false, blocked: { count: 15, hosts: ["g.alicdn.com", "q.alyasset.com"] } })
+      assert.ok(
+        trimmed.includes("被治理闸门拦") && trimmed.includes("g.alicdn.com") && trimmed.includes("TM_WEBFETCH_ALLOWED_DOMAINS"),
+        `a trimmed page names the blocked hosts AND the way out — got: ${trimmed.slice(0, 260)}`,
+      )
+      assert.ok(!trimmed.includes("脚本还没跑完"), "…and at readyState=complete it does not blame load timing")
+      const loaded = br.clickVerdict('uid "e33"', p("complete"), [], { retried: false, dialog: false, blocked: { count: 0, hosts: [] } })
+      assert.ok(loaded.includes("不是加载时机问题") && loaded.includes("take_snapshot"), `a loaded page that ignores the click says so — got: ${loaded.slice(0, 260)}`)
+      const loading = br.clickVerdict('uid "e33"', p("interactive"), [], { retried: false, dialog: false, blocked: { count: 0, hosts: [] } })
+      assert.ok(loading.includes("wait_for"), "only a page that IS still loading gets the wait_for advice")
+      assert.ok(trimmed.includes("不要把这次点击当成成功") && loaded.includes("不要把这次点击当成成功"), "every branch refuses to call it a success")
+    }
+    log("#59-#63: an empty window keeps its lease, a closed page ≠ a dead browser, versions blamed only when true, multi-match waited, three no-change causes split")
+  }
+
+  // ---------- 29. a blank page gets a CAUSE: our gate, or a human wall ----------
+  {
+    // Pure: the wall signature set — thin pages only, so a real article that
+    // merely mentions 验证码 can never be mislabelled.
+    assert.equal(br.challengeWallOf("百度安全验证"), "百度安全验证", "the baike wall is named (measured live: every arm of an item page)")
+    assert.equal(br.challengeWallOf("Just a moment…"), "Cloudflare 人机校验")
+    assert.equal(br.challengeWallOf("Attention Required! | 1020"), "访问被拒（反爬拦截）")
+    assert.equal(br.challengeWallOf("红楼梦_百度百科"), null, "a real title is not a wall")
+    assert.equal(br.challengeWallOf("", null, undefined), null, "nothing to read is not a wall either")
+
+    // Pure: the string that goes into the consent dialog.
+    assert.equal(br.normalizeApprovalHost(" BKSSL.bdimg.com "), "bkssl.bdimg.com", "trimmed + lowercased")
+    assert.equal(br.normalizeApprovalHost("https://bkssl.bdimg.com/a/b.js"), "", "a URL is not a host")
+    assert.equal(br.normalizeApprovalHost("*.bdimg.com"), "", "a wildcard would approve a whole site with one click")
+    assert.equal(br.normalizeApprovalHost("bdimg.com:443"), "", "no port — the gate matches hostnames")
+    assert.equal(br.normalizeApprovalHost(""), "", "empty is not a host")
+
+    // End to end: 0 addressable nodes + a blocked cross-site SCRIPT = the gate
+    // owns the blankness, and the reply says so and names the way out.
+    const fx = makeFakePw({ ariaYaml: "" })
+    const mk = makeTool({ importPlaywright: async () => fx.pw, nodeMajor: 22, cfgDomains: ["baike.baidu.com"] })
+    const ctxR = { directory: root, sessionID: "ses_r29", agent: "researcher" }
+    await mk.tool.execute({ action: "open", url: "https://baike.baidu.com/item/2025%E5%B9%B44%E6%9C%88" }, ctxR)
+    const h = fx.calls.route[0].handler
+    const dec = []
+    const r = () => ({ continue: async () => dec.push("continue"), abort: async () => dec.push("abort") })
+    const req = (url, resourceType) => ({ url: () => url, method: () => "GET", resourceType: () => resourceType })
+    await h(r(), req("https://bkssl.bdimg.com/resource/common/antispam/middle/paris.challenge.min.js", "script"))
+    assert.deepEqual(dec, ["abort"], "a cross-site script is blocked — that is the bug being diagnosed here")
+    const thin = o(await mk.tool.execute({ action: "take_snapshot" }, ctxR))
+    assert.ok(thin.includes("0 个可寻址节点"), "the header still reports the honest count")
+    assert.ok(thin.includes("空白是我们的门禁造成的"), `an empty page blamed on the gate says so — got: ${thin.slice(0, 240)}`)
+    assert.ok(thin.includes('action:"allow_host"') && thin.includes("bkssl.bdimg.com"), "…and names the exact host to approve")
+    assert.ok(thin.includes("重新 navigate"), "approving without re-navigating changes nothing — the tool says so up front")
+    assert.ok(thin.includes("不要把这一页当成"), "…and forbids reporting the site as empty")
+
+    // allow_host: the OFFICIAL dialog, one host, this owner, this session.
+    const noBridge = o(await mk.tool.execute({ action: "allow_host", host: "bkssl.bdimg.com" }, ctxR))
+    assert.ok(/未放行|无人应答|无法/.test(noBridge), `no ask bridge → refused, never self-allowed — got: ${noBridge.slice(0, 160)}`)
+    const asks = []
+    const ctxA = { ...ctxR, ask: async (q) => (asks.push(q), "once") }
+    const granted = o(await mk.tool.execute({ action: "allow_host", host: "bkssl.bdimg.com " }, ctxA))
+    assert.equal(asks.length, 1, "exactly one dialog")
+    assert.deepEqual(asks[0].patterns, ["bkssl.bdimg.com"], "the pattern is the bare host the user can actually judge")
+    assert.ok(granted.includes("临时放行") && granted.includes("本次会话"), `granted, scoped, and it says so — got: ${granted.slice(0, 200)}`)
+    assert.ok(granted.includes("[b1]"), "the reply is prefixed with the browser it applies to")
+    dec.length = 0
+    await h(r(), req("https://bkssl.bdimg.com/resource/common/antispam/middle/paris.challenge.min.js", "script"))
+    assert.deepEqual(dec, ["continue"], "the approved host really clears the gate now")
+    assert.ok(
+      mk.events.some((e) => e.event === "host_approved" && e.host === "bkssl.bdimg.com"),
+      "the approval is in the trajectory (tm_stats can show it)",
+    )
+    // Consent is per owner: the tester's browser gets no free pass from the
+    // researcher's dialog.
+    const ctxB = { directory: root, sessionID: "ses_r29b", agent: "tester" }
+    await mk.tool.execute({ action: "open", url: "https://baike.baidu.com/item/%E7%BA%A2%E6%A5%BC%E6%A2%A6" }, ctxB)
+    dec.length = 0
+    await fx.calls.route[1].handler(r(), req("https://bkssl.bdimg.com/x.js", "script"))
+    assert.deepEqual(dec, ["abort"], "another agent's consent is not a pass here")
+    // An allowlisted host is never put to a dialog — the user learns nothing.
+    asks.length = 0
+    const already = o(await mk.tool.execute({ action: "allow_host", host: "baike.baidu.com" }, ctxA))
+    assert.equal(asks.length, 0, "no dialog for what is already allowed")
+    assert.ok(already.includes("不用批准"), "…and the reply explains why nothing was asked")
+    // Malformed hosts die as arg errors, before any dialog.
+    for (const bad of ["*.bdimg.com", "https://bdimg.com/a.js", "bdimg.com:443", ""]) {
+      const out = o(await mk.tool.execute({ action: "allow_host", host: bad }, ctxA))
+      assert.ok(out.includes("非法") || out.includes("缺少"), `refused as an arg: "${bad}"`)
+    }
+    assert.equal(asks.length, 0, "…and none of them reached the user")
+
+    // A wall is a wall: named, not presented as an empty site to retry.
+    const fxW = makeFakePw({ ariaYaml: "", pageTitle: "百度安全验证" })
+    const mkW = makeTool({ importPlaywright: async () => fxW.pw, nodeMajor: 22, cfgDomains: ["baike.baidu.com"] })
+    await mkW.tool.execute({ action: "open", url: "https://baike.baidu.com/item/2025%E5%B9%B44%E6%9C%88" }, ctxNoAsk)
+    const wallSnap = o(await mkW.tool.execute({ action: "take_snapshot" }, ctxNoAsk))
+    assert.ok(wallSnap.includes("它是一张百度安全验证墙"), `a captcha page is called a captcha page — got: ${wallSnap.slice(0, 220)}`)
+    assert.ok(wallSnap.includes("自动化通道到此为止") && wallSnap.includes("换来源"), "…with the next move, not a retry")
+    const wallRead = o(await mkW.tool.execute({ action: "read" }, ctxNoAsk))
+    assert.ok(wallRead.includes("它是一张百度安全验证墙"), "read says the same thing (the engines must not drift)")
+    // The false-positive guard: a NON-thin page with a wall-shaped title is
+    // never called a wall.
+    const fxN = makeFakePw({ pageTitle: "百度安全验证" })
+    const mkN = makeTool({ importPlaywright: async () => fxN.pw, nodeMajor: 22, cfgDomains: ["cn.bing.com"] })
+    await mkN.tool.execute({ action: "open", url: "https://cn.bing.com/search?q=x" }, ctxNoAsk)
+    const full = o(await mkN.tool.execute({ action: "take_snapshot" }, ctxNoAsk))
+    assert.ok(full.includes("个可寻址节点") && !full.includes("自动化通道到此为止"), "the wall is only consulted when the page is thin")
+    log("#66: bdimg.com seeded, a gate-caused blank named with a scoped allow_host remedy, and a 安全验证 wall reported as a wall")
+  }
+
+  console.log("browser: OK (engine select/degrade matrix, 18-verb playwright mapping + uid registry on mock pw, route()-based allowlist, persistent-profile policy, prompt pins, evaluate_script consent + redaction, dead-session rebuild, hostless-page refusal, multi-tab new_page/close_page, process-verified close, orphan ledger reaper, launch-pid scan + identity gate + tree kill, unverified-close honesty, click effect verification, per-caller browser leases, empty-window and closed-page semantics, full args-schema param surface; real-playwright smoke gated on npm install)")
 }
 
 main().then(

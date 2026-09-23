@@ -10,6 +10,9 @@
  */
 
 import { resolveTmConfig } from "./config.js"
+// The browser verb list lives in ONE place (browser.ts).  A second hand-written
+// copy here is how a shipped verb went missing from the tool schema.
+import { BROWSER_ACTION_MENU, BROWSER_PLAYWRIGHT_ACTIONS } from "./browser.js"
 
 /**
  * Load zod when the host environment provides it (opencode ships it as a
@@ -375,13 +378,18 @@ export async function buildMemoryArgsSchema(): Promise<Record<string, unknown>> 
  */
 export async function buildBrowserArgsSchema(): Promise<Record<string, unknown>> {
   const z = await loadZod()
+  // Derived from the action table itself (browser.ts) — the hand-written verb
+  // list here is how `new_page` and `close_page` went missing from the schema
+  // while the gate accepted them.
   const ACTION_LIST =
-    "navigate_page | take_snapshot | click | fill | hover | drag | press_key | select_page | new_page | close_page | upload_file | wait_for | evaluate_script | list_console_messages | list_network_requests | list_pages | take_screenshot | handle_dialog (18 playwright verbs) | open | navigate | read | screenshot | close (compat verbs)."
+    `${BROWSER_ACTION_MENU} (required) — the ${BROWSER_PLAYWRIGHT_ACTIONS.length} chrome-devtools-mcp verbs, ` +
+    `plus open|navigate|read|screenshot|close (compat) and allow_host (ask the user to un-block ONE script domain).`
   if (!z) {
     return {
-      action: { descriptor: `action: ${ACTION_LIST} (required)` },
+      action: { descriptor: `action: ${ACTION_LIST}` },
       id: { descriptor: 'id: which browser ("b1" from open) — one per agent; required once more than one is live, another agent\'s id is refused' },
       url: { descriptor: "url: string (open/navigate/navigate_page/new_page, allowlisted https)" },
+      host: { descriptor: "host: one bare domain for allow_host (no wildcards, no URL, no port)" },
       image: { descriptor: "image: true with take_screenshot — inline the PNG pixels in this result" },
       uid: { descriptor: "uid: snapshot [uid=eN] token (click/fill/hover/drag/upload_file/wait_for)" },
       selector: { descriptor: "selector: CSS/text locator escape hatch (only when a snapshot cannot express the node)" },
@@ -422,6 +430,7 @@ export async function buildBrowserArgsSchema(): Promise<Record<string, unknown>>
     action: zz.string().describe(ACTION_LIST),
     id: str('Which browser to drive — the id `open` returned ("b1"). Each agent gets its OWN browser: the id is required as soon as more than one is live, another agent\'s id is refused with the owner named, and close {id:"all"} closes all of yours.'),
     url: str("Absolute https URL on an allowlisted host (open/navigate/navigate_page). URL-encode the query (CJK terms too)."),
+    host: str("allow_host only: ONE bare domain whose script the subresource gate blocked (e.g. bkssl.bdimg.com). Wildcards/URLs/ports are refused — the user approves exactly this string."),
     image: bool("take_screenshot only: inline the PNG pixels into this tool result (default false = path only; pixels cost context, so ask only when the screenshot IS the evidence)."),
     uid: str("Snapshot [uid=eN] token from the LATEST take_snapshot (click/fill/hover/drag source/upload_file/wait_for)."),
     selector: str("CSS/text locator escape hatch — only for a node the snapshot cannot express; never guess locators."),

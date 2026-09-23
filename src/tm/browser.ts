@@ -397,6 +397,58 @@ export function rememberSite(allowedSites: Set<string>, url: string): void {
   }
 }
 
+// ---------- a page that is not a page, but a wall ----------------------------
+
+/**
+ * Human-verification walls.  This exists because "0 个可寻址节点" and "this
+ * site wants a human to prove it is one" look identical to the agent, and the
+ * two have opposite next moves: an empty page is worth retrying, a wall never
+ * is — retrying just spends rounds on a captcha.  Measured on baike.baidu.com
+ * item pages, where every arm (raw playwright included, all resources allowed)
+ * returns 0–6 nodes titled 百度安全验证, and the agent reported "该网站没有内容".
+ *
+ * Deliberately narrow: signatures we observed live, plus the unambiguous
+ * English ones.  Callers consult it ONLY when the page came back thin, so an
+ * article that merely mentions 验证码 is never mislabelled as a wall.
+ */
+export const CHALLENGE_WALL_SIGNS: ReadonlyArray<{ readonly re: RegExp; readonly label: string }> = [
+  { re: /百度安全验证|百度的安全验证/, label: "百度安全验证" },
+  { re: /安全验证|访问验证|请完成验证|滑动验证|拖动滑块|人机验证|点击按钮进行验证/, label: "站点安全验证" },
+  { re: /just a moment|checking before the link|cf-browser-verification/i, label: "Cloudflare 人机校验" },
+  { re: /verify you are a human|are you a robot|enable javascript and cookies/i, label: "人机校验" },
+  { re: /access denied|attention required|blocked because|request blocked/i, label: "访问被拒（反爬拦截）" },
+]
+
+/** Which wall this thin page actually is, or null when it is just empty. */
+export function challengeWallOf(...texts: ReadonlyArray<string | null | undefined>): string | null {
+  const hay = texts.filter(Boolean).join("\n").slice(0, 4000)
+  if (!hay.trim()) return null
+  for (const s of CHALLENGE_WALL_SIGNS) if (s.re.test(hay)) return s.label
+  return null
+}
+
+/** One hostname for `allow_host`, or "" when the argument is not a single bare
+ *  domain.  Strict on purpose: this value becomes the pattern in an official
+ *  consent dialog, and a user approving "bkssl.bdimg.com" must not be getting a
+ *  wildcard, a URL with a path, or a port. */
+export function normalizeApprovalHost(raw: unknown): string {
+  const s = String(raw ?? "").trim().toLowerCase().replace(/^[a-z]+:\/\//, "").replace(/^\.+|\.+$/g, "")
+  if (!s || s.length > 253) return ""
+  if (/[\s/@:*?#%\\]/.test(s)) return ""
+  if (!/^[a-z0-9一-鿿-]+(\.[a-z0-9一-鿿-]+)+$/.test(s)) return ""
+  return s
+}
+
+/** The document title, or "" — a title is a diagnostic, never a reason for the
+ *  action that was asked for to fail. */
+async function readTitle(page: { title?: () => Promise<string> }): Promise<string> {
+  try {
+    return String((await page.title?.()) ?? "")
+  } catch {
+    return ""
+  }
+}
+
 // ---------- evaluate_script: consent + result redaction ---------------------
 
 /** `evaluate_script` is the one browser verb the network gate cannot cover:
@@ -978,7 +1030,7 @@ export function clickVerdict(
   target: string,
   before: ClickProbe | null,
   changed: string[],
-  opts: { retried: boolean; dialog: boolean },
+  opts: { retried: boolean; dialog: boolean; blocked?: { count: number; hosts: string[] } },
 ): string {
   const head = `已点击 ${target}`
   const dialogNote = opts.dialog ? "；有未处理对话框——handle_dialog（同轮观察，勿另起动作）" : ""
@@ -992,11 +1044,23 @@ export function clickVerdict(
   const watched = Object.keys(before.attrs).length
     ? Object.entries(before.attrs).map(([k, v]) => `${k}=${v}`).join(" ")
     : "无可观测状态属性"
-  return (
-    `${head}，但页面没有任何可观测变化（${watched} · URL 未变 · DOM 节点 ${before.nodes} 未变 · readyState=${before.ready || "?"}）。` +
-    `点击送达了，可是没有 handler 响应——最常见的原因是页面脚本还没跑完，而 playwright 的可见/稳定/可点检查在这种情况下全部通过。` +
-    `下一步：wait_for 你要点的文字，或重新 take_snapshot 再点一次；不要把这次点击当成成功。${dialogNote}`
-  )
+  const facts = `${watched} · URL 未变 · DOM 节点 ${before.nodes} 未变 · readyState=${before.ready || "?"}`
+  // Three different reasons produce the same "nothing changed", and the advice
+  // that fits one of them is a dead end for the others.  Measured live: a page
+  // at readyState=complete whose framework bundles the governance gate had
+  // trimmed was told to "wait for the text" — wait_for then threw a strict-mode
+  // violation, so the recommended way out led nowhere.
+  const why = opts.blocked && opts.blocked.count > 0
+    ? `最可能的原因不是"还没加载完"，而是**这个页面的脚本被治理闸门拦掉了**：本次有 ${opts.blocked.count} 个子资源被拦截` +
+        `${opts.blocked.hosts.length ? `（${opts.blocked.hosts.join(", ")}）` : ""}，而它们的可执行资源不属于你导航过的那个站。` +
+        `出路：请操作者把这些主机加进 TM_WEBFETCH_ALLOWED_DOMAINS（或先在确认窗里批准该站点）后重新 open；` +
+        `也可以直接 TM_BROWSER_SUBRESOURCE=off 之外逐案判断——总之现在这个按钮上没有 handler。`
+    : before.ready === "complete"
+      ? `页面已经加载完成（readyState=complete），所以这不是加载时机问题：这个元素本身不响应这种点击（常见于 <a> 需要 navigate、事件绑在父节点、或被上层遮罩）。` +
+          `下一步：重新 take_snapshot 看清结构再决定，或改用 navigate / evaluate_script 直接取你要的东西。`
+      : `最常见的原因是页面脚本还没跑完（readyState=${before.ready || "?"}），而 playwright 的可见/稳定/可点检查在这种情况下全部通过。` +
+          `下一步：wait_for 你要点的文字，或重新 take_snapshot 再点一次。`
+  return `${head}，但页面没有任何可观测变化（${facts}）。点击送达了，可是没有 handler 响应。${why}不要把这次点击当成成功。${dialogNote}`
 }
 
 // ---------- pipe CDP client (JSON + NUL framing over fds 3/4) ----------------
@@ -1187,6 +1251,9 @@ export interface PwLocator {
   setInputFiles(files: string | string[]): Promise<unknown>
   waitFor(opts?: Record<string, unknown>): Promise<unknown>
   nth(index: number): PwLocator
+  /** Optional on the seam: a mock without them takes the single-match path. */
+  first?(): PwLocator
+  count?(): Promise<number>
   dragTo(target: PwLocator): Promise<unknown>
   /** Read the element's own state in ONE round-trip, so verifying an action
    *  costs less than the action.  Optional: a locator without it cannot be
@@ -1327,6 +1394,27 @@ export const BROWSER_PLAYWRIGHT_ACTIONS = [
 /** Legacy compat verbs that ride on top of the 18 (both engines). */
 export const BROWSER_COMPAT_ACTIONS = ["open", "navigate", "read", "screenshot", "close"] as const
 
+/** Verbs of our own that act on the GATE rather than the DOM: no page is
+ *  involved, so both engines serve them and neither can drift. */
+export const BROWSER_GATE_ACTIONS = ["allow_host"] as const
+
+/** Every verb the execute layer accepts — the ONE table the refusal menu and
+ *  the args schema are both built from.  The hand-written copies drifted the
+ *  day `new_page` landed (§6o/unknown-action menu), and a schema that omits a
+ *  verb is a capability no agent knows it has. */
+export const ALL_BROWSER_ACTIONS: readonly string[] = [
+  ...BROWSER_PLAYWRIGHT_ACTIONS,
+  ...BROWSER_COMPAT_ACTIONS,
+  ...BROWSER_GATE_ACTIONS,
+]
+export const BROWSER_ACTION_MENU = ALL_BROWSER_ACTIONS.join(" | ")
+
+/** The verbs that must still WORK when a browser has zero tabs: `new_page` is
+ *  the remedy the error text points at, `list_pages` is how you find out you
+ *  are at zero, and `close_page` answers with its own "index 越界（0..-1）"
+ *  rather than this sentence. */
+const ZERO_TAB_SAFE = new Set(["new_page", "list_pages", "close_page"])
+
 /** What the cdp-legacy fallback can still do (R2: degradation must keep the
  *  §6o behavior; everything snapshot-shaped is playwright-only). */
 export const BROWSER_LEGACY_ACTIONS = [
@@ -1377,6 +1465,12 @@ interface ActiveSession {
   /** Engine action dispatch; throws Error with an agent-actionable message
    *  (the execute() catch renders it as phase=execute). */
   act(action: string, args: Record<string, unknown>, stepId: string): Promise<string>
+  /** Is the BROWSER still there?  "Target page, context or browser has been
+   *  closed" is one string covering two very different facts — a tab the user
+   *  closed and a browser that died.  Only the second one may cost the caller
+   *  their lease, or a window the plugin walked away from stays on the user's
+   *  screen with nothing holding it. */
+  alive?(): boolean
   /** Closes the session and reports VERBATIM what it managed to close — a
    *  close that failed must not read like a success (issue #3 of 2026-09-18:
    *  an agent told the user the window was gone while it was still up). */
@@ -1684,8 +1778,15 @@ export function buildTmBrowserTool(deps: {
 
   /** One line telling the agent that the page is NOT actually empty — the
    *  subresource gate dropped N requests.  Without this the model reads a
-   *  blank-looking page and reports "该网站没有图片". */
-  function blockedNote(sess: ActiveSession): string {
+   *  blank-looking page and reports "该网站没有图片".
+   *
+   *  `thin` means the page ALSO came back with nothing addressable, which
+   *  changes the sentence from a footnote into the diagnosis: on baike the
+   *  blocked request was the site's own bundle, so 0 nodes and "no content"
+   *  were our doing.  An agent that is told the causality has two real moves
+   *  (allow_host, or the env seed + restart); one that is not, reports the
+   *  site as empty. */
+  function blockedNote(sess: ActiveSession, thin = false): string {
     if (!sess.blocked.count) return ""
     const n = sess.blocked.count
     const hosts = [...sess.blocked.hosts]
@@ -1694,10 +1795,31 @@ export function buildTmBrowserTool(deps: {
     // drain (and the note would never appear again for the session).
     sess.blocked.count = 0
     sess.blocked.hosts.clear()
-    traj({ step_id: "browser", event: "blocked", count: n, hosts: hosts.slice(0, 20).join(",") })
-    return (
-      `\n注意：本页有 ${n} 个子资源请求被治理白名单拦截（${hosts.slice(0, 6).join(", ")}${hosts.length > 6 ? ` …+${hosts.length - 6}` : ""}）——不是站点没有内容。` +
+    traj({ step_id: "browser", event: "blocked", count: n, hosts: hosts.slice(0, 20).join(","), thin })
+    const list = `${hosts.slice(0, 6).join(", ")}${hosts.length > 6 ? ` …+${hosts.length - 6}` : ""}`
+    const base =
+      `\n注意：本页有 ${n} 个子资源请求被治理白名单拦截（${list}）——不是站点没有内容。` +
       `当前策略 TM_BROWSER_SUBRESOURCE=${subPolicy}；同域资源已自动放行，跨域脚本仍需白名单或弹窗批准。`
+    if (!thin) return base
+    return (
+      base +
+      `这一页的可寻址内容为 0，而被拦的正是页面自己的脚本域名——空白是我们的门禁造成的，不是页面没有内容。` +
+      `两条出路：action:"allow_host" {host:"${hosts[0] ?? "被拦域名"}"} 由我拿官方确认窗去问用户（只放行这个域名、只对你这个浏览器、本次会话），` +
+      `或请用户把域名加进 TM_WEBFETCH_ALLOWED_DOMAINS 后重启 OpenCode。批准后要重新 navigate 一次——门禁在请求时判定，已加载的页面不会自己补回来。` +
+      `在拿到真实内容之前不要把这一页当成"网站没有内容"汇报。`
+    )
+  }
+
+  /** A thin page may be a wall rather than an empty site.  Say which, because
+   *  the next move is the opposite: retry an empty page, never a captcha. */
+  function wallNote(...texts: ReadonlyArray<string | null | undefined>): string {
+    const wall = challengeWallOf(...texts)
+    if (!wall) return ""
+    traj({ step_id: "browser", event: "challenge_wall", sign: wall })
+    return (
+      `\n这一页不是"没有内容"，它是一张${wall}墙——站点要求真人完成验证，自动化通道到此为止。` +
+      `不要重试这一页来"等它加载完"，也不要把"该站点无内容"写进结论：换来源（tm_search 的其它引擎 / 别的站点），` +
+      `或者告诉用户需要他本人在这个窗口里完成一次验证后再继续。`
     )
   }
 
@@ -1854,6 +1976,8 @@ export function buildTmBrowserTool(deps: {
       attachments: [],
       blocked,
       allowedSites,
+      // the CDP child still running IS the browser being alive on this engine
+      alive: () => (child as { exitCode?: number | null }).exitCode === null,
       async act(action, args, stepId) {
         if (action === "navigate" || action === "navigate_page") {
           const url = String(args.url ?? "").trim()
@@ -1872,7 +1996,17 @@ export function buildTmBrowserTool(deps: {
           )
           const text = String((ev.result as { value?: unknown })?.value ?? "")
           traj({ step_id: stepId, event: "result", tokens: Math.ceil(text.length / 4) })
-          return `${pageTextOutput(sess.currentUrl, text)}${blockedNote(sess)}`
+          // Same diagnosis as the playwright leg — the two engines must not
+          // drift on what a blank page is allowed to be called.
+          const thin = text.replace(/\s+/g, "").length < 80
+          let title = ""
+          if (thin) {
+            const t = await cdp
+              .call("Runtime.evaluate", { expression: "document.title", returnByValue: true }, sessionId)
+              .catch(() => null)
+            title = String((t?.result as { value?: unknown })?.value ?? "")
+          }
+          return `${pageTextOutput(sess.currentUrl, text)}${wallNote(title, text)}${blockedNote(sess, thin)}`
         }
         if (action === "screenshot" || action === "take_screenshot") {
           traj({ step_id: stepId, event: "call", kind: "screenshot", url: sess.currentUrl.slice(0, 200) })
@@ -2165,7 +2299,24 @@ export function buildTmBrowserTool(deps: {
       attachments: [],
       blocked: state.blocked,
       allowedSites: state.allowedSites,
+      // The browser object is the truth about liveness; a closed TAB is not it.
+      alive: () =>
+        (owningBrowser as { isConnected?: () => boolean } | null | undefined)?.isConnected?.() !== false,
       async act(action, args, stepId) {
+        // A context with zero pages is ALIVE — it simply has no tab. Addressing
+        // the tab close_page removed threw "Target page, context or browser has
+        // been closed", which the recovery in execute() reads as a dead BROWSER:
+        // the lease was dropped, `close` then reported "no browser open", and the
+        // user kept a window nothing was claiming any more (measured live,
+        // 1-6-0-click.json step 11 — right after our own reply promised
+        // "浏览器仍在运行"). An empty window gets its own honest answer here and
+        // keeps its lease.
+        if (!ZERO_TAB_SAFE.has(action) && context.pages().length === 0) {
+          throw new Error(
+            "这个浏览器已经没有标签页了（0 个，窗口和进程都还在，你的租约我没有丢）。" +
+              '要继续用 new_page 在同一个窗口开一个标签；要结束整个会话用 action:"close"（它会验进程真的退出）。',
+          )
+        }
         if (action === "navigate" || action === "navigate_page") {
           const url = String(args.url ?? "").trim()
           // the navigation itself already cleared the allowlist (execute()
@@ -2181,7 +2332,9 @@ export function buildTmBrowserTool(deps: {
           traj({ step_id: stepId, event: "call", url: sess.currentUrl.slice(0, 200) })
           const text = String((await state.page.evaluate("document.body ? document.body.innerText : ''")) ?? "")
           traj({ step_id: stepId, event: "result", tokens: Math.ceil(text.length / 4) })
-          return `${pageTextOutput(sess.currentUrl, text)}${blockedNote(sess)}`
+          const thin = text.replace(/\s+/g, "").length < 80
+          const title = thin ? await readTitle(state.page) : ""
+          return `${pageTextOutput(sess.currentUrl, text)}${wallNote(title, text)}${blockedNote(sess, thin)}`
         }
         if (action === "screenshot" || action === "take_screenshot") {
           traj({ step_id: stepId, event: "call", kind: "screenshot", url: sess.currentUrl.slice(0, 200) })
@@ -2197,15 +2350,28 @@ export function buildTmBrowserTool(deps: {
           try {
             yaml = await state.page.locator("body").ariaSnapshot()
           } catch (e) {
+            const m = String((e as Error)?.message ?? e)
+            // Only talk about VERSIONS when the accessor itself is missing. It
+            // threw "…has been closed" live and blamed playwright-core 1.63 for
+            // it, which sent the agent off to check dependencies instead of
+            // looking at the page — a wrong diagnosis costs more than none.
             throw new Error(
-              `ariaSnapshot 不可用：${(e as Error).message} —— locator.ariaSnapshot 需要 playwright-core ≥1.49（本包 optionalDependencies 锁 1.63）；未安装或过旧会走 cdp-legacy 降级，那边没有快照动作。`,
+              /not a function|is not defined|unsupported|no method/i.test(m)
+                ? `ariaSnapshot 不可用：${m} —— locator.ariaSnapshot 需要 playwright-core ≥1.49（本包 optionalDependencies 锁 1.63）；未安装或过旧会走 cdp-legacy 降级，那边没有快照动作。`
+                : `快照读取失败：${m.slice(0, 300)}`,
             )
           }
           const annotated = snapIndex.annotate(yaml)
           traj({ step_id: stepId, event: "result", tokens: estimateTokens(annotated), nodes: snapIndex.size })
           const body = capTokens(annotated, `…(快照超过 browserSnapshotMaxTokens=${snapshotBudget}，后续行已截断——用 read 拿原文或先滚动再快照)`)
           const hint = state.dialogs.length ? `\n注意：有 ${state.dialogs.length} 个未处理对话框——先 handle_dialog` : ""
-          return `ARIA 快照（${sess.currentUrl} · ${snapIndex.size} 个可寻址节点）——后续动作按行内 [uid=eN] 寻址：\n${body}${hint}${blockedNote(sess)}`
+          // A snapshot with nothing addressable is the one case worth spending
+          // a title read on: it is either our gate, or the site asking for a
+          // human, and the agent has to be told which — "0 个可寻址节点" alone
+          // reads as "this site is empty".
+          const thin = snapIndex.size === 0
+          const wall = thin ? wallNote(await readTitle(state.page), yaml) : ""
+          return `ARIA 快照（${sess.currentUrl} · ${snapIndex.size} 个可寻址节点）——后续动作按行内 [uid=eN] 寻址：\n${body}${hint}${wall}${blockedNote(sess, thin)}`
         }
         if (action === "click") {
           const loc = targetOf("uid", "selector", args)
@@ -2234,7 +2400,14 @@ export function buildTmBrowserTool(deps: {
             probed: Boolean(before),
             ready: String(before?.ready ?? ""),
           })
-          return clickVerdict(target, before, seen.changed, { retried, dialog: state.dialogs.length > 0 })
+          return clickVerdict(target, before, seen.changed, {
+            retried,
+            dialog: state.dialogs.length > 0,
+            // The gate's own ledger rides along: "nothing changed" on a page
+            // whose scripts were trimmed needs a different next move than a page
+            // that is still loading.
+            blocked: { count: state.blocked.count, hosts: [...state.blocked.hosts].slice(0, 5) },
+          })
         }
         if (action === "fill") {
           const loc = targetOf("uid", "selector", args)
@@ -2276,9 +2449,16 @@ export function buildTmBrowserTool(deps: {
           const timeout = Math.min(30_000, Math.max(100, Number(args.timeoutMs) || PW_DEFAULT_TIMEOUT_MS))
           const what = uid ? `uid "${uid}"` : text ? `文本 "${text.slice(0, 80)}"` : ""
           if (!uid && !text) throw new Error('wait_for 需要 text 或 uid')
-          const loc = uid ? targetOf("uid", "selector", { uid }) : state.page.getByText(text)
+          const base = uid ? targetOf("uid", "selector", { uid }) : state.page.getByText(text)
+          // A visible label matches several nodes on a real page, and playwright's
+          // STRICT mode answers that by throwing its whole internal report at the
+          // agent — measured live, where `wait_for` was the very recovery step our
+          // own click message had just recommended. So: wait for the first match
+          // and SAY that there were several, instead of blocking the way out.
+          const hits = typeof base.count === "function" ? Number(await base.count().catch(() => 1)) || 1 : 1
+          const loc = hits > 1 && typeof base.first === "function" ? base.first() : base
           await loc.waitFor({ state: "visible", timeout })
-          return `等待命中：${what}（≤${timeout}ms 内可见）`
+          return `等待命中：${what}（≤${timeout}ms 内可见）${hits > 1 ? `\n（这个文本命中 ${hits} 个元素，等的是第一个——要精确就改用 uid 寻址）` : ""}`
         }
         if (action === "evaluate_script") {
           const src = String(args.function ?? args.expression ?? "").trim()
@@ -2509,11 +2689,11 @@ export function buildTmBrowserTool(deps: {
     return { ...base, attachments: atts }
   }
 
-  const ALL_ACTIONS = new Set<string>([...BROWSER_PLAYWRIGHT_ACTIONS, ...BROWSER_COMPAT_ACTIONS, "navigate_page"])
-  // The menu is derived from the SAME table the gate below reads.  A
-  // hand-written copy drifted the day `new_page` landed: an agent that mistyped
-  // a verb was shown a list that did not contain the capability it wanted.
-  const ACTION_MENU = [...ALL_ACTIONS].join(" | ")
+  const ALL_ACTIONS = new Set<string>(ALL_BROWSER_ACTIONS)
+  // The menu IS the table the gate below reads.  A hand-written copy drifted the
+  // day `new_page` landed: an agent that mistyped a verb was shown a list that
+  // did not contain the capability it wanted.
+  const ACTION_MENU = BROWSER_ACTION_MENU
 
   const execute = async (rawArgs: Record<string, unknown>, ctx: unknown): Promise<ToolResult> => {
     // Set once a lease is resolved, so the catch below knows WHICH browser died
@@ -2553,6 +2733,46 @@ export function buildTmBrowserTool(deps: {
           }
           approvedFor(caller.owner).add(verdict.url.hostname)
         }
+      }
+      // The remedy for "our gate blanked this page".  A blocked asset host used
+      // to be a dead end: the only move was an env edit plus a restart, which no
+      // agent can do mid-task, so it reported the site as empty instead.  This
+      // routes the SAME official dialog at ONE host, for ONE owner, for the
+      // length of the session — and it cannot widen anything: a host already on
+      // the static allowlist is refused (asking would train the user to approve
+      // what is already allowed), a red-line host is refused with no dialog, and
+      // the pattern handed to the dialog is the exact hostname, never a glob.
+      if (action === "allow_host") {
+        const host = normalizeApprovalHost(args.host)
+        if (!host) {
+          return toToolResult(
+            tmError(tool, "args", '缺少或非法的 host 参数——要形如 "bkssl.bdimg.com" 的单个域名（不接受通配、URL、路径或端口）'),
+          )
+        }
+        const verdict = checkWebUrl(`https://${host}/`, allowlist as readonly string[])
+        if (verdict.ok) {
+          return toToolResult(
+            `不用批准：${host} 本来就在静态白名单里，它的子资源不会被拦。这一页的空白另有原因——看 take_snapshot 的拦截说明（被拦的是别的域名）或用 read 拿原文。`,
+          )
+        }
+        if (!verdict.askable || !verdict.url) {
+          return toToolResult(tmError(tool, "permission", `拒绝放行 ${host}：${verdict.message}`))
+        }
+        const outcome = await askUserForTarget(ctx, {
+          permission: tool,
+          patterns: [host],
+          metadata: { tool, host, reason: "被拦的跨域脚本域名，放行后需重新导航" },
+        })
+        if (outcome !== "approved") {
+          return toToolResult(tmError(tool, "permission", `未放行 ${host}。` + askRefusalNote(outcome)))
+        }
+        approvedFor(caller.owner).add(host)
+        traj({ step_id: "browser", event: "host_approved", host, agent: caller.agent })
+        const mine = ownedBy(caller.owner)[0]
+        return toToolResult(
+          `${mine ? `[${mine.id}] ` : ""}已按用户批准临时放行 ${host}（只对这个浏览器、本次会话，不改任何配置文件）。` +
+            `现在重新 navigate 一次同一页——门禁在请求时判定，已经加载完的页面不会自己把脚本补回来。`,
+        )
       }
       if (action === "open") {
         if (!url) return toToolResult(tmError(tool, "args", "缺少 url 参数"))
@@ -2740,18 +2960,34 @@ export function buildTmBrowserTool(deps: {
       // is not ours to declare dead.
       if (/has been closed|Target closed|Browser closed|browser has been closed/i.test(msg)) {
         const dead = activeLease
-        if (dead) {
+        const leaseId = dead?.id ?? ""
+        // That one string covers two very different facts — a TAB the user closed
+        // and a BROWSER that died.  Only the second may cost the lease: measured
+        // live, closing the last tab threw this line while the window was still
+        // up, the lease got dropped, `close` then reported "no browser open", and
+        // the user was left holding a browser no agent could address.
+        const alive = dead ? dead.session.alive?.() !== false : false
+        if (dead && !alive) {
           leases.delete(dead.id)
           clearIdle(dead.id)
         }
-        traj({ step_id: "browser", event: "session_dead", cleared: Boolean(dead), id: dead?.id ?? "", reason: msg.slice(0, 160) })
+        traj({
+          step_id: "browser",
+          event: alive ? "page_dead_browser_alive" : "session_dead",
+          cleared: Boolean(dead && !alive),
+          id: leaseId,
+          reason: msg.slice(0, 160),
+        })
         return toToolResult(
           tmError(
             tool,
             "execute",
-            `${msg.slice(0, 200)}\n浏览器实例已失效${dead ? `（${dead.id}，${dead.agent || "本会话"} 的窗口）：我已丢弃它，下一次 action:"open" 会真的重启一个新实例` : "，当前没有可复用的会话"}。` +
-              `连着两次都这样，通常是本机已有同品牌浏览器在跑、新进程把请求移交给旧实例后退掉了——请用户关掉那个窗口再 open，或设 TM_BROWSER_ENGINE=cdp-legacy 换一条传输。` +
-              `不要第三次重复同一个动作。`,
+            alive
+              ? `${msg.slice(0, 200)}\n但浏览器本身还连着（${leaseId} 我保留了，你的 id 不变）——死的是**这一个页面/标签**，不是实例。` +
+                  `下一步：list_pages 看还剩几个标签，或 new_page 在同一个窗口开一个；要结束整个会话用 close。`
+              : `${msg.slice(0, 200)}\n浏览器实例已失效${dead ? `（${leaseId}，${dead.agent || "本会话"} 的窗口）：我已丢弃它，下一次 action:"open" 会真的重启一个新实例` : "，当前没有可复用的会话"}。` +
+                  `连着两次都这样，通常是本机已有同品牌浏览器在跑、新进程把请求移交给旧实例后退掉了——请用户关掉那个窗口再 open，或设 TM_BROWSER_ENGINE=cdp-legacy 换一条传输。` +
+                  `不要第三次重复同一个动作。`,
           ),
         )
       }
@@ -2767,6 +3003,7 @@ export function buildTmBrowserTool(deps: {
 - Lifecycle (the user SEES this window): headful by default — headless is an operator setting (TM_BROWSER_HEADLESS), not a parameter you can pass. An idle session closes itself (TM_BROWSER_IDLE_MS, default 180s) and the user is told. ALWAYS action:"close" when your browser work is done, and quote the tool's own close line — "已确认关闭" vs "警告：关闭未完全成功" — instead of asserting the window is gone.
 - Discipline (enforced by defaults): act ONLY on uids from the latest take_snapshot — no guessed locators; one action then one observation; fold dialogs into the same round (snapshot header warns while a dialog is held); 3000 ms action budget; networkidle is never waited on; screenshots are the visual-last-resort, not the primary read.
 - Network: the top-level navigation must clear the domain allowlist (seeded = tm_webfetch's hosts; out-of-allowlist open/navigate asks the user through the OFFICIAL confirmation dialog BEFORE any spawn). SUBRESOURCES then follow TM_BROWSER_SUBRESOURCE (default same-site): images/media/fonts/stylesheets load, a script/XHR loads when it belongs to a site this session actually opened, anything else is blocked and reported as a "N 个子资源被拦截" note on the next snapshot — that note means the gate trimmed the page, NOT that the site has no images. env-file URLs and non-http(s) schemes hard-reject under every policy.
+- An EMPTY page gets a reason, never a shrug. A site whose own bundle sits on a brand-unrelated CDN (Baidu's bdimg.com is the case that started this) renders 0 addressable nodes behind our gate; the reply then names the blocked host and says the blankness is OURS, with two ways out: allow_host { host } — one bare domain, this browser, this session, via the OFFICIAL dialog, nothing written to any config (re-navigate afterwards, the gate decides per request) — or the user adding the host to TM_WEBFETCH_ALLOWED_DOMAINS and restarting. And if the page is really a human-verification wall (百度安全验证 / Cloudflare / access denied) the reply says so, because a wall is not an empty site: retrying it buys nothing, the move is another source or the user's own hands.
 - A dead instance is never retried: if an action reports the browser/page "has been closed", the cached session is dropped, the reply says the next open really rebuilds, and the trajectory records session_dead — do NOT repeat the same open a third time (close the competing browser window, or set TM_BROWSER_ENGINE=cdp-legacy). evaluate_script on a hostless page (chrome-error://, about:blank) is refused outright: an empty dialog pattern is something no user can judge.  No browser installed → structured error, fall back to tm_webfetch / MCP.  Role grant: team + researcher full, tester browser-only (UI verification).`
 
   return {

@@ -147,7 +147,12 @@ For user-visible frontend changes, verify through the governed tm_browser
    agents end up renumbering each other's uids and clicking the wrong
    element while both report success.
 2. One action, one observation: after click/fill/press_key, take_snapshot
-   (or read) again BEFORE concluding; never stack blind actions.
+   (or read) again BEFORE concluding; never stack blind actions.  A
+   "0 个可寻址节点" snapshot is a claim about the page or about our own
+   gate — never about the site being empty.  Read the note under it: a
+   blocked script domain means \`allow_host { host }\` then re-navigate;
+   a 安全验证 wall means a human has to pass it, so report UI NOT
+   VERIFIED instead of retrying it into the ground.
 3. Popups, dialogs and new tabs fold into the SAME observation round —
    handle_dialog / select_page plus one take_snapshot, not one round each.
 4. Waits: \`wait_for { text }\` inside a 3000 ms budget (the engine
@@ -254,7 +259,17 @@ You are one of the two network roles (the other is the team lead).
      sets TM_BROWSER_HEADLESS — there is no headless parameter for you
      to pass.  When a snapshot ends with "N 个子资源请求被拦截" the
      governance gate trimmed the page: that is NOT "the site has no
-     images" — report the blocked hosts in FINDINGS instead.  When your
+     images" — report the blocked hosts in FINDINGS instead.  And when the
+     page comes back with 0 个可寻址节点 WHILE a script host was blocked,
+     the blankness is our gate, not an empty site (a site's own bundle can
+     live on a brand-unrelated CDN — Baidu's bdimg.com is the standing
+     example): call \`allow_host { host }\` for that one domain (one
+     official dialog, your browser only, nothing written to config), then
+     re-navigate — or name the host in HANDOFF so the user can add it to
+     TM_WEBFETCH_ALLOWED_DOMAINS and restart.  A reply that calls the page
+     a 安全验证 wall is a different fact again: a human has to pass it, so
+     change source (another engine, another site) and never write "该网站
+     没有内容" about either case.  When your
      UI work is done, action:"close" and quote the tool's own verdict —
      已确认关闭 (a pid was checked and is gone) / 进程未核验 (no pid was
      available, so nothing was verified) / 警告：关闭未完全成功 (the

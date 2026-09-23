@@ -28,6 +28,11 @@ export const DEFAULT_BASH_READONLY_ALLOWED: readonly string[] = [
   "wc", "cut", "dir", "Get-Content", "Get-ChildItem", "Select-String",
   "Measure-Object", "Select-Object", "Where-Object", "Sort-Object",
   "Group-Object", "Test-Path",
+  // Process LISTING, read-only and write-free.  tm_browser's close now verifies
+  // that the browser's OS pid really exited, and a "已确认关闭" claim the user
+  // cannot check is worth less than one they can — measured live, an agent told
+  // to verify leftover msedge processes had no allowed way to ask the OS.
+  "tasklist", "ps",
 ]
 
 /**
@@ -39,7 +44,10 @@ export const DEFAULT_BASH_READONLY_ALLOWED: readonly string[] = [
  * mainland mirror, and PARENT domains for baidu/moegirl so every sibling
  * subdomain (baike./tieba./mzh./mobile.) is covered — real sessions showed
  * agents bouncing off baike.baidu.com and mzh.moegirl.org.cn (the agent-install flow points
- * agents at the installation guide on exactly these hosts).  Subdomains of
+ * agents at the installation guide on exactly these hosts).  A site's OWN
+ * asset CDN on a brand-unrelated domain has to be seeded too — same-site
+ * cannot infer it, and blocking it is what makes tm_browser report a blank
+ * page (bdimg.com below is that case, measured).  Subdomains of
  * an entry are included;
  * TM_WEBFETCH_ALLOWED_DOMAINS overrides the list (comma/semicolon
  * separated; a lone "*" opens every host — keep the engine hosts or
@@ -48,6 +56,13 @@ export const DEFAULT_BASH_READONLY_ALLOWED: readonly string[] = [
 export const DEFAULT_WEBFETCH_DOMAINS: readonly string[] = [
   // CN search engines + content (parent domains cover every sibling subdomain)
   "baidu.com", // www. search / baike. encyclopedia / tieba. — real sessions hit baike.baidu.com
+  // Baidu's OWN static + anti-spam CDN.  Not a subdomain of baidu.com, so the
+  // same-site subresource policy can never infer it, and tm_browser rendered
+  // baike.baidu.com/ as 0 addressable nodes while the identical client with
+  // this host allowed rendered 260 (measured 2026-09-23, Edge Beta +
+  // playwright-core 1.63).  A page whose own bundle we block is a blank page
+  // we then report as "no content" — that is the bug this seed closes.
+  "bdimg.com", // bkssl. challenge scripts / resource. / static. asset bundles
   "moegirl.org.cn", // mobile. term / mzh. main site — real sessions hit mzh
   "bilibili.com", // search. / www. video pages / space.
   "www.sogou.com",

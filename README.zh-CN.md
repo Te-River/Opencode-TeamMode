@@ -136,6 +136,46 @@ OpenCode 下次启动时装好。
   如果插件还被 npm 装进了 `~/.config/opencode`，package-lock 会钉住版本——在那里再跑一次 `npm install @te-river/opencode-team-mode@latest`。完整配方（含 agent 更新提示词）见[安装指南·更新](./docs/installation.md)。
 - **前置条件：** [OpenCode](https://opencode.ai)（桌面版或 CLI）+ Node ≥ 18。
 
+### 🖥️ 安装会在你机器上改什么
+
+一共三处，都在这个仓库之外——之所以写出来，是因为一个悄悄改你系统环境的插件，
+不值得信任。
+
+| 改了什么 | 落在哪 | 存在多久 |
+|---|---|---|
+| OpenCode 配置里的插件条目 | `~/.config/opencode/opencode.jsonc`（不存在就新建；已有 `opencode.json` 会被**迁移进** `.jsonc`，原文件不动） | 直到你删掉那行 |
+| 清掉的插件缓存 | `~/.cache/opencode/packages/*opencode-team-mode*`（含里面真正被加载的嵌套 `node_modules` 副本） | 下次启动重新下载——缓存本就没有"恢复"一说 |
+| **一个用户级环境变量** | `OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS=true` | **Windows：`setx` 写进你的用户配置——重启后仍在，而且你之后启动的每一个程序都看得到它，不只是 OpenCode。** macOS 用 `launchctl setenv`、Linux 用 `systemctl --user set-environment`：只在本次登录会话内（重启后要再跑一次安装脚本） |
+
+为什么非得动第三个：`task { background: true }` 是唯一能在 OpenCode 界面上
+**给你看**的子代理——卡片直接链到那个子会话，你也能停掉它。而宿主是靠**它自己
+进程上的一个开关**打开它的，插件没法在加载自己的进程里设标志，所以这个开关只能
+从环境里来。不设也不会坏：`task` 只是会挡住 lead，卡片也停在非后台形态。
+
+撤销：
+
+```powershell
+# Windows —— 从用户配置里删掉
+[Environment]::SetEnvironmentVariable("OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS", $null, "User")
+```
+
+```bash
+launchctl unsetenv OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS          # macOS
+systemctl --user unset-environment OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS   # Linux
+```
+
+或者安装时直接跳过，这样脚本只碰上面那两处文件：
+
+```powershell
+.\install.ps1 -NoBackgroundSubagents                     # 或 $env:TEAMMODE_SKIP_BACKGROUND_SUBAGENTS="1"
+```
+
+```bash
+TEAMMODE_SKIP_BACKGROUND_SUBAGENTS=1 bash install.sh
+```
+
+无论走哪条，安装脚本都会打印它改了什么，并且**把值读回来核对**，而不是信自己的退出码。
+
 ### 验证
 
 重启后打开 agent 选择器，看到 **team、architect、implementer、reviewer、
@@ -217,7 +257,7 @@ HMAC 句柄，agent 真需要 payload 时用 `tm_fetch` 分页取。
 | `tm_join` | **子代理回收**——插件侧的派发器已经没有了（`tm_dispatch` 被移除：插件创建的子会话，用户既打不开也停不掉）。派活统一走宿主自己的 `task` / `task { background: true }`，`tm_join` 是它的读端：不带参数=状态快照，`waitMs`=有界等待，`cancel:true` 取消跑飞的子任务，`tm_join { ids: ["ses_…"] }` 则把某个子代理的**整篇**回复经卸载管线取回（句柄 + ≤80 token 预览），而不是几千 token 直接压进上下文。插件重启后它还会从宿主会话树重建登记，遗留的子代理被"接管"而不是丢失 | 仅 Lead |
 | `tm_pty` | 在宿主自己的终端会话上**非阻塞执行命令**（`start`/`status`/`list`/`kill`）：独立的构建与测试各自一个会话并行跑，不再串成一条 120 秒的 bash 调用。它不抓输出（命令自己 tee 日志，用 `tm_read` 读），且每次启动都先过 R6 分类器、R2 危险面 glob，再走官方确认窗，才真的建进程 | 仅 Lead |
 | `tm_stats` | **插件把自己的 trajectory 读回来**：卸载挡在上下文之外的 token（扣掉确实回来的预览）、派发重叠省下的秒数（串行代价减去子代理实际占用的墙钟）、PTC 内部量、治理计数（被拦子资源、`tm_pty` 拒绝、bash 超时夹顶、缓存命中、脱敏次数）——外加**宿主能力矩阵**（每个宿主接口标 `已验证/存在未用/待观察/缺失/需人眼`）。只读本插件自己写的文件；OpenCode 升级后第一个跑它。`{ recent: 20 }` 追加一份逐条调用清单——每次卸载结果的句柄和落盘路径都在里面，这就是"看看刚才那个工具到底返回了什么"的办法（宿主不给插件工具卡片留展开位） | 全角色 |
-| `tm_browser` | 交互式浏览器会话（**驱动你的默认浏览器**）：18 个 Playwright 动词（快照优先：`take_snapshot` → 按 uid 寻址的 `click`/`fill`/`drag`…，**并新增多标签页 `new_page` / `close_page`**，可同时持有两个页面）+ 5 个旧版兼容动词（open/navigate/read/screenshot/close）；Playwright 引擎需 Node ≥ 20，不满足或导入失败时自动降级到旧版 CDP 引擎。它开的是**你自己的默认浏览器渠道**（默认装 Edge Beta 就开 Beta），除操作者设 `TM_BROWSER_HEADLESS` 外保持有头；页面自家图片/CSS/JS 靠 `same-site` 子资源策略正常加载；`take_screenshot { image:true }` 会附一张 JPEG，让模型真能看见画面。**一个 agent 一个浏览器**：`open` 返回一个 id（`b1`），之后每条回复都带着它——那个窗口、它的 uid 编号、它经对话框批准过的主机，都属于**你的**会话；用别人的 id 会被拒绝并点名属主（id 是名字，不是钥匙），`close { id:"all" }` 只关你自己的。`click` 报的是**页面做了什么**，而不只是"我发出了鼠标事件"：它点击前后各读一次目标的可观测状态（`aria-expanded`、URL、DOM 节点数），回答形如 `已点击 … · aria-expanded: false → true`；页面还没加载完时会有界重试一次——这正是实测中"点击落在没有 handler 的节点上"的成因；仍然没有变化就说"页面没有任何可观测变化"，而不是暗示成功。`close` 在浏览器的操作系统进程真正退出之前不会说“已确认关闭”——它等 pid、必要时补一次终止，两种结果都会把 pid 写在回复里，因为连接断开不等于浏览器关了；万一拿不到 pid，它会说“进程未核验”，而不是借用那句已确认。本进程启动过却没能收掉的浏览器会记进按工作区隔离的账本（pid、属主 pid、可执行文件），由下一次启动回收——只回收属主进程已死**且**该 pid 现在仍是那个可执行文件的条目，并按整棵进程树终止（Windows 上 `taskkill /T`），绝不动另一个窗口的活标签 | Lead + Researcher + Tester（仅 UI 验证） |
+| `tm_browser` | 交互式浏览器会话（**驱动你的默认浏览器**）：18 个 Playwright 动词（快照优先：`take_snapshot` → 按 uid 寻址的 `click`/`fill`/`drag`…，**并新增多标签页 `new_page` / `close_page`**，可同时持有两个页面）+ 5 个旧版兼容动词（open/navigate/read/screenshot/close）；Playwright 引擎需 Node ≥ 20，不满足或导入失败时自动降级到旧版 CDP 引擎。它开的是**你自己的默认浏览器渠道**（默认装 Edge Beta 就开 Beta），除操作者设 `TM_BROWSER_HEADLESS` 外保持有头；页面自家图片/CSS/JS 靠 `same-site` 子资源策略正常加载；`take_screenshot { image:true }` 会附一张 JPEG，让模型真能看见画面。**一个 agent 一个浏览器**：`open` 返回一个 id（`b1`），之后每条回复都带着它——那个窗口、它的 uid 编号、它经对话框批准过的主机，都属于**你的**会话；用别人的 id 会被拒绝并点名属主（id 是名字，不是钥匙），`close { id:"all" }` 只关你自己的。`click` 报的是**页面做了什么**，而不只是"我发出了鼠标事件"：它点击前后各读一次目标的可观测状态（`aria-expanded`、URL、DOM 节点数），回答形如 `已点击 … · aria-expanded: false → true`；页面还没加载完时会有界重试一次——这正是实测中"点击落在没有 handler 的节点上"的成因；仍然没有变化就说"页面没有任何可观测变化"，而不是暗示成功。`close` 在浏览器的操作系统进程真正退出之前不会说“已确认关闭”——它等 pid、必要时补一次终止，两种结果都会把 pid 写在回复里，因为连接断开不等于浏览器关了；万一拿不到 pid，它会说“进程未核验”，而不是借用那句已确认。本进程启动过却没能收掉的浏览器会记进按工作区隔离的账本（pid、属主 pid、可执行文件），由下一次启动回收——只回收属主进程已死**且**该 pid 现在仍是那个可执行文件的条目，并按整棵进程树终止（Windows 上 `taskkill /T`），绝不动另一个窗口的活标签。**空白页现在会自己解释原因**：`same-site` 无从知道一个站点把自己的脚本包放在与品牌无关的 CDN 上（百度把脚本发在 `bdimg.com`），所以当一页返回 `0 个可寻址节点` 而同时有脚本域名被拦时，回复会直接说明这片空白是**我们的门禁**造成的、点名该域名，并给出 `allow_host { host }`——一个域名一次官方确认窗，只对你的浏览器、只在本次会话，不写任何配置文件（批准后要重新导航，门禁在请求时判定）。而真的需要人工验证的页面（百度安全验证 / Cloudflare / access denied）会被说成一道验证墙，因为对它的正确动作是换来源，不是再试一次 | Lead + Researcher + Tester（仅 UI 验证） |
 
 > **固定工具优先级阶梯（每个任务都适用）：① 用户自己的 MCP/插件工具
 > → ② TeamMode 受治理工具（`tm_*`） → ③ 模型自己的推理。** 它同时是回退链：某个受治理
@@ -243,7 +283,8 @@ HMAC 句柄，agent 真需要 payload 时用 `tm_fetch` 分页取。
 > ```
 >
 > （给宿主进程设好——Windows 用 `setx`，或从带这个变量的终端启动——然后重启
-> OpenCode；安装脚本会替你做好）。打开之后 TeamMode 负责把它压在 token 预算内：
+> OpenCode；安装脚本会替你做好，但那是一次**持久的用户级写入**，具体键名、存活
+> 时间和撤销命令见[安装会在你机器上改什么](#️-安装会在你机器上改什么)）。打开之后 TeamMode 负责把它压在 token 预算内：
 > 注入进来的整篇回复会被换成"预览 + 取回方式"，并且**不会另存一份到磁盘**
 > （`TM_TASK_OFFLOAD=off` 就恢复宿主的原样注入）。这条路的代价也说明白：每个后台
 > 任务完成都会唤醒 lead 一次、花一轮。留在原地的读端是 `tm_join`：按 id 把某个
@@ -459,7 +500,7 @@ Team Lead 自己从不删黑板，你可以随时审计任何一次运行。
 | `TM_SEARCH_RELEVANCE_FLOOR` | `0.35` | 与查询词零重叠的命中只保留该比例的权重（压垃圾，不删引擎） |
 | `TM_SEARCH_MAX_HITS` | `10` | 每引擎腿与融合列表保留的命中数 |
 | `TM_SEARCH_DISABLED_ENGINES` | 未设 | 从引擎表与所有 `auto` 路由中移除的引擎（`sogou,baidu` 写法） |
-| `TM_BROWSER_SUBRESOURCE` | `same-site` | 顶层导航过白名单后，页面子资源的策略：`same-site` = 图/媒体/字体/样式表一律放行，脚本/XHR 仅当属于本次会话真正打开过的站点；`passive` = 只放被动资源；`off` = 旧行为（逐请求过白名单）。被拦掉的请求会在下一次快照以"N 个子资源请求被拦截"告知 |
+| `TM_BROWSER_SUBRESOURCE` | `same-site` | 顶层导航过白名单后，页面子资源的策略：`same-site` = 图/媒体/字体/样式表一律放行，脚本/XHR 仅当属于本次会话真正打开过的站点；`passive` = 只放被动资源；`off` = 旧行为（逐请求过白名单）。被拦掉的请求会在下一次快照以"N 个子资源请求被拦截"告知；如果这一页已经没有任何可寻址内容，那句提示会直接说明空白是我们的门禁造成的，并指向 `allow_host` 与本变量 |
 | `TM_BROWSER_IDLE_MS` | `180000` | 无人触碰的浏览器会话超过该毫秒数自动关闭并提示用户（0 关闭该回收）——没人负责的窗口是打扰用户的 bug |
 | `TM_BROWSER_ASK_EVAL` | `on` | `evaluate_script` 在**你的**浏览器里跑任意 JS——这是域白名单管不住的唯一动词（白名单限制我们去哪儿导航，管不了已加载的页面交回什么）。每个浏览器会话走一次官方确认窗；没有 ask 桥就拒绝。`off` 恢复旧行为；结果脱敏（JWT/bearer/cookie/api-key 形状）不可关闭 |
 | `TM_WEB_CACHE_TTL_SEC` | `300` | 受治理抓取在同一 URL 上可复用多久（0 = 关）。tm_webfetch / tm_search / PTC 桥共用一份缓存；条目以哈希命名（带令牌的查询串不落盘），且只在**静态白名单**放行的那一跳读写——弹窗授权仍是逐请求的，复用命中会标注 缓存命中 |
@@ -476,7 +517,7 @@ Team Lead 自己从不删黑板，你可以随时审计任何一次运行。
 | `TM_COMPACTION_AUTOCONTINUE` | `on` | 设 `off` 则压缩后不让宿主静默续跑，先由人复核状态 |
 | `TM_SHELL_NO_COLOR` | `on` | 经 `shell.env` 给每个子 shell 注入 `NO_COLOR`/`TERM=dumb`（ANSI 进度条纯属上下文税）。绝不覆盖宿主已设的值 |
 | `TM_SHELL_ENV` | — | 显式 `KEY=VALUE;KEY2=VALUE2` 透传进子 shell——刻意用白名单，避免这个钩子变成父环境泄露通道 |
-| `TM_WEBFETCH_ALLOWED_DOMAINS` | 23 个种子主机 | tm_webfetch / tm_search / tm_browser 白名单（`"*"` 全开；空 = 全拒；自定义值**替换**种子——保留引擎主机） |
+| `TM_WEBFETCH_ALLOWED_DOMAINS` | 24 个种子主机 | tm_webfetch / tm_search / tm_browser 白名单（`"*"` 全开；空 = 全拒；自定义值**替换**种子——保留引擎主机）。站点自己的资源 CDN 必须进种子，否则 `tm_browser` 打开就是白屏——`bdimg.com` 就是因为这个才在种子里；临时缺口走 `tm_browser { action:"allow_host", host }`，不用改环境变量 |
 | `TM_BROWSER_PATH` | 自动探测 | tm_browser 可执行文件覆盖（默认用你的默认浏览器——Chromium 系时；否则回退 Edge/Chrome 探测） |
 | `TM_BROWSER_HEADLESS` | `auto` | `1` 无头（CI）/ `0` 有头 / `auto`（仅无显示的 Linux 用无头） |
 | `TM_BROWSER_ENGINE` | `playwright` | `playwright`（需 Node ≥ 20；导入失败自动降级）/ `cdp-legacy`（零依赖 CDP pipe，仅核心动词） |

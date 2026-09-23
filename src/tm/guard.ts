@@ -161,7 +161,7 @@ export function classifyReadonlyCommand(
     if (!allow(base)) {
       return allowVerdict(
         `命令 "${shorten(base, 40)}" 不在 tm_bash 只读白名单内`,
-        "改用白名单只读命令（ls/cat/head/tail/grep/rg/find/awk/sort/uniq/wc/cut/dir/Get-Content/Get-ChildItem/Select-String/Measure-Object）；需要执行删除/网络/安装/进程等危险命令请改用内置 bash（将弹官方确认框审批），无 bash 权限则向 HUMAN 申请批准",
+        "改用白名单只读命令（ls/cat/head/tail/grep/rg/find/awk/sort/uniq/wc/cut/dir/tasklist/ps/Get-Content/Get-ChildItem/Select-String/Measure-Object）；需要执行删除/网络/安装/进程等危险命令请改用内置 bash（将弹官方确认框审批），无 bash 权限则向 HUMAN 申请批准",
       )
     }
   }

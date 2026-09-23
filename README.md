@@ -139,6 +139,49 @@ OpenCode installs the plugin on next startup.
   If you also npm-installed the plugin into `~/.config/opencode`, its package-lock pins the version — run `npm install @te-river/opencode-team-mode@latest` there too. Full recipe (including an agent-driven update prompt): [installation guide, Updating](./docs/installation.md).
 - **Prerequisites:** [OpenCode](https://opencode.ai) (Desktop or CLI) and Node ≥ 18.
 
+### 🖥️ What the installer changes on your machine
+
+Three things, all outside this repo — listed because a plugin that edits your
+environment without saying so is not one you can trust.
+
+| What | Where it lands | How long it stays |
+|---|---|---|
+| A plugin entry in the OpenCode config | `~/.config/opencode/opencode.jsonc` (created if missing; an existing `opencode.json` is **migrated into** the `.jsonc`, the original file left untouched) | until you delete the line |
+| A purged plugin cache | `~/.cache/opencode/packages/*opencode-team-mode*` (including the nested `node_modules` copy that actually runs) | re-downloaded on next start — it is a cache, nothing to restore |
+| **A user-level environment variable** | `OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS=true` | **Windows: `setx` writes it into your user profile — it survives reboot and is visible to EVERY program you start afterwards, not just OpenCode.** macOS `launchctl setenv` / Linux `systemctl --user set-environment`: this login session only (re-run the installer after a reboot) |
+
+Why that third one is there: `task { background: true }` is the only sub-agent
+the OpenCode interface can **show** you — a card linking to the live child
+session, which you can stop. The host turns it on through a flag on **its own
+process**, and a plugin cannot set flags in the process that loads it, so the
+flag has to come from the environment. Without it nothing breaks: `task` simply
+blocks the lead and its card stays non-background.
+
+Undo it:
+
+```powershell
+# Windows — remove it from the user profile
+[Environment]::SetEnvironmentVariable("OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS", $null, "User")
+```
+
+```bash
+launchctl unsetenv OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS          # macOS
+systemctl --user unset-environment OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS   # Linux
+```
+
+Or skip it at install time, and the installer touches only the two files above:
+
+```powershell
+.\install.ps1 -NoBackgroundSubagents                     # or $env:TEAMMODE_SKIP_BACKGROUND_SUBAGENTS="1"
+```
+
+```bash
+TEAMMODE_SKIP_BACKGROUND_SUBAGENTS=1 bash install.sh
+```
+
+Either way the installer prints what it changed, and reads the value back
+instead of trusting its own exit code.
+
 ### Verify
 
 Restart, open the agent picker, and look for **team, architect, implementer,
@@ -223,7 +266,7 @@ through with `tm_fetch` when it genuinely needs the payload.
 | `tm_join` | **Sub-agent collection** — there is no plugin-side dispatcher any more (`tm_dispatch` is removed: a child a plugin creates is a session the user can neither open nor stop from the interface). Delegation goes through the host's own `task` / `task { background: true }`, and `tm_join` is the read side: a status snapshot, a bounded `waitMs`, `cancel:true` to abort, and `claimNamedChild` so `tm_join { ids: ["ses_…"] }` pulls one child's WHOLE reply back through the offload pipeline (handle + ≤80-token preview) instead of kilotokens inline. It also rebuilds its registry from the host session tree after a restart, so leftover children are 接管 rather than lost | Lead only |
 | `tm_pty` | **Non-blocking command execution** on the host's own terminal sessions (`start`/`status`/`list`/`kill`) — independent builds and test suites overlap instead of queueing behind one 120 s bash call. Captures no output (the command tees its own log; read it with `tm_read`), and every start passes the R6 classifier, the R2 danger-face globs **and** the official confirmation dialog before a process exists | Lead only |
 | `tm_stats` | **The plugin reads its own trajectory back**: tokens kept out of the context window by offloading (net of the preview that arrived), seconds saved by dispatch overlap (serial cost minus the wall window the children actually used), PTC internals, governance counts (blocked subresources, refused `tm_pty` starts, clamped bash timeouts, cache hits, redactions) — plus the **host capability matrix** (`已验证/存在未用/待观察/缺失/需人眼` per host surface). Read-only over files this plugin wrote; run it first after an OpenCode upgrade. `{ recent: 20 }` appends a call-by-call recap — handle + payload path for every offloaded result, which is how you see what a governed tool actually returned (the host gives plugin tools no expandable card) | All agents |
-| `tm_browser` | Interactive browser session (**your default browser**): 18 Playwright verbs (snapshot-first `take_snapshot` → uid-addressed `click`/`fill`/`drag`/…, **including multi-tab `new_page` / `close_page`** so you can hold two pages at once) + 5 legacy compat verbs (open/navigate/read/screenshot/close); Playwright engine needs Node ≥ 20, below that (or on any import failure) it auto-degrades to the legacy CDP engine. It drives YOUR default browser channel (an Edge Beta default opens Edge Beta), stays headful unless the operator sets `TM_BROWSER_HEADLESS`, loads a page's own images/CSS/JS via the `same-site` subresource policy, and `take_screenshot { image:true }` attaches a JPEG so the model can actually see the screen. **One browser per agent**: `open` returns an id (`b1`) and every reply is tagged with it — that window, its uid numbering and its dialog-approved hosts belong to YOUR session; another agent's id is refused with the owner named (an id is a name, not a key), and `close { id:"all" }` closes only your own. `click` reports what the PAGE did, not merely that a mouse event was sent: it reads the target's observable state before and after (`aria-expanded`, URL, DOM node count) and answers `已点击 … · aria-expanded: false → true`, retries once if the page had not finished loading — the measured cause of a click that lands on a node with no handler — and says 页面没有任何可观测变化 rather than implying success. `close` will not say 已确认关闭 until the browser's OS process is gone — it waits on the pid, terminates it once if it lingers, and prints the pid either way, because a dropped connection is not a closed browser; when no pid could be resolved it says 进程未核验 rather than borrowing that sentence. A browser this process launched but could not reap is recorded in a per-workspace ledger (pid, owner pid, executable) and reclaimed by the next boot — only entries whose owner process is dead *and* whose pid still is that executable, terminated as a whole tree (`taskkill /T` on Windows), never another window's live tab | Lead + Researcher + Tester (UI verification) |
+| `tm_browser` | Interactive browser session (**your default browser**): 18 Playwright verbs (snapshot-first `take_snapshot` → uid-addressed `click`/`fill`/`drag`/…, **including multi-tab `new_page` / `close_page`** so you can hold two pages at once) + 5 legacy compat verbs (open/navigate/read/screenshot/close); Playwright engine needs Node ≥ 20, below that (or on any import failure) it auto-degrades to the legacy CDP engine. It drives YOUR default browser channel (an Edge Beta default opens Edge Beta), stays headful unless the operator sets `TM_BROWSER_HEADLESS`, loads a page's own images/CSS/JS via the `same-site` subresource policy, and `take_screenshot { image:true }` attaches a JPEG so the model can actually see the screen. **One browser per agent**: `open` returns an id (`b1`) and every reply is tagged with it — that window, its uid numbering and its dialog-approved hosts belong to YOUR session; another agent's id is refused with the owner named (an id is a name, not a key), and `close { id:"all" }` closes only your own. `click` reports what the PAGE did, not merely that a mouse event was sent: it reads the target's observable state before and after (`aria-expanded`, URL, DOM node count) and answers `已点击 … · aria-expanded: false → true`, retries once if the page had not finished loading — the measured cause of a click that lands on a node with no handler — and says 页面没有任何可观测变化 rather than implying success. `close` will not say 已确认关闭 until the browser's OS process is gone — it waits on the pid, terminates it once if it lingers, and prints the pid either way, because a dropped connection is not a closed browser; when no pid could be resolved it says 进程未核验 rather than borrowing that sentence. A browser this process launched but could not reap is recorded in a per-workspace ledger (pid, owner pid, executable) and reclaimed by the next boot — only entries whose owner process is dead *and* whose pid still is that executable, terminated as a whole tree (`taskkill /T` on Windows), never another window's live tab. **A blank page now explains itself**: `same-site` cannot know that a site's own bundle lives on a brand-unrelated CDN (Baidu serves its scripts from `bdimg.com`), so when a page comes back with `0 个可寻址节点` while a script host was blocked, the reply says the blankness is **our gate**, names the host, and offers `allow_host { host }` — one official dialog for one bare domain, for your browser only, for this session, nothing written to config (re-navigate afterwards, the gate decides per request). A page that is really a human-verification wall (百度安全验证 / Cloudflare / access denied) is reported as a wall, because the move there is another source, not another retry | Lead + Researcher + Tester (UI verification) |
 
 > **Fixed tool priority ladder (every task): ① the user's own MCP/plugin
 > tools → ② TeamMode governed tools (`tm_*`) → ③ the model's own reasoning.**
@@ -253,7 +296,10 @@ through with `tm_fetch` when it genuinely needs the payload.
 > ```
 >
 > (set it for the app process — `setx` on Windows, or launch from a shell that
-> exports it — then restart OpenCode; the installers do it for you). TeamMode
+> exports it — then restart OpenCode; the installers do it for you, and that is
+> a **persistent user-scope write**, so see
+> [What the installer changes on your machine](#-what-the-installer-changes-on-your-machine)
+> for the exact value, its lifetime and the undo command). TeamMode
 > then keeps that channel inside your token budget: the injected full reply is
 > replaced by a preview plus a pointer, and nothing is copied to disk
 > (`TM_TASK_OFFLOAD=off` restores the host's verbatim text). Cost of the host
@@ -508,12 +554,12 @@ for overrides, extra agents and disabling roles.
 | `TM_BLACKBOARD_TTL` | `7` | store retention (days) |
 | `TM_BASH_READONLY_ALLOWED` | built-in table | tm_bash allowlist |
 | `TM_SEARCH_DEFAULT_ENGINE` | `auto` | tm_search engine when no `engine` arg is given (`auto` = classify + parallel fan-out + RRF fusion; any table name also pins a manual default) |
-| `TM_WEBFETCH_ALLOWED_DOMAINS` | the 23 seeded hosts | tm_webfetch / tm_search / tm_browser allowlist (`"*"` opens all; empty = deny all; a custom list REPLACES the seed — keep the engine hosts) |
+| `TM_WEBFETCH_ALLOWED_DOMAINS` | the 24 seeded hosts | tm_webfetch / tm_search / tm_browser allowlist (`"*"` opens all; empty = deny all; a custom list REPLACES the seed — keep the engine hosts). A site's own asset CDN has to be seeded or `tm_browser` renders it blank — `bdimg.com` is there for exactly that reason; per-session gaps go through `tm_browser { action:"allow_host", host }` instead of an env edit |
 | `TM_BROWSER_PATH` | auto-detect | tm_browser executable override (default: your DEFAULT browser when Chromium-family, else Edge/Chrome probes) |
 | `TM_BROWSER_HEADLESS` | `auto` | `1` headless (CI) / `0` headful / `auto` (headless only on display-less Linux) |
 | `TM_BROWSER_ENGINE` | `playwright` | `playwright` (needs Node ≥ 20; any import failure auto-degrades) / `cdp-legacy` (zero-dep CDP pipe, core verbs only) |
 | `TM_BROWSER_SNAPSHOT_MAX_TOKENS` | `1200` | hard cap on `take_snapshot` payloads |
-| `TM_BROWSER_SUBRESOURCE` | `same-site` | what a page may load after its navigation was allowed: `same-site` = images/media/fonts/stylesheets always, scripts/XHR only for a site this session actually opened; `passive` = only the passive types; `off` = the legacy every-request gate. Blocked requests surface as a "N 个子资源请求被拦截" note on the next snapshot |
+| `TM_BROWSER_SUBRESOURCE` | `same-site` | what a page may load after its navigation was allowed: `same-site` = images/media/fonts/stylesheets always, scripts/XHR only for a site this session actually opened; `passive` = only the passive types; `off` = the legacy every-request gate. Blocked requests surface as a "N 个子资源请求被拦截" note on the next snapshot, and when the page has nothing addressable left the note says the blankness is ours and points at `allow_host` / this env var |
 | `TM_BROWSER_IDLE_MS` | `180000` | an untouched browser session closes itself after this many ms (0 disables) and tells the user — a window nobody owns is a user-facing bug |
 | `TM_BROWSER_ASK_EVAL` | `on` | `evaluate_script` runs arbitrary JS in YOUR browser — the one verb the domain allowlist can't cover (it limits where we navigate, not what a loaded page hands back). One official-dialog consent per browser session; no ask bridge ⇒ refused. `off` restores the old behaviour; the result redaction (JWT/bearer/cookie/api-key shapes) is NOT switchable |
 | `TM_WEB_CACHE_TTL_SEC` | `300` | how long a governed fetch may re-serve the same URL (0 = off). One store shared by tm_webfetch / tm_search / the PTC bridge; entries are hash-named (a token-bearing query never hits disk) and are only read or written for hops the STATIC allowlist admitted — dialog consent stays per-request, and a re-served page says 缓存命中 |

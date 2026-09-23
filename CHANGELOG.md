@@ -109,6 +109,17 @@ registry saw 1.5.0 as the install-script fix release).
   request continues for the approver and aborts for everyone else). A host that
   passes no sessionID keeps the old single-shared-browser behaviour, because
   then there is only one caller to confuse.
+- **A blocked script host now has a way out that is not an env edit.**
+  `tm_browser { action: "allow_host", host }` takes ONE bare domain (a wildcard, a
+  URL, a path or a port is refused as an argument error before any dialog), puts it
+  in front of the host's official confirmation dialog as that exact string, and
+  files the grant under the calling session's browser for the length of the session
+  — nothing is written to any config, one agent's approval is still not another's
+  pass, and a host already on the static allowlist is answered 不用批准 rather than
+  turned into a dialog the user can learn nothing from. Re-navigating afterwards is
+  part of the reply, because the gate decides per request. Before this, the only
+  remedy for a page our own gate had blanked was "ask the user to edit an env var
+  and restart" — which no agent can do mid-task, so it reported the site as empty.
 
 
 ### Changed
@@ -319,6 +330,64 @@ broken" and "the answer is not what I expected" must not be conflated.
   `click_verified {effective, retried, probed, ready}`. A detached element is
   not treated as a failure either — a navigating click is recognised from the
   URL independently of the probe.
+- **Closing the last tab no longer costs you the browser (found by a live
+  1.6.0 test session, and it was our own regression).** `close_page` left
+  `state.page` pointing at the tab it had just closed while the reply promised
+  "浏览器仍在运行"; the next action then threw playwright's
+  `Target page, context or browser has been closed`, the dead-instance recovery
+  read that as a dead BROWSER and dropped the lease — so `close` reported
+  "no browser open" about a window still on the user's screen, and the only
+  thing left to reclaim it was the boot orphan reaper. Two separate fixes: an
+  empty window now answers with its own sentence ("0 个标签页，窗口和进程都还在，
+  用 new_page 开一个") that never mentions a closed browser, and the recovery
+  distinguishes a closed TAB from a dead BROWSER by asking the browser object
+  (`alive()`), dropping the lease only for the latter. The audit says which:
+  `page_dead_browser_alive` vs `session_dead`.
+- **`wait_for { text }` no longer throws playwright's internals at the agent.**
+  A visible label like a sidebar category matches several nodes, and strict mode
+  answered with the full report (`resolved to 2 elements`, the `aka getByRole`
+  hints, a Call log) — measured live, on the very recovery step our own click
+  message had just recommended, so the way out was blocked. It now waits for the
+  FIRST match and says so (`这个文本命中 3 个元素，等的是第一个——要更准就用 uid`).
+- **"Nothing changed" now names the right reason.** The first version of the
+  click verdict blamed load timing unconditionally, and a page at
+  `readyState=complete` with 15 blocked subresources was told to `wait_for` —
+  which then threw, per the entry above. The no-change reply now splits three
+  ways: blocked subresources are named with their hosts and the real remedy
+  (allowlist the host / approve it in the dialog, then re-open), a fully loaded
+  page that ignores the click is reported as that element not responding (and
+  told so plainly, `这不是加载时机问题`), and only a page that really is still
+  loading gets the `wait_for` advice.
+- **A snapshot failure no longer blames playwright when nothing is wrong with
+  it.** Every `take_snapshot` failure appended "locator.ariaSnapshot needs
+  playwright-core ≥1.49 …" regardless of the underlying error, so a closed page
+  sent an agent to audit its dependencies. The version sentence now appears only
+  when the accessor itself is missing (`not a function`); anything else is
+  reported as what it is.
+- **`tasklist` and `ps` joined the tm_bash read-only allowlist.** A live session
+  was told to check for leftover browser processes after a close, and this allowlist
+  refused the command — which made 已确认关闭 unverifiable by the one party who
+  cared. Listing is now allowed; `taskkill` still is not (pinned both ways), and
+  the refusal hint names the commands that ARE allowed.
+- **`baike.baidu.com` rendered as a blank page and the tool said nothing about
+  why.** The `same-site` subresource policy passes a page's own scripts by
+  registrable site, and Baidu serves its bundle — including the antispam challenge
+  script — from `bdimg.com`, which shares no brand suffix with `baidu.com`, so no
+  amount of same-site logic could infer it. Measured on one machine with one
+  executable: `baike.baidu.com/` came back with **0 addressable nodes behind the
+  gate and 260 with `bdimg.com` allowed** (274 with everything allowed), i.e. the
+  blank was ours, and an agent reading "0 个可寻址节点" reported 该网站没有内容.
+  Three changes: `bdimg.com` joins the seeded hosts (a site's own CDN on an
+  unrelated brand domain has to be seeded — the new `allow_host` verb covers what a
+  seed cannot anticipate); a page that comes back with nothing addressable WHILE
+  script hosts were blocked now says out loud that the blankness is our gate, names
+  the host and gives both remedies; and a thin page that is really a
+  human-verification wall (百度安全验证 / Cloudflare's Just a moment / access
+  denied) is reported as a wall, because the move there is another source or the
+  user's own hands — never another retry. Baidu's item pages defeat a fourth thing
+  we do not own: with every resource allowed they still serve 安全验证 to an
+  automated client, which is their anti-bot policy rather than our defect (plain
+  playwright measures 0 characters there too).
 
 ### Known gap (found while fixing the above, deliberately NOT changed)
 

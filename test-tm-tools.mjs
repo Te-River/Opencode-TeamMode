@@ -127,6 +127,7 @@ try {
       cfg.webfetchAllowedDomains,
       [
         "baidu.com",
+        "bdimg.com",
         "moegirl.org.cn",
         "bilibili.com",
         "www.sogou.com",
@@ -148,7 +149,7 @@ try {
         "pypi.org",
         "learn.microsoft.com",
       ],
-      "default webfetch allowlist = 21 CN-reachable research hosts (parent domains cover siblings)",
+      "default webfetch allowlist = 22 CN-reachable research hosts (parent domains cover siblings + Baidu's own script CDN)",
     )
     assert.deepEqual(
       tm.resolveTmConfig({ TM_WEBFETCH_ALLOWED_DOMAINS: "docs.example.com, *" }).webfetchAllowedDomains,
@@ -476,6 +477,19 @@ try {
     assert.equal(
       ep.classifyBashCommand("env FOO=bar node app.js", "standard"), null,
       "R6: env real launcher stays allowed",
+    )
+    // #62 (from a real session): tm_browser's close now verifies that the OS pid
+    // actually exited, but the agent had NO allowed way to double-check leftover
+    // msedge trees — `tasklist` was refused by this very allowlist, so a
+    // "已确认关闭" claim was unverifiable by the one party who cared. Read-only
+    // process LISTING is now allowed; nothing that can act is.
+    for (const cmd of ['tasklist /FI "IMAGENAME eq msedge.exe"', "ps -eo pid,ppid,comm"]) {
+      assert.equal(tm.classifyReadonlyCommand(cmd, allow).ok, true, `process listing is read-only: ${cmd}`)
+    }
+    assert.equal(tm.classifyReadonlyCommand("taskkill /PID 1234", allow).ok, false, "listing the table did not license signalling it")
+    assert.ok(
+      tm.classifyReadonlyCommand("uptime", allow).suggestion.includes("tasklist"),
+      "the refusal hint now names the commands that ARE allowed",
     )
     // custom allowlist via config
     assert.equal(tm.classifyReadonlyCommand("python x", ["python"]).ok, true, "custom allowlist member")
@@ -852,6 +866,7 @@ try {
       A,
       [
         "baidu.com",
+        "bdimg.com",
         "moegirl.org.cn",
         "bilibili.com",
         "www.sogou.com",
@@ -873,7 +888,7 @@ try {
         "pypi.org",
         "learn.microsoft.com",
       ],
-      "seeded allowlist = 21 CN-reachable research hosts (engines + dev sources + github + mirror)",
+      "seeded allowlist = 22 CN-reachable research hosts (engines + dev sources + github + mirror)",
     )
     assert.equal(tm.hostAllowed("cn.bing.com", A), true, "exact host allowed")
     assert.equal(tm.hostAllowed("a.mobile.moegirl.org.cn", A), true, "subdomain of a listed host allowed")

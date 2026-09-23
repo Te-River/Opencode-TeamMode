@@ -84,7 +84,7 @@ you:
 
 | Platform | What the installer does | Revert |
 |---|---|---|
-| Windows | `setx OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS true` (user scope, survives reboot) | `REG delete HKCU\Environment /v OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS /f` |
+| Windows | `setx OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS true` (user scope, survives reboot — **every program you start afterwards sees it, not just OpenCode**) | `REG delete HKCU\Environment /v OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS /f` |
 | macOS | `launchctl setenv …` — reaches GUI apps this login, **not** after a logout | `launchctl unsetenv OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS` |
 | Linux | `systemctl --user set-environment …` when a user session exists, else prints the `export` line | `systemctl --user unset-environment OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS` |
 
@@ -328,7 +328,7 @@ OpenCode 自带的 `task { background: true }` 是唯一能在它界面上**看�
 
 | 平台 | 安装脚本做什么 | 撤销 |
 |---|---|---|
-| Windows | `setx OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS true`（用户级，重启仍在） | `REG delete HKCU\Environment /v OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS /f` |
+| Windows | `setx OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS true`（用户级，重启仍在——**之后你启动的每个程序都看得到它，不只是 OpenCode**） | `REG delete HKCU\Environment /v OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS /f` |
 | macOS | `launchctl setenv …`——本次登录对 GUI 生效，**注销后失效** | `launchctl unsetenv OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS` |
 | Linux | 有用户级 systemd 就 `systemctl --user set-environment …`，否则打印 `export` 那行 | `systemctl --user unset-environment OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS` |
 

@@ -474,6 +474,27 @@ assert.ok(
   cfg2.agent["researcher"].prompt.includes("another agent's id is refused"),
   "researcher: an id is a name, not a capability token — the refusal is stated up front",
 )
+// A blank page has three possible meanings and the agent must be told the
+// difference, because "0 个可寻址节点" was being reported as "该网站没有内容"
+// while our own gate was blocking the site's script bundle (measured on baike:
+// 0 nodes blocked vs 260 with bdimg.com allowed).
+assert.ok(
+  cfg2.agent["researcher"].prompt.includes("the blankness is our gate"),
+  "researcher: a gate-caused blank is named as ours, not as an empty site",
+)
+assert.ok(
+  cfg2.agent["researcher"].prompt.includes("allow_host") &&
+    cfg2.agent["researcher"].prompt.includes("re-navigate"),
+  "researcher: the remedy is a scoped approval plus a re-navigation, and it is in the prompt",
+)
+assert.ok(
+  cfg2.agent["researcher"].prompt.includes("安全验证 wall"),
+  "researcher: a human-verification wall is a different fact, and its move is another source",
+)
+assert.ok(
+  cfg2.agent["tester"].prompt.includes("never about the site being empty"),
+  "tester: the same three-way reading of an empty snapshot, on the UI-verification side",
+)
 assert.ok(
   cfg2.agent["tester"].prompt.includes("id of YOUR browser"),
   "tester: open returns the id of the caller's own browser",
