@@ -117,14 +117,33 @@ export function openHostTodos(todos: unknown): HostTodo[] {
  *  it for a window that was never ours. */
 export function leaseTripwire(
   held: readonly { id: string; owner: string; agent: string; idleMs: number }[],
+  callerSessionID?: string,
 ): string | null {
   if (!held.length) return null
-  return (
-    `⚠ ${held.length} 个浏览器还开着（子代理已结算，但它没 close）：` +
-    held.map((l) => `${l.id}（${l.agent || "未知角色"} · 空闲 ${Math.round(l.idleMs / 1000)}s）`).join("、") +
-    `\n要么让它 close 并引用工具自己的三种裁决之一（已确认关闭 / 进程未核验 / 警告：关闭未完全成功），` +
-    `要么由你向用户写明为什么留着。不要替它写"已关闭"——那是把没人核实过的结论交付出去。`
-  )
+  const isMine = (l: { owner: string }) => !!callerSessionID && l.owner === callerSessionID
+  const mine = held.filter(isMine)
+  const theirs = held.filter((l) => !isMine(l))
+  const at = (l: { idleMs: number }) => `空闲 ${Math.round(l.idleMs / 1000)}s`
+  const parts: string[] = []
+  if (theirs.length) {
+    parts.push(
+      `⚠ ${theirs.length} 个浏览器还开着（子代理已结算，但它没 close）：` +
+        theirs.map((l) => `${l.id}（${l.agent || "未知角色"} · ${at(l)}）`).join("、") +
+        `\n要么让它 close 并引用工具自己的三种裁决之一（已确认关闭 / 进程未核验 / 警告：关闭未完全成功），` +
+        `要么由你向用户写明为什么留着。不要替它写"已关闭"——那是把没人核实过的结论交付出去。`,
+    )
+  }
+  // The caller's own window is the one the user is looking at, and the live
+  // recheck proved this branch was the missing one: a lead that keeps a browser
+  // across rounds is legitimate, so this is a reminder, not an accusation —
+  // but silence is the defect.
+  for (const l of mine) {
+    parts.push(
+      `（你自己还占着 ${l.id}，${at(l)}。收尾前 action:"close" 并引用工具的裁决句；` +
+        `如果确实要跨轮留着，就在回复里向用户说明为什么。）`,
+    )
+  }
+  return parts.join("\n")
 }
 
 /** Resolve the host session API defensively — `messages` is what tm_join
@@ -676,8 +695,11 @@ export function buildDispatchTools(deps: DispatchDeps): {
         if (settled && typeof deps.browserLeases === "function") {
           try {
             const done = new Set(mine.filter((r) => r.state !== "running").map((r) => r.sessionID))
-            const held = deps.browserLeases().filter((l) => done.has(l.owner))
-            const line = leaseTripwire(held)
+            // #86: the CALLER's own lease counts too. Filtering to settled
+            // children alone was the blind spot the live recheck walked into —
+            // the window the user actually sees is usually the lead's.
+            const held = deps.browserLeases().filter((l) => done.has(l.owner) || l.owner === parent)
+            const line = leaseTripwire(held, parent)
             if (line) {
               header.push(line)
               log({ step_id: "join", event: "lease_held", count: held.length, ids: held.map((l) => l.id).join(",") })

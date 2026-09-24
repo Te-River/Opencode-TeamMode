@@ -3367,12 +3367,15 @@ try {
       // #80: a settled child still holding a browser is reported as a FACT at the
       // moment the lead reads the round, not left to a prompt rule the child may
       // never have followed.
-      assert.equal(dmod.leaseTripwire([]), null, "no held lease adds nothing")
+      assert.equal(dmod.leaseTripwire([], "ses_lead"), null, "no held lease adds nothing")
       {
-        const line = dmod.leaseTripwire([
-          { id: "b2", owner: "ses_x", agent: "researcher", idleMs: 45_000 },
-          { id: "b3", owner: "ses_y", agent: "", idleMs: 1_500 },
-        ])
+        const line = dmod.leaseTripwire(
+          [
+            { id: "b2", owner: "ses_x", agent: "researcher", idleMs: 45_000 },
+            { id: "b3", owner: "ses_y", agent: "", idleMs: 1_500 },
+          ],
+          "ses_lead",
+        )
         assert.ok(line.includes("2 个浏览器还开着"), "counts them")
         assert.ok(line.includes("b2（researcher · 空闲 45s）"), "names the id, the owning role, and how long it has sat")
         assert.ok(line.includes("未知角色"), "an owner with no recorded role is still reported, never dropped")
@@ -3383,6 +3386,24 @@ try {
         assert.ok(/browserLeases:\s*\(\)\s*=>\s*browserTool\.leases\(\)/.test(idxSrc), "tm_join is wired to the browser's own lease table")
         const brSrc = fs.readFileSync(new URL("./dist/tm/browser.js", import.meta.url), "utf8")
         assert.ok(/leases:\s*\(\)/.test(brSrc), "tm_browser exposes that table instead of a copy of it")
+      }
+      // #86: the LIVE recheck caught the blind spot — the lead opened b5, kept it
+      // on purpose, collected a child, and nothing said a word about the window
+      // the USER could see. Filtering to settled children only was the whole bug.
+      {
+        const own = dmod.leaseTripwire([{ id: "b5", owner: "ses_lead", agent: "team", idleMs: 62_000 }], "ses_lead")
+        assert.ok(own.includes("你自己还占着 b5"), "the caller's own lease is named as its own")
+        assert.ok(own.includes("空闲 62s"), "with how long it has sat")
+        assert.ok(!/子代理已结算/.test(own), "and NOT accused of being a settled child — keeping a window across rounds is legitimate")
+        assert.ok(/向用户说明/.test(own), "the next move is to close it or tell the user why")
+        const mixed = dmod.leaseTripwire(
+          [
+            { id: "b5", owner: "ses_lead", agent: "team", idleMs: 10_000 },
+            { id: "b2", owner: "ses_x", agent: "researcher", idleMs: 30_000 },
+          ],
+          "ses_lead",
+        )
+        assert.ok(/子代理已结算/.test(mixed) && /你自己还占着/.test(mixed), "a mixed round reports both groups, separately worded")
       }
 
       // the pure helpers that outlived the dispatcher

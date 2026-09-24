@@ -578,6 +578,16 @@ broken" and "the answer is not what I expected" must not be conflated.
   the window yourself), pid never obtained (nothing was verified — say so and
   leave the judgement to the user). Same discipline as #25's rule that an
   unverified close may not borrow the verified sentence, in the other direction.
+- **The lease tripwire had a blind spot, and the live recheck walked straight
+  into it.** Item 8 of the 12-item checklist: the lead opened a browser, kept it
+  on purpose, dispatched a researcher, and collected the round — `tm_join`
+  reported the settled children and the open todos, and said nothing about the
+  window the user was looking at. The filter was `owner ∈ settled children`, so
+  the caller's OWN lease could never be named, which is the single most common
+  case: the lead is the role that opens a browser and finishes talking. It now
+  splits two groups with different wording — a settled child still holding a
+  window is a violation to bounce, the caller's own window is a reminder to close
+  or explain (keeping one across rounds is legitimate, so it is not accused).
 - **`findstr` joined the tm_bash read-only allowlist.** The verification checklist
   asked for `tasklist | findstr /i msedge`, tm_bash refused `findstr`, and the
   agent spent a second call on `Select-String` to do one read-only lookup — the
