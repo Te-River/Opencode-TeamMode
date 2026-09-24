@@ -257,7 +257,12 @@ You are one of the two network roles (the other is the team lead).
      this opens a VISIBLE window of the user's OWN browser channel (an
      Edge Beta default opens Edge Beta); headless only when the operator
      sets TM_BROWSER_HEADLESS — there is no headless parameter for you
-     to pass.  When a snapshot ends with "N 个子资源请求被拦截" the
+     to pass.  Absence of a confirmation dialog is NOT evidence the host
+     is on the allowlist: the reply now says which path let a page through
+     (静态白名单 / 你刚批准的窗 / 宿主按已记住的"始终允许"秒回).  A saved
+     "always" is project-wide, so it can let YOUR session through without
+     ever asking you — quote the tool's own line instead of concluding
+     "该 URL 在白名单内".  When a snapshot ends with "N 个子资源请求被拦截" the
      governance gate trimmed the page: that is NOT "the site has no
      images" — report the blocked hosts in FINDINGS instead.  And when the
      page comes back with 0 个可寻址节点 WHILE a script host was blocked,

@@ -24,7 +24,7 @@
  */
 
 import { isEnvFilePath } from "../envprotect.js"
-import { askFnOf, askRefusalNote, askUserForTarget, type TmAskFn } from "./perm-ask.js"
+import { askFnOf, askGrantNote, askRefusalNote, askUserForTarget, askUserForTargetDetailed, type TmAskFn } from "./perm-ask.js"
 import type { ToolResult } from "../types.js"
 import { shorten, DEFAULT_WEBFETCH_DOMAINS, type TmConfig } from "./config.js"
 
@@ -501,6 +501,13 @@ export async function fetchWebText(
      *  a hop the static allowlist admitted, so a hit can never bypass a
      *  dialog the current config still requires. */
     cache?: WebCache
+    /** Skip the READ, keep the WRITE.  `fresh: true` means "do not hand me a
+     *  past observation" — it does not mean "throw the observation you just
+     *  made away".  Skipping the whole cache object here used to forfeit the
+     *  write too, so a fresh fetch left nothing behind and the next caller paid
+     *  for the same network trip again (measured live: two calls, 7 408 bytes
+     *  each, no 缓存命中 on the second). */
+    noCacheRead?: boolean
     /** Content negotiation for THIS call.  tm_webfetch asks for Markdown (see
      *  WEBFETCH_ACCEPT_MD); the search engine legs pass nothing and keep the
      *  browser-shaped default.  The cache key stays the URL ALONE: one page is
@@ -553,7 +560,7 @@ export async function fetchWebText(
     // CACHE — reached only when the STATIC allowlist admitted this hop, so a
     // hit can neither resurrect a now-disallowed host nor skip consent the
     // current config asks for.  A cache failure is a miss, never an error.
-    if (staticAllow && opts.cache?.enabled()) {
+    if (staticAllow && !opts.noCacheRead && opts.cache?.enabled()) {
       const hit = opts.cache.get(current.toString())
       if (hit) return { text: hit.body, contentType: hit.contentType, finalUrl: current.toString(), cachedAt: hit.at }
     }
@@ -660,6 +667,7 @@ export function buildTmWebfetchTool(deps: {
       try {
         const args = rawArgs ?? {}
         const requested = typeof args.url === "string" ? args.url.trim() : ""
+        let grantNote = ""
         const verdict = checkWebUrl(requested, allowlist)
         if (!verdict.ok) {
           // ASKABLE miss (allowlist only) → the OFFICIAL dialog decides, the
@@ -667,16 +675,20 @@ export function buildTmWebfetchTool(deps: {
           if (!verdict.askable || !verdict.url) {
             return toToolResult(tmError(tool, "permission", verdict.message))
           }
-          const outcome = await askUserForTarget(ctx, {
+          const res = await askUserForTargetDetailed(ctx, {
             permission: tool,
             patterns: [verdict.url.toString()],
             metadata: { tool, url: shorten(requested, 200) },
           })
-          if (outcome !== "approved") {
+          if (res.outcome !== "approved") {
             return toToolResult(
-              tmError(tool, "permission", verdict.message + " " + askRefusalNote(outcome)),
+              tmError(tool, "permission", verdict.message + " " + askRefusalNote(res.outcome)),
             )
           }
+          // Same reporting duty as tm_browser: the page came because a rule
+          // allowed it, and "an always the user clicked in another session"
+          // must not read as "this host is on the allowlist".
+          grantNote = askGrantNote(res)
         }
         const stepId = pipelines.nextStepId()
         pipelines.store.appendTrajectory({ tool, step_id: stepId, event: "call" })
@@ -690,7 +702,8 @@ export function buildTmWebfetchTool(deps: {
           fetchImpl: deps.fetchImpl,
           ask: askFn,
           skipAskHosts: approvedHosts,
-          cache: fresh ? undefined : deps.cache,
+          cache: deps.cache,
+          noCacheRead: fresh,
           // The page GET asks for Markdown first (measured 5.3× smaller on
           // learn.microsoft.com, no-op elsewhere); the engine legs never come
           // through here, so their calibrated browser-shaped header stands.
@@ -713,7 +726,7 @@ export function buildTmWebfetchTool(deps: {
           if (hits.length > 0) {
             const sp = (verdict.ok ? verdict.url : new URL(requested)).searchParams
             const query = sp.get("q") ?? sp.get("wd") ?? sp.get("query") ?? sp.get("keyword") ?? ""
-            const listing = renderSearchHits(query || res.finalUrl, "webfetch", hits) + cacheNote
+            const listing = renderSearchHits(query || res.finalUrl, "webfetch", hits) + cacheNote + grantNote
             return toToolResult(
               pipelines.govern(stepId, tool, listing, {
                 contentType: detectContentType(listing),
@@ -772,7 +785,7 @@ export function buildTmWebfetchTool(deps: {
           }
         }
         return toToolResult(
-          pipelines.govern(stepId, tool, text + cacheNote + mdNote, {
+          pipelines.govern(stepId, tool, text + cacheNote + mdNote + grantNote, {
             contentType,
             clue: `url=${shorten(res.finalUrl, 120)}`,
           }),

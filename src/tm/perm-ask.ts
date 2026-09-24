@@ -52,6 +52,65 @@ export function askFnOf(ctx: unknown): TmAskFn | null {
 
 export type AskOutcome = "approved" | "rejected" | "timed-out" | "unavailable"
 
+/** A remembered allow rule resolves the ask inside the host; a human has to
+ *  read the dialog, decide and click. 1.5 s separates the two by an order of
+ *  magnitude on the observed desktop, and this is a HEURISTIC, not a host
+ *  contract — which is exactly why the sentence it produces says "没有人点这个
+ *  窗" only alongside the mechanism, never instead of it. */
+export const ASK_AUTO_GRANT_MS = 1_500
+
+export interface AskResult {
+  outcome: AskOutcome
+  /** How long the host took to answer.  Undefined when there was no bridge. */
+  answeredInMs?: number
+  /** approved AND answered fast enough that nobody can have clicked it — i.e.
+   *  a saved rule (an "always" the user granted earlier, possibly in another
+   *  agent's session) answered on their behalf. */
+  autoGranted: boolean
+}
+
+/** The same drive as `askUserForTarget`, but it reports HOW the approval
+ *  arrived.  Callers that show the user a result need this: an agent that
+ *  cannot tell "the host remembered an always-allow" from "the user just
+ *  approved this" will report 免弹窗 as evidence about the allowlist, and that
+ *  is how a correct observation becomes a wrong conclusion. */
+export async function askUserForTargetDetailed(
+  ctx: unknown,
+  req: TmAskRequest,
+  waitMs?: number,
+  autoGrantMs = ASK_AUTO_GRANT_MS,
+): Promise<AskResult> {
+  const ask = askFnOf(ctx)
+  if (!ask) return { outcome: "unavailable", autoGranted: false }
+  const budget = Math.max(ASK_WAIT_FLOOR_MS, Math.round(waitMs ?? askWaitMs))
+  const t0 = Date.now()
+  let timer: ReturnType<typeof setTimeout> | null = null
+  try {
+    await new Promise<unknown>((resolve, reject) => {
+      timer = setTimeout(() => reject(TIMED_OUT), budget)
+      Promise.resolve(ask(req)).then(resolve, reject)
+    })
+    const answeredInMs = Date.now() - t0
+    return { outcome: "approved", answeredInMs, autoGranted: answeredInMs < autoGrantMs }
+  } catch (err) {
+    return { outcome: err === TIMED_OUT ? "timed-out" : "rejected", answeredInMs: Date.now() - t0, autoGranted: false }
+  } finally {
+    if (timer) clearTimeout(timer)
+  }
+}
+
+/** The line a caller appends when a governed web fetch/navigation proceeded on
+ *  an approval rather than on the static allowlist.  One function so no tool
+ *  can half-report it. */
+export function askGrantNote(res: AskResult): string {
+  if (res.outcome !== "approved") return ""
+  return res.autoGranted
+    ? `\n（本次不是静态白名单放行：宿主按已记住的规则直接准了，${res.answeredInMs ?? 0}ms 内没有人可能点过这个窗。` +
+      `那通常是用户先前点过的"始终允许"——它按项目生效，对所有 agent 会话都算，所以这不证明本会话被单独征求过意见。` +
+      `要收回：在宿主的权限设置里删掉那条规则。）`
+    : `\n（本次由用户刚刚在确认窗里批准，仅这一会话有效。）`
+}
+
 /** Our own reject sentinel — an `ask()` that never settles has to be told
  *  apart from a dialog the user actually answered "no". */
 const TIMED_OUT = Symbol("ask-timed-out")

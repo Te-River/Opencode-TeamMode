@@ -32,7 +32,10 @@ export const DEFAULT_BASH_READONLY_ALLOWED: readonly string[] = [
   // that the browser's OS pid really exited, and a "已确认关闭" claim the user
   // cannot check is worth less than one they can — measured live, an agent told
   // to verify leftover msedge processes had no allowed way to ask the OS.
-  "tasklist", "ps",
+  // findstr joins it for the same reason: `tasklist | findstr /i msedge` is the
+  // natural Windows spelling of that check, and refusing it only turned one
+  // call into two (live evidence: refused, then re-run with Select-String).
+  "tasklist", "ps", "findstr",
 ]
 
 /**

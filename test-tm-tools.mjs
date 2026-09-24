@@ -486,6 +486,14 @@ try {
     for (const cmd of ['tasklist /FI "IMAGENAME eq msedge.exe"', "ps -eo pid,ppid,comm"]) {
       assert.equal(tm.classifyReadonlyCommand(cmd, allow).ok, true, `process listing is read-only: ${cmd}`)
     }
+    // #84: the same self-check spelled the Windows way. `tasklist | findstr /i
+    // msedge` was refused and the agent spent a second call on Select-String —
+    // friction that buys nothing, since findstr only reads the pipe it is given.
+    assert.equal(
+      tm.classifyReadonlyCommand("tasklist | findstr /i msedge", allow).ok,
+      true,
+      "findstr is Windows grep and is read-only on its input",
+    )
     assert.equal(tm.classifyReadonlyCommand("taskkill /PID 1234", allow).ok, false, "listing the table did not license signalling it")
     assert.ok(
       tm.classifyReadonlyCommand("uptime", allow).suggestion.includes("tasklist"),
@@ -995,6 +1003,30 @@ try {
           pa.setAskWaitMs(75_000)
         }
       }
+      // #81: an approval that arrives in milliseconds cannot have been clicked,
+      // and the agent has to be told which of the two it got.  Live evidence: a
+      // researcher whose session was let through by a saved "always" reported
+      // "免弹窗直接成功" and then INFERRED that the host was allowlisted — a
+      // correct observation, exported as a wrong conclusion, into a deliverable.
+      {
+        const pa = await import("./dist/tm/perm-ask.js")
+        const req = { permission: "tm_webfetch", patterns: ["https://x.test/"] }
+        const instant = await pa.askUserForTargetDetailed({ ask: async () => "once" }, req, 5_000, 1_500)
+        assert.equal(instant.outcome, "approved", "an answered ask is approved")
+        assert.equal(instant.autoGranted, true, "answered in ~0ms ⇒ nobody clicked; that is a saved rule")
+        assert.ok(pa.askGrantNote(instant).includes("始终允许"), "and the note names the mechanism the user actually used")
+        assert.ok(pa.askGrantNote(instant).includes("对所有 agent 会话"), "…including that it is project-wide, not per-agent")
+        const slow = await pa.askUserForTargetDetailed(
+          { ask: async () => { await new Promise((r) => setTimeout(r, 30)); return "once" } },
+          req,
+          5_000,
+          20,
+        )
+        assert.equal(slow.autoGranted, false, "answered slower than the threshold ⇒ a real click")
+        assert.ok(pa.askGrantNote(slow).includes("刚刚在确认窗里批准"), "and that reads as the user's own verdict")
+        const refused = await pa.askUserForTargetDetailed({ ask: async () => { throw new Error("no") } }, req, 5_000, 1_500)
+        assert.equal(pa.askGrantNote(refused), "", "a refusal appends nothing")
+      }
       // 403 after header disguise → DIRECTIVE: call tm_browser (not "try again")
       const forbidden = await wf.execute({ url: "https://baike.baidu.com/item/x" }, ctx)
       assert.ok(
@@ -1224,6 +1256,13 @@ try {
     const forced = await insideTool.execute({ url: npmUrl, fresh: true }, wctx)
     assert.equal(inside, 2, "fresh:true bypasses the cache and hits the network again")
     assert.ok(!String(forced.output).includes("缓存命中"), "and the fresh reply makes no cache claim")
+    // #82: what it must NOT do is forfeit the WRITE.  "Don't hand me a past
+    // observation" is not "throw away the observation you just made" — the live
+    // export showed two calls, both full network fetches, because the fresh one
+    // cached nothing.
+    const afterFresh = await insideTool.execute({ url: npmUrl }, wctx)
+    assert.equal(inside, 2, "the fresh fetch stored what it fetched — the next caller is served from disk")
+    assert.ok(String(afterFresh.output).includes("缓存命中"), "and says so")
 
     let never = 0
     const narrowedTool = wf.buildTmWebfetchTool({

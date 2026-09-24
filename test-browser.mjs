@@ -1965,6 +1965,43 @@ async function main() {
     log("#80: open names the close duty, and says so honestly when the reaper is off")
   }
 
+  // ---------- 33. #81/#83: who let this page in, and what a dead pid means ----------
+  {
+    // #81 — a saved "always" answers the ask inside the host, so no dialog ever
+    // appears for THIS agent. The reply has to say which path let the page in,
+    // or an agent reads "no dialog" as "allowlisted" (measured, in a deliverable).
+    const fx = makeFakePw()
+    const mk = makeTool({ importPlaywright: async () => fx.pw, nodeMajor: 22 })
+    const asked = []
+    const ctxInstant = {
+      directory: root,
+      sessionID: "s-grant",
+      agent: "researcher",
+      ask: async (req) => (asked.push(req), "once"),
+    }
+    const granted = o(await mk.tool.execute({ action: "open", url: "https://developer.mozilla.org/zh-CN/docs/Web/HTTP" }, ctxInstant))
+    assert.equal(asked.length, 1, "an off-allowlist navigation still asks the host")
+    assert.ok(granted.includes("不是静态白名单放行"), "and the reply says the page came in through an approval, not the seed")
+    assert.ok(granted.includes("对所有 agent 会话"), "…naming that a saved always is project-wide, so per-agent consent was never consulted")
+    assert.ok(mk.events.some((e) => e.event === "silent_grant"), "the silent grant is on the trajectory, not just on screen")
+
+    // #83 — a dead pid cannot own a window. The leftover tab count is our own
+    // stale reference; sending the user to close it is a false errand.
+    const fxD = makeFakePw()
+    const mkD = makeTool({ importPlaywright: async () => fxD.pw, nodeMajor: 22, browserPid: NO_PID })
+    await mkD.tool.execute({ action: "open", url: "https://cn.bing.com" }, ctxNoAsk)
+    fxD.__ctx.close = async () => {
+      throw new Error("context busy (fake)")
+    }
+    fxD.calls.launchBrowser.close = async () => {}
+    const deadProc = o(await mkD.tool.execute({ action: "close" }, ctxNoAsk))
+    assert.ok(deadProc.includes("警告：关闭未完全成功"), "a half-closed session still refuses the success verdict")
+    assert.ok(/进程已确认不在/.test(deadProc), "…and with the pid verified gone it says so plainly")
+    assert.ok(!/请用户手动关闭/.test(deadProc), "no instruction to hunt a window that cannot exist")
+    assert.ok(/路由引用/.test(deadProc), "the leftover tab count is attributed to us, not to the desktop")
+    log("#81/#83: an approval is reported as an approval, and a dead pid stops being a user errand")
+  }
+
   console.log("browser: OK (engine select/degrade matrix, 18-verb playwright mapping + uid registry on mock pw, route()-based allowlist, persistent-profile policy, prompt pins, evaluate_script consent + redaction, dead-session rebuild, hostless-page refusal, multi-tab new_page/close_page, process-verified close, orphan ledger reaper, launch-pid scan + identity gate + tree kill, unverified-close honesty, click effect verification, per-caller browser leases, empty-window and closed-page semantics, full args-schema param surface; real-playwright smoke gated on npm install)")
 }
 

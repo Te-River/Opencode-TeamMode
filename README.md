@@ -497,7 +497,13 @@ silently allowed. The normal verification stack (`npm test`, `tsc`,
 > ⚠️ **When you approve a dialog, pick "once" — not "always".** Verified on
 > the live host, "always" records a far broader rule than the command you
 > saw: approving `Get-ChildItem env:PATH` with "always" stores `Get-ChildItem
-> *`, so every later `Get-ChildItem` runs with no dialog at all.
+> *`, so every later `Get-ChildItem` runs with no dialog at all. The web
+> channel has the same trap and it is easier to fall into: one "always" on a
+> host lets **every agent session in that project** open it, so the per-agent
+> browser consent never gets asked again. The reply now says which path let a
+> page in (static allowlist / the dialog you just answered / a saved rule that
+> answered in milliseconds), because an agent that cannot tell them apart
+> reports "no dialog" as "that site is allowed".
 
 > Deferral to the dialog is per-session: env reads only route to the dialog
 > in sessions running TeamMode's injected agents. In any other session the

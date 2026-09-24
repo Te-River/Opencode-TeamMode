@@ -547,6 +547,43 @@ broken" and "the answer is not what I expected" must not be conflated.
   permission now fails visibly at the feature instead of invisibly at the modal,
   which is the honest trade.
 
+- **The reply now says WHICH path let a page in.** From the 1.6.0 host
+  re-verification export: `developer.mozilla.org` is not in the 22 seeded hosts,
+  no config overrode the allowlist, and the gate code was correct
+  (`checkWebUrl` → `ok:false, askable:true`) — yet lead and researcher both
+  opened it with no dialog, because the user had once clicked 始终允许 and the
+  host answers from its saved rule. Two things were wrong with that. Per-agent
+  consent (#58) is not consulted by a project-wide rule, so one click in one
+  session is a pass for all of them; and nothing in the reply distinguished the
+  three cases, so the researcher reported "免弹窗直接成功" and inferred "该 URL
+  在白名单内" — a correct observation exported as a wrong conclusion, written
+  into its deliverable. `askUserForTargetDetailed` now reports how fast the host
+  answered, and an approval that arrived faster than a human can click is
+  labelled as what it is (saved rule, project-wide, how to revoke it); a slow one
+  is labelled as the user's own verdict. Trajectory gains `silent_grant` vs
+  `dialog_approved`, and the researcher prompt forbids the inference explicitly.
+- **`fresh: true` stopped throwing away the page it had just fetched**
+  (`tm_webfetch`). It skipped the whole cache object, so it neither read NOR
+  wrote: two calls to the same URL, 7 408 bytes each, and the second one still
+  said nothing about a cache — measured in the same export. `fresh` means "do not
+  hand me a past observation", which the fresh fetch satisfies for itself while
+  leaving the fresh body to the next caller; the read is now skipped alone
+  (`noCacheRead`) and the write stands, still under the existing rule that only a
+  statically-allowed hop may ever touch the cache.
+- **`close` no longer sends the user to hunt a window that cannot exist.** When
+  the pid was verified gone but a tab reference lingered, the warning branch
+  printed "窗口很可能仍在前台，请用户手动关闭（pid 33560）" in the same sentence as
+  "进程 33560 早已不在". It now splits three ways: pid confirmed exited (no window
+  to find, and the leftover count is OUR stale route reference), pid alive (close
+  the window yourself), pid never obtained (nothing was verified — say so and
+  leave the judgement to the user). Same discipline as #25's rule that an
+  unverified close may not borrow the verified sentence, in the other direction.
+- **`findstr` joined the tm_bash read-only allowlist.** The verification checklist
+  asked for `tasklist | findstr /i msedge`, tm_bash refused `findstr`, and the
+  agent spent a second call on `Select-String` to do one read-only lookup — the
+  same class as #62: a self-check the user can run by hand should not cost a
+  round-trip.
+
 ### Known gap (found while fixing the above, deliberately NOT changed)
 
 - `projectSlug()` — the tier that names a tm_memory `project` directory —

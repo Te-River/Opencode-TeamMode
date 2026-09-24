@@ -67,7 +67,7 @@ import * as fs from "node:fs"
 import * as os from "node:os"
 import * as path from "node:path"
 import { checkWebUrl, seedWebfetchDomains } from "./webfetch.js"
-import { askRefusalNote, askUserForTarget } from "./perm-ask.js"
+import { askGrantNote, askRefusalNote, askUserForTarget, askUserForTargetDetailed } from "./perm-ask.js"
 import { assertReadablePath } from "./guard.js"
 import { isEnvFilePath } from "../envprotect.js"
 import type { ToolAttachment, ToolResult } from "../types.js"
@@ -2674,7 +2674,17 @@ export function buildTmBrowserTool(deps: {
           text:
             `警告：关闭未完全成功（${sess.label}${errs.length ? `：${errs.join("; ")}` : ""}）——` +
             `残留标签页 ${alivePages} 个${connected ? "，浏览器进程仍处于连接状态" : ""} · ${pidNote}。` +
-            `窗口很可能仍在前台，请用户手动关闭该浏览器窗口${browserPid > 0 ? `（pid ${browserPid}）` : ""}。${profile}。`,
+            // Three states, and the sentence must match the one we are in.  A
+            // dead pid cannot have a window on the desktop, so telling the user
+            // to go hunt it sends them after something that is not there — and
+            // the leftover count is OUR own stale reference (close_page leaves
+            // state.page on the tab it closed).  No pid at all is a DIFFERENT
+            // fact: nothing was verified, so the window may genuinely remain.
+            (browserPid > 0 && processGone
+              ? `进程已确认不在（pid ${browserPid} 已退出），所以桌面上不该还有它的窗口——那个"残留标签页"是我自己留着的路由引用，不是窗口，你不用去找。${profile}。`
+              : browserPid > 0
+                ? `窗口很可能仍在前台（pid ${browserPid} 还在），请用户手动关闭该浏览器窗口。${profile}。`
+                : `这次没拿到浏览器 pid，进程无法核验——若桌面上窗口仍在请手动关闭。${profile}。`),
         }
       },
     }
@@ -2770,6 +2780,9 @@ export function buildTmBrowserTool(deps: {
       // a lease is keyed by it; without one (an older host, a test harness) all
       // callers share the single anonymous bucket, which is the old behaviour.
       const caller = callerOf(ctx)
+      // Set when this call proceeded on a DIALOG approval rather than the
+      // static allowlist; appended to whichever reply the action returns.
+      let grantNote = ""
       // allowlist FIRST — an out-of-allowlist URL only proceeds after the
       // OFFICIAL dialog approves it (then the host passes the network layer
       // too); hard red lines (scheme / env-file) reject with no dialog.
@@ -2783,17 +2796,28 @@ export function buildTmBrowserTool(deps: {
           if (!verdict.askable || !verdict.url) {
             return toToolResult(tmError(tool, "permission", verdict.message))
           }
-          const outcome = await askUserForTarget(ctx, {
+          const res = await askUserForTargetDetailed(ctx, {
             permission: tool,
             patterns: [verdict.url.toString()],
             metadata: { tool, url: url.slice(0, 200) },
           })
-          if (outcome !== "approved") {
+          if (res.outcome !== "approved") {
             return toToolResult(
-              tmError(tool, "permission", verdict.message + " " + askRefusalNote(outcome)),
+              tmError(tool, "permission", verdict.message + " " + askRefusalNote(res.outcome)),
             )
           }
           approvedFor(caller.owner).add(verdict.url.hostname)
+          // The approval is recorded in the REPLY, not only the trajectory: an
+          // agent that cannot tell a saved "always" from a fresh click reports
+          // "no dialog appeared" as evidence about the allowlist — measured live,
+          // that is exactly what a researcher wrote into its deliverable.
+          grantNote = askGrantNote(res)
+          traj({
+            step_id: "browser",
+            event: res.autoGranted ? "silent_grant" : "dialog_approved",
+            host: verdict.url.hostname,
+            answered_ms: res.answeredInMs,
+          })
         }
       }
       // The remedy for "our gate blanked this page".  A blocked asset host used
@@ -2851,7 +2875,7 @@ export function buildTmBrowserTool(deps: {
           armIdle(existing)
           return withAttachments(
             toToolResult(
-              `[${existing.id}] 复用你自己的浏览器（${existing.session.headless ? "无头" : "有头窗口"} · ${existing.session.label}）。${out}`,
+              `[${existing.id}] 复用你自己的浏览器（${existing.session.headless ? "无头" : "有头窗口"} · ${existing.session.label}）。${out}${grantNote}`,
             ),
             existing.session,
           )
@@ -2894,7 +2918,8 @@ export function buildTmBrowserTool(deps: {
               duty +
               (others > 0
                 ? `现在共有 ${others + 1} 个浏览器在跑（别的 agent 各有各的窗口），省略 id 会被拒绝。`
-                : ""),
+                : "") +
+              grantNote,
           ),
           s,
         )
@@ -2906,7 +2931,7 @@ export function buildTmBrowserTool(deps: {
         activeLease = got.lease
         const out = await got.lease.session.act(action, { url }, "browser")
         armIdle(got.lease)
-        return withAttachments(toToolResult(`[${got.lease.id}] ${out}`), got.lease.session)
+        return withAttachments(toToolResult(`[${got.lease.id}] ${out}${grantNote}`), got.lease.session)
       }
       if (action === "close") {
         // `id:"all"` closes every browser the CALLER owns — never anybody
@@ -3004,7 +3029,7 @@ export function buildTmBrowserTool(deps: {
       const stepId = pipelines.nextStepId()
       const out = await session.act(action, args, stepId)
       if (action !== "evaluate_script") {
-        return withAttachments(toToolResult(`[${lease.id}] ${out}`), session)
+        return withAttachments(toToolResult(`[${lease.id}] ${out}${grantNote}`), session)
       }
       // The value is masked BEFORE it can reach the context window, the run
       // store or the trajectory; the agent is told a mask happened (a silent

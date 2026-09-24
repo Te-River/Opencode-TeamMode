@@ -510,6 +510,17 @@ for (const dead of ["bing-int", "sogou", "baidu", "360"]) {
 assert.ok(cfg2.agent["researcher"].prompt.includes("never build a search URL there"), "researcher: dead CN SERPs are named as dead ends, not options")
 assert.ok(cfg2.agent["researcher"].prompt.includes("ONE SEARCH IS A SAMPLE, NOT A SEARCH"), "researcher: multi-query refinement loop is mandatory (no one-shot search)")
 assert.ok(cfg2.agent["researcher"].prompt.includes("个子资源请求被拦截"), "researcher: a trimmed page is reported as gate action, not 'the site has no images'")
+// #81: measured live, a researcher saw no dialog and INFERRED the host was
+// allowlisted — the absence of a prompt is not a fact about the allowlist,
+// because a saved "always" answers for every session in the project.
+assert.ok(
+  cfg2.agent["researcher"].prompt.includes("Absence of a confirmation dialog is NOT evidence"),
+  "researcher: no-dialog must not be read as allowlisted",
+)
+assert.ok(
+  /project-wide/.test(cfg2.agent["researcher"].prompt),
+  "…and the rule names the project-wide reach of a saved always",
+)
 // close now has THREE verdicts, and the third is the one that used to be
 // reported to the user as a success: the tool could not find a pid, so nothing
 // was verified.  A prompt that only knows two of them turns 进程未核验 into
