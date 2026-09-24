@@ -308,6 +308,48 @@ export function findBrowserExecutable(env: Record<string, string | undefined> = 
  *   auto (default)                    → headless ONLY when there is no
  *   display possible (Linux without DISPLAY/WAYLAND_DISPLAY).
  */
+/** Decide what profile directory TM_BROWSER_USER_DATA_DIR asks for.
+ *
+ *  The tool description has claimed for a long time that "the real profile is
+ *  never touched" while nothing enforced it: the string went straight into
+ *  `launchPersistentContext`.  Pointing it at the user's own browser data dir is
+ *  not a neutral choice — with the browser open, the new process hands its URL
+ *  to the running instance and exits (the confusing "本机已有同品牌浏览器在跑"
+ *  failure), and with it closed the agent browses AS THE USER, with every cookie
+ *  and saved session, while our orphan reaper force-kills (`taskkill /T /F`) any
+ *  browser whose owner died — a real route to corrupting a profile.
+ *
+ *  So: a real browser data dir is refused with the fix named, anything else is
+ *  honored, and an unset value keeps the isolated temp profile (the default).
+ *  Pure, so both engines and the tests share one answer. */
+export function classifyProfileDir(
+  env: Record<string, string | undefined> = process.env,
+): { dir: string | null; refusal: string | null } {
+  const raw = String(env.TM_BROWSER_USER_DATA_DIR ?? "").trim()
+  if (!raw) return { dir: null, refusal: null }
+  const norm = raw.replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase()
+  const segs = norm.split("/").filter(Boolean)
+  const last = segs[segs.length - 1] ?? ""
+  const looksReal =
+    last === "user data" ||
+    last === "google-chrome" ||
+    last === "chromium" ||
+    last === "profiles" ||
+    /(^|\/)(microsoft|google)\/(edge|chrome|chromium|chrome sxs)(\/(user data))?$/.test(norm) ||
+    /\/mozilla\/firefox\/(profiles|profile)$/.test(norm)
+  if (looksReal) {
+    return {
+      dir: null,
+      refusal:
+        `TM_BROWSER_USER_DATA_DIR 指向的看起来是浏览器自己的数据目录（${raw}），拒绝用它启动。` +
+        `那样 agent 就是以你的真实身份上网，而孤儿回收是强杀进程，可能损坏这个目录。` +
+        `要保留登录态：把它改成一个专用空目录（例如 D:\\tm-browser-profile 或 ~/.tm-browser-profile），` +
+        `第一次让 agent 打开登录页、你人工登录一次，之后 cookie 就在这个目录里跨会话保留。`,
+    }
+  }
+  return { dir: raw, refusal: null }
+}
+
 export function resolveHeadless(env: Record<string, string | undefined> = process.env): boolean {
   const raw = String(env.TM_BROWSER_HEADLESS ?? "auto").trim().toLowerCase()
   if (["1", "true", "force", "yes"].includes(raw)) return true
@@ -1508,6 +1550,11 @@ interface ActiveSession {
    *  agent from here — never from the caller's request — so a reused
    *  (sticky) session cannot be described as something it is not. */
   headless: boolean
+  /** The profile this session was ACTUALLY launched with, or null for the
+   *  isolated temp one.  Reported from here for the same reason `headless` is:
+   *  reading TM_BROWSER_USER_DATA_DIR again at reply time lets a cdp-legacy
+   *  session (which used a temp dir) be described as 持久登录配置. */
+  persistentProfile: string | null
   /** Engine/profile identity for the open + close lines the agent quotes. */
   label: string
   /** Screenshot pixels the model asked for, drained by execute() into the
@@ -1975,7 +2022,13 @@ export function buildTmBrowserTool(deps: {
   async function openLegacySession(headless: boolean, approvedHosts: Set<string>): Promise<ActiveSession> {
     const executable = discover(env)
     if (!executable) throw discoveryError()
-    const profileDir = fs.mkdtempSync(path.join(os.tmpdir(), "tm-browser-"))
+    // The SAME knob on BOTH engines.  This used to be temp-only, so a session
+    // that degraded to cdp-legacy kept its logins nowhere while the reply still
+    // read the env and announced 持久登录配置.
+    const profile = classifyProfileDir(env)
+    if (profile.refusal) throw new Error(profile.refusal)
+    const persistent = profile.dir !== null
+    const profileDir = persistent ? profile.dir! : fs.mkdtempSync(path.join(os.tmpdir(), "tm-browser-"))
     const child = spawn(
       executable,
       [
@@ -2037,6 +2090,7 @@ export function buildTmBrowserTool(deps: {
       kind: "cdp-legacy",
       currentUrl: "about:blank",
       headless,
+      persistentProfile: persistent ? profileDir : null,
       label: `cdp-legacy · ${path.basename(executable)} · pid ${child.pid ?? "?"}`,
       attachments: [],
       blocked,
@@ -2136,18 +2190,28 @@ export function buildTmBrowserTool(deps: {
           })
         })
         const dead = (child as { exitCode?: number | null; killed?: boolean }).exitCode !== null
-        try {
-          rmForceSafe(profileDir, { recursive: true })
-        } catch {
-          /* a locked leftover temp dir is reclaimed by the OS — never fail close */
+        // Only a directory WE created is ours to remove. Deleting a user-named
+        // persistent profile on close would destroy the logins the knob exists
+        // to keep.
+        if (!persistent) {
+          try {
+            rmForceSafe(profileDir, { recursive: true })
+          } catch {
+            /* a locked leftover temp dir is reclaimed by the OS — never fail close */
+          }
         }
         return dead
-          ? { closed: true, text: "浏览器进程已退出（cdp-legacy），临时配置目录已清理。" }
+          ? {
+              closed: true,
+              text: persistent
+                ? `浏览器进程已退出（cdp-legacy）；持久配置目录已保留（下次 open 复用登录态）：${profileDir}。`
+                : "浏览器进程已退出（cdp-legacy），临时配置目录已清理。",
+            }
           : {
               closed: false,
               text:
                 `警告：cdp-legacy 子进程 pid ${child.pid ?? "?"} 未在 3s 内退出，窗口可能仍在前台——` +
-                `请手动关闭该浏览器窗口（临时目录 ${profileDir}）。`,
+                `请手动关闭该浏览器窗口（配置目录 ${profileDir}${persistent ? "，持久目录我不会删" : "，临时目录"}）。`,
             }
       },
     }
@@ -2185,7 +2249,9 @@ export function buildTmBrowserTool(deps: {
       // headful: honor --start-maximized (null viewport = the OS window size)
       viewport: headless ? undefined : null,
     }
-    const persistentDir = String(env.TM_BROWSER_USER_DATA_DIR ?? "").trim()
+    const profile = classifyProfileDir(env)
+    if (profile.refusal) throw new Error(profile.refusal)
+    const persistentDir = profile.dir ?? ""
     // R2 (revised 2026-09-18): playwright's `channel` resolves the executable
     // ITSELF, which silently overrode our discovery (a Beta-default Windows
     // host opened STABLE Edge).  executablePath is now the primary launch and
@@ -2357,6 +2423,7 @@ export function buildTmBrowserTool(deps: {
       kind: "playwright",
       currentUrl: "about:blank",
       headless,
+      persistentProfile: persistentDir || null,
       label: `playwright/${via} · ${path.basename(executable)} · ${headless ? "headless" : "headful"}`,
       attachments: [],
       blocked: state.blocked,
@@ -2780,6 +2847,12 @@ export function buildTmBrowserTool(deps: {
       // a lease is keyed by it; without one (an older host, a test harness) all
       // callers share the single anonymous bucket, which is the old behaviour.
       const caller = callerOf(ctx)
+      // The profile knob is checked BEFORE any engine runs: a refused value must
+      // not spawn a browser that then discovers the problem.
+      {
+        const probe = classifyProfileDir(env)
+        if (probe.refusal) return toToolResult(tmError(tool, "args", probe.refusal))
+      }
       // Set when this call proceeded on a DIALOG approval rather than the
       // static allowlist; appended to whichever reply the action returns.
       let grantNote = ""
@@ -2891,7 +2964,10 @@ export function buildTmBrowserTool(deps: {
         const out = await s.act("navigate", { url }, "browser")
         traj({ step_id: "browser", event: "open", headless, label: s.label, id: lease.id, agent: lease.agent })
         const mode = s.headless ? "无头" : "有头窗口"
-        const profile = String(env.TM_BROWSER_USER_DATA_DIR ?? "").trim() ? "持久登录配置" : "隔离临时配置"
+        // From the SESSION, never from the environment: this line used to re-read
+        // TM_BROWSER_USER_DATA_DIR at reply time, so a session that had degraded
+        // to cdp-legacy (temp profile) announced 持久登录配置.
+        const profile = s.persistentProfile ? "持久登录配置" : "隔离临时配置"
         const note =
           lastSel && preference !== "cdp-legacy" && lastSel.kind === "cdp-legacy"
             ? `\n（引擎：cdp-legacy 降级——${lastSel.reason ?? ""}；完整 16 动作需 npm install playwright-core + node≥20）`
@@ -3096,7 +3172,7 @@ export function buildTmBrowserTool(deps: {
 - MULTI-TAB is a first-class flow: new_page { url? } opens a tab and makes it current (its url clears the SAME allowlist gate and dialog as navigate_page), list_pages numbers them, select_page { index } switches, close_page { index? } closes one and moves you to a survivor — closing the LAST tab does NOT close the browser, and the reply says so. Compare two pages without losing either.
 - ONE BROWSER PER AGENT: open returns an id ("b1") and that window is YOURS — its own uid numbering, its own current tab, its own dialog-approved hosts. Every reply is prefixed with the id it ran on. Pass id on every action once more than one browser is live (omitting it is only unambiguous while exactly one exists and it is yours); another agent's id is refused with the owner named, because sharing one window means your take_snapshot renumbers the uids they are holding and their next click lands somewhere else while STILL reporting success. close { id: "all" } closes all of yours — never anybody else's.
 - 18 actions (chrome-devtools-mcp aligned): navigate_page { url } · take_snapshot { } → ariaSnapshot YAML with injected [uid=eN] · click/fill{text}/hover { uid|selector } · drag { uid, targetUid } · press_key { key } · select_page { index } · upload_file { uid, filePath } (filePath must live INSIDE the workspace/blackboard scope — .env & shell-rc files are refused) · wait_for { text|uid, timeoutMs<=3000 default } · evaluate_script { function } (arbitrary JS in YOUR browser: needs one official-dialog consent per browser session, and the result is scanned so JWT/bearer/cookie/api-key shapes never enter the context) · list_console_messages · list_network_requests · list_pages · take_screenshot { fullPage?, image? } → the PNG always lands in the run store (path in the reply); with image:true a quality-70 JPEG of the same view is attached to THIS result so a vision model can actually see it (opt-in: pixels cost context, so ask only when the screenshot is the evidence) · handle_dialog { dialogAction: accept|dismiss, promptText }.
-- Compat actions: open { url } — launch/reuse + navigate (TM_BROWSER_PATH override → DEFAULT browser, Chromium-family only; the registry ProgId decides the CHANNEL, so an Edge Beta default opens Edge Beta, not stable). Isolated temp profile by default; persistent login ONLY via TM_BROWSER_USER_DATA_DIR (the real profile is never touched). navigate / read (page text) / screenshot / close also work.
+- Compat actions: open { url } — launch/reuse + navigate (TM_BROWSER_PATH override → DEFAULT browser, Chromium-family only; the registry ProgId decides the CHANNEL, so an Edge Beta default opens Edge Beta, not stable). Isolated temp profile by default; persistent login ONLY via TM_BROWSER_USER_DATA_DIR — honored by BOTH engines, and a value pointing at your browser's OWN data dir (…\\Microsoft\\Edge\\User Data, google-chrome, Firefox Profiles) is refused before anything spawns, because browsing as your real identity plus a force-kill reaper is how a profile gets corrupted. navigate / read (page text) / screenshot / close also work.
 - Lifecycle (the user SEES this window): headful by default — headless is an operator setting (TM_BROWSER_HEADLESS), not a parameter you can pass. An idle session closes itself (TM_BROWSER_IDLE_MS, default 180s) and the user is told. ALWAYS action:"close" when your browser work is done, and quote the tool's own close line — "已确认关闭" vs "警告：关闭未完全成功" — instead of asserting the window is gone.
 - Discipline (enforced by defaults): act ONLY on uids from the latest take_snapshot — no guessed locators; one action then one observation; fold dialogs into the same round (snapshot header warns while a dialog is held); 3000 ms action budget; networkidle is never waited on; screenshots are the visual-last-resort, not the primary read.
 - Network: the top-level navigation must clear the domain allowlist (seeded = tm_webfetch's hosts; out-of-allowlist open/navigate asks the user through the OFFICIAL confirmation dialog BEFORE any spawn). SUBRESOURCES then follow TM_BROWSER_SUBRESOURCE (default same-site): images/media/fonts/stylesheets load, a script/XHR loads when it belongs to a site this session actually opened, anything else is blocked and reported as a "N 个子资源被拦截" note on the next snapshot — that note means the gate trimmed the page, NOT that the site has no images. env-file URLs and non-http(s) schemes hard-reject under every policy.

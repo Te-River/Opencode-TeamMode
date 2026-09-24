@@ -2002,6 +2002,58 @@ async function main() {
     log("#81/#83: an approval is reported as an approval, and a dead pid stops being a user errand")
   }
 
+  // ---------- 34. #85: the profile we NAME is the profile we OPENED ----------
+  {
+    // (a) the guard the tool description has always claimed but never had.
+    const real = br.classifyProfileDir({ TM_BROWSER_USER_DATA_DIR: "C:\\Users\\x\\AppData\\Local\\Microsoft\\Edge\\User Data" })
+    assert.ok(real.refusal, "a real Edge data dir is refused, not launched into")
+    assert.ok(real.dir === null, "…and yields no directory")
+    for (const p of [
+      "c:\\users\\x\\appdata\\local\\google\\chrome\\user data\\",
+      "C:\\Users\\x\\AppData\\Local\\Chromium\\User Data",
+      "/home/x/.config/google-chrome",
+      "/home/x/.mozilla/firefox/Profiles",
+      "D:\\Anything\\User Data",
+    ]) {
+      assert.ok(br.classifyProfileDir({ TM_BROWSER_USER_DATA_DIR: p }).refusal, `refused as a real browser profile: ${p}`)
+    }
+    for (const p of ["D:\\agent-profile", "/home/x/tm-browser-profile", ""]) {
+      const c = br.classifyProfileDir({ TM_BROWSER_USER_DATA_DIR: p })
+      assert.equal(c.refusal, null, `a dedicated dir is accepted: ${p || "(unset)"}`)
+    }
+    assert.equal(br.classifyProfileDir({}).dir, null, "unset means the isolated temp profile, exactly as before")
+    assert.ok(/TM_BROWSER_USER_DATA_DIR/.test(br.classifyProfileDir({ TM_BROWSER_USER_DATA_DIR: "C:\\Users\\x\\AppData\\Local\\Microsoft\\Edge\\User Data" }).refusal), "the refusal names the knob to fix")
+
+    // (b) refusing must not spawn anything.
+    const fx = makeFakePw()
+    const mk = makeTool({
+      importPlaywright: async () => fx.pw,
+      nodeMajor: 22,
+      env: { TM_BROWSER_USER_DATA_DIR: path.join(process.env.LOCALAPPDATA ?? "C:\\Users\\x\\AppData\\Local", "Microsoft", "Edge", "User Data") },
+    })
+    const refused = o(await mk.tool.execute({ action: "open", url: "https://cn.bing.com" }, ctxNoAsk))
+    assert.ok(refused.includes("phase=") || refused.includes("拒绝"), "the refusal comes back as an error, not a launch")
+    assert.equal(fx.calls.launch.length, 0, "a refused profile never reaches playwright")
+    assert.equal(fx.calls.persistent.length, 0, "…and never reaches launchPersistentContext either")
+
+    // (c) the label is the SESSION's fact.  A session launched with no persistent
+    // dir must not be described as persistent because the env happens to be set
+    // now — that is the headless bug wearing a different hat (§6e's own comment
+    // says the mode is reported from the session for exactly this reason).
+    const src = fs.readFileSync(new URL("./dist/tm/browser.js", import.meta.url), "utf8")
+    assert.ok(/persistentProfile/.test(src), "ActiveSession carries the profile it was actually launched with")
+    const labelSite = src.slice(src.indexOf("const profile ="), src.indexOf("const profile =") + 260)
+    assert.ok(labelSite.length > 20 && !/env\.TM_BROWSER_USER_DATA_DIR/.test(labelSite), "open/close read it off the session, not off the environment")
+    // (d) the legacy engine honours the same knob, and must never delete a
+    // directory the user pointed us at.
+    const legacyBlock = src.slice(src.indexOf("async function openLegacySession"), src.indexOf("async function openPlaywrightSession"))
+    assert.ok(legacyBlock.includes("classifyProfileDir"), "cdp-legacy resolves the profile through the SAME function")
+    const closeBlock = src.slice(src.indexOf("rmForceSafe(profileDir"))
+    assert.ok(/if \(!persistent|persistent \?|!sess\.persistentProfile/.test(src), "a persistent dir is kept; only our own temp dir is removed")
+    assert.ok(closeBlock.length > 0, "the temp-dir cleanup path still exists (non-persistent only)")
+    log("#85: a real browser profile is refused before any spawn, and the reply names the session's own profile")
+  }
+
   console.log("browser: OK (engine select/degrade matrix, 18-verb playwright mapping + uid registry on mock pw, route()-based allowlist, persistent-profile policy, prompt pins, evaluate_script consent + redaction, dead-session rebuild, hostless-page refusal, multi-tab new_page/close_page, process-verified close, orphan ledger reaper, launch-pid scan + identity gate + tree kill, unverified-close honesty, click effect verification, per-caller browser leases, empty-window and closed-page semantics, full args-schema param surface; real-playwright smoke gated on npm install)")
 }
 

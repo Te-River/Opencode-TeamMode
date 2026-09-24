@@ -421,7 +421,10 @@ Two more channels complete the surface:
   `npx playwright install` is not part of the user flow (the dependency
   itself resolves at npm install/publish time). Isolated temp profile by
   default: persistent logins only if you explicitly set
-  `TM_BROWSER_USER_DATA_DIR`. The browser's **own** site-permission bubble
+  `TM_BROWSER_USER_DATA_DIR`. No cookies by design — the agent opens a blank
+  profile, which is also why a risk-scored site (Baidu) may hand it a
+  verification wall your own window walks past. Want it logged in: point the
+  variable at a DEDICATED directory and log in once by hand. The browser's **own** site-permission bubble
   ("…wants to access other apps and services on this device") is
   auto-**denied** at launch: that modal is not our confirmation channel, it has
   no timeout, and on a machine left running unattended it would hang the page
@@ -602,7 +605,7 @@ for overrides, extra agents and disabling roles.
 | `TM_COMPACTION_AUTOCONTINUE` | `on` | `off` stops the host from silently resuming the turn after a compaction, so a human re-reads state first |
 | `TM_SHELL_NO_COLOR` | `on` | inject `NO_COLOR`/`TERM=dumb` into every child shell via `shell.env` (ANSI progress bars are pure context tax). Never overwrites a value the host already set |
 | `TM_SHELL_ENV` | — | explicit `KEY=VALUE;KEY2=VALUE2` passthrough into child shells — deliberately allowlisted, so this hook can't become a side channel for the parent environment |
-| `TM_BROWSER_USER_DATA_DIR` | — (isolated temp profile) | explicit persistent profile dir — the ONLY way logins survive between sessions |
+| `TM_BROWSER_USER_DATA_DIR` | — (isolated temp profile) | explicit persistent profile dir — the ONLY way logins survive between sessions, and honored by BOTH engines (playwright and cdp-legacy). Use a DEDICATED directory (e.g. `D:\tm-browser-profile`) and log in by hand the first time; pointing it at your browser's own data dir (`…\Microsoft\Edge\User Data`, `google-chrome`, Firefox `Profiles`) is refused before anything spawns, because that would have the agent browse as you while a force-kill reaper owns the process |
 | `TM_MEMORY_GLOBAL_DIR` | `~/.opencode-team/memories/global/` | tm_memory GLOBAL tier store |
 | `TM_MEMORY_SESSION_TTL_MIN` | `240` | session-tier entry TTL (lazy + boot sweep) |
 | `TM_MEMORY_MAX_ENTRIES` | `200` | per-scope entry cap; over it `add` fails on purpose — run `compact` |

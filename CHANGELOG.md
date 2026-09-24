@@ -584,6 +584,29 @@ broken" and "the answer is not what I expected" must not be conflated.
   same class as #62: a self-check the user can run by hand should not cost a
   round-trip.
 
+- **A browser profile is now named as the session has one, not as the
+  environment says.** Reported from a live session ("the agent's browser doesn't
+  have my cookies"), and checking it turned up two separate falsehoods:
+  1. the tool description claimed *"the real profile is never touched"* while
+     nothing enforced it — `TM_BROWSER_USER_DATA_DIR` went straight into
+     `launchPersistentContext`. Pointing it at the browser's own data dir is not
+     neutral: with the browser open the new process hands its URL to the running
+     instance and exits (the confusing "本机已有同品牌浏览器在跑" failure), and
+     with it closed the agent browses **as you**, with every cookie and session,
+     while the orphan reaper force-kills (`taskkill /T /F`) any browser whose
+     owner died — a real route to corrupting a profile. `classifyProfileDir` now
+     refuses that shape (Edge/Chrome/Chromium `User Data`, `google-chrome`,
+     Firefox `Profiles`) BEFORE any engine starts and says what to do instead: a
+     dedicated empty directory, logged into once by hand.
+  2. `cdp-legacy` never read the variable at all — its profile was always a
+     throwaway `mkdtemp` — while the `open` reply re-read the environment and
+     announced 持久登录配置. So a degraded session promised its logins would
+     survive and they could not. Both engines now resolve the profile through the
+     same function, the session carries `persistentProfile` and the reply reads
+     it from there (the same fix `headless` already had, for the same reason),
+     and legacy close deletes ONLY a directory it created itself — a
+     user-named persistent dir is never removed.
+
 ### Known gap (found while fixing the above, deliberately NOT changed)
 
 - `projectSlug()` — the tier that names a tm_memory `project` directory —

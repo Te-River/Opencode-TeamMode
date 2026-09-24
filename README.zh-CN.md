@@ -382,8 +382,10 @@ agent 永远看不到原始搜索页的噪音。
   钉死）。从不下载浏览器——Playwright 按路径启动**你自己装的**浏览器，
   `npx playwright install` 不属于用户流程（依赖本体在 npm
   install/发布时解析）。默认隔离临时 profile：登录态想跨会话保留，只有
-  显式设置 `TM_BROWSER_USER_DATA_DIR` 这一条路。浏览器**自己**弹出的站点权限气泡
-  （"……想要访问此设备上的其他应用和服务"）在启动时就被**自动拒绝**：那个模态框不是
+  显式设置 `TM_BROWSER_USER_DATA_DIR` 这一条路。默认没有 cookie 是设计：agent 开的是
+  全新 profile，这也是风控站点（比如百度）给你的窗口放行、却给它弹验证墙的原因。
+  想让它带登录态：把该变量指到一个**专用目录**，首次人工登录一次。浏览器**自己**
+  弹出的站点权限气泡（"……想要访问此设备上的其他应用和服务"）在启动时就被**自动拒绝**：那个模态框不是
   我们的确认通道、也没有任何超时，在无人看管的机器上会把页面永久挂住。我们从不
   自动"允许"任何权限——真需要该权限的页面会在那项功能上明显失败，而不是在一个
   没人看见的弹窗上悄悄卡死。agent 忘关的窗口现在会被**说出来**，而不只是等回收：
@@ -539,7 +541,7 @@ Team Lead 自己从不删黑板，你可以随时审计任何一次运行。
 | `TM_BROWSER_HEADLESS` | `auto` | `1` 无头（CI）/ `0` 有头 / `auto`（仅无显示的 Linux 用无头） |
 | `TM_BROWSER_ENGINE` | `playwright` | `playwright`（需 Node ≥ 20；导入失败自动降级）/ `cdp-legacy`（零依赖 CDP pipe，仅核心动词） |
 | `TM_BROWSER_SNAPSHOT_MAX_TOKENS` | `1200` | `take_snapshot` 载荷硬顶 |
-| `TM_BROWSER_USER_DATA_DIR` | —（隔离临时 profile） | 显式持久 profile 目录——登录态跨会话保留的唯一途径 |
+| `TM_BROWSER_USER_DATA_DIR` | —（隔离临时 profile） | 显式持久 profile 目录——登录态跨会话保留的唯一途径，两个引擎（playwright 与 cdp-legacy）都支持。请用**专用空目录**（如 `D:\tm-browser-profile`），首次人工登录一次；指向浏览器自己的数据目录（`…\Microsoft\Edge\User Data`、`google-chrome`、Firefox `Profiles`）会在启动前被拒绝——那等于让 agent 以你的身份上网，而进程归强杀式回收器管 |
 | `TM_MEMORY_GLOBAL_DIR` | `~/.opencode-team/memories/global/` | tm_memory GLOBAL 层存储 |
 | `TM_MEMORY_SESSION_TTL_MIN` | `240` | session 层条目 TTL（惰性 + 启动清扫） |
 | `TM_MEMORY_MAX_ENTRIES` | `200` | 每作用域条目上限；超限 add 故意失败——先跑 `compact` |
