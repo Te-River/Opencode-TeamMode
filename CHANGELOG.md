@@ -166,7 +166,23 @@ registry saw 1.5.0 as the install-script fix release).
   part of the reply, because the gate decides per request. Before this, the only
   remedy for a page our own gate had blanked was "ask the user to edit an env var
   and restart" — which no agent can do mid-task, so it reported the site as empty.
-
+- **Two rules now sit in every role's prompt: 效率至上, and your language is the
+  user's.** The efficiency mandate (`## Efficiency first` in the lead, the same
+  duty inside `SHARED_RULES`) prices work in ROUNDS rather than in diligence: one
+  wide call beats three narrow ones, independent calls batch into the same round,
+  ≥3 probes collapse into a single `tm_ptc_run`, and a step is never re-run just
+  to watch it pass again — with its boundary written next to it, because an
+  efficiency rule that outranks the evidence rule is exactly how an unverified
+  "done" becomes the cheap option.  The language rule came out of a measurement,
+  not a hunch: the prompts are English (13 Chinese lines in `src/prompts/`, every
+  one of them QUOTING a tool string), while 555 Chinese literal lines in `src/tm/`
+  flow into the context on every tool call — so an agent mirrors the tool and an
+  English request came back in Chinese.  The reply is now written in the language
+  of the user's own message, and a Chinese string is quoted VERBATIM only where it
+  IS the evidence (a close verdict, a refusal line, 无人应答), because a translated
+  verdict is a claim nobody can re-check.  Localising those 555 strings was
+  weighed and left as its own item: it would rewrite ~414 test assertions that pin
+  the exact sentences users see, and the prompt rule costs none of them.
 
 ### Changed
 

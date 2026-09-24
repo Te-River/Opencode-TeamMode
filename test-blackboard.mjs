@@ -394,6 +394,13 @@ assert.ok(leadPrompt.includes("TTL sweeper"), "lead: TTL sweeper is sole cleanup
 assert.ok(leadPrompt.includes("VERBATIM CONTRACTS"), "lead: api-contract verbatim rule (kept)")
 assert.ok(leadPrompt.includes("## Evidence standard"), "lead: evidence standard (kept)")
 assert.ok(leadPrompt.includes("## Docs sync"), "lead: docs-sync rule (CHANGELOG + AGENTS.md)")
+assert.ok(leadPrompt.includes("效率至上"), "lead: the efficiency mandate carries the user's own wording")
+assert.ok(leadPrompt.includes("## Reply language"), "lead: output language follows the USER, not the tool output")
+assert.ok(
+  leadPrompt.indexOf("## Efficiency first") < leadPrompt.indexOf("## Routing table"),
+  "lead: the efficiency mandate is stated BEFORE the table it justifies (a rule after its exception cannot bind)",
+)
+
 assert.ok(leadPrompt.includes("update AGENTS.md"), "lead: AGENTS.md sync duty")
 assert.ok(leadPrompt.includes("Repo hygiene applies to you too"), "lead: repo hygiene rule (temp files deleted / OS temp dir)")
 assert.ok(leadPrompt.includes("Tool-first, memory-second"), "lead: tool-first lookup rule (scan tool surface, concrete call, no simulation)")
@@ -419,6 +426,14 @@ for (const expert of EXPERTS) {
   assert.ok(cfg2.agent[expert].prompt.includes("STATUS: done | blocked | failed"), expert + ": skeleton status line")
   assert.ok(cfg2.agent[expert].prompt.includes("Do not re-open"), expert + ": no README/AGENTS.md re-reading")
   assert.ok(cfg2.agent[expert].prompt.includes("## Evidence rule"), expert + ": evidence rule")
+  assert.ok(cfg2.agent[expert].prompt.includes("效率至上"), expert + ": the efficiency mandate is shared by every role, not just the lead")
+  assert.ok(cfg2.agent[expert].prompt.includes("## Reply language"), expert + ": output language follows the user, not the tool output")
+  // A Chinese tool string must not drag an English conversation into Chinese,
+  // and the fix must not cost the evidence its exact wording — the two rules
+  // live in the same section for that reason.
+  const lang = cfg2.agent[expert].prompt.slice(cfg2.agent[expert].prompt.indexOf("## Reply language"))
+  assert.ok(/verbatim/i.test(lang.split("## ")[1] ?? ""), expert + ": quoted tool strings stay verbatim (evidence precision survives translation)")
+
   assert.ok(cfg2.agent[expert].prompt.includes("All file reads / searches / enumeration go through tm_read / tm_grep / tm_bash"), expert + ": removed-tools rule routes reads/search/enumeration to tm_*")
   assert.ok(cfg2.agent[expert].prompt.includes("removed from the tool surface"), expert + ": anti-retry warning for removed built-ins")
   assert.ok(cfg2.agent[expert].prompt.includes("## Project conventions"), expert + ": README conventions rule")

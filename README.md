@@ -51,6 +51,9 @@ TeamMode's answer to each:
 | 🧭 **Walls of text** | Replies are steered into the shape the host renders fastest: a markdown table for per-file / per-case / per-finding results, fenced code for diffs and configs, a browser screenshot attached as an inline image only when you ask for one. The host does not draw mermaid, so no agent pretends it does. |
 | 🎯 **Goal drift** | The lead opens with `GOAL:` in your own words plus checkable `ACCEPTANCE:` criteria, and the run does not end while a criterion lacks evidence — the only legitimate stops are named (blocked on you, or provably unachievable). When a round settles with items still open on the host's todo list, `tm_join` says 目标未达成 and lists them, and the goal is carried through context compaction so a summarized transcript cannot redefine it. |
 
+| 🗣️ **Replies in a language you never chose** | The governed tools answer in Chinese, and an agent left to its own devices mirrors that straight back at you. Every role now carries a reply-language rule: your own language wins, and a Chinese string is quoted verbatim only where it IS the evidence (a close verdict, a refusal line) — translating a verdict is how an unchecked claim starts looking checked. |
+| ⏱️ **Rounds spent for the sake of looking careful** | 效率至上 is written into the lead and all five specialists: one wide call instead of three narrow ones, independent calls in the same round, ≥3 probes collapsed into one `tm_ptc_run`, no re-running a check to watch it pass again — with the boundary stated too: efficiency never buys its way out of the evidence rule, because an unverified "done" costs you the round *and* the bug. |
+
 And the workflow discipline underneath: deterministic routing, a ≤30-line plan
 you approve before ≥2 dispatches execute, structured `STATUS/CHANGES/FINDINGS/
 EVIDENCE/HANDOFF` replies between agents, and static verification (build /
