@@ -3612,6 +3612,81 @@ try {
       console.log("14. redirect trail + Retry-After: OK (both hops named and the stopping hop counted; 429/503 carry a numeric Retry-After; an HTTP date is not laundered into seconds; a direct hit stays quiet)")
     }
 
+    // ---------- 15. content negotiation: the page GET asks for Markdown, the engines do not ----------
+    {
+      const wf = await import("./dist/tm/webfetch.js")
+      const cm = await import("./dist/tm/cache.js")
+      const BROWSER_ACCEPT = "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8"
+      const mkRes = (body, ct) => ({
+        status: 200,
+        headers: { get: (n) => (String(n).toLowerCase() === "content-type" ? ct : null) },
+        text: async () => body,
+      })
+      const tool = (impl, extra) =>
+        wf.buildTmWebfetchTool({
+          pipelines: { store: { appendTrajectory: () => {} }, nextStepId: () => "sE15", govern: (_s, _t, c) => c },
+          cfg: { ...tm.resolveTmConfig({}), webfetchAllowedDomains: ["learn.microsoft.com", "cn.bing.com"] },
+          fetchImpl: impl,
+          ...extra,
+        })
+      const o5 = (r) => String(r?.output ?? "")
+      const ctx5 = { directory: process.cwd() }
+
+      // (1) fetchWebText's DEFAULT header is the browser-shaped one, byte-exact.
+      // tm_search's engine legs call it and do not pass an accept — the
+      // 2026-09-14 anti-bot benchmark calibrated exactly that string, so a
+      // markdown-first preference must never leak into it by default.
+      let seenAccept = ""
+      await wf.fetchWebText(new URL("https://cn.bing.com/search?q=x"), ["cn.bing.com"], {
+        fetchImpl: async (_u, init) => {
+          seenAccept = String((init && init.headers && init.headers.accept) || "")
+          return mkRes("<html><body><h1>hit</h1></body></html>", "text/html")
+        },
+      })
+      assert.equal(seenAccept, BROWSER_ACCEPT, "the shared default Accept is unchanged, byte-exact (image/avif+webp ARE the browser fingerprint)")
+
+      // (2) tm_webfetch's own GET asks for Markdown first — measured on this
+      // host: learn.microsoft.com returns text/markdown at 11 449 B where the
+      // browser-shaped request gets 60 778 B of HTML (3/3 runs, and bing/csdn/
+      // MDN are byte-identical either way, so the preference costs nothing).
+      const sent = []
+      const md = o5(
+        await tool(async (u, init) => {
+          sent.push(String((init && init.headers && init.headers.accept) || ""))
+          return mkRes("# 标题\n\n看 [链接](https://example.com/a) 和 `code`。", "text/markdown")
+        }, {}).execute({ url: "https://learn.microsoft.com/en-us/dotnet/core/" }, ctx5),
+      )
+      assert.ok(sent[0].startsWith("text/markdown,"), `tm_webfetch leads with text/markdown — got: ${sent[0]}`)
+      assert.ok(sent[0].includes("text/html"), "…and still accepts HTML, so a host that ignores the hint keeps working")
+      assert.ok(sent[0].includes("image/avif"), "…and keeps the browser-shaped tail intact (the UA disguise is the point of the header)")
+
+      // (3) a Markdown body must NOT go through the HTML stripper — its brackets,
+      // backticks and links are content, not markup.
+      assert.ok(md.includes("[链接](https://example.com/a)"), `markdown survives verbatim — got: ${md.slice(0, 200)}`)
+      assert.ok(md.includes("`code`") && md.includes("# 标题"), "…including headings and inline code")
+      assert.ok(/markdown/i.test(md), "and the reply SAYS the page arrived as markdown (so the shape is not a mystery)")
+
+      // (4) ONE page, ONE cache entry — the preference changes what the writer
+      // asked for, never how many entries a URL owns (§6m-c pins this, and it
+      // caught the first version of this change splitting the store in two).
+      let hits = 0
+      const counting = async (_u, init) => (hits++, mkRes("# 同一份文档", "text/markdown"))
+      const cache = cm.createWebCache({ dir: mktmp("accept-cache"), ttlSec: 300 })
+      const first = o5(await tool(counting, { cache }).execute({ url: "https://learn.microsoft.com/x" }, ctx5))
+      const second = await wf.fetchWebText(new URL("https://learn.microsoft.com/x"), ["learn.microsoft.com"], { fetchImpl: counting, cache })
+      assert.ok(first.includes("# 同一份文档"), "the markdown body arrives intact")
+      assert.equal(second.contentType, "text/markdown", "the reader gets the STORED negotiation, not an assumed one")
+      assert.equal(hits, 1, "the second caller reads the same entry (the negotiation is a request-time preference, not a shard key)")
+
+      // (5) the HTML path is untouched: an HTML body is still stripped to text.
+      const html = o5(
+        await tool(async () => mkRes("<html><body><h1>标题</h1><p>正文</p><script>x=1</script></body></html>", "text/html; charset=utf-8"), {})
+          .execute({ url: "https://learn.microsoft.com/en-us/dotnet/core/y" }, ctx5),
+      )
+      assert.ok(html.includes("正文") && !html.includes("x=1"), "HTML still goes through the extractor (and <script> dies)")
+      console.log("15. Accept negotiation: OK (shared default byte-exact for the engine legs, tm_webfetch leads with text/markdown and keeps the browser tail, markdown passes through unstripped and labelled, one page keeps ONE cache entry and the reader gets the stored content-type, HTML path untouched)")
+    }
+
 } finally {
   restoreEnv()
   for (const dir of tmpDirs) fs.rmSync(dir, { recursive: true, force: true })

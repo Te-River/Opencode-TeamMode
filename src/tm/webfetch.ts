@@ -57,6 +57,24 @@ const WEBFETCH_UA =
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
 const WEBFETCH_ACCEPT =
   "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8"
+/**
+ * Markdown-first, for the ONE path that reads a whole page: tm_webfetch.
+ * Measured on the user's own connection, 3 samples each (2026-09-24):
+ * `learn.microsoft.com` answers this header with `text/markdown` at **11 449 B
+ * where the browser-shaped request gets 60 778 B of HTML** — a 5.3× cut on a
+ * seeded documentation host, for free.  Every other host tried (MDN,
+ * docs.python.org, cn.bing.com SERP, csdn, zhihu) returns the SAME document
+ * either way, so asking costs nothing where the hint is ignored; the csdn 521
+ * seen once also happened on the browser-shaped request, so it is not
+ * negotiation-related.
+ * The tail stays byte-identical to Chrome's (`image/avif`, `image/webp`) — the
+ * header is part of the fingerprint the UA disguise buys us, so only the
+ * preference is added, never the shape changed.  tm_search's engine legs keep
+ * `WEBFETCH_ACCEPT` verbatim: the 2026-09-14 anti-bot benchmark calibrated
+ * exactly that string, and a SERP is not a document.
+ */
+export const WEBFETCH_ACCEPT_MD =
+  "text/markdown,text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8"
 const WEBFETCH_ACCEPT_LANGUAGE = "zh-CN,zh;q=0.9,en;q=0.8"
 const WEBFETCH_TIMEOUT_MS = 20_000
 const WEBFETCH_MAX_BYTES = 2_000_000
@@ -460,6 +478,13 @@ export async function fetchWebText(
      *  a hop the static allowlist admitted, so a hit can never bypass a
      *  dialog the current config still requires. */
     cache?: WebCache
+    /** Content negotiation for THIS call.  tm_webfetch asks for Markdown (see
+     *  WEBFETCH_ACCEPT_MD); the search engine legs pass nothing and keep the
+     *  browser-shaped default.  The cache key stays the URL ALONE: one page is
+     *  one entry (§6m-c pins it), and whoever reads it routes on the stored
+     *  content-type — which is also why the reply says so when a body arrived
+     *  as Markdown.  A re-negotiation is a `fresh: true` away. */
+    accept?: string
   } = {},
 ): Promise<WebFetchResult> {
   const doFetch = opts.fetchImpl ?? (globalThis as { fetch?: FetchImpl }).fetch
@@ -468,6 +493,7 @@ export async function fetchWebText(
   }
   const timeoutMs = opts.timeoutMs ?? WEBFETCH_TIMEOUT_MS
   const maxBytes = opts.maxBytes ?? WEBFETCH_MAX_BYTES
+  const accept = (opts.accept && opts.accept.trim()) || WEBFETCH_ACCEPT
   let current = url
   const approvedHosts = opts.skipAskHosts ?? new Set<string>()
   // Every hop, in order.  Without this an allowlisted shortener that bounces
@@ -516,7 +542,7 @@ export async function fetchWebText(
         signal: ctrl.signal,
         headers: {
           "user-agent": WEBFETCH_UA,
-          accept: WEBFETCH_ACCEPT,
+          accept,
           "accept-language": WEBFETCH_ACCEPT_LANGUAGE,
         },
       })) as Awaited<ReturnType<FetchImpl>>
@@ -576,7 +602,7 @@ const WEBFETCH_DESCRIPTION = `Fetch a web page through the governed pipeline (do
 
 - ANTI-PATTERN: do NOT hand-build search-engine URLs here — that is tm_search's job (multi-engine, extracted hit lists).  Use THIS tool for a page you already know: a direct article/wiki term, a registry JSON endpoint, a raw file.
 - Seeded hosts (CN-reachable, no API keys): moegirl.org.cn (parent — all subdomains: mobile. term https://mobile.moegirl.org.cn/TERM, mzh. main site) · search.bilibili.com · cn.bing.com (search: https://cn.bing.com/search?q=QUERY; &ensearch=1 for international results) · baidu.com (parent: www. search /s?wd=QUERY, baike. encyclopedia entries) · www.sogou.com (https://www.sogou.com/web?query=QUERY) · www.so.com (https://www.so.com/s?q=QUERY) · registry.npmjs.org (package JSON: https://registry.npmjs.org/<pkg>/latest, search: https://registry.npmjs.org/-/v1/search?text=QUERY) · api.github.com (repo search: https://api.github.com/search/repositories?q=QUERY) · api.stackexchange.com (question search: https://api.stackexchange.com/2.3/search/advanced?order=desc&sort=relevance&q=QUERY&site=stackoverflow&pagesize=10) · hn.algolia.com (HN story search: https://hn.algolia.com/api/v1/search?query=QUERY&tags=story) · raw.githubusercontent.com + gist.githubusercontent.com + github.com (docs/code/issues) · ghproxy.net (mainland mirror for github raw).  URL-encode the query (CJK terms too).  Search-engine result pages are auto-extracted to a title+URL hit list.  Expand colloquial/abbreviated terms to canonical forms and fetch BOTH spellings.
-- Governance: only http(s), hosts must be allowlisted (extend via TM_WEBFETCH_ALLOWED_DOMAINS, "*" opens all), redirects re-checked per hop, HTML stripped to text; output above TM_OFFLOAD_THRESHOLD tokens is offloaded to a handle — page with tm_fetch (try mode:"structure" first).
+- Governance: only http(s), hosts must be allowlisted (extend via TM_WEBFETCH_ALLOWED_DOMAINS, "*" opens all), redirects re-checked per hop (a refusal names the whole hop chain), HTML stripped to text — some documentation hosts (learn.microsoft.com measured 5.3x smaller) are fetched as Markdown when they honour accept: text/markdown, and the reply says so; output above TM_OFFLOAD_THRESHOLD tokens is offloaded to a handle — page with tm_fetch (try mode:"structure" first).
 - Governance: out-of-allowlist hosts route through the OFFICIAL confirmation dialog (approve to proceed once; the 1-min unanswered auto-reject applies); env-file URLs and non-http(s) schemes are hard-rejected with no dialog.
 - Freshness: a repeated URL is served from a local TTL cache (TM_WEB_CACHE_TTL_SEC, default 300 s) and the reply SAYS 缓存命中 with its age.  Need the page as it is NOW?  Pass { fresh: true } to bypass the cache and hit the network.`
 
@@ -642,6 +668,10 @@ export function buildTmWebfetchTool(deps: {
           ask: askFn,
           skipAskHosts: approvedHosts,
           cache: fresh ? undefined : deps.cache,
+          // The page GET asks for Markdown first (measured 5.3× smaller on
+          // learn.microsoft.com, no-op elsewhere); the engine legs never come
+          // through here, so their calibrated browser-shaped header stands.
+          accept: WEBFETCH_ACCEPT_MD,
         })
         // A re-served page is stated as such — an agent that believes a cache
         // hit is a fresh observation propagates a stale fact into the plan.
@@ -670,6 +700,12 @@ export function buildTmWebfetchTool(deps: {
           }
         }
         const { text } = extractWebResponse(res.text, res.contentType)
+        // A Markdown body is the source text, not markup — say so, because an
+        // agent that sees `#` and `](` can otherwise spend a round deciding the
+        // page is a raw file dump.
+        const mdNote = res.contentType.includes("markdown")
+          ? "\n（正文以 Markdown 送达：站点按 Accept 直接给了源文本，未经 HTML 抽取。）"
+          : ""
         if (!text.trim()) {
           // anti-bot / JS-rendered pages (baidu is the usual offender) return
           // an empty shell — tell the agent instead of storing nothing
@@ -713,7 +749,7 @@ export function buildTmWebfetchTool(deps: {
           }
         }
         return toToolResult(
-          pipelines.govern(stepId, tool, text + cacheNote, {
+          pipelines.govern(stepId, tool, text + cacheNote + mdNote, {
             contentType,
             clue: `url=${shorten(res.finalUrl, 120)}`,
           }),

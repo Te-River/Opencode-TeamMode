@@ -129,6 +129,19 @@ registry saw 1.5.0 as the install-script fix release).
   `TM_BOARD_MAX_CHARS` refuses instead of truncating, and `TM_BOARD_MAX_FILES`
   caps a session folder with a refusal that names the TTL sweeper as the only
   reclaim path. All six roles carry it.
+- **`tm_webfetch` now asks for Markdown before HTML** on the page-GET path, and
+  the reply says which one arrived. Measured on the user's own connection, three
+  samples per host: `learn.microsoft.com` answers the markdown-preferring header
+  with `text/markdown` at **11 449 B where the browser-shaped request gets
+  60 778 B of HTML** — a 5.3× cut on a seeded documentation host, for free.
+  MDN, docs.python.org, `cn.bing.com`'s SERP, csdn and zhihu return the same
+  document either way, so the preference costs nothing where it is ignored, and
+  the header's browser-shaped tail (`image/avif`, `image/webp`) is left
+  byte-identical because that shape is part of the fingerprint the UA disguise
+  buys. `tm_search`'s engine legs keep the old default verbatim — the 2026-09-14
+  anti-bot benchmark calibrated that exact string, and a SERP is not a document.
+  One page keeps ONE cache entry (the sharing is pinned); the reader routes on
+  the stored content-type instead of assuming the format it asked for.
 - **A blocked script host now has a way out that is not an env edit.**
   `tm_browser { action: "allow_host", host }` takes ONE bare domain (a wildcard, a
   URL, a path or a port is refused as an argument error before any dialog), puts it
