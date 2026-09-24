@@ -505,6 +505,27 @@ broken" and "the answer is not what I expected" must not be conflated.
   rewritten rule names `tm_board_write` as the channel every role has and states
   the three that own no file tool at all.
 
+- **A site permission bubble could wedge a browser nobody was watching.**
+  Edge/Chrome raise their OWN modal for device-level permissions ("…想要 访问此
+  设备上的其他应用和服务", 阻止/允许) when a page's script asks. That dialog is not
+  our `ctx.ask` channel, so nothing in this plugin can bound it: `perm-ask`'s
+  bounded wait and the approval gate's `TM_ASK_TIMEOUT_MIN` auto-reject both
+  supervise OUR requests, and a native bubble has no timeout at all. Measured on
+  a real Edge Beta against `npmjs.com/package/zod`: without any handling
+  `page.goto` never reached `domcontentloaded` inside **45 s** (the tab kept
+  spinning behind the bubble); with `--deny-permission-prompts` the same page
+  reported `readyState=complete` in **10.7 s** with its body rendered. Since the
+  documented deployment style is "leave it running on a server", one
+  unanswered bubble meant one permanently wedged browser lease and one burned
+  task. Both engines now pass the switch (pinned, because "one engine got the
+  fix" is this repo's most-repeated defect), and the direction is deliberate:
+  the plugin auto-**denies** and never auto-allows a site permission — no
+  `permissions:` in the context options, no `grantPermissions` anywhere — since
+  letting a site reach device services on the plugin's say-so is exactly the
+  self-allowing the rest of the codebase refuses. A page that genuinely needs a
+  permission now fails visibly at the feature instead of invisibly at the modal,
+  which is the honest trade.
+
 ### Known gap (found while fixing the above, deliberately NOT changed)
 
 - `projectSlug()` — the tier that names a tm_memory `project` directory —

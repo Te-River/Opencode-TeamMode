@@ -495,6 +495,16 @@ async function main() {
     assert.equal(fx.calls.launch[0].channel, undefined, "no channel on an explicit TM_BROWSER_PATH — channel would relaunch a different install")
     assert.equal(fx.calls.launch[0].headless, true, "TM_BROWSER_HEADLESS=1 honored through playwright opts")
     assert.ok(fx.calls.launch[0].args.includes("--mute-audio"), "hardened launch flags carried")
+    // #79: the browser's OWN permission bubble has no timeout we control, and
+    // measured on npmjs.com an unanswered one held page.goto past 45 s.
+    assert.ok(
+      fx.calls.launch[0].args.includes("--deny-permission-prompts"),
+      "playwright launch denies site permission prompts instead of leaving a modal nobody will click",
+    )
+    assert.ok(
+      !("permissions" in fx.calls.contextOpts[0]),
+      "…and the context grants NOTHING — auto-deny is the only direction this toolset takes",
+    )
     const ctxOpts = fx.calls.contextOpts[0]
     assert.equal(ctxOpts.timeout, 3000, "3000 ms action budget is the ENGINE default")
     assert.match(String(ctxOpts.userAgent), /Windows NT/, "real-Chrome UA applied via context options")
@@ -1904,6 +1914,34 @@ async function main() {
     const closedDeaf = o(await mkDeaf.tool.execute({ action: "close" }, ctxNoAsk))
     assert.ok(closedDeaf.includes("进程未核验"), "…and close then refuses the 已确认关闭 sentence (pinned by §25)")
     log("#72: one failed pid query no longer forfeits the ledger and the close verification forever")
+  }
+
+  // ---------- 31. #79: the native permission bubble is denied at launch ----------
+  {
+    // Measured on a real Edge Beta against npmjs.com: without the switch,
+    // `page.goto` never reached domcontentloaded inside 45 s because the
+    // browser's own "…想要 访问此设备上的其他应用和服务" bubble was waiting
+    // for a click; with it the page finished in ~10 s. The bubble is NOT our
+    // ctx.ask channel, so perm-ask's bounded wait and the approval gate's
+    // TM_ASK_TIMEOUT_MIN cannot reach it — on an unattended server that is a
+    // permanently wedged browser lease.
+    assert.equal(br.BROWSER_DENY_PERMISSIONS_ARG, "--deny-permission-prompts", "the switch Chromium actually answers to")
+    const src = fs.readFileSync(new URL("./dist/tm/browser.js", import.meta.url), "utf8")
+    // The two engines build their argument lists in two places, and "one engine
+    // got the fix" is this repo's most-repeated defect — so pin both textually.
+    const legacy = src.slice(src.indexOf('"--remote-debugging-pipe"'), src.indexOf('"about:blank"'))
+    assert.ok(legacy.length > 20, "the cdp-legacy spawn array is still findable in the built module")
+    assert.ok(legacy.includes("BROWSER_DENY_PERMISSIONS_ARG"), "cdp-legacy denies permission prompts too (no engine drift)")
+    const pwBlock = src.slice(src.indexOf("const launchArgs"))
+    assert.ok(pwBlock.slice(0, 600).includes("BROWSER_DENY_PERMISSIONS_ARG"), "playwright's launchArgs carry it")
+    assert.equal(
+      (src.match(/BROWSER_DENY_PERMISSIONS_ARG/g) || []).length,
+      3,
+      "one definition, exactly two launch sites — a third use would mean a new engine nobody pinned",
+    )
+    // And the safe direction is the only direction: no auto-allow anywhere.
+    assert.ok(!/--grant-permission-prompts|grantPermissions\(/.test(src), "the plugin never auto-ALLOWS a site permission")
+    log("#79: both engines deny the browser's own permission bubble, and never auto-allow one")
   }
 
   console.log("browser: OK (engine select/degrade matrix, 18-verb playwright mapping + uid registry on mock pw, route()-based allowlist, persistent-profile policy, prompt pins, evaluate_script consent + redaction, dead-session rebuild, hostless-page refusal, multi-tab new_page/close_page, process-verified close, orphan ledger reaper, launch-pid scan + identity gate + tree kill, unverified-close honesty, click effect verification, per-caller browser leases, empty-window and closed-page semantics, full args-schema param surface; real-playwright smoke gated on npm install)")

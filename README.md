@@ -421,7 +421,12 @@ Two more channels complete the surface:
   `npx playwright install` is not part of the user flow (the dependency
   itself resolves at npm install/publish time). Isolated temp profile by
   default: persistent logins only if you explicitly set
-  `TM_BROWSER_USER_DATA_DIR`.
+  `TM_BROWSER_USER_DATA_DIR`. The browser's **own** site-permission bubble
+  ("…wants to access other apps and services on this device") is
+  auto-**denied** at launch: that modal is not our confirmation channel, it has
+  no timeout, and on a machine left running unattended it would hang the page
+  indefinitely. Nothing is ever auto-allowed — a page that truly needs such a
+  permission fails visibly at that feature instead of invisibly at a dialog.
 
 When a fetch still returns **403 after the real-Chrome headers**, the error
 is a DIRECTIVE: the gate is JS-challenge / TLS-fingerprint based and only a

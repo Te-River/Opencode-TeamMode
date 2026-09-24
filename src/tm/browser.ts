@@ -1485,6 +1485,17 @@ const OBSERVE_BUFFER_CAP = 200
 const HARDENED_UA =
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
 
+// The browser's OWN site-permission bubble ("…想要 访问此设备上的其他应用和服务",
+// 阻止/允许) is not our ctx.ask channel, so nothing in perm-ask or the approval
+// gate can bound it: measured on npmjs.com, an unanswered bubble held
+// `page.goto` past its 45 s timeout without even reaching domcontentloaded, and
+// a server-side session has nobody to click. Denying at launch is the safe
+// direction and the ONLY one this toolset takes — there is deliberately no
+// auto-allow counterpart (no `permissions:` in the context options either),
+// because a browser that grants a site device access on the plugin's say-so
+// would be the self-allowing the rest of this codebase refuses to do.
+export const BROWSER_DENY_PERMISSIONS_ARG = "--deny-permission-prompts"
+
 const SPAWN_TIMEOUT_MS = 15_000
 const NAVIGATE_EVENT_TIMEOUT_MS = 15_000
 
@@ -1972,6 +1983,7 @@ export function buildTmBrowserTool(deps: {
         "--accept-lang=zh-CN,zh;q=0.9,en;q=0.8",
         "--no-first-run", "--no-default-browser-check", "--disable-extensions",
         "--disable-background-networking", "--mute-audio",
+        BROWSER_DENY_PERMISSIONS_ARG,
         "about:blank",
       ],
       { stdio: ["ignore", "ignore", "ignore", "pipe", "pipe"], windowsHide: true },
@@ -2156,6 +2168,7 @@ export function buildTmBrowserTool(deps: {
     const launchArgs = [
       "--no-first-run", "--no-default-browser-check", "--disable-extensions",
       "--disable-background-networking", "--mute-audio",
+      BROWSER_DENY_PERMISSIONS_ARG,
       ...(headless ? [] : ["--start-maximized"]),
     ]
     const contextOpts: Record<string, unknown> = {
