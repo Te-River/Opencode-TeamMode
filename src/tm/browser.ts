@@ -449,6 +449,54 @@ async function readTitle(page: { title?: () => Promise<string> }): Promise<strin
   }
 }
 
+/**
+ * The launch pid, asked more than once.
+ *
+ * Why this exists: `childProcRows` folds EVERY OS-query failure (PowerShell
+ * exiting non-zero, the 6 s timeout killing it mid-flight, a JSON parse miss)
+ * into an empty list, and the launcher used to ask exactly once.  Under load —
+ * this plugin's own parallel test runner reproduces it, four suites hammering
+ * CIM at once — one such query fails now and then, and a single failed query
+ * used to cost the session two things permanently: the orphan-ledger entry (so
+ * the next boot could not reclaim that browser) and `close`'s process
+ * verification.  Worse, an exception escaping the lookup failed `open` itself,
+ * reporting a browser that had launched fine as an error.
+ *
+ * So: a failed or empty answer is retried a bounded number of times, and any
+ * throw is swallowed into the retry counter — the pid is diagnostic and
+ * reclamation metadata, never a reason to lose the session.  When it still
+ * cannot be resolved, `via: "none"` says so and close keeps refusing the
+ * 已确认关闭 sentence (pinned by §25).
+ */
+export const LAUNCH_PID_ATTEMPTS = 3
+export const LAUNCH_PID_RETRY_MS = 250
+
+export async function resolveLaunchPid(opts: {
+  /** playwright's own accessor — it does not exist on 1.63, so this is usually 0 */
+  playwrightPid?: () => number
+  executablePath: string
+  /** may throw, may answer empty, may answer undefined (let the scanner query) */
+  rows: () => ChildProcRow[] | undefined
+  sleep?: (ms: number) => Promise<void>
+  attempts?: number
+}): Promise<{ pid: number; via: "playwright" | "child-scan" | "none"; failures: number }> {
+  const pwPid = Number(opts.playwrightPid?.() ?? 0) || 0
+  if (pwPid > 0) return { pid: pwPid, via: "playwright", failures: 0 }
+  const attempts = Math.max(1, Number(opts.attempts) || LAUNCH_PID_ATTEMPTS)
+  const sleep = opts.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)))
+  let failures = 0
+  for (let i = 0; i < attempts; i++) {
+    if (i) await sleep(LAUNCH_PID_RETRY_MS)
+    try {
+      const scan = launchedBrowserPid(opts.executablePath, { rows: opts.rows() })
+      if (scan > 0) return { pid: scan, via: "child-scan", failures }
+    } catch {
+      failures++
+    }
+  }
+  return { pid: 0, via: "none", failures }
+}
+
 // ---------- evaluate_script: consent + result redaction ---------------------
 
 /** `evaluate_script` is the one browser verb the network gate cannot cover:
@@ -2166,21 +2214,17 @@ export function buildTmBrowserTool(deps: {
           return null
         }
       })()
-    const { pid: browserPid, via: pidRoute } = (() => {
+    const { pid: browserPid, via: pidRoute, failures: pidFailures } = await resolveLaunchPid({
       // playwright's own accessor first — it does not exist on 1.63, so the OS
       // scan is what answers today.  Which route replied is AUDITED: a silent
       // fall-back to 0 would put us straight back to printing 已确认关闭 about a
       // process nobody looked at.
-      const pwPid = Number(
-        (owningBrowser as { process?: () => { pid?: unknown } } | null | undefined)?.process?.()?.pid ?? 0,
-      ) || 0
-      if (pwPid > 0) return { pid: pwPid, via: "playwright" }
-      const scan = launchedBrowserPid(target.executablePath ?? executable, {
-        rows: deps.listChildren ? deps.listChildren(process.pid) : undefined,
-      })
-      return { pid: scan, via: scan > 0 ? "child-scan" : "none" }
-    })()
-    traj({ step_id: "browser", event: "launch_pid", via: pidRoute, pid: browserPid })
+      playwrightPid: () =>
+        Number((owningBrowser as { process?: () => { pid?: unknown } } | null | undefined)?.process?.()?.pid ?? 0) || 0,
+      executablePath: target.executablePath ?? executable,
+      rows: () => (deps.listChildren ? deps.listChildren(process.pid) : undefined),
+    })
+    traj({ step_id: "browser", event: "launch_pid", via: pidRoute, pid: browserPid, tries: pidFailures })
     recordBrowser(browserPid, persistentDir ? "playwright-persistent" : "playwright", executable)
     const state = {
       page: context.pages()[0] ?? (await context.newPage()),

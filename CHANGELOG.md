@@ -410,6 +410,22 @@ broken" and "the answer is not what I expected" must not be conflated.
   sent an agent to audit its dependencies. The version sentence now appears only
   when the accessor itself is missing (`not a function`); anything else is
   reported as what it is.
+- **One failed OS query no longer forfeits a browser forever.** The parallel
+  test runner caught this: `test-browser`'s real leg sometimes failed "the orphan
+  ledger recorded the pid this session launched".  It is not a visibility race (a
+  probe measured the first scan itself taking ~2.8 s, by which point any launched
+  browser is long enumerable) — it is `childProcRows` folding EVERY PowerShell/CIM
+  failure (non-zero exit, the 6 s timeout killing it, a JSON parse miss) into an
+  empty list, asked exactly once at launch.  pid 0 then skips the ledger entry, so
+  the next boot cannot reclaim that browser and `close` can never verify the
+  process: a transient query became a permanent condition.  Reproducing it through
+  the test seam also exposed something worse — an exception escaping the lookup
+  failed `open` outright, reporting a successfully launched browser as a tool
+  error.  `resolveLaunchPid` now retries a bounded three times, swallows every
+  throw into the retry counter, and never lets the pid question cost the session;
+  when it still cannot answer, `via: "none"` stays in the trajectory and `close`
+  keeps refusing 已确认关闭.
+
 - **`tasklist` and `ps` joined the tm_bash read-only allowlist.** A live session
   was told to check for leftover browser processes after a close, and this allowlist
   refused the command — which made 已确认关闭 unverifiable by the one party who

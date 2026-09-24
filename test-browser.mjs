@@ -1860,6 +1860,52 @@ async function main() {
     log("#66: bdimg.com seeded, a gate-caused blank named with a scoped allow_host remedy, and a 安全验证 wall reported as a wall")
   }
 
+  // ---------- 30. a transient OS-query failure is not a permanent answer ----------
+  {
+    // Real defect, exported by the parallel runner: `childProcRows` collapses ANY
+    // PowerShell/CIM failure (non-zero status, the 6s timeout killing it, a JSON
+    // parse miss) into [], and launch asked it exactly ONCE.  pid 0 then means
+    // recordBrowser skips — so the browser this session launched entered no
+    // orphan ledger AND `close` could never verify the process, forever, because
+    // of one query that failed right now.
+    const rowsFor = (pid) => [{ pid, name: "msedge.exe", cmdline: `"${fakeExe}" --no-first-run` }]
+    const flaky = { count: 0 }
+    const mkFlaky = makeTool({
+      importPlaywright: async () => makeFakePw().pw,
+      nodeMajor: 22,
+      // fails (throws) first, then answers "nothing" once, then answers properly
+      listChildren: () => {
+        flaky.count++
+        if (flaky.count === 1) throw new Error("CIM busy (simulated)")
+        if (flaky.count === 2) return []
+        return rowsFor(NO_PID + 7)
+      },
+    })
+    const opened = o(await mkFlaky.tool.execute({ action: "open", url: "https://cn.bing.com" }, ctxNoAsk))
+    assert.ok(/浏览器已启动/.test(opened), `open still succeeds when the pid scan stumbles — got: ${opened.slice(0, 140)}`)
+    const ev = mkFlaky.events.find((e) => e.event === "launch_pid")
+    assert.ok(
+      ev && Number(ev.pid) === NO_PID + 7 && ev.via === "child-scan",
+      `a later attempt answers it instead of giving up — audited ${JSON.stringify(ev)} after ${flaky.count} scan calls`,
+    )
+    assert.ok(flaky.count >= 3, `the scan was actually re-asked (calls: ${flaky.count})`)
+    // A scan that NEVER answers must stay honest: no pid, and the session says so
+    // rather than inventing one.
+    const mkDeaf = makeTool({
+      importPlaywright: async () => makeFakePw().pw,
+      nodeMajor: 22,
+      listChildren: () => {
+        throw new Error("no CIM here, ever")
+      },
+    })
+    await mkDeaf.tool.execute({ action: "open", url: "https://cn.bing.com" }, ctxNoAsk)
+    const deaf = mkDeaf.events.find((e) => e.event === "launch_pid")
+    assert.ok(deaf && deaf.via === "none" && Number(deaf.pid) === 0, `a permanently failing scan is still audited as none — got ${JSON.stringify(deaf)}`)
+    const closedDeaf = o(await mkDeaf.tool.execute({ action: "close" }, ctxNoAsk))
+    assert.ok(closedDeaf.includes("进程未核验"), "…and close then refuses the 已确认关闭 sentence (pinned by §25)")
+    log("#72: one failed pid query no longer forfeits the ledger and the close verification forever")
+  }
+
   console.log("browser: OK (engine select/degrade matrix, 18-verb playwright mapping + uid registry on mock pw, route()-based allowlist, persistent-profile policy, prompt pins, evaluate_script consent + redaction, dead-session rebuild, hostless-page refusal, multi-tab new_page/close_page, process-verified close, orphan ledger reaper, launch-pid scan + identity gate + tree kill, unverified-close honesty, click effect verification, per-caller browser leases, empty-window and closed-page semantics, full args-schema param surface; real-playwright smoke gated on npm install)")
 }
 
