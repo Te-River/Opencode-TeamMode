@@ -409,6 +409,16 @@ broken" and "the answer is not what I expected" must not be conflated.
   automated client, which is their anti-bot policy rather than our defect (plain
   playwright measures 0 characters there too).
 
+- **A refused redirect named only the host it stopped at.** An allowlisted
+  shortener that bounces off-site produced `主机 "x" 不在白名单` with no mention of
+  the URL the agent had actually asked for — which reads as "that site will not
+  fetch", and sent agents back to retry the entry URL they had just watched
+  fail. `fetchWebText` now tracks every hop and appends
+  `跳转链: a → b（停在第 N 跳）` to the refusals, the 403/418 directive and the
+  generic HTTP-error line. A 429/503 also carries the server's own
+  `Retry-After` when (and only when) it is delta-seconds, so "come back later"
+  is never reported as "nothing here"; an HTTP-date is deliberately not
+  laundered into a countdown, because this toolset has no way to honor one.
 - **`"*"` used to open the instance-metadata endpoint.** The domain allowlist
   answered "is this host on the list", and with `TM_WEBFETCH_ALLOWED_DOMAINS="*"`
   (a documented setting) it answered yes for every string — including

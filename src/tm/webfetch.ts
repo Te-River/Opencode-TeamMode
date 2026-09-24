@@ -422,6 +422,21 @@ async function readBodyCapped(res: {
   return out + decoder.decode()
 }
 
+/** A 429/503 that says WHEN, not just NO.  Only the delta-seconds spelling
+ *  becomes a sentence: an HTTP-date would be laundered into a countdown the
+ *  agent has no way to honor (there is no sleep in this toolset), and a wrong
+ *  number is worse than no number. */
+export function retryAfterNote(raw: unknown): string {
+  const v = String(raw ?? "").trim()
+  if (!/^\d{1,6}$/.test(v)) return ""
+  const s = Number(v)
+  if (!s) return ""
+  return (
+    ` · Retry-After: ${s} 秒——这是"待会儿再来"，不是"这页没了"。` +
+    `本轮先换别的来源（tm_search 其它引擎 / 直接源站），别对同一 URL 原地重试。`
+  )
+}
+
 /**
  * Fetch a URL with hard timeout, byte cap, and MANUAL redirects — every
  * hop is re-checked against the allowlist before it is requested.
@@ -455,23 +470,34 @@ export async function fetchWebText(
   const maxBytes = opts.maxBytes ?? WEBFETCH_MAX_BYTES
   let current = url
   const approvedHosts = opts.skipAskHosts ?? new Set<string>()
+  // Every hop, in order.  Without this an allowlisted shortener that bounces
+  // off-site produced a refusal naming ONLY the off-site host, which reads as
+  // "this site will not fetch" — and sent the agent back to retry the very
+  // entry URL it had just watched fail.  The chain is the fact; the last host
+  // is only where it stopped.
+  const hopHosts: string[] = []
+  const trail = (): string => {
+    const seq = hopHosts.filter((h, i) => i === 0 || h !== hopHosts[i - 1])
+    return seq.length > 1 ? ` · 跳转链: ${seq.join(" → ")}（停在第 ${hopHosts.length} 跳）` : ""
+  }
   for (let hop = 0; hop <= WEBFETCH_MAX_REDIRECTS; hop++) {
+    hopHosts.push(current.hostname)
     // every hop re-checked — an allowlisted shortener cannot bounce off-site
     const verdict = checkWebUrl(current.toString(), allowlist)
     const staticAllow = verdict.ok
     if (!verdict.ok) {
       // an ASKABLE miss (allowlist only) can be walked through the official
       // dialog; hard red lines (scheme / env-file / bad URL) never ask
-      if (!verdict.askable || !verdict.url) throw new Error(verdict.message)
+      if (!verdict.askable || !verdict.url) throw new Error(verdict.message + trail())
       const host = verdict.url.hostname
       if (!approvedHosts.has(host)) {
-        if (!opts.ask) throw new Error(verdict.message)
+        if (!opts.ask) throw new Error(verdict.message + trail())
         const outcome = await askUserForTarget({ ask: opts.ask }, {
           permission: "tm_webfetch",
           patterns: [current.toString()],
           metadata: { source: "tm_webfetch redirect" },
         })
-        if (outcome !== "approved") throw new Error(verdict.message + " " + askRefusalNote(outcome))
+        if (outcome !== "approved") throw new Error(verdict.message + " " + askRefusalNote(outcome) + trail())
         approvedHosts.add(host)
       }
     }
@@ -496,7 +522,7 @@ export async function fetchWebText(
       })) as Awaited<ReturnType<FetchImpl>>
       if (REDIRECT_STATUSES.has(res.status)) {
         const loc = res.headers.get("location")
-        if (!loc) throw new Error(`重定向 ${res.status} 缺少 Location 头`)
+        if (!loc) throw new Error(`重定向 ${res.status} 缺少 Location 头${trail()}`)
         current = new URL(loc, current)
         continue
       }
@@ -513,11 +539,13 @@ export async function fetchWebText(
         throw new Error(
           `HTTP ${res.status}${known}——伪装浏览器请求头后仍被拒，该站需要真实浏览器会话。` +
             `下一步：调用 tm_browser 打开此 URL（action:"open" → action:"read"）` +
-            `（${shorten(u, 120)}）；或换 tm_search 引擎 / 找直接源站。`,
+            `（${shorten(u, 120)}）；或换 tm_search 引擎 / 找直接源站。${trail()}`,
         )
       }
       if (res.status < 200 || res.status >= 300) {
-        throw new Error(`HTTP ${res.status}（最终 URL: ${shorten(current.toString(), 120)}）`)
+        throw new Error(
+          `HTTP ${res.status}（最终 URL: ${shorten(current.toString(), 120)}）${retryAfterNote(res.headers.get("retry-after"))}${trail()}`,
+        )
       }
       const contentType = (res.headers.get("content-type") ?? "text/plain").toLowerCase()
       const raw = await readBodyCapped(res, maxBytes)

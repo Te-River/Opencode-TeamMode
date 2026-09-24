@@ -3559,6 +3559,59 @@ try {
       console.log("13. egress red line: OK (metadata/link-local/multicast/reserved + IPv4-mapped and DNS64 carriers are hard; loopback/RFC1918/ULA/CGNAT/.localhost ask and \"*\" cannot answer for them)")
     }
 
+    // ---------- 14. a redirect says where it came from; a 429 says when ----------
+    {
+      const wf = await import("./dist/tm/webfetch.js")
+      const res = (status, headers, body) => ({
+        status,
+        headers: { get: (n) => headers[String(n).toLowerCase()] ?? null },
+        text: async () => body ?? "",
+      })
+      const mkTool = (impl, domains) =>
+        wf.buildTmWebfetchTool({
+          pipelines: { store: { appendTrajectory: () => {} }, nextStepId: () => "sE14", govern: (_s, _t, c) => c },
+          cfg: { ...tm.resolveTmConfig({}), webfetchAllowedDomains: domains ?? ["cn.bing.com"] },
+          fetchImpl: impl,
+        })
+      const o2 = (r) => String(r?.output ?? "")
+
+      // (1) an allowlisted shortener that bounces off-site used to report only
+      // the last host — which reads as "this site will not fetch" and sends the
+      // agent back to the entry URL it just watched fail.
+      const seen = []
+      const chain = mkTool(async (u) => {
+        seen.push(u)
+        if (u.includes("learn.microsoft.com")) return res(302, { location: "https://m.example.net/p" })
+        return res(200, { "content-type": "text/plain" }, "never reached")
+      }, ["learn.microsoft.com"])
+      const chained = o2(await chain.execute({ url: "https://learn.microsoft.com/shortcut" }, { directory: process.cwd() }))
+      assert.equal(seen.length, 1, "the off-site hop is never fetched")
+      assert.ok(
+        /跳转链: learn\.microsoft\.com → m\.example\.net/.test(chained),
+        `the refusal names BOTH hops in order — got: ${chained.slice(0, 300)}`,
+      )
+      assert.ok(/停在第 2 跳/.test(chained), `…and says which hop stopped it — got: ${chained.slice(0, 300)}`)
+
+      // (2) 429 with a numeric Retry-After is a WAIT, and the agent has to be
+      // able to tell it apart from "this URL is dead".
+      const limited = mkTool(async () => res(429, { "retry-after": "30", "content-type": "text/plain" }, ""))
+      const lim = o2(await limited.execute({ url: "https://cn.bing.com/search?q=x" }, { directory: process.cwd() }))
+      assert.ok(lim.includes("429") && lim.includes("30"), `the 429 carries its own Retry-After — got: ${lim.slice(0, 220)}`)
+      assert.ok(!/07:28/.test(lim), "and it does not invent a date")
+
+      // (3) an HTTP-date Retry-After is not a countdown; do not turn it into
+      // seconds the agent will sleep on.
+      const dated = mkTool(async () => res(503, { "retry-after": "Wed, 21 Oct 2015 07:28:00 GMT" }, ""))
+      const dOut = o2(await dated.execute({ url: "https://cn.bing.com/search?q=x" }, { directory: process.cwd() }))
+      assert.ok(dOut.includes("503") && !/21 秒|15 秒|07:28/.test(dOut), `a date-shaped Retry-After is not laundered into seconds — got: ${dOut.slice(0, 220)}`)
+
+      // (4) the ordinary path stays quiet — no chain line for a direct hit.
+      const direct = mkTool(async () => res(200, { "content-type": "text/plain" }, "plain body"))
+      const d2 = o2(await direct.execute({ url: "https://cn.bing.com/x" }, { directory: process.cwd() }))
+      assert.ok(d2.includes("plain body") && !/跳转链|第 1 跳/.test(d2), "a single-hop fetch reports no trail")
+      console.log("14. redirect trail + Retry-After: OK (both hops named and the stopping hop counted; 429/503 carry a numeric Retry-After; an HTTP date is not laundered into seconds; a direct hit stays quiet)")
+    }
+
 } finally {
   restoreEnv()
   for (const dir of tmpDirs) fs.rmSync(dir, { recursive: true, force: true })
