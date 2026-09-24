@@ -3687,6 +3687,38 @@ try {
       console.log("15. Accept negotiation: OK (shared default byte-exact for the engine legs, tm_webfetch leads with text/markdown and keeps the browser tail, markdown passes through unstripped and labelled, one page keeps ONE cache entry and the reader gets the stored content-type, HTML path untouched)")
     }
 
+    // ---------- 16. the date the model reads is computed when it is read ----------
+    {
+      const wf = await import("./dist/tm/webfetch.js")
+      const line = wf.searchDateLine(new Date(2026, 0, 2))
+      assert.ok(line.includes("2026-01-02"), `the date line prints the day it was given — got: ${line}`)
+      assert.ok(/最新|最近/.test(line), "…and says what to do with it (anchor recency judgements here, not in training memory)")
+      // The whole point: two renders across a month boundary DIFFER.  A constant
+      // captured at plugin startup cannot do this, and the desktop is a long-lived
+      // process — the sessions that run for days are exactly the ones that drift.
+      const jan = wf.searchDateLine(new Date(2026, 0, 31))
+      const feb = wf.searchDateLine(new Date(2026, 1, 1))
+      assert.notEqual(jan, feb, "the line is a function of the clock, not a module constant")
+      assert.ok(/\(检索于 /.test(jan) && !/2026-01-31/.test(feb), "…month and day both come from the argument")
+      // default = today, and it is recomputed per call
+      const today = new Date()
+      const pad = (n) => String(n).padStart(2, "0")
+      assert.ok(
+        wf.searchDateLine().includes(`${today.getFullYear()}-${pad(today.getMonth() + 1)}-${pad(today.getDate())}`),
+        "no argument means THIS moment, formatted the same way",
+      )
+      // wired into the ONE header every engine and the auto route render through
+      const listed = wf.renderSearchHits("舞蹈教学", "auto", [{ url: "https://example.com/a", title: "A" }])
+      assert.ok(/检索于 \d{4}-\d{2}-\d{2}/.test(listed), `the hit list carries the date — got: ${listed.split("\n")[0]}`)
+      assert.ok(listed.indexOf("检索于") < listed.indexOf("1. "), "…BEFORE the hits, so it anchors the read")
+      // The auto route has its OWN header — a date on the per-engine path and
+      // none on the default one is exactly the drift this repo keeps hitting.
+      const sm2 = await import("./dist/tm/search.js")
+      const fusedHead = sm2.renderFusedHits("舞蹈教学", ["bing", "moegirl"], [{ url: "https://example.com/b", title: "B" }], []).split("\n")[0]
+      assert.ok(/检索于 \d{4}-\d{2}-\d{2}/.test(fusedHead), `the DEFAULT route's header carries it too — got: ${fusedHead}`)
+      console.log("16. recency anchor: OK (the date is computed per render across a month boundary, defaults to now, and rides the one header every search route renders)")
+    }
+
 } finally {
   restoreEnv()
   for (const dir of tmpDirs) fs.rmSync(dir, { recursive: true, force: true })

@@ -142,6 +142,19 @@ registry saw 1.5.0 as the install-script fix release).
   anti-bot benchmark calibrated that exact string, and a SERP is not a document.
   One page keeps ONE cache entry (the sharing is pinned); the reader routes on
   the stored content-type instead of assuming the format it asked for.
+- **`tm_search` states the date it ran on, and no prompt may hard-code one.**
+  ZCode re-renders its search description (`get description()`) for exactly this
+  reason: a long-lived desktop process that baked "the current month is
+  September 2026" into a string at startup keeps serving that sentence into
+  November, and a stale anchor is worse than none — the model trusts it.  We
+  cannot copy the surface (the plugin has no evidence the host re-reads a tool
+  description after registration, which `capabilities.ts` would grade
+  `unverified`), so the date rides the one thing we render per call: the hit-list
+  header — on BOTH renderers, the per-engine one and the `auto` fused one, which
+  builds its own line (that split is the drift this repo keeps getting caught
+  by).  ~20 tokens per search.  A new `test-blackboard.mjs` guard fails the
+  suite if any injected agent prompt or command template ever contains an
+  absolute date.
 - **A blocked script host now has a way out that is not an env edit.**
   `tm_browser { action: "allow_host", host }` takes ONE bare domain (a wildcard, a
   URL, a path or a port is refused as an argument error before any dialog), puts it

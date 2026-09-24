@@ -379,8 +379,31 @@ export function extractSearchHits(
 /** Compact numbered rendering — what actually enters the context.  Carries
  *  the engine-provided snippet (one line) and the fusion source tag when
  *  the caller supplied them; plain title+URL otherwise. */
+/**
+ * Today, in the words the model reads — computed at render time, never baked
+ * into a constant.
+ *
+ * The desktop is a long-lived process (the README's whole "quit and restart"
+ * section exists because of it), so anything that captures a date at plugin
+ * startup goes stale precisely in the sessions that run for days — and a stale
+ * "current month" is what makes a model search `react latest version 2025` in
+ * 2026.  ZCode solves this on its side with `get description()`, re-rendered per
+ * read; we cannot copy that surface, because this plugin has no evidence that
+ * the host re-reads a tool description after registration (capabilities.ts would
+ * grade that `unverified`, and acting on it would be a guess).  The REPLY, on
+ * the other hand, is ours to build on every call — so the date lives there, on
+ * the one header every search route renders.  ~20 tokens per lookup, once.
+ */
+export function searchDateLine(now: Date = new Date()): string {
+  const p = (n: number) => String(n).padStart(2, "0")
+  return (
+    `(检索于 ${now.getFullYear()}-${p(now.getMonth() + 1)}-${p(now.getDate())}：` +
+    `判断"最新/最近/今年"以这一天为准，不要用训练记忆里的年份)`
+  )
+}
+
 export function renderSearchHits(query: string, engine: string, hits: SearchHit[]): string {
-  const lines = [`[search] ${engine} × "${query}" → ${hits.length} 条结果:`]
+  const lines = [`[search] ${engine} × "${query}" → ${hits.length} 条结果 ${searchDateLine()}`]
   hits.forEach((h, i) => {
     lines.push(`${i + 1}. ${h.source ? `[${h.source}] ` : ""}${h.title}`)
     lines.push(`   ${h.url}`)

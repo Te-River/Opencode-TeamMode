@@ -34,6 +34,7 @@ import {
   fetchWebText,
   extractSearchHits,
   renderSearchHits,
+  searchDateLine,
   hostAllowed,
   seedWebfetchDomains,
   type FetchImpl,
@@ -671,10 +672,14 @@ export function fuseRrf(
     .map((row, i) => ({ ...row.hit, rank: i + 1 }))
 }
 
-function renderFusedHits(query: string, routes: string[], hits: SearchHit[], notes: string[]): string {
+/** Exported for the §16 pin: the auto route builds its OWN header line, so the
+ *  recency anchor has to be added here as well — a date on the per-engine path
+ *  and none on the default one is the drift this project keeps getting caught
+ *  out by (the unknown-action menu, the browser verb table). */
+export function renderFusedHits(query: string, routes: string[], hits: SearchHit[], notes: string[]): string {
   const label = routes.length === 1 ? `auto→${routes[0]}` : "auto"
   const lines = [
-    `[search] ${label} × "${query}" → ${hits.length} 条结果（路由 ${routes.join("+")}${routes.length > 1 ? "，RRF 融合" : ""}）:`,
+    `[search] ${label} × "${query}" → ${hits.length} 条结果（路由 ${routes.join("+")}${routes.length > 1 ? "，RRF 融合" : ""}） ${searchDateLine()}:`,
   ]
   hits.forEach((h, i) => {
     lines.push(`${i + 1}. ${h.source ? `[${h.source}] ` : ""}${h.title}${h.fetchable === false ? "（域名不在白名单，需批准）" : ""}`)

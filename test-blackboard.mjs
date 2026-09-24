@@ -361,6 +361,27 @@ assert.ok(leadPrompt.includes("Relay the HANDOFF content verbatim"), "lead: hand
 assert.ok(leadPrompt.includes("NO MANIFEST"), "lead: MANIFEST.md removed")
 assert.ok(!leadPrompt.includes("MANIFEST.md is"), "lead: no MANIFEST state board")
 assert.ok(leadPrompt.includes("<session-key>"), "lead: session layer in board paths")
+/* No absolute date in anything the model reads.  A desktop plugin lives in a
+   process that runs for days (the README's restart section is the proof), so a
+   "current month" or "as of 2026-09" baked into a prompt/description goes stale
+   silently — and the stale one is worse than none, because the model trusts it.
+   Recency therefore has exactly one legal home: strings rendered per call
+   (tm_search's date line, searchDateLine), never a constant. */
+{
+  const dated = /20\d{2}-\d{2}-\d{2}|20\d{2}年\d{1,2}月|as of 20\d\d/i
+  const offenders = [
+    ...Object.entries(cfg2.agent).filter(([, a]) => dated.test(String(a.prompt ?? ""))).map(([n]) => `${n}.prompt`),
+    ...Object.entries(cfg2.command).filter(([, c]) => dated.test(String(c.template ?? ""))).map(([n]) => `${n}.template`),
+  ]
+  assert.deepEqual(offenders, [], "no injected prompt or command template carries an absolute date")
+  // and the one place a date IS stated is rendered from the clock, per call
+  const wfDate = await import("./dist/tm/webfetch.js")
+  assert.notEqual(
+    wfDate.searchDateLine(new Date(2026, 0, 31)),
+    wfDate.searchDateLine(new Date(2026, 1, 1)),
+    "the recency line is a function of the clock, not a constant",
+  )
+}
 // The lead names the session folder and the task; the WRITER chooses the file.
 // Passing the folder down is load-bearing, because a bash-less role cannot
 // invent a timestamp of its own.
