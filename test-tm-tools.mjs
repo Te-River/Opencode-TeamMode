@@ -3325,6 +3325,27 @@ try {
         await doneRt.dispose()
       }
 
+      // #80: a settled child still holding a browser is reported as a FACT at the
+      // moment the lead reads the round, not left to a prompt rule the child may
+      // never have followed.
+      assert.equal(dmod.leaseTripwire([]), null, "no held lease adds nothing")
+      {
+        const line = dmod.leaseTripwire([
+          { id: "b2", owner: "ses_x", agent: "researcher", idleMs: 45_000 },
+          { id: "b3", owner: "ses_y", agent: "", idleMs: 1_500 },
+        ])
+        assert.ok(line.includes("2 个浏览器还开着"), "counts them")
+        assert.ok(line.includes("b2（researcher · 空闲 45s）"), "names the id, the owning role, and how long it has sat")
+        assert.ok(line.includes("未知角色"), "an owner with no recorded role is still reported, never dropped")
+        assert.ok(/已确认关闭/.test(line) && /进程未核验/.test(line), "points at the tool's own verdicts instead of a bare 已关闭")
+        // The seam is the whole design: tm_join must read the browser tool's OWN
+        // lease table, or the two drift and the warning lies.
+        const idxSrc = fs.readFileSync(new URL("./dist/tm/index.js", import.meta.url), "utf8")
+        assert.ok(/browserLeases:\s*\(\)\s*=>\s*browserTool\.leases\(\)/.test(idxSrc), "tm_join is wired to the browser's own lease table")
+        const brSrc = fs.readFileSync(new URL("./dist/tm/browser.js", import.meta.url), "utf8")
+        assert.ok(/leases:\s*\(\)/.test(brSrc), "tm_browser exposes that table instead of a copy of it")
+      }
+
       // the pure helpers that outlived the dispatcher
       assert.deepEqual(dmod.parseIdList('["ses_a","ses_b"]'), ["ses_a", "ses_b"], "a JSON-array string parses (real models send this)")
       assert.deepEqual(dmod.parseIdList(["ses_a", " ses_b "]), ["ses_a", "ses_b"], "a real array still parses (trimmed)")

@@ -28,6 +28,18 @@ in order, and give each part its own line in FINDINGS/EVIDENCE.
 - \`STATUS: blocked\` is for a part with an unmet dependency — say what blocks
   it and what would unblock it; do not mark yourself done.
 
+## Things the user can still see when you stop
+The skeleton is where you settle them, because nothing else forces the question
+at the moment you decide you are finished:
+- If you opened a \`tm_browser\` window, EVIDENCE carries the tool's OWN close
+  line verbatim (one of 已确认关闭 / 进程未核验 / 警告：关闭未完全成功) or states
+  why the window is deliberately still open — a window still open is not done.
+  Do not write "已关闭" in your own words: the three verdicts mean three
+  different things and only the tool's line tells the lead which one happened.
+- A file you wrote outside the repo (a screenshot, a captured log) is named by
+  path in CHANGES, so the user can find it; a temp file you made is deleted
+  before this reply, not after it.
+
 ## Blackboard rules (hybrid mode — files are the exception)
 - Default: zero file I/O. The skeleton reply IS the deliverable.
 - Only when your full deliverable genuinely exceeds ~50 lines (e.g. a

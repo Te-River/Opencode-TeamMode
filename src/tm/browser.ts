@@ -1604,6 +1604,11 @@ export function buildTmBrowserTool(deps: {
    *  killed (leaving a visible orphan window). */
   dispose: () => Promise<void>
   engineInfo: () => { kind: BrowserEngineKind | null; reason: string | null }
+  /** Which browsers are alive right now and who owns each.  tm_join reads this
+   *  to tell the lead that a child settled while still holding a window — the
+   *  close duty is otherwise a prompt rule, and a prompt rule the agent forgets
+   *  leaves a window on the user's screen with nothing said about it. */
+  leases: () => { id: string; owner: string; agent: string; idleMs: number }[]
 } {
   const { pipelines } = deps
   const env = deps.env ?? process.env
@@ -2872,11 +2877,21 @@ export function buildTmBrowserTool(deps: {
             ? `\n（子资源策略=off：跨域图片/脚本一律拦截，页面可能显示不全——TM_BROWSER_SUBRESOURCE=same-site 可恢复）`
             : ""
         const others = liveLeases().length - 1
+        // The close duty belongs in the reply that OPENS the window, not only in
+        // the tool description: a long-lived host never re-reads a description
+        // (the same finding that moved the date onto the search header), and the
+        // agent's attention is here — the moment it stops needing the page is the
+        // moment it forgets the window exists. When the reaper is off, say so
+        // rather than promising a cleanup that will not come.
+        const duty = idleCloseMs
+          ? `\n用完必须 action:"close"（窗口用户看得见；空闲 ${Math.round(idleCloseMs / 1000)}s 我会替你关掉并提示他）。`
+          : `\n用完必须 action:"close"——TM_BROWSER_IDLE_MS=0，没有空闲回收，你不关它就一直开着。`
         armIdle(lease)
         return withAttachments(
           toToolResult(
             `[${lease.id}] 浏览器已启动（${mode}，${profile} · ${s.label}）。${out}${note}${guard}` +
               `\n这个窗口的 id 是 ${lease.id}，归你（${lease.agent || "本会话"}）：后续动作带 id:"${lease.id}"。` +
+              duty +
               (others > 0
                 ? `现在共有 ${others + 1} 个浏览器在跑（别的 agent 各有各的窗口），省略 id 会被拒绝。`
                 : ""),
@@ -3100,5 +3115,14 @@ export function buildTmBrowserTool(deps: {
       kind: lastSel?.kind ?? null,
       reason: lastSel?.reason ?? null,
     }),
+    leases: () => {
+      const nowMs = Date.now()
+      return liveLeases().map((l) => ({
+        id: l.id,
+        owner: l.owner,
+        agent: l.agent,
+        idleMs: Math.max(0, nowMs - l.lastActivity),
+      }))
+    },
   }
 }

@@ -426,7 +426,12 @@ Two more channels complete the surface:
   auto-**denied** at launch: that modal is not our confirmation channel, it has
   no timeout, and on a machine left running unattended it would hang the page
   indefinitely. Nothing is ever auto-allowed — a page that truly needs such a
-  permission fails visibly at that feature instead of invisibly at a dialog.
+  permission fails visibly at that feature instead of invisibly at a dialog. A
+  window an agent forgets is now **reported**, not merely reaped: `open` states
+  the close duty in its own reply (with the real idle seconds), the reply
+  contract requires the tool's close verdict in `EVIDENCE`, and `tm_join` tells
+  the lead `⚠ N 个浏览器还开着` when a sub-agent settled while still holding one
+  — so you are never the only one who notices.
 
 When a fetch still returns **403 after the real-Chrome headers**, the error
 is a DIRECTIVE: the gate is JS-challenge / TLS-fingerprint based and only a

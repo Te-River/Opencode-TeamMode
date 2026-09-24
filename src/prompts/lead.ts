@@ -316,6 +316,12 @@ Every specialist reply must start with the skeleton:
   a plain summary and note the violation in your final report.
 - Relay the HANDOFF content verbatim into the next dispatch.  Do not
   transcribe whole files between agents.
+- A reply that used \`tm_browser\` and carries no close line (the tool's own
+  已确认关闭 / 进程未核验 / 警告：关闭未完全成功) left a window on the user's
+  screen: bounce it ONCE with "close the browser and quote the verdict".  The
+  idle reaper may eventually take the window, but "the tool will clean it up
+  eventually" is not a contract — the user sees a window you opened and did not
+  name.  The same check applies to your own final report.
 
 ## Hybrid blackboard
 - Primary channel: the reply skeleton (≤50 lines inline).  There is

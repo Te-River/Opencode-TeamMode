@@ -396,6 +396,10 @@ assert.ok(leadPrompt.includes("## Evidence standard"), "lead: evidence standard 
 assert.ok(leadPrompt.includes("## Docs sync"), "lead: docs-sync rule (CHANGELOG + AGENTS.md)")
 assert.ok(leadPrompt.includes("效率至上"), "lead: the efficiency mandate carries the user's own wording")
 assert.ok(leadPrompt.includes("## Reply language"), "lead: output language follows the USER, not the tool output")
+// #80: the lead is the one role that actually sees a specialist's reply, so the
+// lease check has to be its enforcement duty too — a rule nobody reads is a rule
+// nobody follows, and the idle reaper is a fallback, not a contract.
+assert.ok(leadPrompt.includes("no close line"), "lead: bounces a browser reply that never reported closing")
 assert.ok(
   leadPrompt.indexOf("## Efficiency first") < leadPrompt.indexOf("## Routing table"),
   "lead: the efficiency mandate is stated BEFORE the table it justifies (a rule after its exception cannot bind)",
@@ -424,6 +428,14 @@ assert.ok(!testerP.includes("UI verification mode"), "tester: old UI automation 
 assert.ok(testerP.includes("UI NOT VERIFIED:"), "tester: honest no-tooling fallback")
 for (const expert of EXPERTS) {
   assert.ok(cfg2.agent[expert].prompt.includes("STATUS: done | blocked | failed"), expert + ": skeleton status line")
+  // #80: forgetting to close a browser is not an attention problem, it is a
+  // missing field — the skeleton is the one thing every role fills in at the
+  // moment it decides it is finished, so the lease question lives there.
+  assert.ok(
+    cfg2.agent[expert].prompt.includes("a window still open is not done"),
+    expert + ": the reply contract asks for the lease verdict before 'done'",
+  )
+
   assert.ok(cfg2.agent[expert].prompt.includes("Do not re-open"), expert + ": no README/AGENTS.md re-reading")
   assert.ok(cfg2.agent[expert].prompt.includes("## Evidence rule"), expert + ": evidence rule")
   assert.ok(cfg2.agent[expert].prompt.includes("效率至上"), expert + ": the efficiency mandate is shared by every role, not just the lead")

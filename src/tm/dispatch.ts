@@ -71,6 +71,10 @@ export interface DispatchDeps {
   onChildSession?: (sessionID: string, agent: string) => void
   /** Injectable clock for tests. */
   now?: () => number
+  /** tm_browser's live lease table (id + owning session + idle).  tm_join uses
+   *  it to report a child that settled while still holding a visible window —
+   *  see the lease tripwire. Absent = the check is skipped, never assumed. */
+  browserLeases?: () => { id: string; owner: string; agent: string; idleMs: number }[]
   /** Ceiling on how long tm_join will wait on a round of children. */
   maxWaitMs?: number
 }
@@ -104,6 +108,23 @@ export function openHostTodos(todos: unknown): HostTodo[] {
     if (content) open.push({ content: content.slice(0, 120), status })
   }
   return open
+}
+
+/** #80: the line tm_join adds when a SETTLED child still owns a browser window.
+ *  Takes only the leases already filtered to settled children, so the ownership
+ *  rule stays where the child registry is; this function's whole job is to say
+ *  it in the one shape that survives the lead's skimming — and to refuse to say
+ *  it for a window that was never ours. */
+export function leaseTripwire(
+  held: readonly { id: string; owner: string; agent: string; idleMs: number }[],
+): string | null {
+  if (!held.length) return null
+  return (
+    `⚠ ${held.length} 个浏览器还开着（子代理已结算，但它没 close）：` +
+    held.map((l) => `${l.id}（${l.agent || "未知角色"} · 空闲 ${Math.round(l.idleMs / 1000)}s）`).join("、") +
+    `\n要么让它 close 并引用工具自己的三种裁决之一（已确认关闭 / 进程未核验 / 警告：关闭未完全成功），` +
+    `要么由你向用户写明为什么留着。不要替它写"已关闭"——那是把没人核实过的结论交付出去。`
+  )
 }
 
 /** Resolve the host session API defensively — `messages` is what tm_join
@@ -646,6 +667,23 @@ export function buildDispatchTools(deps: DispatchDeps): {
             }
           } catch {
             /* the todo endpoint is an extra, never a reason to fail a join */
+          }
+        }
+        // #80: THE LEASE TRIPWIRE. A child that settled while it still owned a
+        // browser left that window on the user's screen, and the only thing that
+        // was supposed to catch it is a prompt line the child may not have
+        // followed. This is a fact read off the lease table, not a reminder.
+        if (settled && typeof deps.browserLeases === "function") {
+          try {
+            const done = new Set(mine.filter((r) => r.state !== "running").map((r) => r.sessionID))
+            const held = deps.browserLeases().filter((l) => done.has(l.owner))
+            const line = leaseTripwire(held)
+            if (line) {
+              header.push(line)
+              log({ step_id: "join", event: "lease_held", count: held.length, ids: held.map((l) => l.id).join(",") })
+            }
+          } catch {
+            /* the lease table is an extra, never a reason to fail a join */
           }
         }
         const wantText = !(args.includeText === false || args.includeText === "false")

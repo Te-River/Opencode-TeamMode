@@ -489,6 +489,13 @@ async function main() {
     const mk = makeTool({ importPlaywright: async () => fx.pw, nodeMajor: 22 })
     const open = await mk.tool.execute({ action: "open", url: "https://cn.bing.com" }, ctxNoAsk)
     assert.ok(o(open).includes("浏览器已启动") && o(open).includes("已导航"), "playwright open keeps the §6o launch+nav wording")
+    // #80: the close duty has to be in the reply that OPENS the window. The
+    // tool description says it, but a long-lived host never re-reads a
+    // description (that is the same finding that moved the date onto the search
+    // header), and the agent forgets the window the moment it stops needing it.
+    const openText = o(open)
+    assert.ok(/用完必须.*close/.test(openText), "open states the close duty where the agent will still act on it")
+    assert.ok(/\b180s\b/.test(openText), "…naming the idle window the reaper will use, not a vague 'later'")
     assert.equal(mk.tool.engineInfo().kind, "playwright", "engineInfo = playwright")
     assert.equal(fx.calls.launch.length, 1, "one launch attempt")
     assert.equal(fx.calls.launch[0].executablePath, fakeExe, "the DISCOVERED executable is what launches")
@@ -1942,6 +1949,20 @@ async function main() {
     // And the safe direction is the only direction: no auto-allow anywhere.
     assert.ok(!/--grant-permission-prompts|grantPermissions\(/.test(src), "the plugin never auto-ALLOWS a site permission")
     log("#79: both engines deny the browser's own permission bubble, and never auto-allow one")
+  }
+
+  // ---------- 32. #80: the close duty rides the reply that opens the window ----------
+  {
+    const fx = makeFakePw()
+    // TM_BROWSER_IDLE_MS=0 switches the reaper OFF, and that has to change the
+    // sentence: promising an auto-close that will never come is how a forgotten
+    // window becomes a permanent one.
+    const mk = makeTool({ importPlaywright: async () => fx.pw, nodeMajor: 22, idleMs: 0 })
+    const opened = o(await mk.tool.execute({ action: "open", url: "https://cn.bing.com" }, ctxNoAsk))
+    assert.ok(/用完必须.*close/.test(opened), "the duty is stated even with no reaper behind it")
+    assert.ok(!/空闲\s*\d+s/.test(opened), "…and no auto-close is promised that cannot happen")
+    assert.ok(/没有空闲回收/.test(opened), "the reply says plainly that nothing will reclaim it")
+    log("#80: open names the close duty, and says so honestly when the reaper is off")
   }
 
   console.log("browser: OK (engine select/degrade matrix, 18-verb playwright mapping + uid registry on mock pw, route()-based allowlist, persistent-profile policy, prompt pins, evaluate_script consent + redaction, dead-session rebuild, hostless-page refusal, multi-tab new_page/close_page, process-verified close, orphan ledger reaper, launch-pid scan + identity gate + tree kill, unverified-close honesty, click effect verification, per-caller browser leases, empty-window and closed-page semantics, full args-schema param surface; real-playwright smoke gated on npm install)")

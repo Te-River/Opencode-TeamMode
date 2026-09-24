@@ -183,6 +183,27 @@ registry saw 1.5.0 as the install-script fix release).
   verdict is a claim nobody can re-check.  Localising those 555 strings was
   weighed and left as its own item: it would rewrite ~414 test assertions that pin
   the exact sentences users see, and the prompt rule costs none of them.
+- **A forgotten browser window is now reported, not hoped away.** The complaint
+  was that agents forget to `close`, and the existing answers were all
+  faith-based: a line in the tool description (which a long-lived host never
+  re-reads — the same finding that moved the date onto the search header), and a
+  180 s idle reaper that fixes it *after* the user has been staring at the
+  window. Three layers now, cheapest first:
+  1. `open` states the duty in its own reply, with the real number
+     (`用完必须 action:"close"…空闲 180s 我会替你关掉`), and says 没有空闲回收
+     instead of promising a cleanup when `TM_BROWSER_IDLE_MS=0`;
+  2. the reply contract gained a section for *things the user can still see* —
+     a role that opened a window must carry the tool's own verdict in EVIDENCE
+     (已确认关闭 / 进程未核验 / 警告) or name why it is left open, because the
+     skeleton is the one moment the agent is forced to ask itself whether it is
+     finished;
+  3. `tm_join` reads the browser's live lease table (new `leases()` seam, one
+     shared instance so there is no second source of truth) and appends
+     `⚠ N 个浏览器还开着（子代理已结算，但它没 close）` with the id, the owning
+     role and how long it has sat — the same tripwire shape as the goal check,
+     because a settled child holding a window is a fact, not a suspicion.
+  The lead's enforcement list gained the matching duty: bounce such a reply once
+  instead of relaying "已关闭" the tool never said.
 
 ### Changed
 

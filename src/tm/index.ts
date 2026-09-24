@@ -471,6 +471,10 @@ export async function createTmTools(
     pipelines,
     onChildSession: opts.onChildSession,
     maxWaitMs: cfg.joinMaxWaitMs,
+    // #80: tm_join reports a child that settled while still holding a browser
+    // window.  One shared instance already owns the lease table, so this is a
+    // read of a fact, not a second source of truth.
+    browserLeases: () => browserTool.leases(),
   })
   tools.tm_join = dispatch.tm_join
   // tm_pty — non-blocking command execution on the host's own terminal
