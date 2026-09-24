@@ -42,6 +42,7 @@ export function seedWebfetchDomains(allowlist: readonly string[]): string[] {
     allowlist.every((d, i) => d === DEFAULT_WEBFETCH_DOMAINS[i])
   return isDefaultSeed ? [...allowlist, ...T4_SEEDED_DOMAINS] : [...allowlist]
 }
+import { classifyHost } from "./egress.js"
 import { detectContentType } from "./preview.js"
 import { tmError, toToolResult } from "./result.js"
 import { projectJsonFields, type TmPipelines } from "./pipelines.js"
@@ -104,6 +105,30 @@ export function checkWebUrl(raw: unknown, allowlist: readonly string[]): UrlVerd
   }
   if (url.protocol !== "https:" && url.protocol !== "http:") {
     return { ok: false, message: `仅允许 http(s) 抓取（收到 ${url.protocol}）——file:// 等本地协议一律拒绝` }
+  }
+  // The egress red line runs BEFORE the allowlist, because "*" is a documented
+  // operator setting and an allowlist that answers for `169.254.169.254` is a
+  // credential leak with a config file behind it. Private space is the softer
+  // half: a local dev API is a real target, so it asks — every time.
+  const egress = classifyHost(url.hostname)
+  if (egress.level === "forbidden") {
+    return {
+      ok: false,
+      message:
+        `目标 ${url.hostname} 落在不可路由 / 元数据地址段（${egress.via}）——R6 同级红线，不可批准。` +
+        `这类地址没有"看起来对不对"可供判断：云元数据端点会把临时凭据直接送进上下文、run store 和 trajectory。` +
+        `要本机服务请用 tm_browser（有头窗口由用户自己看着），要公网内容请给公开主机名。`,
+    }
+  }
+  if (egress.level === "private") {
+    return {
+      ok: false,
+      askable: true,
+      url,
+      message:
+        `目标 ${url.hostname} 属于私网 / 回环地址段（${egress.via}），域名白名单——包括 "*"——不能替你放行，只能逐次经用户批准。` +
+        `正在请求官方确认窗；批准仅对本次有效。本地开发服务器的 UI 验证更该用 tm_browser（那才是为它设计的通道）。`,
+    }
   }
   if (!allowlist.includes("*") && !hostAllowed(url.hostname, allowlist)) {
     return {

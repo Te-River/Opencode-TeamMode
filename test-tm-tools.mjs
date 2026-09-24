@@ -3502,6 +3502,63 @@ try {
       console.log("12. tm_board_write: OK (board-scoped writer for roles with no file tool — path chosen by the tool, revisions never overwrite, content never echoed, traversal/symlink/quota/cap refusals write nothing)")
     }
 
+    // ---------- 13. network egress red line: an IP literal is not a domain ----------
+    {
+      const eg = await import("./dist/tm/egress.js")
+      const hard = (h) => eg.classifyHost(h).level === "forbidden"
+      const ask = (h) => eg.classifyHost(h).level === "private"
+      const open = (h) => eg.classifyHost(h).level === "public"
+
+      // NEVER consentable — a cloud metadata endpoint is not a thing a dialog can
+      // help the user judge, and no UI-verification flow needs it.
+      for (const h of [
+        "169.254.169.254", // AWS/OpenStack/IMDSv1
+        "169.254.1.1",
+        "0.0.0.0",
+        "224.0.0.1",
+        "240.0.0.1",
+        "198.18.0.1", // benchmarking range
+        "::",
+        "ff02::1",
+        "100::1",
+        "2001:10::1",
+        "::ffff:169.254.169.254", // IPv4-mapped: the SAME target wearing an IPv6 coat
+        "64:ff9b::a9fe:a9fe", // DNS64/NAT64 well-known prefix carrying 169.254.169.254
+      ]) {
+        assert.equal(hard(h), true, `${h} is a non-routable / metadata-shaped target and stays a hard red line`)
+      }
+      // Private space: reachable from the user's own machine, so a coding agent has
+      // genuine reasons (a local dev API). Ask, and never let "*" answer for it.
+      for (const h of ["127.0.0.1", "10.1.2.3", "172.16.0.1", "192.168.1.1", "localhost", "api.localhost", "::1", "fe80::1", "fc00::1", "100.64.0.1"]) {
+        assert.equal(ask(h), true, `${h} is private space — it goes to the dialog, not silently past the gate`)
+      }
+      for (const h of ["8.8.8.8", "1.1.1.1", "172.32.0.1", "100.128.0.1", "2001:4860:8000::8", "example.com", "cn.bing.com"]) {
+        assert.equal(open(h), true, `${h} is ordinary public space`)
+      }
+      // Bracket + trailing-dot + case spellings the URL parser hands us.
+      assert.equal(ask("[::1]"), true, "bracketed IPv6 hostname normalizes")
+      assert.equal(eg.classifyHost("Example.LocalHost.").level, "private", "case and the trailing root dot do not change the verdict")
+      assert.equal(eg.classifyHost("").level, "public", "an empty host is not an IP claim (the URL parser owns that error)")
+      assert.equal(eg.classifyHost("999.1.1.1").level, "public", "an unparseable dotted quad is not mistaken for private space")
+
+      // ---- wired into the ONE door every web tool passes through ----
+      const WF = await import("./dist/tm/webfetch.js")
+      // "*" is a documented operator setting; it must not become a way to read the
+      // instance metadata service into the model context.
+      const meta = WF.checkWebUrl("http://169.254.169.254/latest/meta-data/iam/security-credentials/", ["*"])
+      assert.equal(meta.ok, false, "metadata endpoint refused even with the allowlist wide open")
+      assert.equal(meta.askable ?? false, false, "…and it is NOT askable — no dialog can rescue it")
+      assert.ok(/红线|不可批准/.test(meta.message), `the message says it is a red line — got: ${meta.message}`)
+      const loop = WF.checkWebUrl("http://127.0.0.1:8787/admin", ["*"])
+      assert.equal(loop.ok, false, "loopback is not silently open under \"*\" either")
+      assert.equal(loop.askable, true, "…but a local dev server is something a user CAN judge, so it asks")
+      const named = WF.checkWebUrl("http://localhost:5173/", ["*"])
+      assert.equal(named.askable, true, "a .localhost name asks too")
+      const pub = WF.checkWebUrl("https://cn.bing.com/search?q=x", ["*"])
+      assert.equal(pub.ok, true, "a public host is untouched by the egress rule")
+      console.log("13. egress red line: OK (metadata/link-local/multicast/reserved + IPv4-mapped and DNS64 carriers are hard; loopback/RFC1918/ULA/CGNAT/.localhost ask and \"*\" cannot answer for them)")
+    }
+
 } finally {
   restoreEnv()
   for (const dir of tmpDirs) fs.rmSync(dir, { recursive: true, force: true })

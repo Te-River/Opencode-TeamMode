@@ -409,6 +409,26 @@ broken" and "the answer is not what I expected" must not be conflated.
   automated client, which is their anti-bot policy rather than our defect (plain
   playwright measures 0 characters there too).
 
+- **`"*"` used to open the instance-metadata endpoint.** The domain allowlist
+  answered "is this host on the list", and with `TM_WEBFETCH_ALLOWED_DOMAINS="*"`
+  (a documented setting) it answered yes for every string — including
+  `http://169.254.169.254/latest/meta-data/…`, whose response is a set of
+  temporary cloud credentials that would then have ride into the model context,
+  the run store and the trajectory. Loopback and RFC1918 were silently open on
+  the same path. `src/tm/egress.ts` is the missing question — *what does this IP
+  literal actually point at* — asked before the allowlist, so no configuration
+  answers for it: non-routable ranges (link-local/metadata, `0.0.0.0/8`,
+  multicast, reserved, benchmarking, `100::/64`, `2001:2::/48`, ORCHIDv2/AMT,
+  `ff00::/12`, `::`) are a hard red line that never reaches a dialog, while
+  private space (loopback, RFC1918, ULA, `fe80::/10`, CGNAT, `.localhost`) stays
+  reachable but only by the user's own approval, every time — a local dev API is
+  a legitimate target and `*` is not allowed to decide on the user's behalf. The
+  IPv4-mapped and DNS64/NAT64 carrier forms are unwrapped before the policy runs
+  (`::ffff:169.254.169.254` and `64:ff9b::a9fe:a9fe` are the same target as
+  `169.254.169.254`), because a policy that reads only the outer notation is a
+  policy that can be bypassed by changing it. Zero dependency, and it applies on
+  every redirect hop since `fetchWebText` re-checks per hop.
+
 - **The blackboard rule named the wrong roles as the ones that could not
   write.** It said "(architect / reviewer)" and omitted `researcher` — the role
   that actually hit the failure — while `reviewer`'s only theoretical route
