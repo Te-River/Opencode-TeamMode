@@ -9,6 +9,19 @@ registry saw 1.5.0 as the install-script fix release).
 
 ### Changed
 
+- **The prompts no longer prescribe Chinese wording (user rule).** What the agent
+  writes follows the language of the request; that was already the rule in
+  `## Reply language`, but three prompt templates contradicted it by handing the
+  model Chinese sentences to emit (`Only the first may become "浏览器已关闭" …`,
+  `the other two are "窗口可能还在，请用户确认"`, `never write "该网站没有内容"`), and
+  the `效率至上` heading gloss invited the same mirroring. All of it is now English
+  prose — and what stays Chinese is Chinese on purpose: the tool's own verdict
+  strings (`已确认关闭 / 进程未核验 / 警告：关闭未完全成功 / 无人应答 / 已合并 / N 个
+  可寻址节点 / 域名不在白名单`) quoted verbatim, because those bytes ARE the evidence
+  and a translated verdict is a claim nobody can grep for.  `test-blackboard` now
+  scans every injected prompt and command template for Han characters against a
+  CLOSED allowlist, so a new prescribed-Chinese sentence fails the suite and names
+  itself rather than quietly becoming the product's behavior.
 - **On v2, everything the plugin changes is now scoped to Team mode** (user
   requirement).  Every v2 hook fires for every session on the host, so the per-role tool
   trim, the 0.2 temperature, the board note, the compaction survival list, the native

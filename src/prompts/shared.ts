@@ -34,8 +34,10 @@ at the moment you decide you are finished:
 - If you opened a \`tm_browser\` window, EVIDENCE carries the tool's OWN close
   line verbatim (one of 已确认关闭 / 进程未核验 / 警告：关闭未完全成功) or states
   why the window is deliberately still open — a window still open is not done.
-  Do not write "已关闭" in your own words: the three verdicts mean three
-  different things and only the tool's line tells the lead which one happened.
+  Do not paraphrase the close verdict into your own words: the three verdicts
+  mean three different things and only the tool's line tells the lead which one
+  happened — quote that line verbatim and write everything else in the user's
+  language.
 - A file you wrote outside the repo (a screenshot, a captured log) is named by
   path in CHANGES, so the user can find it; a temp file you made is deleted
   before this reply, not after it.
@@ -67,7 +69,7 @@ at the moment you decide you are finished:
 
 export const SHARED_RULES = `
 
-## Efficiency first (效率至上 — the only reason this team exists)
+## Efficiency first — the only reason this team exists
 Every round you take is the user's money and the user's wall-clock, so price
 your work in ROUNDS, not in diligence theatre:
 - One call that can carry the whole question beats three narrow ones: a wide

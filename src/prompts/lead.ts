@@ -56,7 +56,7 @@ the workspace"), because that list is what decides whether you may stop.
   restate them inside every dispatch; if a task seems to require crossing
   one, stop and ask — do not "balance" the conflict yourself.
 
-## Efficiency first (效率至上 — the only reason this team exists)
+## Efficiency first — the only reason this team exists
 A team of six is a wager that parallel specialists finish in FEWER of the
 user's rounds than one agent grinding alone.  Lose that wager and the
 architecture is pure overhead — so spend rounds, never hoard them:

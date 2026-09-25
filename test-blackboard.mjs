@@ -394,6 +394,31 @@ assert.ok(leadPrompt.includes("<session-key>"), "lead: session layer in board pa
     ...Object.entries(cfg2.command).filter(([, c]) => dated.test(String(c.template ?? ""))).map(([n]) => `${n}.template`),
   ]
   assert.deepEqual(offenders, [], "no injected prompt or command template carries an absolute date")
+  /* The prompts are English, and the ONLY legal Chinese in one is a verbatim tool
+     string.  The user's rule (2026-09-25): nothing in a prompt may prescribe Chinese
+     wording for what the agent writes — reply language follows the REQUEST.  The
+     verbatim strings stay because they ARE the evidence a later reader can grep for
+     (goal 6 / principle 10): a translated close verdict is a claim nobody can re-check.
+     So the set is CLOSED: a new Chinese token in a prompt fails here and names itself,
+     which is the difference between a rule and a hope. */
+  {
+    const VERBATIM_TOOL_STRINGS = [
+      "已确认关闭", "进程未核验", "警告", "关闭未完全成功", "无人应答", "已合并",
+      "个可寻址节点", "域名不在白名单", "需批准", "在白名单内", "静态白名单",
+      "你刚批准的窗", "宿主按已记住的", "始终允许", "秒回", "该",
+      "个子资源请求被拦截",
+    ]
+    const strayByRole = []
+    for (const [name, a] of Object.entries(cfg2.agent)) {
+      const stray = [...new Set(String(a.prompt ?? "").match(/[一-鿿]+/g) ?? [])].filter((t) => !VERBATIM_TOOL_STRINGS.includes(t))
+      if (stray.length) strayByRole.push(`${name}: ${stray.join("、")}`)
+    }
+    for (const [name, c] of Object.entries(cfg2.command)) {
+      const stray = [...new Set(String(c.template ?? "").match(/[一-鿿]+/g) ?? [])].filter((t) => !VERBATIM_TOOL_STRINGS.includes(t))
+      if (stray.length) strayByRole.push(`command ${name}: ${stray.join("、")}`)
+    }
+    assert.deepEqual(strayByRole, [], "no prompt prescribes Chinese wording — the only Chinese left is a quoted tool verdict")
+  }
   // and the one place a date IS stated is rendered from the clock, per call
   const wfDate = await import("./dist/tm/webfetch.js")
   assert.notEqual(
@@ -414,7 +439,7 @@ assert.ok(leadPrompt.includes("TTL sweeper"), "lead: TTL sweeper is sole cleanup
 assert.ok(leadPrompt.includes("VERBATIM CONTRACTS"), "lead: api-contract verbatim rule (kept)")
 assert.ok(leadPrompt.includes("## Evidence standard"), "lead: evidence standard (kept)")
 assert.ok(leadPrompt.includes("## Docs sync"), "lead: docs-sync rule (CHANGELOG + AGENTS.md)")
-assert.ok(leadPrompt.includes("效率至上"), "lead: the efficiency mandate carries the user's own wording")
+assert.ok(leadPrompt.includes("## Efficiency first"), "lead: the efficiency mandate is there, spelled in English like the rest of the prompt")
 assert.ok(leadPrompt.includes("## Reply language"), "lead: output language follows the USER, not the tool output")
 // #80: the lead is the one role that actually sees a specialist's reply, so the
 // lease check has to be its enforcement duty too — a rule nobody reads is a rule
@@ -458,7 +483,7 @@ for (const expert of EXPERTS) {
 
   assert.ok(cfg2.agent[expert].prompt.includes("Do not re-open"), expert + ": no README/AGENTS.md re-reading")
   assert.ok(cfg2.agent[expert].prompt.includes("## Evidence rule"), expert + ": evidence rule")
-  assert.ok(cfg2.agent[expert].prompt.includes("效率至上"), expert + ": the efficiency mandate is shared by every role, not just the lead")
+  assert.ok(cfg2.agent[expert].prompt.includes("## Efficiency first"), expert + ": the efficiency mandate is shared by every role, not just the lead")
   assert.ok(cfg2.agent[expert].prompt.includes("## Reply language"), expert + ": output language follows the user, not the tool output")
   // A Chinese tool string must not drag an English conversation into Chinese,
   // and the fix must not cost the evidence its exact wording — the two rules
@@ -552,7 +577,7 @@ assert.ok(
   "researcher: all three close verdicts are named",
 )
 assert.ok(
-  /Only the first may become "浏览器已关闭"/.test(cfg2.agent["researcher"].prompt),
+  /Only the first may be reported as the browser being/.test(cfg2.agent["researcher"].prompt),
   "researcher: an unverified close may not be reported to the user as closed",
 )
 // One browser per agent.  Three agents carry tm_browser and host `task`
@@ -579,7 +604,7 @@ assert.ok(
   "researcher: the remedy is a scoped approval plus a re-navigation, and it is in the prompt",
 )
 assert.ok(
-  cfg2.agent["researcher"].prompt.includes("安全验证 wall"),
+  cfg2.agent["researcher"].prompt.includes("human-verification wall"),
   "researcher: a human-verification wall is a different fact, and its move is another source",
 )
 assert.ok(

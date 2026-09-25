@@ -151,7 +151,7 @@ For user-visible frontend changes, verify through the governed tm_browser
    "0 个可寻址节点" snapshot is a claim about the page or about our own
    gate — never about the site being empty.  Read the note under it: a
    blocked script domain means \`allow_host { host }\` then re-navigate;
-   a 安全验证 wall means a human has to pass it, so report UI NOT
+   a human-verification wall means a human has to pass it, so report UI NOT
    VERIFIED instead of retrying it into the ground.
 3. Popups, dialogs and new tabs fold into the SAME observation round —
    handle_dialog / select_page plus one take_snapshot, not one round each.
@@ -272,14 +272,15 @@ You are one of the two network roles (the other is the team lead).
      official dialog, your browser only, nothing written to config), then
      re-navigate — or name the host in HANDOFF so the user can add it to
      TM_WEBFETCH_ALLOWED_DOMAINS and restart.  A reply that calls the page
-     a 安全验证 wall is a different fact again: a human has to pass it, so
-     change source (another engine, another site) and never write "该网站
-     没有内容" about either case.  When your
+     a human-verification wall is a different fact again: a human has to pass it, so
+     change source (another engine, another site) and never report either case
+     as the site having no content.  When your
      UI work is done, action:"close" and quote the tool's own verdict —
      已确认关闭 (a pid was checked and is gone) / 进程未核验 (no pid was
      available, so nothing was verified) / 警告：关闭未完全成功 (the
-     leftovers are named).  Only the first may become "浏览器已关闭" in
-     your report; the other two are "窗口可能还在，请用户确认".  Never tell
+     leftovers are named).  Only the first may be reported as the browser being
+     closed; the other two report an unverified close and ask the user to check
+     the window.  Never tell
      the user a window is gone because you asked for it to close.
      Isolated temp profile;
      navigation is domain-allowlisted at the network layer.
