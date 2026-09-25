@@ -19,9 +19,11 @@
 > **懒人路径：** 把下面这段话粘给任意编码 agent，让它替你装：
 >
 > ```text
-> 安装 OpenCode 插件 @te-river/opencode-team-mode：按照
-> https://raw.githubusercontent.com/Te-River/Opencode-TeamMode/main/docs/installation.md
-> 的指引完成安装，并按该指南里的检查项验证。
+> 安装 OpenCode 插件 @te-river/opencode-team-mode：先跑 `opencode --version` 判断版本。
+> 1.18.x → https://raw.githubusercontent.com/Te-River/Opencode-TeamMode/main/docs/installation.md
+> 2.x → https://raw.githubusercontent.com/Te-River/Opencode-TeamMode/main/docs/installation-v2.md
+> （2.x 的插件不能创建 agent，六个角色和六条 `/team-*` 命令要靠那份指南里的生成步骤落到
+> 配置目录——这一步不是可选的。）然后按该指南里的检查项验证。
 > ```
 >
 > **装好后只需要记住一条命令：** `/team-run <任务>` —— Team Lead 会先出计划、
@@ -85,10 +87,12 @@ TeamMode 对每一个的回应：
 把这段话粘给任意编码 agent——它会改配置、提醒你重启、并完成验证：
 
 ```text
-安装 OpenCode 插件 @te-river/opencode-team-mode：按照
-https://raw.githubusercontent.com/Te-River/Opencode-TeamMode/main/docs/installation.md
-的指引完成安装，并按该指南里的检查项验证。
-（若该 URL 无法访问——中国大陆网络常见——改用镜像前缀重试：
+安装 OpenCode 插件 @te-river/opencode-team-mode：先跑 `opencode --version` 判断版本。
+1.18.x → https://raw.githubusercontent.com/Te-River/Opencode-TeamMode/main/docs/installation.md
+2.x → https://raw.githubusercontent.com/Te-River/Opencode-TeamMode/main/docs/installation-v2.md
+（2.x 的插件不能创建 agent，六个角色和六条 `/team-*` 命令要靠那份指南里的生成步骤落到配置
+目录——这一步不是可选的。）按该指南里的检查项验证。
+（若 URL 无法访问——中国大陆网络常见——改用镜像前缀重试：
 https://ghproxy.net/ + 原路径。）
 ```
 
@@ -690,7 +694,8 @@ opencode-team-mode/
 │   ├── tm/               ← 受治理工具：pipelines / store / preview / guard / refs /
 │   │                        webfetch / search / memory / browser / shell-bridge / ptc/（9 模块）
 │   └── types.ts          ← 加载器契约类型（1.18.x）
-├── docs/installation.md  ← agent 可消费的安装指南
+├── docs/installation.md  ← agent 可消费的安装指南（1.18.x）
+├── docs/installation-v2.md ← 2.x 安装指南（角色以生成的配置文件形式落地）
 ├── scripts/              ← 一行安装脚本（bash / PowerShell）
 ├── pt07/                 ← PT-07 基线套件（种子化 A/B token 测量）
 └── README.*.md           ← 你在这里（有两个版本）
@@ -719,7 +724,8 @@ opencode-team-mode/
 ## 🔗 链接
 
 - [npm 包](https://www.npmjs.com/package/@te-river/opencode-team-mode) — `@te-river/opencode-team-mode`
-- [安装指南](./docs/installation.md) — 完整的手动 / agent 可消费流程
+- [安装指南（1.18.x）](./docs/installation.md) — 完整的手动 / agent 可消费流程
+- [安装指南（**OpenCode 2.x**）](./docs/installation-v2.md) — 装法不同：2.x 插件不能创建 agent，六个角色和六条命令要生成到配置目录
 - [OpenCode Desktop](https://opencode.ai) — 官网与下载
 - [OpenCode 文档](https://opencode.ai/docs) — 配置与插件文档
 - [OpenCode 插件 API](https://opencode.ai/docs/plugins) — 开发你自己的插件

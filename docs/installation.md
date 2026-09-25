@@ -1,5 +1,17 @@
 # TeamMode Installation Guide / 安装指南
 
+> **This page is the OpenCode 1.18.x path.** On OpenCode 2.x a plugin cannot create an
+> agent, so the six roles and the six `/team-*` commands have to be generated into
+> `~/.config/opencode/agents/` and `commands/` — that flow is its own page:
+> **[installation-v2.md](./installation-v2.md)**. Check `opencode --version` first;
+> following the wrong one leaves Team half-installed (the plugin loads, the roles do not
+> exist).
+>
+> **本页是 1.18.x 的装法。** OpenCode 2.x 上插件不能创建 agent，六个角色和六条 `/team-*`
+> 命令必须生成到 `~/.config/opencode/agents/` 与 `commands/`——那一套单独写在
+> **[installation-v2.md](./installation-v2.md)**。先跑 `opencode --version` 再选：走错页面会
+> 留下"插件加载了、角色不存在"的半安装状态。
+
 > **For LLM agents:** your user asked you to install `@te-river/opencode-team-mode`. This document is the complete, self-contained procedure. Read it fully, then execute. Do not improvise package names or config locations — everything you need is here.
 >
 > **面向 LLM 智能体：** 用户要求你安装 `@te-river/opencode-team-mode`。本文档是完整、自包含的安装规程。通读后再执行。不要 improvised 包名或配置路径——所需信息全在这里。

@@ -19,9 +19,12 @@
 > **The lazy path:** paste this to any coding agent and let it do the work:
 >
 > ```text
-> Install the OpenCode plugin @te-river/opencode-team-mode following
-> https://raw.githubusercontent.com/Te-River/Opencode-TeamMode/main/docs/installation.md
-> Then verify the install using the checks in that guide.
+> Install the OpenCode plugin @te-river/opencode-team-mode. First run `opencode --version`:
+> 1.18.x → https://raw.githubusercontent.com/Te-River/Opencode-TeamMode/main/docs/installation.md
+> 2.x → https://raw.githubusercontent.com/Te-River/Opencode-TeamMode/main/docs/installation-v2.md
+> (on 2.x a plugin cannot create an agent, so the six roles and six `/team-*` commands come
+> from a generator step in that guide — that step is not optional.) Then verify the install
+> using the checks in that guide.
 > ```
 >
 > **The one command to remember afterwards:** `/team-run <task>` — the Team Lead
@@ -87,9 +90,12 @@ orchestrator (opt-out in [Configuration](#-configuration)).
 Copy this into any coding agent — it will edit your config, restart-remind you, and verify:
 
 ```text
-Install the OpenCode plugin @te-river/opencode-team-mode following
-https://raw.githubusercontent.com/Te-River/Opencode-TeamMode/main/docs/installation.md
-(If that URL is unreachable — common on mainland-China networks — retry with
+Install the OpenCode plugin @te-river/opencode-team-mode. First run `opencode --version`:
+1.18.x → https://raw.githubusercontent.com/Te-River/Opencode-TeamMode/main/docs/installation.md
+2.x → https://raw.githubusercontent.com/Te-River/Opencode-TeamMode/main/docs/installation-v2.md
+(on 2.x a plugin cannot create an agent, so the six roles and six `/team-*` commands come from
+a generator step in that guide — that step is not optional.)
+(If a URL is unreachable — common on mainland-China networks — retry with
 the mirror prefix: https://ghproxy.net/ + the same path.)
 Then verify the install using the checks in that guide.
 ```
@@ -767,7 +773,8 @@ opencode-team-mode/
 │   ├── tm/               ← Governed tools: pipelines / store / preview / guard / refs /
 │   │                        webfetch / search / memory / browser / shell-bridge / ptc/ (9 modules)
 │   └── types.ts          ← Loader-contract types (1.18.x)
-├── docs/installation.md  ← The agent-consumable install guide
+├── docs/installation.md  ← The agent-consumable install guide (1.18.x)
+├── docs/installation-v2.md ← The 2.x install guide (roles arrive as generated config files)
 ├── scripts/              ← One-line installers (bash / PowerShell)
 ├── pt07/                 ← PT-07 baseline suite (seeded A/B token measurement)
 └── README.*.md           ← You are here (twice)
@@ -799,7 +806,8 @@ are intentionally loose but not psychic).
 ## 🔗 Links
 
 - [npm Package](https://www.npmjs.com/package/@te-river/opencode-team-mode) — `@te-river/opencode-team-mode`
-- [Installation guide](./docs/installation.md) — the complete manual / agent-consumable procedure
+- [Installation guide, 1.18.x](./docs/installation.md) — the complete manual / agent-consumable procedure
+- [Installation guide, **OpenCode 2.x**](./docs/installation-v2.md) — a different install: a 2.x plugin cannot create an agent, so the six roles and six commands are generated into the config directory
 - [OpenCode Desktop](https://opencode.ai) — Official website & download
 - [OpenCode Docs](https://opencode.ai/docs) — Configuration & plugin documentation
 - [OpenCode Plugin API](https://opencode.ai/docs/plugins) — Build your own plugins

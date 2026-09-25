@@ -85,6 +85,19 @@ registry saw 1.5.0 as the install-script fix release).
 
 ### Added
 
+- **`docs/installation-v2.md` — OpenCode 2.x gets its own installation page** (#4).  The
+  v1 guide is not a shorter version of the same job: on 2.x a plugin cannot create an
+  agent, so the six roles and the six `/team-*` commands have to be GENERATED into
+  `~/.config/opencode/agents/` and `commands/`, `default_agent` must be set after those
+  files exist (a default naming a missing agent makes the host fall back to `build` with
+  no complaint), and several v1 mechanisms simply do not exist — no plugin dialog, no
+  `todowrite` (hence `tm_ledger`), no `OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS` to
+  enable.  Both READMEs now point an installing agent at `opencode --version` first, and
+  the v1 page opens by saying it is the 1.18.x path.  To make the documented command true
+  for an INSTALLED copy, `scripts/gen-v2-config.mjs` is now in npm's `files` (verified by
+  running the generator out of a copied-out package tree); what is still open is the
+  installer itself — `install.sh` / `install.ps1` have no 2.x branch yet, and this page is
+  the working path meanwhile.
 - **`tm_ledger` — the LEDGER rule finally has a place to live on v2** (#16).  The
   lead's prompt mandates the list before the work (every new ask becomes an item,
   an interruption is an insertion, `blocked` is a state and not an exit, a
