@@ -38,11 +38,25 @@ export interface V2ProbeReport {
   executedAfter: string[]
   /** actions reaching permission.evaluate */
   actions: string[]
+  /** shape facts about the message list a request carries: how many messages, how
+   *  many look like the host's injected `<task id=… state="completed">` envelope,
+   *  and how long the biggest one is.  LENGTHS ONLY — the body of a sub-agent reply
+   *  is the most private payload in the product, which is exactly why Plan B keeps
+   *  it off disk.  This is what decides whether the v2 offload has anything to hook
+   *  onto, and it must not be guessed from the v1 shape. */
+  messages: number
+  taskEnvelopes: number
+  maxEnvelopeChars: number
   /** permission evaluations whose resources carried a URL (count, never the URL) */
   urlResources: number
   evaluations: number
   /** hook points the ctx did not expose — a missing entry is a host fact */
   hooksMissing: string[]
+  /** the ctx domains the host actually handed us.  This is what decides whether an
+   *  event-driven rebuild is even possible: a plugin cannot subscribe to a channel
+   *  that was never given, and "we should rebuild tm_join on ctx.event" is only a
+   *  plan if ctx.event exists. */
+  ctxDomains: string[]
   /** whether TM_V2_PROBE reached THIS process.  Without this line, "no browser
    *  tools were seen" and "nobody was listening" are the same answer. */
   probeTarget: string
@@ -98,7 +112,11 @@ export async function applyV2Probe(ctx: unknown, opts: ProbeOptions = {}): Promi
     actions: [],
     urlResources: 0,
     evaluations: 0,
+    messages: 0,
+    taskEnvelopes: 0,
+    maxEnvelopeChars: 0,
     hooksMissing: [],
+    ctxDomains: [],
     probeTarget: file ? path.basename(file) : "",
     lines: 0,
   }
@@ -108,6 +126,8 @@ export async function applyV2Probe(ctx: unknown, opts: ProbeOptions = {}): Promi
   const seenActions = new Set<string>()
   const seenAgents = new Set<string>()
   const seenBeforeShapes = new Set<string>()
+
+  report.ctxDomains = Object.keys((ctx ?? {}) as Record<string, unknown>).sort()
 
   const write = (rec: Record<string, unknown>) => {
     if (!file || report.lines >= maxLines) return
@@ -164,6 +184,17 @@ export async function applyV2Probe(ctx: unknown, opts: ProbeOptions = {}): Promi
   arm("session", "context", (raw) => {
     const event = raw as { agent?: string; tools?: Record<string, unknown> }
     const names = Object.keys(event?.tools ?? {})
+    const msgs = Array.isArray((event as { messages?: unknown }).messages) ? (event as { messages: unknown[] }).messages : []
+    report.messages = Math.max(report.messages, msgs.length)
+    // Shape only: a boolean "this looks like the host's envelope" and a character
+    // count.  Nothing of the body is kept, hashed or written.
+    for (const m of msgs) {
+      const text = typeof m === "string" ? m : JSON.stringify((m as { parts?: unknown; text?: unknown })?.parts ?? (m as { text?: unknown })?.text ?? "")
+      if (text.includes("state=\"completed\"") && text.includes("<task id=")) {
+        report.taskEnvelopes += 1
+        report.maxEnvelopeChars = Math.max(report.maxEnvelopeChars, text.length)
+      }
+    }
     for (const n of names) seenToolNames.add(n)
     const agent = String(event?.agent ?? "?")
     if (!seenAgents.has(agent)) {
@@ -241,8 +272,12 @@ export function probeSummary(report: V2ProbeReport): Record<string, unknown> {
     probe_executed_after: report.executedAfter.join(" "),
     probe_actions: report.actions.join(" "),
     probe_evaluations: report.evaluations,
+    probe_messages: report.messages,
+    probe_task_envelopes: report.taskEnvelopes,
+    probe_max_envelope_chars: report.maxEnvelopeChars,
     probe_url_resources: report.urlResources,
     probe_hooks_missing: report.hooksMissing.join(" "),
+    probe_ctx_domains: report.ctxDomains.join(" "),
     probe_lines: report.lines,
     probe_target: report.probeTarget,
   }

@@ -415,6 +415,8 @@ export function renderStats(
         line.probe_executed_after ? `execute.after 见到：${line.probe_executed_after}` : "",
         line.probe_evaluations !== undefined ? `permission.evaluate ${line.probe_evaluations} 次（动作：${line.probe_actions || "无"}）` : "",
         line.probe_url_resources !== undefined ? `其中资源里带 URL 的 ${line.probe_url_resources} 次` : "",
+        line.probe_ctx_domains ? `ctx 给了：${line.probe_ctx_domains}` : "",
+        line.probe_messages !== undefined ? `请求里消息数 ${line.probe_messages} · 注入的 <task> 信封 ${line.probe_task_envelopes} 个（最长 ${line.probe_max_envelope_chars} 字符）` : "",
         line.probe_hooks_missing ? `挂不上的钩子：${line.probe_hooks_missing}` : "",
       ].filter(Boolean)
       const allBits = [...offBits, ...probe]

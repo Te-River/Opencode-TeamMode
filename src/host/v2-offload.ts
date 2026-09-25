@@ -57,6 +57,22 @@ export const NATIVE_GOVERNED_TOOLS: ReadonlySet<string> = new Set([
   "bash",
   "webfetch",
   "execute",
+  /*
+   * `subagent` is v2's version of Plan B, and it is here because of what was
+   * MEASURED rather than what v1 did.  A live run recorded
+   * `execute.before subagent {agent,background,description,prompt}` ->
+   * `permission.evaluate action=subagent` -> `execute.after subagent
+   * {content,metadata,output}`: a synchronous child's whole reply arrives as THIS
+   * tool's result, so one hook governs it.  The same run showed
+   * `session.hook("context")` carrying a single message and no
+   * `<task id=… state="completed">` envelope at all -- so v1's chat.message offload
+   * has no anchor on v2, and rewriting the message list against a guessed shape is
+   * how evidence gets deleted silently (the same reason host-hooks.ts declines
+   * `experimental.chat.messages.transform`).  Consequence stated plainly: a
+   * BACKGROUND child's reply, which the host injects later, is NOT governed here --
+   * closing that needs the ctx.event/ctx.session rebuild, which is an open decision.
+   */
+  "subagent",
 ])
 
 export interface V2OffloadReport {

@@ -570,10 +570,10 @@ assert.ok(/mode:"structure" \| "lines"/.test(rendered), "and names the two ways 
 assert.ok(/不要为了看一眼把全文读回来/.test(rendered), "it tells the model not to page the whole body back just to look once")
 assert.deepEqual(
   [...NATIVE_GOVERNED_TOOLS].sort(),
-  ["bash", "execute", "glob", "grep", "read", "shell", "webfetch"],
+  ["bash", "execute", "glob", "grep", "read", "shell", "subagent", "webfetch"],
   "the governed list stays closed -- and `execute` is on it because that is the ONLY door native browser output has into the context (the Team surface is edit/execute/question/shell/subagent/write)",
 )
-assert.ok(![...NATIVE_GOVERNED_TOOLS].some((t) => ["agent", "patch", "question", "subagent", "write", "edit"].includes(t)), "shapes nobody has observed are still not interpreted")
+assert.ok(![...NATIVE_GOVERNED_TOOLS].some((t) => ["agent", "patch", "question", "write", "edit"].includes(t)), "shapes nobody has observed are still not interpreted (`subagent` earns its place: execute.after was measured carrying {content,metadata,output})")
 console.log("   OK (closed tool list, unknown shapes untouched, attachments and metadata preserved, failure degrades, off restores verbatim)")
 
 console.log("8. the config projection — what the installer copies onto disk")

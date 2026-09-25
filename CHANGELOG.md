@@ -223,6 +223,28 @@ registry saw 1.5.0 as the install-script fix release).
 
 ### Fixed
 
+- **The v2 surface probe now records the `ctx` domains and the shape of the message
+  list**, because two open decisions were being argued from assumptions.  What it
+  measured on a live 2.0.16 host:
+  - the context carries **21 domains including `event`, `session`, `mcp`, `rpc`,
+    `storage` and `websearch`** — so rebuilding `tm_join`/Plan B on v2 has a real
+    door, and "the host gives us nothing" is not the reason it is unwritten;
+  - a `subagent` dispatch reaches all three seams (`execute.before` with
+    `{agent,background,description,prompt}`, `permission.evaluate action=subagent`,
+    `execute.after` with `{content,metadata,output}`), so a synchronous child's
+    reply is governable exactly like a native `shell` result — `subagent` joins the
+    closed governed list;
+  - nested `tm_*` calls made **inside** a Code Mode program each produce their own
+    `execute.before`/`execute.after` pair (`execute.after tm_read {content}`), so
+    one hook governs both worlds rather than only the aggregate;
+  - but `session.hook("context")` showed 0–1 messages and **no
+    `<task id=… state="completed">` envelope in any observed run**, so v1's
+    `chat.message` offload has NO anchor on v2.  Since v2 forces every dispatch to
+    `background`, the child's report arrives through a channel this plugin has not
+    yet been shown to see — which is recorded as a gap rather than papered over with
+    a rewrite against a guessed message shape (the same reason
+    `host-hooks.ts` refuses `experimental.chat.messages.transform`).
+
 - **`tm_join` no longer reports "there is nothing to adopt" on a host it could not
   query.**  Three outcomes collapsed into one sentence: the host surface is absent
   (v2's client shim exposes only `file.read`/`find.text`, so there is no
