@@ -122,13 +122,33 @@ this before treating any sentence above as platform-neutral.
   729 tokens (its parameter table is the other 1 337, and those descriptors are
   per-parameter truth, not prose), and with `tm_pty` retired too the measured cost is
   now **2 660 for architect/implementer/reviewer, 4 726 tester, 6 391 researcher,
-  7 366 lead**, which is what `direct` buys per request. `TM_V2_CODEMODE=off` restores
-  catalog-only. The history did not disappear — it stayed in AGENTS.md and CHANGELOG.md
+  7 366 lead**, which is what `direct` was supposed to buy per request. **FALSIFIED
+  2026-09-26 by the user's own desktop session**: with `options.codemode:false` sent for
+  all ten tools, 2.0.16 still delivered every `tm_*` inside the host's Code Mode catalog
+  ("They cannot be called directly…"), and the model's own callable list was the nine
+  native tools. So the flag changes what WE send and nothing else, the default now sends
+  nothing (`TM_V2_CODEMODE=direct` is an opt-in experiment for a build that honours it),
+  and the outcome is an OBSERVATION — `tools_in_request`, derived from whether a `tm_*`
+  name ever appears in an assembled request's own tool map — printed by `tm_stats` beside
+  the sent flag. The token figures above stand as measurements of OUR definition set;
+  what turned out to be fiction was the claim that the model receives them.
+  The history did not disappear — it stayed in AGENTS.md and CHANGELOG.md
   where it costs nothing per request, which is the rule this repo applies to prompts
   generally (see the subtraction philosophy).
   What the live session DID confirm: the per-role trim works (the native
   read/grep/glob/list/webfetch/websearch/skill/patch the matrix denies were
   gone from the request).
+- **Goal 4 gains a third outcome besides "in context" and "offloaded": CAPPED.** A
+  live session caught the generic offload eating a report: a `tm_stats` answer called
+  through Code Mode arrived as the `execute` result at 2 917 tokens and came back as an
+  80-token preview, so the lead spent the round paging a table back in and the user got
+  prose about numbers. Two payloads are structurally unreadable once previewed — a
+  browser snapshot (its `[ref=…]` lines ARE the next click's arguments) and a report
+  (a table with a row missing is not a smaller table, it is a broken one) — so
+  `capKeepingAddressing()` and `capKeepingTables()` keep the structural lines and drop
+  the prose instead, up to `budget × 4`, and say how much did not fit. `reportCapped` /
+  `capped` / `offloaded` are three separate counters in `tm_stats`, because they answer
+  three different questions about what entered the context.
 - **The two personalities now ship different tool surfaces, and the prompt fork
   has a home.** `V1_ONLY_TOOLS` (in `v2-permissions.ts`) is the single source for
   what v2 does not register; `v2.ts` skips those when registering and
