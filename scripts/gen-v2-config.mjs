@@ -214,6 +214,21 @@ const V2_TEXT = [
    * completion envelope re-enters context carrying the command text — an R6 touchpoint). */
   ["either: give each its own call, or run it through tm_pty (non-blocking,\n  where granted) and check `status` later.  A tm_pty session writes no\n  transcript back to you, so tee its output to a file (`<cmd> 2>&1 | tee\n  <log>`) and read that file for EVIDENCE once it reports exited.",
    "either: give each its own call, or run it through `shell` with\n  `background:true` (it returns at once with a shell ID and the file its output\n  streams to, and the host notifies you when it exits — so do NOT poll, and never\n  re-run the command to watch it pass again).  Either way tee the output\n  (`<cmd> 2>&1 | tee\n  <log>`) and read that log for EVIDENCE."],
+  /* Option A (user decision 2026-09-25): interactive browsing goes to the host's own
+   * browser_* tools, because that is the only browser the desktop renders in its side
+   * panel (docs/research/browser-pane.md).  Governance is NOT taken off the table: the gate
+   * lives in src/host/v2-browser-gate.ts (execute.before + a leak-detected fallback that
+   * replaces the page with the refusal), and snapshots stay addressable through
+   * capKeepingAddressing.  tm_browser stays named as the fallback for a host with no
+   * desktop browser (CLI / standalone server).  Every key below must match the v1 prompt
+   * byte-exactly: assertForkApplied() throws when one stops matching. */
+  ["  URLs → tm_webfetch, JS-rendered pages → tm_browser (network roles only).", "  URLs → tm_webfetch, JS-rendered pages → the host's own browser_* tools (they drive\n  the side panel the user can actually see), falling back to tm_browser when no desktop browser is connected (network roles only)."],
+  ["- a visual state (a rendered UI, a chart) → tm_browser", "- a visual state (a rendered UI, a chart) → the host's browser_* tools (browser_tabs_open → browser_snapshot → browser_screenshot), or tm_browser when they are not offered"],
+  ["## UI verification (tm_browser — you carry it)", "## UI verification (the host's browser_* tools — you carry them)"],
+  ["For user-visible frontend changes, verify through the governed tm_browser", "For user-visible frontend changes, verify through the host's own browser_* tools (tm_browser only when they are absent)"],
+  ["If tm_browser is unavailable on this host, the action you need is not", "If neither browser_* nor tm_browser is available on this host, the action you need is not"],
+  ["  via your governed tm_search / tm_browser / tm_webfetch first,", "  via your governed tm_search / tm_webfetch and the host's browser_* tools (or tm_browser when no desktop browser is connected) first,"],
+  ["  lookups: governed tm_search / tm_browser / tm_webfetch first, then user MCP tools.", "  lookups: governed tm_search / tm_webfetch + the host's browser_* tools first, then user MCP tools."],
 ]
 
 function forkBody(text, hits) {

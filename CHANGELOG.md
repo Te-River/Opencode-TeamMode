@@ -9,6 +9,15 @@ registry saw 1.5.0 as the install-script fix release).
 
 ### Changed
 
+- **The v2 prompts now send interactive browsing to the host's tools (option A,
+  decided 2026-09-25).** Seven exact-string entries join the `V2_TEXT` fork table, so a
+  v2 role reads "use the host's `browser_*` tools — `browser_tabs_open` →
+  `browser_snapshot` → `browser_screenshot` — and `tm_browser` only when no desktop
+  browser is connected" where v1 reads the tm_browser sentence; the tester's UI-verification
+  heading is forked the same way. Six of the twelve generated role files changed.
+  `assertForkApplied()` is the reason this is safe to do by string: a key that stops
+  matching the v1 prompt fails the build instead of shipping a v2 model a rule about a
+  tool we no longer want it to reach for first.
 - **Native `browser_*` now rides OUR gate, and its snapshots stay addressable**
   (option A, decided 2026-09-25: browsing goes to the host's own tools because that
   is the only browser the desktop's side panel shows — `docs/research/browser-pane.md`).
