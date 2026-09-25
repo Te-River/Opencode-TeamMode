@@ -35,11 +35,18 @@
  */
 
 import type { OpenCodePlugin } from "./types.js"
+import type { V2Plugin } from "./host/v2-types.js"
 import { createV1Personality } from "./host/v1.js"
+import { v2Personality } from "./host/v2.js"
 
-const plugin: OpenCodePlugin = {
+const plugin: OpenCodePlugin & Pick<V2Plugin, "setup"> = {
   id: "team-mode",
+  // read by an OpenCode 1.18.x host
   server: createV1Personality,
+  // read by an OpenCode 2.x host; `Plugin.define` is the identity function, so
+  // handing over the plain {id, setup} pair IS the definition — no v2 SDK at
+  // runtime, which is what keeps this package installable by v1 users.
+  setup: v2Personality.setup,
 }
 
 export default plugin

@@ -114,7 +114,13 @@ console.log("3. paths: OK (.git/opencode-team, tmpdir fallback)")
 const cfg = { $schema: "https://opencode.ai/config.json", plugin: [] }
 assert.equal(plugin.id, "team-mode", "display id")
 assert.equal(typeof plugin.server, "function", "v1 loader gate: server() present")
-assert.ok(!("setup" in plugin), "no dead setup property (1.18.x loader ignores it)")
+// v1.1-v1.3 died exactly here: a plugin that shipped `setup` and no `server`
+// loads as NOTHING on the 1.18.x loader (it calls server() and only server()).
+// The v2 port adds `setup` on purpose — an OpenCode 2.x host reads it and
+// ignores `server` — so the invariant is no longer "never have a setup" but
+// "never a setup without a server": the dead-plugin failure stays impossible,
+// and the dual-personality export is allowed to exist.
+assert.equal(typeof plugin.setup, "function", "v2 host gate: setup() present alongside server()")
 /* the approval gate only arms for a client with a permission-reply path —
  * the v1 surface is postSessionIdPermissionsPermissionId (live-probed);
  * without it the config hook drops the R6 env ask face (dead-popup guard),

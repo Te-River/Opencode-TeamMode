@@ -164,6 +164,15 @@ export async function askUserForTarget(
 /** One sentence naming WHY the dialog did not grant access.  This is not
  *  cosmetic: "用户未批准" for a dialog nobody saw teaches the agent to give up
  *  (or retry silently) instead of telling the human to look at the screen. */
+/** What "we could not ask" means on THIS host generation.  v1 says 旧版协议
+ *  because there it is true; the v2 personality replaces the sentence because
+ *  on v2 the absence is the NEW protocol, and telling the model the host is old
+ *  would send it looking for an upgrade it already has. */
+let unavailableNote = "宿主无法弹出确认窗口（旧版协议）。"
+export function setAskUnavailableNote(note: string): void {
+  if (typeof note === "string" && note.trim()) unavailableNote = note
+}
+
 export function askRefusalNote(outcome: AskOutcome, waitMs = askWaitMs): string {
   if (outcome === "rejected") return "用户未批准。"
   if (outcome === "timed-out") {
@@ -173,5 +182,5 @@ export function askRefusalNote(outcome: AskOutcome, waitMs = askWaitMs): string 
       `如果确实不想开权限，就改用白名单内的源，不要重复调用。`
     )
   }
-  return "宿主无法弹出确认窗口（旧版协议）。"
+  return unavailableNote
 }
