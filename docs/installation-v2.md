@@ -174,6 +174,8 @@ a new release may have changed them. Re-running is cheap — unchanged files are
 | `tm_webfetch` on an odd site says it refused **without asking anyone** | Expected on 2.x: a plugin cannot raise a dialog. Use a source that works, or let the host's own permission rule allow it; the address red line (metadata / private) has no consent path at all, on either generation |
 | `task`/`subagent` seems to block the lead | On 2.x the plugin forces `background: true`; if you also set the old `OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS`, unset it — it is a v1 flag and only confuses the picture |
 | A tool's output arrives un-offloaded | `TM_NATIVE_OFFLOAD=off` (or a missing `tool.execute.after` seam on an older 2.x build) — `tm_stats` names which |
+| A background sub-agent's reply is huge and un-governed | A stated gap, not a breakage: v2 never hands a plugin the injected message before it is persisted, and we do not rewrite outgoing messages (a wrong guess at that layer's shape deletes evidence silently). The compensation is in the contract instead: the oversized deliverable goes to the blackboard file, its path rides the reply, and the lead pulls the whole thing with `tm_join` |
+| You want OUR browser visible in the side panel | Not possible — the panel attaches to the server's own browser service (`docs/research/browser-pane.md`). What IS reachable is a still frame: hand the screenshot to the host's `browser_preview { path }`, which renders a server-local png/html/md/pdf into that panel. Not yet confirmed in a real GUI session |
 | You need to know what the host actually exposes | `TM_V2_PROBE=<path>.jsonl` records tool and action **names and counts only** — never a command, path, URL or value — and `tm_stats` renders the capability matrix |
 
 ---
@@ -316,6 +318,8 @@ opencode reload
 | `tm_webfetch` 说它"没问任何人就直接拒绝" | v2 的预期行为：插件弹不出对话框。换一个不需要这次访问的源，或让宿主自己的权限规则放行；地址红线（元数据 / 私网）在两代宿主上都没有授权路径 |
 | `subagent` 好像把领队挡住了 | v2 上插件会强制 `background: true`；如果你顺手设了老的 `OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS`，请取消它——那是 v1 的开关，在这里只会误导判断 |
 | 某个工具的输出没被卸载 | `TM_NATIVE_OFFLOAD=off`（或者那个 2.x 构建没有 `tool.execute.after` 缝）——`tm_stats` 会告诉你是哪一种 |
+| 后台子代理的回复太长，没被治理 | 这是**明说的缺口**，不是坏了：v2 不会在落盘前把注入的消息交给插件，而我们不改写发出的消息（猜错那一层的形状等于静默删证据）。补偿写在提示词里：超限交付进黑板文件、回复带路径，领队用 `tm_join` 取全文 |
+| 想在侧边栏看到我们 `tm_browser` 的页面 | 做不到（面板挂的是服务端自己的浏览器服务；见 `docs/research/browser-pane.md`）。能看到的是**静帧**：让 agent 把截图交给宿主的 `browser_preview { path }`，它会把服务端本地文件（png/html/md/pdf/mermaid）渲染进面板——这条尚未在你的 GUI 里验证过 |
 | 想知道宿主到底给了什么 | `TM_V2_PROBE=<路径>.jsonl` 只记工具名与权限动作名**以及计数**，绝不记命令行、路径、URL 或环境变量值；`tm_stats` 会把能力矩阵渲染出来 |
 
 ### v2 专属的开关

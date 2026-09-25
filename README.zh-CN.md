@@ -563,7 +563,7 @@ Team Lead 自己从不删黑板，你可以随时审计任何一次运行。
 | `TM_PTY_MAX` | `4` | 本插件同时最多保持多少个 `tm_pty` 终端会话 |
 | `TM_JOIN_MAX_WAIT_MS` | `60000` | `tm_join { waitMs }` 的上限。过去是 300 000，于是有了一次"连续两次各等 5 分钟、期间 lead 什么都没做"的实测——等待不是并行，所以默认改成"看一眼就去干活"。上一次没等到任何结算时，第二次等待被截到 10 秒并附替代动作 |
 | `TM_STORE_RECLAIM` | `on` | 启动时回收“升级留下的遗产”：超过 TTL 没动静的分片，以及临时目录回退点上分片之前的 `blackboard/` + `trajectory/`（一台真实机器上实测滞留 503 MB 过期 run，而搬家后没有任何清扫器指向那里）。只删超过 TTL 的条目——新鲜的 run 一定留着，因为升级前起来的会话可能还在往里写。设 `off` 就完全不碰磁盘（测试执行器会设它） |
-| `TM_TASK_OFFLOAD` | `on` | 把宿主的后台子代理压在 token 预算内：`task { background: true }` 完成时宿主会把子代理全文注入你的会话，这里把超限的正文换成预览 + 取回指针（`tm_join { ids: [...] }`）。**只碰**同时满足三条的 part：`synthetic === true`、正文精确匹配宿主自己的 `<task id=… state="completed">` 信封、且超过文本卸载阈值；任一不满足就原样放过。不往磁盘复制任何东西——全文本来就写在子会话里。`off` 恢复宿主原样注入 |
+| `TM_TASK_OFFLOAD` | `on` | 把宿主的后台子代理压在 token 预算内：`task { background: true }` 完成时宿主会把子代理全文注入你的会话，这里把超限的正文换成预览 + 取回指针（`tm_join { ids: [...] }`）。**只碰**同时满足三条的 part：`synthetic === true`、正文精确匹配宿主自己的 `<task id=… state="completed">` 信封、且超过文本卸载阈值；任一不满足就原样放过。不往磁盘复制任何东西——全文本来就写在子会话里。`off` 恢复宿主原样注入。**OpenCode 2.x 上这一半不适用**：v2 不会把注入后的消息在落盘前交给插件，而我们刻意不改写发出的消息（对那一层形状猜错就是静默删证据，v1 的 `experimental.chat.messages.transform` 就是因此一直没实现）。v2 的补偿是契约而不是改写：超限交付写进黑板文件、回复里带路径，领队读摘要、用 `tm_join` 取全文 |
 | `TM_TOOL_HINTS` | `on` | 通过 `tool.definition` 把本插件的调用点纪律追加到内置 `bash` / `task` 的**描述**后面（只追加、幂等，绝不替换宿主原文） |
 | `TM_AGENT_TEMPERATURE` | `off` | `on` 时按角色分档采样（architect 0.35 / researcher 0.3 / reviewer 0.1 / 其余 0.2）经 `chat.params` 生效；也可写 `reviewer=0.05;team=0.4`。默认关闭＝守住"所有 agent 0.2"这条既定原则 |
 | `TM_COMPACTION_CONTEXT` | `on` | 在宿主压缩前追加"必须存活清单"（回复骨架、offload 句柄、未回收的子会话 id、出处、板上路径）。只做追加——宿主自己的压缩提示词不被替换 |

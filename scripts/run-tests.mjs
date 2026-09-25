@@ -131,19 +131,30 @@ const run = (file) =>
     let err = ""
     child.stdout.on("data", (d) => (out += String(d)))
     child.stderr.on("data", (d) => (err += String(d)))
-    child.on("close", (code) => resolve({ file, code, ms: Date.now() - started, out, err }))
-    child.on("error", (e) => resolve({ file, code: 1, ms: Date.now() - started, out, err: String(e?.message ?? e) }))
+    // `code === null` means the child was KILLED, not that it failed. That
+    // distinction is the whole content of #18 (a suite once ended early with no
+    // assertion in its output, which reads as "hung" or as "the product broke"), so
+    // the signal is carried and named instead of being flattened into exit code 1.
+    child.on("close", (code, signal) => resolve({ file, code, signal, ms: Date.now() - started, out, err }))
+    child.on("error", (e) => resolve({ file, code: 1, signal: null, ms: Date.now() - started, out, err: String(e?.message ?? e) }))
   })
 
 const report = (r) => {
   const okRun = r.code === 0
   const label = okRun ? "\x1b[32mPASS\x1b[0m" : "\x1b[31mFAIL\x1b[0m"
-  console.log(`\n──── ${r.file} · ${label} · ${(r.ms / 1000).toFixed(1)}s ────`)
+  const how = okRun ? "" : r.code === null ? ` · killed by ${r.signal ?? "unknown signal"}` : ` · exit ${r.code}`
+  console.log(`\n──── ${r.file} · ${label}${how} · ${(r.ms / 1000).toFixed(1)}s ────`)
   // a passing suite prints only its own summary lines; a failing one prints
   // everything, because the assertion message IS the report
   const text = (r.out + (r.err ? `\n[stderr]\n${r.err}` : "")).trimEnd()
   const lines = text.split(/\r?\n/)
   console.log(okRun ? lines.slice(-6).join("\n") : text)
+  // A suite that dies before printing its own final line says nothing about why.
+  // Say what is missing rather than letting the reader guess between a hang, an
+  // OOM kill and a real assertion.
+  if (!okRun && !/ALL .* TESTS PASSED|ALL PASS/.test(r.out)) {
+    console.log(`[runner] 该套件没打印自己的结束行（最后一行：${JSON.stringify(lines.at(-1) ?? "(无输出)")}）——这是提前退出，不是断言失败`)
+  }
 }
 
 const build = () =>
