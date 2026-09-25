@@ -769,6 +769,13 @@ export function buildTmSearchTool(deps: {
           const settled = await Promise.all(
             routes.map(async (key): Promise<FusionGroup & { note?: string }> => {
               const engine = SEARCH_ENGINES[key]
+              const stalledLeg = dupe.stalled(key)
+              if (stalledLeg.blocked) {
+                // Proven not to be listening in this conversation: the leg is
+                // dropped WITHOUT fetching, so the other legs still vote and the
+                // round is actually saved instead of merely commented on.
+                return { engine: key, hits: [], note: `${key} 已连续 ${stalledLeg.stalls} 次对不同问题给出同一结果集，本轮不再请求它` }
+              }
               const prepared = engine.prepareQuery ? engine.prepareQuery(query) : query
               const target = new URL(engine.buildUrl(encodeURIComponent(prepared)))
               if (!hostAllowed(target.hostname, allowlist)) {
@@ -868,6 +875,27 @@ export function buildTmSearchTool(deps: {
           }
           approvedHosts.add(target.hostname)
           ask = askFnOf(ctx)
+        }
+        const stall = dupe.stalled(engine.name)
+        if (stall.blocked) {
+          // The advisory note has already been tried and ignored in a live
+          // session (collapse climbed to 6 repeats), so past the limit the
+          // request is refused outright: the only escalation a model cannot
+          // skip is not making the call.
+          pipelines.store.appendTrajectory({
+            tool,
+            step_id: stepId,
+            event: "blocked_stalled",
+            engine: engine.name,
+            repeats: stall.stalls,
+          })
+          return toToolResult(
+            tmError(
+              tool,
+              "execute",
+              `engine "${engine.name}" 已被本进程封锁：连续 ${stall.stalls} 次对不同问题返回完全相同的结果集，再问只会拿到同样的字节，所以这次请求我没有发出去。下一步只有三条：换 engine:"auto" 让其余引擎投票、把一个概念拆成一次一条查询、或用宿主的子代理（v1 是 task，v2 是 subagent）派一份自包含的调研任务给 researcher。`,
+            ),
+          )
         }
         const res = await fetchWebText(target, allowlist, {
           fetchImpl: deps.fetchImpl,

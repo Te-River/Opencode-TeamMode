@@ -70,12 +70,21 @@ import { checkWebUrl, seedWebfetchDomains } from "./webfetch.js"
 import { askGrantNote, askRefusalNote, askUserForTarget, askUserForTargetDetailed } from "./perm-ask.js"
 import { assertReadablePath } from "./guard.js"
 import { isEnvFilePath } from "../envprotect.js"
+import { createSerpLoopGuard, serpRefusal } from "./serp-loop.js"
 import type { ToolAttachment, ToolResult } from "../types.js"
 import { tmError, toToolResult } from "./result.js"
 import type { TmConfig } from "./config.js"
 import { estimateTokens } from "./config.js"
 import type { TmPipelines } from "./pipelines.js"
 import { rmForceSafe } from "../fs-safe.js"
+
+/**
+ * Per-process by design, like the dupe guard: ONE shared browser tool instance
+ * serves every agent in this plugin process, and "how many search-result pages
+ * has this conversation opened" is a conversation-level fact, not a per-caller
+ * one (leases are per-caller; the loop is the conversation's).
+ */
+const serpLoop = createSerpLoopGuard()
 
 /** Per-OS browser candidates, in preference order (first hit wins).  ONLY a
  *  fallback: on Windows the registry probe below is what actually honours the
@@ -2864,6 +2873,24 @@ export function buildTmBrowserTool(deps: {
       // new_page carries a URL too — it must clear the SAME allowlist gate, or
       // "open a second tab" becomes a way around the official dialog.
       if ((action === "open" || action === "navigate" || action === "navigate_page" || action === "new_page") && url) {
+        // Search-results pages are tm_search's job: one call returns a deduped,
+        // RRF-fused hit list, while a browser SERP grab costs a round trip and a
+        // snapshot budget each time.  A live session burned ~30 of them.  The
+        // first few still pass (bing's HTML is sometimes an anti-bot shell and a
+        // real browser is the only way through), then the navigation is refused.
+        const serp = serpLoop.observe(url)
+        if (serp) {
+          pipelines.store.appendTrajectory({
+            tool,
+            step_id: pipelines.nextStepId(),
+            event: serp.blocked ? "serp_refused" : "serp_nav",
+            engine: serp.target.engine,
+            repeats: serp.count,
+          })
+          if (serp.blocked) {
+            return toToolResult(tmError(tool, "permission", serpRefusal(serp)))
+          }
+        }
         const verdict = checkWebUrl(url, allowlist as readonly string[])
         if (!verdict.ok) {
           if (!verdict.askable || !verdict.url) {

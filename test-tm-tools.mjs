@@ -1518,13 +1518,51 @@ try {
       assert.ok(v2.note.includes("拆成一次查询"), "and gives a next step, not a shrug")
       const v3 = g.observe("bing", "第三个问题", junk, ["第三个", "问题"])
       assert.equal(v3.repeats, 3, "the repeat count climbs so the escalation can trigger")
+      assert.equal(g.stalled("bing").blocked, false, "two collapses is still a warning — the block counts COLLAPSES, not repeats")
+      const v4 = g.observe("bing", "第四个问题", junk, ["第四个", "问题"])
       assert.ok(
-        v3.note.includes("内置 task") && v3.note.includes("background:true"),
-        "at 3 collapses the escalation names the host's task tool (and the background switch) — not a dispatcher that no longer exists",
+        v4.note.includes("v1 是 task") && v4.note.includes("v2 是 subagent") && v4.note.includes("background:true"),
+        "at the limit the escalation names the host's sub-agent tool for BOTH personalities — a rule naming a tool v2 has never heard of is advice nobody can take",
       )
+      // #15: the advisory version was tried in a live session and ignored — the
+      // collapse counter climbed 2→3→4→5→6 across ~50 tm_search calls. At the
+      // limit the engine is refused, which is the one escalation that cannot be
+      // skipped, because the call is simply not made.
+      assert.equal(g.stalled("bing").blocked, true, "the engine is now BLOCKED, not merely warned")
+      assert.ok(v4.note.includes("它已被封锁"), "and the note says so in the same words the refusal will use")
+      g.observe("bing", "第五个问题", [h("https://different.example/", "别的答复")], ["第五个", "问题"])
+      assert.equal(g.stalled("bing").blocked, false, "a genuinely different result set resets the stall — one bad stretch must not mute an engine for the process")
+      assert.equal(g.stalled("never-asked").blocked, false, "an engine with no history is never blocked")
       const g2 = dg.createDupeGuard()
       const good = [h("https://maimai.sega.com/", "maimai DX"), h("https://zhuanlan.zhihu.com/p/1", "舞萌DX 是什么")]
       assert.equal(g2.observe("bing", "舞萌DX", good, ["舞萌"]).note, "", "a normal, on-topic result set gets NO warning text")
+      assert.equal(g2.stalled("bing").blocked, false, "…and does not stall the engine")
+    }
+
+    // #14: a live session spent ~30 browser navigations on cn.bing.com/search?q=…
+    // — one query per round trip, on the channel tm_search already owns.
+    {
+      const sl = await import("./dist/tm/serp-loop.js")
+      const serpUrl = `https://cn.bing.com/search?q=${encodeURIComponent("神椿 动漫")}`
+      const serp = sl.serpTarget(serpUrl)
+      assert.equal(serp.engine, "bing", "a bing results page is recognised, with the query decoded")
+      assert.equal(serp.query, "神椿 动漫", "…and the query comes back readable")
+      assert.equal(sl.serpTarget("https://cn.bing.com/")?.engine, undefined, "a bare home page (no query) is NOT a search")
+      assert.equal(sl.serpTarget("https://baike.baidu.com/item/%E5%85%83%E7%A5%9E/10593772"), null, "an article is not a search — the guard must not eat real pages")
+      assert.equal(sl.serpTarget("https://github.com/search?q=opencode&type=repositories").engine, "github", "github's search path maps to the github engine")
+      assert.equal(sl.serpTarget("not a url"), null, "a malformed URL is simply not a search")
+      assert.equal(sl.serpTarget("https://stackoverflow.com/questions/12/x"), null, "a question page is not /search")
+
+      const loop = sl.createSerpLoopGuard(2)
+      assert.equal(loop.observe("https://cn.bing.com/search?q=a").blocked, false, "the first SERP grab passes — bing's HTML is sometimes an anti-bot shell and only a real browser gets through")
+      assert.equal(loop.observe("https://cn.bing.com/search?q=b").blocked, false, "…and the second")
+      const third = loop.observe("https://cn.bing.com/search?q=c")
+      assert.equal(third.blocked, true, "past the limit the navigation is refused")
+      const refusal = sl.serpRefusal(third)
+      assert.ok(refusal.includes("tm_search") && refusal.includes("bing"), "the refusal names the tool and the engine that should have been used")
+      assert.ok(refusal.includes("反爬壳子"), "…and it keeps the legitimate fallback on the record instead of banning the path")
+      assert.equal(loop.observe("https://example.com/docs"), null, "a non-SERP URL is not counted and not judged at all")
+      assert.equal(loop.seen(), 3, "only search pages feed the counter")
     }
 
     // bing's international layout wraps EVERY hit in /ck/a?…u=a1<base64> —

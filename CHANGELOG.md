@@ -136,6 +136,25 @@ registry saw 1.5.0 as the install-script fix release).
 
 ### Fixed
 
+- **An engine that stops listening is now refused, not just described.**
+  `dupe-guard` has reported `collapse` (same result set, different question)
+  since 1.5.x, and a live session showed the advisory form does not work: the
+  counter climbed 2 → 3 → 4 → 5 → 6 while the model kept rephrasing at bing,
+  ending at ≈50 `tm_search` calls and 424K input tokens for a three-term lookup.
+  Past `DUPE_BLOCK_AFTER` (3 collapses in a row) the engine is refused outright —
+  in the explicit path before any fetch, and in the `auto` route by dropping that
+  leg so the remaining engines still vote. The streak resets when the result set
+  changes, so one bad stretch cannot mute an engine for the life of the process.
+  The only escalation a model cannot skip is not making the call.
+- **`tm_browser` is no longer a searchable-by-loop escape hatch.** The same
+  session opened roughly thirty search-results pages through the browser instead
+  of calling `tm_search` once — each costing a round trip plus a snapshot budget,
+  and each returning a worse list than the fused one the governed front would
+  have produced. `src/tm/serp-loop.ts` recognizes a SERP URL by its engine host
+  and `/search` path shape, and after `SERP_NAV_LIMIT` (3) visits to the same
+  engine with the same query refuses the navigation and names `tm_search` as the
+  next move. The first few still pass on purpose: bing's HTML is sometimes an
+  anti-bot shell, and then a real browser genuinely is the only way through.
 - **The v2 argument table for `tm_join` / `tm_pty` / `tm_stats` now says what
   its parameters are.** Those three build their `args` without zod, so the shape
   reaches the v2 adapter as `{ key: { descriptor: "name: type (guidance)" } }`.

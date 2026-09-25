@@ -68,28 +68,45 @@ export interface DupeVerdict {
 }
 
 /**
- * Per-process ledger of (engine → last signature + query).  Deliberately
- * in-memory: it is a conversation-level observation, and a restart of the
- * plugin legitimately starts a fresh judgement (the agent is asking afresh).
+ * An engine that has answered a DIFFERENT question with the SAME result set this
+ * many times is not listening, and asking it again costs a round and a fetch to
+ * produce bytes we already have.  A live session proved the advisory version of
+ * this rule does not work: the guard reported `collapse` at repeats 2,3,4,5,6 and
+ * the model kept going (≈50 tm_search calls, 424K input tokens).  So past the
+ * limit the engine is refused outright — the only form of escalation that cannot
+ * be ignored is not making the call.
  */
+export const DUPE_BLOCK_AFTER = 3
+
+/** Per-process ledger of (engine → last signature + query).  Deliberately
+ *  in-memory: it is a conversation-level observation, and a restart of the
+ *  plugin legitimately starts a fresh judgement (the agent is asking afresh). */
 export function createDupeGuard(limit = 60): {
   observe: (engine: string, query: string, hits: ReadonlyArray<{ url?: string; title?: string; snippet?: string }>, terms: readonly string[]) => DupeVerdict
+  /** ask BEFORE spending a fetch: a stalled engine is refused without calling it */
+  stalled: (engine: string) => { blocked: boolean; stalls: number }
   seen: () => number
 } {
-  const last = new Map<string, { sig: string; query: string; repeats: number }>()
+  const last = new Map<string, { sig: string; query: string; repeats: number; stalls: number }>()
   return {
     observe(engine, query, hits, terms) {
       const sig = hitSignature(hits)
       const prev = last.get(engine)
       let repeats = 1
       let collapse = false
+      // A NEW result set is evidence the engine is listening again, so the stall
+      // streak resets — otherwise one bad stretch would mute an engine for the
+      // rest of the process.
+      let stalls = prev?.stalls ?? 0
       if (sig) {
         if (prev && prev.sig === sig) {
           repeats = prev.repeats + 1
-          // same answer set, different question = the engine is not listening
           collapse = prev.query !== query
+          if (collapse) stalls += 1
+        } else {
+          stalls = 0
         }
-        last.set(engine, { sig, query, repeats })
+        last.set(engine, { sig, query, repeats, stalls })
         if (last.size > limit) {
           const oldest = last.keys().next().value
           if (oldest) last.delete(oldest)
@@ -109,12 +126,16 @@ export function createDupeGuard(limit = 60): {
       }
       if (collapse || irrelevant) {
         parts.push(
-          repeats >= 3
-            ? `下一步：这类多概念关联查询已经在本进程失败 ${repeats} 次——用内置 task 派一份自包含的调研任务给 researcher（多个且要持续跟进就加 background:true；让它用自己的上下文去试错），或直接把不确定处报告给用户；不要在本会话里继续串行试。`
+          stalls >= DUPE_BLOCK_AFTER
+            ? `下一步：该引擎在本进程已连续 ${stalls} 次给出同一结果集，**它已被封锁，再问它会直接拒绝**（省下的就是你本来要花的两轮）。把概念拆开逐次查、换 engine:"auto" 让其余引擎投票，或用宿主的子代理工具（v1 是 task，v2 是 subagent）派一份自包含的调研任务给 researcher（要并行就加 background:true）；也可以把不确定处直接报告给用户。`
             : `下一步：把一个概念拆成一次查询（先查 A 是什么，再查 A 与 B 的关联），或换 engine:"auto" 让多引擎投票。`,
         )
       }
       return { repeats, collapse, irrelevant, note: parts.join("\n") }
+    },
+    stalled(engine) {
+      const stalls = last.get(engine)?.stalls ?? 0
+      return { blocked: stalls >= DUPE_BLOCK_AFTER, stalls }
     },
     seen: () => last.size,
   }
