@@ -131,9 +131,28 @@ registry saw 1.5.0 as the install-script fix release).
   enable.  Both READMEs now point an installing agent at `opencode --version` first, and
   the v1 page opens by saying it is the 1.18.x path.  To make the documented command true
   for an INSTALLED copy, `scripts/gen-v2-config.mjs` is now in npm's `files` (verified by
-  running the generator out of a copied-out package tree); what is still open is the
-  installer itself — `install.sh` / `install.ps1` have no 2.x branch yet, and this page is
-  the working path meanwhile.
+  running the generator out of a copied-out package tree).  The 2.x branch in the
+  installers landed in the same release line (see the installer bullet), with its
+  not-yet-run-on-a-live-host status stated instead of smoothed over.
+- **The installers have an OpenCode 2.x branch** (#10, #11).  `install.sh` /
+  `install.ps1` detect the host major version and, on 2.x, run the three things only an
+  installer can do: write the plugin entry, generate the six roles and six `/team-*`
+  commands **from the installed package**, and write `default_agent: "team"` LAST,
+  reading it back from disk with JSONC comments masked so a commented-out key cannot read
+  as active.  If any role file is missing the default is refused, because a default
+  naming a missing agent makes the host fall back to `build` silently.  v1's cache-purge
+  and npm-re-resolve machinery is skipped on 2.x (it would delete a directory that host
+  never loads from), and the `OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS` block is
+  **forked, not deleted**: the v1 path is line-for-line what it was (both files are pure
+  insertions — 392 and 425 added lines, zero removed), and the v2 path prints that the
+  flag is not needed together with its undo command.  The version probe also asks the
+  desktop app — `resources/opencode-cli.version`, then the bundled
+  `opencode-cli.exe --version` — because a desktop install puts no `opencode` on `PATH`,
+  so a PATH-only probe answers "not found" on a machine running 2.0.16 (verified on one).
+  What is NOT claimed: this branch has not been run end-to-end on a live 2.x host — both
+  scripts parse clean and the probe is checked against the installed version file, which
+  is not the same statement — so `docs/installation-v2.md` says that out loud and keeps
+  the manual steps as the verified path.
 - **`tm_ledger` — the LEDGER rule finally has a place to live on v2** (#16).  The
   lead's prompt mandates the list before the work (every new ask becomes an item,
   an interruption is an insertion, `blocked` is a state and not an exit, a

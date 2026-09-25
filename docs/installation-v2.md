@@ -21,6 +21,23 @@ opencode --version        # 1.18.x → installation.md ;  2.x → this page
 
 ## Part A — English
 
+### One command, or the steps below
+
+`scripts/install.sh` / `scripts\install.ps1` now detect the host major version and run
+all three steps of this page on 2.x (plugin entry → generate roles and commands →
+`default_agent` last, with a read-back from disk). Two things are said rather than
+implied:
+
+- the version probe also asks the **desktop app** (`resources/opencode-cli.version`,
+  then the bundled `opencode-cli.exe --version`), because the desktop install does not
+  put `opencode` on `PATH` — on such a machine a PATH-only probe answers "not found"
+  while 2.0.16 is running;
+- this branch has **not been exercised end-to-end on a live 2.x host yet** (both
+  scripts parse clean and the probe is verified against the installed app's version
+  file, which is not the same claim). So the manual steps below remain the verified
+  path; if the installer's v2 branch misbehaves, follow them and report which step said
+  what.
+
 ### What is different on 2.x (read this before the steps)
 
 | | OpenCode 1.18.x | OpenCode 2.x |
@@ -159,6 +176,13 @@ a new release may have changed them. Re-running is cheap — unchanged files are
 ---
 
 ## Part B — 中文
+
+### 一条命令，或者按下面的步骤来
+
+`scripts/install.sh` / `scripts\install.ps1` 现在会探测宿主主版本，并在 2.x 上把本页的三步全做完（插件条目 → 生成角色与命令 → 最后写 `default_agent`，并从磁盘读回校验）。两件事直说而不含糊：
+
+- 版本探测也会去问**桌面端**（`resources/opencode-cli.version`，再试自带的 `opencode-cli.exe --version`），因为桌面安装不把 `opencode` 放进 `PATH`——在这种机器上，只探 PATH 会得到"没找到"，而 2.0.16 正在跑；
+- 这条 v2 分支**还没在活体 2.x 宿主上端到端跑过**（两份脚本解析通过、探测对已安装应用的版本文件验证过——这不等于同一个结论）。所以下面的手动步骤仍是已验证路径；安装脚本的 v2 分支若表现不对，请按手动步骤做，并回报是哪一步说了什么。
 
 ### 2.x 上到底哪里不一样（先看这张表再动手）
 
