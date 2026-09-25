@@ -442,6 +442,7 @@ export function renderStats(
         line.tools_in_request ? `工具交付：请求内实际可见=${line.tools_in_request}（direct 是否被宿主采纳只看这一项）` : "",
         line.browser_gate_note ? `  ${line.browser_gate_note}` : "",
         line.native_capped !== undefined ? `快照按寻址预算截断 ${line.native_capped} 次（不是卸载：ref 留在上下文里）` : "",
+        line.native_report_capped !== undefined ? `报告型输出保留表格截断散文 ${line.native_report_capped} 次（表格整份留下，句柄装全文）` : "",
       ].filter(Boolean)
       out.push(`- \`${s}\` · ${bits.join(" · ")}`)
       if (line.scope_unknown !== undefined && Number(line.scope_unknown) > 0) {

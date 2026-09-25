@@ -647,6 +647,7 @@ export const v2Personality: V2Plugin = {
           // the half of the delivery story the sent flag cannot tell.
           tools_in_request: session.report.tmInRequestSurface ? "tm-in-request" : "catalog-only",
           native_capped: offload.report.capped,
+          native_report_capped: offload.report.reportCapped,
           ...probeSummary(probe.report),
         })
       } catch {

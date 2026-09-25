@@ -1,6 +1,6 @@
 import type { V2Registration } from "./v2-types.js"
 import type { TeamScope } from "./v2-scope.js"
-import { capTokens, capKeepingAddressing, detectContentType } from "../tm/preview.js"
+import { capTokens, capKeepingAddressing, capKeepingTables, detectContentType, hasMarkdownTable } from "../tm/preview.js"
 import { parseHostEnvelope, renderOffloadedSubagent } from "../task-offload.js"
 import { estimateTokens } from "../tm/config.js"
 
@@ -107,6 +107,9 @@ export interface V2OffloadReport {
    *  rather than replaced by a handle — the tokens they cost are counted, and so is
    *  the fact that we chose a usable `ref` over the smaller number */
   capped: number
+  /** report-shaped payloads (tables kept, prose dropped) — a third outcome, because
+   *  "offloaded" and "capped" answer different questions about what entered context */
+  reportCapped: number
   /** envelopes RECOGNISED, whether or not they needed rewriting — a counter that
    *  moves only on a rewrite cannot tell "the channel is alive, nothing was big"
    *  apart from "this host's format is not the one we match" (which is exactly how
@@ -186,6 +189,34 @@ export function renderAddressingCap(
   )
 }
 
+/** The budget a report (a `tm_stats`-shaped answer, a `tm_join` summary) keeps in
+ *  context: tables win the space, prose is what gets dropped. Pinned separately from
+ *  the snapshot budget because a report has more prose per table. */
+export const NATIVE_REPORT_MAX_TOKENS = 1600
+
+export function reportTokenBudget(env: Record<string, string | undefined> | undefined): number {
+  const raw = Number(String(env?.TM_NATIVE_REPORT_MAX_TOKENS ?? "").trim())
+  return Number.isFinite(raw) && raw >= 200 ? Math.min(20_000, Math.floor(raw)) : NATIVE_REPORT_MAX_TOKENS
+}
+
+export function renderReportCap(
+  tool: string,
+  capped: string,
+  governed: { ref: string; access_token: string; expire_at: number; tokens: number },
+  tablesDropped: number,
+): string {
+  const when = new Date(governed.expire_at).toISOString().replace("T", " ").slice(0, 16)
+  return (
+    capped +
+    `
+
+（原生 ${tool} 的返回是报告形的：表格已整份留在上面，被删掉的只有表格之间的说明文字——` +
+    `全文 ${governed.tokens} token，别为了看一句散文把整份读回来。` +
+    (tablesDropped > 0 ? `注意：预算之外还有 ${tablesDropped} 行表格内容没进来，需要时用 ` : "需要更多行时用 ") +
+    `tm_fetch { ref:"${governed.ref}", access_token:"${governed.access_token}", mode:"lines" } 分段取。过期 ${governed.expire_at} · ${when}）`
+  )
+}
+
 export function renderNativeOffload(
   tool: string,
   governed: { offloaded: true; ref: string; access_token: string; expire_at: number; tokens: number; preview: string },
@@ -207,7 +238,7 @@ export function applyV2NativeOffload(
 ): { registrations: Promise<V2Registration>[]; report: V2OffloadReport; active: boolean } {
   const env = deps.env ?? process.env
   const off = /^(0|false|no|off)$/i.test(String(env.TM_NATIVE_OFFLOAD ?? "").trim())
-  const report: V2OffloadReport = { seen: 0, ours: 0, unmatched: 0, considered: 0, offloaded: 0, capped: 0, envelopes: 0, degraded: 0, tokensSaved: 0, byTool: {} }
+  const report: V2OffloadReport = { seen: 0, ours: 0, unmatched: 0, considered: 0, offloaded: 0, capped: 0, reportCapped: 0, envelopes: 0, degraded: 0, tokensSaved: 0, byTool: {} }
   const hook = (ctx as { tool?: { hook?: unknown } })?.tool?.hook
   if (typeof hook !== "function") {
     // No seam at all: report it, do not silently pretend the promise holds.
@@ -285,6 +316,24 @@ export function applyV2NativeOffload(
         if (textPart(parts[i])) parts[i] = { type: "text", text: "" }
       }
       report.capped++
+      report.tokensSaved += Math.max(0, estimateTokens(found.text) - estimateTokens(rendered))
+      report.byTool[tool].offloaded++
+      return
+    }
+    if (!envelope && hasMarkdownTable(found.text)) {
+      // A report is not a log. Offloading `tm_stats` down to an 80-token preview
+      // (measured live, on a report that came back through Code Mode's `execute` at
+      // 2 917 tokens) leaves the lead describing a table it cannot see and the user
+      // reading prose about numbers instead of the numbers. So the tables stay, the
+      // prose goes, and the handle still carries the whole thing.
+      const budget = reportTokenBudget(deps.env)
+      const cut = capKeepingTables(found.text, budget)
+      const rendered = renderReportCap(tool, cut.text, g, cut.tablesDropped)
+      parts[found.index] = { type: "text", text: rendered }
+      for (let i = found.index + 1; i < parts.length; i++) {
+        if (textPart(parts[i])) parts[i] = { type: "text", text: "" }
+      }
+      report.reportCapped++
       report.tokensSaved += Math.max(0, estimateTokens(found.text) - estimateTokens(rendered))
       report.byTool[tool].offloaded++
       return

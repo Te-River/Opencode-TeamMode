@@ -1305,7 +1305,37 @@ for (const dir of made) {
     fs.rmSync(dir, { recursive: true, force: true })
   } catch {
     /* temp dir */
-    // Code Mode is the same browser through a different door: `tools.browser.*` inside an
+    // A report is not a log: the generic offload would leave the lead describing a
+  // table it could not see (measured live — a 2 917-token tm_stats answer arriving
+  // through Code Mode's `execute` and coming back as an 80-token preview).
+  {
+    const prose = Array.from({ length: 60 }, (_, i) => `口径说明第 ${i} 段：这一整段都是散文，模型不需要逐字读，删掉它不损失任何结构。`).join(String.fromCharCode(10))
+    const table = [
+      "| 工具 | 调用 | 卸载 | 省下 token |",
+      "|---|---:|---:|---:|",
+      ...Array.from({ length: 12 }, (_, i) => `| tm_webfetch${i} | ${i + 3} | ${i} | ${1000 * (i + 1)} |`),
+    ].join(String.fromCharCode(10))
+    const report = `**口径**：统计自本插件保留的 trajectory。${String.fromCharCode(10)}${prose}${String.fromCharCode(10)}### 令牌经济${String.fromCharCode(10)}${table}${String.fromCharCode(10)}结尾散句。`
+    const t = handled("execute", { content: [{ type: "text", text: report }], metadata: {}, output: report })
+    t.run()
+    const out = String(t.ev.result.content[0].text)
+    assert.equal(t.o.report.reportCapped, 1, "the report path is its own outcome, counted apart from offload and cap")
+    for (const row of table.split(String.fromCharCode(10))) {
+      assert.ok(out.includes(row), `every table row survives — a table with a hole in it is not a table (${row.slice(0, 24)})`)
+    }
+    assert.ok(out.includes("### 令牌经济"), "the table keeps its heading")
+    assert.ok(!out.includes("口径说明第 40 段"), "the prose between tables is what paid for it")
+    assert.match(out, /表格已整份留在上面/, "and the reply says which half is in front of the model")
+    assert.ok(estimateTokens(report) > 1600, "the payload really was over the report budget")
+    assert.ok(estimateTokens(out) < estimateTokens(report) / 2, `and the saving is real (${estimateTokens(report)} -> ${estimateTokens(out)})`)
+    // A non-report payload still takes the old path — this branch must not become a
+    // reason to keep more prose in context than the threshold allows.
+    const log = "line of log output " + "x".repeat(9000)
+    const t2 = handled("shell", { content: [{ type: "text", text: log }], metadata: {}, output: log })
+    t2.run()
+    assert.equal(t2.o.report.reportCapped, 0, "a plain log does not enter the report branch")
+    assert.match(String(t2.ev.result.content[0].text), /PREVIEW≤80|已按 JIT 治理卸载/, "the generic offload still governs it")
+  }
   // `execute` program may never surface as its own execute.before, so a gate that only
   // reads input.url is bypassable by putting the navigate in a program.
   {

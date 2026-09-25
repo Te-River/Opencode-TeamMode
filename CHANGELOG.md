@@ -21,6 +21,19 @@ registry saw 1.5.0 as the install-script fix release).
 
 ### Changed
 
+- **A report no longer gets treated like a log.** Measured live: a `tm_stats` answer
+  called from inside Code Mode came back as the `execute` result at 2 917 tokens and
+  the generic offload turned it into an 80-token preview — so the lead spent its round
+  paging the table back in row by row, and what the user finally saw was prose *about*
+  numbers instead of the numbers (which is also the real story behind "your output
+  doesn't render"). `capKeepingTables()` now recognises a payload that carries a
+  Markdown table and keeps the tables plus their headings, dropping the prose between
+  them (`TM_NATIVE_REPORT_MAX_TOKENS` default 1 600, tables may overtake to × 4 — a
+  table with a hole in it is not a table), with the full text still on the handle.
+  `reportCapped` is a third outcome next to `offloaded` and `capped`, printed by
+  `tm_stats`, because the three answer different questions about what entered the
+  context. A payload with no table still takes the old path — pinned, so this branch
+  cannot quietly become a reason to keep prose.
 - **`options.codemode:false` does not deliver tools directly on 2.0.16, and the
   default no longer claims it does.** A live desktop session answered the A–F forensic
   prompt with the fact: every `tm_*` arrived inside the host's Code Mode catalog ("They

@@ -192,6 +192,98 @@ export function capKeepingAddressing(
   }
 }
 
+/** How far a table payload may overtake its nominal budget — same reasoning as the
+ *  snapshot cap: a truncated row is not a smaller table, it is an unreadable one. */
+export const TABLE_OVERTAKE_FACTOR = 4
+
+/** Does this payload carry a Markdown table? A line starting with `|` followed by an
+ *  alignment row is the whole test — prose that merely quotes a pipe is not a report. */
+export function hasMarkdownTable(text: string): boolean {
+  const lines = text.split("\n")
+  for (let i = 0; i < lines.length - 1; i++) {
+    if (!lines[i].trimStart().startsWith("|")) continue
+    if (/^\s*\|[:\s|-]+\|/.test(lines[i + 1] ?? "")) return true
+  }
+  return false
+}
+
+/**
+ * Cap a REPORT payload: keep the tables, drop the prose around them.
+ *
+ * The generic offload (≤80-token preview + handle) is right for a 50 KB log and wrong
+ * for a report, and on this host the wrongness reaches the user: a `tm_stats` call made
+ * from inside Code Mode comes back as the `execute` result, is offloaded whole, and the
+ * lead ends up describing a table it had to page back in row by row. A live session
+ * measured exactly that on a 2 917-token report.
+ *
+ * Table lines are structural: a row is only readable with its header and alignment row,
+ * so they are kept as a unit, along with the heading above each table. Everything else
+ * is filler. Same rule as capKeepingAddressing and for the same reason — spend the
+ * budget on the part the reader cannot reconstruct.
+ */
+export function capKeepingTables(
+  text: string,
+  maxTokens: number,
+): { text: string; kept: number; dropped: number; total: number; tablesDropped: number } {
+  const lines = text.split("\n")
+  const cost = lines.map((l) => estimateTokens(l) + 1)
+  const totalCost = cost.reduce((a, b) => a + b, 0)
+  if (totalCost <= maxTokens) {
+    return { text, kept: lines.length, dropped: 0, total: lines.length, tablesDropped: 0 }
+  }
+
+  const keep = new Array<boolean>(lines.length).fill(false)
+  const heading = /^\s*#{1,6}\s/
+  for (let i = 0; i < lines.length; i++) {
+    if (!(lines[i] ?? "").trimStart().startsWith("|")) continue
+    if (i > 0 && heading.test(lines[i - 1] ?? "")) keep[i - 1] = true
+    let j = i
+    while (j < lines.length && (lines[j] ?? "").trimStart().startsWith("|")) j++
+    for (let k = i; k < j; k++) keep[k] = true
+    i = j
+  }
+
+  const tableIdx: number[] = []
+  lines.forEach((_, i) => {
+    if (keep[i]) tableIdx.push(i)
+  })
+  const tableCost = tableIdx.reduce((s, i) => s + cost[i], 0)
+  const ceiling = maxTokens * TABLE_OVERTAKE_FACTOR
+  const picked = new Set<number>()
+  let used = 0
+  let tablesDropped = 0
+  if (tableCost <= ceiling) {
+    for (const i of tableIdx) {
+      picked.add(i)
+      used += cost[i]
+    }
+    for (let i = 0; i < lines.length; i++) {
+      if (picked.has(i)) continue
+      if (used + cost[i] <= maxTokens) {
+        picked.add(i)
+        used += cost[i]
+      }
+    }
+  } else {
+    // Even the tables overflow: keep what fits and COUNT the lines left out, so the
+    // reply can say a section is missing instead of showing half of one.
+    for (const i of tableIdx) {
+      if (used + cost[i] <= ceiling) {
+        picked.add(i)
+        used += cost[i]
+      } else tablesDropped++
+    }
+  }
+  const out = lines.filter((_, i) => picked.has(i))
+  return {
+    text: out.join("\n"),
+    kept: out.length,
+    dropped: lines.length - out.length,
+    total: lines.length,
+    tablesDropped,
+  }
+}
+
 export function capTokens(text: string, maxTokens: number): string {
   const marker = " …(截断)"
   let total = 0

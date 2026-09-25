@@ -533,6 +533,10 @@ Team Lead 自己从不删黑板，你可以随时审计任何一次运行。
 | `TM_ENV_PROTECT` | `strict` | R6 模式：`strict` / `standard` / `off`（off 同时解除审批计时器）
 | `TM_R6_FINE_ASK` | 按命令行判定（仅 v2） | 在 **v2** 上，命令行由宿主的 `permission.evaluate` 钩子逐次判定，所以普通 `git status` 什么都不问、导出环境变量照样问。`off` 退回"每条 shell 命令都问"——宿主不提供该钩子时也会自动走这条路，而且启动日志会说是哪一个原因造成的。v1 不受影响：它本来就在工具调用钩子里判定 |
 | `TM_V2_CODEMODE` | catalog（`direct` 需显式开启）——**仅 v2** | 我们的工具怎么送到模型面前。OpenCode 2.x 用 `options.codemode` 决定可见性。我们曾默认发 `codemode:false` 并宣称"以真实定义交付"——**一次 2.0.16 桌面端活体会话把它推翻了**：发了那个标志之后，十个 `tm_*` 仍然只出现在宿主的 Code Mode 目录里（原文："They cannot be called directly…"），模型可直接调用的是那九个原生工具。所以默认什么都不发，`direct` 留给可能认它的构建做实验。能核对的只有关停记录里的 `tools_in_request`（`tm_stats` 渲染成"请求内实际可见=…"），不是我们发出的标志 |
+| `TM_PRIVATE_SPACE` | v1 `ask` · **v2 `deny`** | 私网（回环、RFC1918、ULA、CGNAT、`.localhost`）经我们工具时的行为：`ask` 走宿主确认窗（v1 弹得出），`allow` 放开整段，`deny` 拒绝。v2 默认 `deny`，因为插件在那儿弹不出窗子——"等用户批准"在一台给不出确认框的宿主上不是闸门，是让 agent 干等。所以 v2 的拒绝语会印出两条操作者自己走得通的出口（`TM_PRIVATE_SPACE=allow`，或把这一台主机名写进 `TM_WEBFETCH_ALLOWED_DOMAINS`）。元数据 / 链路本地 / 保留段不在这个开关管辖内：任何设置都拒，也没有批准路径 |
+| `TM_V2_BROWSER_GATE` | 开——**仅 v2** | 对宿主 `browser_*` 目录的门禁（`execute.before` 判 URL 与 `browser_preview` 路径，也扫 `execute` 程序里出现的浏览器 URL）。`off` 恢复宿主无治理的浏览；启动行与 `tm_stats` 会说清当前是哪种 |
+| `TM_NATIVE_SNAPSHOT_MAX_TOKENS` | 1200——**仅 v2** | 原生 `browser_snapshot` / `browser_find` 在上下文里保留的预算。带 ref 的行优先占位，静态文字先被删；超过 `预算 × 4` 时回复会说明有多少 ref 行没装下，kept + dropped 恒等于总行数 |
+| `TM_NATIVE_REPORT_MAX_TOKENS` | 1600——**仅 v2** | 报告形原生结果（带 Markdown 表格的那种：经 Code Mode 回来的 `tm_stats`、`tm_join` 汇总）在上下文里保留的预算。表格行和小标题优先占位，被删的是表格之间的散文——缺一行的表格就不是表格；全文仍在句柄里 |
 | `TM_LEDGER_MAX_ITEMS` | 200 | 每个会话 `tm_ledger` 的条数上限。宿主的 `ctx.storage` 没有 TTL 也没有配额（实测），所以清单到顶就**拒绝新增**，而不是悄悄丢掉最早的条目——拒绝是领队能据此行动的信号，静默截断则是一条没人能复核的主张 |
 | `TM_V2_PROBE` | —（仅 v2） | 表面探针的 JSONL 输出路径，记录宿主真实给出的工具 id、权限动作名、参数键名。只记名字与计数——绝不记命令行、路径、URL、环境变量值。它是"宿主到底有没有 X"这个问句的取证入口（问运行中的构建，而不是问文档）；不设这个变量时，同一批名字集合仍会进轨迹，`tm_stats` 照样能看 | |
 | `TM_ASK_TIMEOUT_MIN` | `1` | 无人应答弹窗自动拒绝前等待的分钟数（地板 1 分钟——安全：抢跑应答良性记为 `already-closed`；宿主应答事件到插件晚约 120 秒是事件总线投递延迟，非点击解析延迟）。此外每个受治理工具都会在"这个值 + 15 秒"处自己结束等待——审批闸只在 R6 开启且宿主能回复时才武装，而一个永不返回的工具在界面上读起来就是卡死，不是在请你确认 |
