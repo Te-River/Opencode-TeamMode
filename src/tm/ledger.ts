@@ -11,10 +11,15 @@
  *
  * This module is the other answer.  Storage is `ctx.storage` — the host's own
  * key/value domain, proven by a boot self-check that writes a marker and reads it
- * back.  That choice matters: the alternative was a file under the run store, and
- * a session list written to disk is the user's most private work-in-progress
- * sitting in a temp directory with no owner.  `ctx.storage` is the host's, scoped
- * to the host's own location, and removed with it.
+ * back.  That choice beats the alternative (a file under the run store), which is
+ * the user's work-in-progress sitting in a temp directory with no owner.  Two facts
+ * from a live 2.0.16 probe (`docs/research/agent-data-exchange.md`) shape this file:
+ *   · the domain is shared across sessions, agents AND projects — the only namespace
+ *     is the plugin id — so the session id is part of the key and nothing may be
+ *     written without one;
+ *   · there is no TTL and no quota, so a list that only ever grows is a leak with a
+ *     friendly name.  That is why `LEDGER_MAX_ITEMS` refuses instead of promising a
+ *     cleanup mechanism this host does not offer.
  *
  * The honesty rule this module exists to obey (product goal #6): a reply about
  * the list says whether the list REACHED storage.  An in-memory-only "已记录"
@@ -141,6 +146,17 @@ export function emptyLedger(sessionID: string): Ledger {
   return { sessionID, items: [], updated: Date.now() }
 }
 
+/** `ctx.storage` never expires anything (measured), so the list needs a ceiling or
+ *  it grows for the life of the install. Refusing is honest; silently truncating
+ *  would be the overstated claim — the lead would believe its oldest asks were gone
+ *  when they were only hidden. */
+export const LEDGER_MAX_ITEMS_DEFAULT = 200
+
+export function ledgerMaxItems(env: Record<string, string | undefined> = process.env): number {
+  const n = Number(String(env.TM_LEDGER_MAX_ITEMS ?? "").trim())
+  return Number.isFinite(n) && n >= 10 ? Math.floor(n) : LEDGER_MAX_ITEMS_DEFAULT
+}
+
 /** A merge is reported, not hidden: the reply says "这条已经在清单上（#2）" so the
  *  lead learns the insertion was a repeat instead of wondering why the count did
  *  not move. */
@@ -255,6 +271,8 @@ export interface LedgerToolDeps {
    *  to the lead), and on v2 the matrix grants every `tm_*` to every role, so the
    *  gate lives here rather than in the frozen permission table. */
   onlyAgent?: string
+  /** Resolved from the personality's own env copy, so v1 and v2 can differ. */
+  env?: Record<string, string | undefined>
   /** Called after a successful write so the host (index.ts) can log the trajectory. */
   onWrite?: (sessionID: string, event: string) => void
   now?: () => number
@@ -324,6 +342,17 @@ export function buildLedgerTool(deps: LedgerToolDeps): ToolDefinition {
               .filter(Boolean)
         if (!texts.length) {
           return toToolResult(tmError(tool, "args", "add 需要 text —— 空的一条要求只会让清单变长，不会让活变少"))
+        }
+        const max = ledgerMaxItems(deps.env)
+        if (ledger.items.length + texts.length > max) {
+          return toToolResult(
+            tmError(
+              tool,
+              "args",
+              `清单已有 ${ledger.items.length} 条，再加 ${texts.length} 条会超过上限 ${max}（TM_LEDGER_MAX_ITEMS）。` +
+                `宿主的 ctx.storage 不设 TTL，也不会替你回收：先把已完成的条目在回复里总结掉，或显式清一次，别让它无声涨下去。`,
+            ),
+          )
         }
         let merged = 0
         const added: LedgerItem[] = []

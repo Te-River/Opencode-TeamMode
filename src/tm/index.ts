@@ -548,7 +548,7 @@ export async function createTmTools(
   // personality is frozen: an extra tool in this record would be a v1 tool-
   // surface change smuggled in through a v2 feature.
   if (opts.ledgerStore) {
-    tools.tm_ledger = buildLedgerTool({ store: opts.ledgerStore, onlyAgent: "team" })
+    tools.tm_ledger = buildLedgerTool({ store: opts.ledgerStore, onlyAgent: "team", env: opts.env ?? process.env })
   }
   return {
     runId,

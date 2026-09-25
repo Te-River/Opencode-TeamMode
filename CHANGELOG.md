@@ -346,6 +346,21 @@ registry saw 1.5.0 as the install-script fix release).
 
 ### Fixed
 
+- **`ctx.storage` is global and immortal — the LEDGER now knows both.**
+  A live probe disproved two things this module had assumed: the domain is shared
+  across sessions, agents and projects (only the plugin id namespaces it), and nothing
+  in it ever expires. The session id was already part of the key, so no cross-session
+  read is possible by accident, but a list that only grows is a leak with a friendly
+  name: `tm_ledger { action:"add" }` now refuses past `TM_LEDGER_MAX_ITEMS` (200)
+  with the reason, and writes nothing on the way out — truncating the oldest items
+  would leave the lead believing its early asks were still accounted for.
+- **A capability row that said "needs an Effect runtime" was wrong.** The published
+  shape of `ctx.event.subscribe()` was read as unusable without a dependency this
+  package does not have, so the row was written as a limitation and the settle-channel
+  decision inherited it. A live 2.0.16 probe subscribed with zero dependencies and
+  streamed the whole server's events, so the row now says what is actually true — it is
+  reachable, and the catch is scope, not dependencies: every other session's events
+  arrive too, so anything built on it filters by session first.
 - **Our governed tools never reached the model as tools.** Reading the 2.0.16
   binary for something else turned up the switch: tool visibility is decided by
   `options.codemode`, and a tool whose value is not `false` is offered ONLY through

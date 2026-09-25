@@ -187,7 +187,8 @@ this before treating any sentence above as platform-neutral.
   a false positive. ② `todowrite` is gone, and the LEDGER rule now has a home anyway:
   `tm_ledger` keeps the lead's list in the host's own `ctx.storage`, and
   `tm_join`'s goal tripwire reads it (an empty list answers `ledger_empty`, never a
-  silent pass). ③ `execute.after` sees a native `shell` result with keys
+  silent pass).
+  Measured facts about that domain (live 2.0.16 probe, `docs/research/agent-data-exchange.md`): it is shared across sessions, agents AND projects — the only namespace is the plugin id — which is why the session id is part of the key and a call without one is refused; and it has no TTL and no quota, which is why `LEDGER_MAX_ITEMS` (default 200, `TM_LEDGER_MAX_ITEMS`) REFUSES rather than truncating — silently dropping the oldest asks would be the same overstated claim wearing a new uniform. ③ `execute.after` sees a native `shell` result with keys
   `content / metadata / output`, which is the precondition for putting JIT offload
   over the native tools (#5) — without that observation the retirement of
   `tm_bash` would have been an assumption.

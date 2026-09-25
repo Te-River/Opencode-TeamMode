@@ -107,11 +107,16 @@ export function v2CapabilityRows(i: Inputs): CapabilityRow[] {
         : undefined,
     },
     {
-      seam: "ctx.event.subscribe(type) → Effect Stream",
-      feature: "看见后台子代理回复被注入进来的那一刻（记账，不能改写）",
+      seam: "ctx.event.subscribe() → 事件流",
+      feature: "看见别的会话发生了什么（结算、注入、跨会话信号）",
       state: domains.includes("event") ? "declared" : "missing",
       evidence: "static",
-      note: "公开形状要 Effect 运行时（插件 SDK 自己依赖 effect@4.0.0-beta）；我们的 dependencies 是空的，所以这条按决定处理，不擅自引依赖",
+      // This row used to say the opposite — that the public shape needed an Effect
+      // runtime and therefore could not be used with our empty `dependencies`. A
+      // live 2.0.16 probe disproved it, so the correction is the whole point: the
+      // seam is reachable with zero dependencies, and the catch is not the
+      // dependency but the scope (server-wide, every session's events).
+      note: "实测（docs/research/agent-data-exchange.md）：subscribe() 零依赖可用，但流是**全服务器**的 —— 用它必须先按 sessionID 过滤，否则会把别人会话的事件读进我们的上下文与轨迹",
     },
     {
       seam: "ctx.storage",

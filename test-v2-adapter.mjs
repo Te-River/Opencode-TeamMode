@@ -287,6 +287,26 @@ assert.match(textOf(done1), /#1 → done/, "…and an exact id does land")
 assert.equal(ledgerGoalLine(normalizeLedger(await fake.ctx.storage.get(LED_KEY))).match(/还有 (\d+) 项/u)[1], "1", "the count moves with the list, it is not a constant the tool repeats")
 const notLead = await led.execute({ action: "list" }, { ...CTX, agent: "researcher" })
 assert.match(textOf(notLead), /领队/, "the list is the lead's instrument; a specialist answers in STATUS instead")
+// ctx.storage has no TTL and no quota (measured on a live 2.0.16), so a list that
+// only grows is a leak. The cap REFUSES and says why; truncating silently would
+// leave the lead believing its oldest asks were still on the list somewhere.
+{
+  const capped = makeFakeCtx({ directory: ws, agents: [] })
+  process.env.TM_LEDGER_MAX_ITEMS = "12"
+  await capped.ctx.storage.set("team-mode/ledger/ses_cap", {
+    sessionID: "ses_cap",
+    updated: Date.now(),
+    items: Array.from({ length: 12 }, (_, i) => ({ id: i + 1, text: `旧条目 ${i}`, status: "done", at: Date.now() })),
+  })
+  const cc = await withCapturedConsole(() => plugin.setup(capped.ctx))
+  const ctools = Object.fromEntries(capped.tools.list().map((t) => [t.id ?? t.name, t]))
+  const over = await ctools.tm_ledger.execute({ action: "add", text: "再来一条" }, { ...CTX, sessionID: "ses_cap" })
+  assert.match(textOf(over), /超过上限 12/, "the ceiling bites before the write, not after")
+  assert.match(textOf(over), /不设 TTL/, "…and the refusal names the reason a ceiling exists at all")
+  assert.equal((await capped.ctx.storage.get("team-mode/ledger/ses_cap")).items.length, 12, "nothing was appended to the stored list")
+  delete process.env.TM_LEDGER_MAX_ITEMS
+  await cc.value?.()
+}
 {
   const bad = makeFakeCtx({ directory: ws, agents: [] })
   bad.ctx.storage.set = async () => {
