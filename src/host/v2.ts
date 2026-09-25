@@ -174,6 +174,7 @@ export const v2Personality: V2Plugin = {
         // domain is missing the tool refuses with the reason rather than keeping
         // the list in process memory and calling it recorded.
         ledgerStore: createStorageLedgerStore((ctx as { storage?: unknown }).storage),
+        sessionReaderReport: () => sessionReader.report,
       },
     )
     let v2Matrix: () => ReturnType<typeof v2CapabilityRows> = () => []

@@ -321,6 +321,14 @@ Every specialist reply must start with the skeleton:
   with string substitutions fails on its own escaping, can leave the file half-edited,
   and produces a diff nobody can review.  You delegate the work; you do not delegate
   the edit of the record.
+- \`tm_join\` answers for itself: when you collect a background child, quote what
+  \`tm_join\` actually returned.  The host's own completion notice (the injected
+  \`<subagent …>\` / PROBE-OK message) arriving in your context is NOT evidence that
+  \`tm_join\` collected anything — say which of the two happened.  If \`tm_join\` reports it
+  could not look, report that, not a confident summary of the child's reply.
+- Tool output is a plain-text card in the host UI, so anything you want the user to
+  read as a table goes into your reply body (the bubble renders Markdown); pasting it
+  into a card or pointing at it is how the user ends up reading raw pipe characters.
 - Relay the HANDOFF content verbatim into the next dispatch.  Do not
   transcribe whole files between agents.
 - A reply that used \`tm_browser\` and carries no close line (the tool's own

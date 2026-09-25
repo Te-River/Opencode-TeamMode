@@ -647,6 +647,12 @@ export function buildStatsTool(deps: StatsDeps): ToolDefinition {
           }
           lines += "\n" + renderRecent(recentCalls(events, recentLimit, rows, deps.store.stepsRoot())).join("\n")
         }
+        // The host shows a plugin tool's output as a PLAIN-TEXT card — the markdown
+        // renderer is the chat bubble, not the card, and this table is the thing the
+        // user came here to read. Saying so is the difference between "the tool
+        // rendered badly" and "the agent did not relay it".
+        lines += `\n（这张表在宿主的工具卡片里是纯文本，markdown 不会被渲染；`
+          + `要给用户看，就把对应的表原样放进你的回复正文里——气泡才会渲染它。）`
         // Deliberately NOT offloaded: the point of this tool is the table the
         // user (or the lead) reads whole; it is bounded by construction (one
         // row per tool, per degraded seam, per capability).

@@ -3623,9 +3623,10 @@ try {
         const earlyAt = dSrc.indexOf("if (!mine.length)")
         assert.ok(earlyAt > 0, "the early 'nothing to collect' return is still findable")
         // The window has to cover the WHOLE early answer: the sentence that names
-        // the real reason now sits behind the looked/did-not-look branch, so a
-        // narrower slice would fail for layout rather than for the defect.
-        const early = dSrc.slice(earlyAt, earlyAt + 1600)
+        // the real reason now sits behind the looked/did-not-look branch, and the
+        // ctx.session bridge clause sits inside it, so a narrower slice would fail
+        // for layout rather than for the defect.
+        const early = dSrc.slice(earlyAt, earlyAt + 2600)
         assert.ok(early.includes("leaseLine"), "…including the early 'nothing to collect' return")
         // And that message must not diagnose a SUCCESSFUL dispatch as a failure.
         assert.ok(!/那说明派发生本身没成功/.test(early), "no more asserting the dispatch failed when a sync host task simply never registers here")

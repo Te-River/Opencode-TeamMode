@@ -671,6 +671,12 @@ console.log("7. TTL-only reclamation + session-partitioned boards: OK")
   assert.match(lead, /Docs and business context are maintained with the file write\/edit tool/,
     "the lead carries the rule for the record it owns")
   assert.match(lead, /never by\s+a generated throwaway script/, "and names the forbidden mechanism")
+  // Two rules that came out of the live desktop session: a host-injected completion
+  // notice must never be reported as tm_join's answer, and a tool card is plain text,
+  // so any table the user should read has to be relayed into the reply body.
+  assert.match(lead, /answers for itself/, "the lead must quote what tm_join actually returned")
+  assert.match(lead, /NOT evidence that/, "and must not pass the host's injection off as collection")
+  assert.match(lead, /plain-text card in the host UI/, "the lead knows tool cards do not render markdown")
   for (const [id, cfg] of specialists) {
     assert.match(cfg.prompt, /Editing documentation is a WRITE, not a shell job/, `${id} carries the doc-write rule`)
     assert.match(cfg.prompt, /never by generating a throwaway script/, `${id} is told not to script the edit`)

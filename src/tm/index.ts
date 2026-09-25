@@ -145,6 +145,9 @@ export interface CreateTmToolsOptions {
    *  and therefore registers no `tm_ledger` at all — its tool surface stays the
    *  one the v1 personality was frozen with. */
   ledgerStore?: import("./ledger.js").LedgerStore
+  /** What the v2 `ctx.session` bridge saw (attempted shapes, last host error), so
+   *  `tm_join` can report WHY a named id could not be claimed. */
+  sessionReaderReport?: () => { attempted: number; resolved: number; usedShape?: string; failedShapes: string[]; lastError?: string }
 }
 
 /** Collision-free shard key for a workspace path.  It is a HASH rather than a
@@ -517,6 +520,7 @@ export async function createTmTools(
     // The goal tripwire prefers the HOST's todo list; when there is none (v2),
     // the plugin's own LEDGER is the list that can actually be checked.
     ledgerStore: opts.ledgerStore,
+    sessionReaderReport: opts.sessionReaderReport,
   })
   tools.tm_join = dispatch.tm_join
   // tm_pty — non-blocking command execution on the host's own terminal

@@ -78,6 +78,9 @@ export interface DispatchDeps {
   browserLeases?: () => { id: string; owner: string; agent: string; idleMs: number }[]
   /** Ceiling on how long tm_join will wait on a round of children. */
   maxWaitMs?: number
+  /** What the v2 `ctx.session` bridge saw on its last attempt — reported so a failed
+   *  claim can name the shapes it tried instead of printing "no pending dispatch". */
+  sessionReaderReport?: () => { attempted: number; resolved: number; usedShape?: string; failedShapes: string[]; lastError?: string }
   /** The plugin's own LEDGER (v2 has no host `session.todo` to read).  Present =
    *  the goal tripwire has a second thing it can actually check; absent = the
    *  tripwire says it could not check, which is a different answer from "clean". */
@@ -659,9 +662,20 @@ export function buildDispatchTools(deps: DispatchDeps): {
           // host we cannot query no longer reports as "confirmed: nothing there".
           const saw = adoption.looked
           const inner = idFilter
-            ? saw
-              ? "（ids 未匹配到本会话的子代理，宿主会话树里也没有可认领的子会话）"
-              : `（ids 未匹配到；而且我没能查看宿主会话树：${adoption.why}）`
+            ? (() => {
+                // Naming the shapes the v2 session bridge tried is the whole point:
+                // without it, a claim that failed because `ctx.session.get` answered
+                // in a shape we do not know prints the same sentence as a tree we
+                // did query, and the lead goes back to waiting for a report that
+                // exists.
+                const sr = deps.sessionReaderReport?.()
+                const bridge = sr && sr.attempted > 0
+                  ? `；我试过的 ctx.session 形状：${(sr.failedShapes.length ? sr.failedShapes.join("→") : sr.usedShape ?? "?")}${sr.lastError ? `（宿主最后一次的错误：${shorten(sr.lastError, 90)}）` : "（宿主没有报错，只是没给出 parentID）"}`
+                  : ""
+                return saw
+                  ? `（ids 未匹配到本会话的子代理，宿主会话树里也没有可认领的子会话）${bridge}`
+                  : `（ids 未匹配到；而且我没能查看宿主会话树：${adoption.why}）${bridge}`
+              })()
             : saw
               ? ""
               : `（注意：${adoption.why}，所以"确实没有子代理"这个结论我给不出）`
