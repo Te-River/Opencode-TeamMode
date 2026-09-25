@@ -33,6 +33,23 @@ registry saw 1.5.0 as the install-script fix release).
   `dispatch.ts`, with the feed as the source of candidate session ids. Until that
   lands, the honest statement is the one the child's completion gives: the reply
   reaches the lead through the host's own injection, not through our collect path.
+- **`tm_join` can no longer let a failed claim read as an empty tree, and the lead may
+  no longer quote the host's notice as its own collection.** From the live desktop
+  session: the bridge to `ctx.session.get` failed for a named child id, and the answer
+  printed the same sentence as a tree we had actually queried. It now appends the
+  shapes it attempted plus the host's last error. Two prompt rules with assertions
+  cover the rest: quote what `tm_join` returned (an injected `PROBE-OK` is not that
+  evidence), and remember a tool card is plain text — `tm_stats` says the same on its
+  own tail, because its tables are exactly the thing the user is supposed to read.
+- **A live desktop run also proved three claims we had only held offline**: the
+  wildcard search fix (10 results, "未返回结果的引擎：无"), the ledger really landing
+  in `ctx.storage`, and the private-space refusal naming both exits — verified by the
+  agent itself against `request.json` that no request was sent. Two claims did NOT
+  hold: the native `browser_snapshot` reached the model uncapped (4 012 tokens, so
+  either that host's browser result never arrives at `execute.after`, or it arrives in
+  a shape we do not recognise and we are silently not governing it), and
+  `tm_browser`'s page is not in the side panel while native tabs are — as forensics
+  predicted. `browser_preview` does render into the panel.
 - **Doc and business-context edits must go through the write/edit tool — a generated
   throwaway patch script is forbidden by prompt rule now** (user requirement
   2026-09-26). The rule earned itself: while patching markdown through ad-hoc scripts
