@@ -9,6 +9,20 @@ registry saw 1.5.0 as the install-script fix release).
 
 ### Changed
 
+- **`tm_search` was dead on every v2 host, and it answered "没有结果" while doing
+  so.** The v2 personality defaults `TM_WEBFETCH_ALLOWED_DOMAINS` to `"*"` (a 2.x
+  plugin cannot raise the dialog an off-allowlist host used to route to), but the
+  wildcard branch lived only inside `checkWebUrl` — `hostAllowed()` answered `false`
+  for it.  `tm_search` asks that predicate directly, before each leg, so all four
+  legs of its own fan-out were dropped without a request leaving the process, and
+  three queries in a row came back as "auto(cjk: bing+moegirl+stackoverflow+hn)
+  没有返回可提取的结果".  One predicate now decides for every consumer (and
+  `checkWebUrl`'s private copy is gone), which is the shape the browser already used;
+  the address red line is untouched — `"*"` still cannot open
+  `169.254.169.254`, pinned by a new assertion.  And when a *narrowed* list does drop
+  every leg, the refusal now says 一条都没请求出去 plus the operator's remedy: "the
+  engines found nothing" and "our gate never asked them" are different facts, and the
+  old sentence collapsed them into a retry the agent could not win.
 - **v2 can finally see a sub-agent settle (#8).** v1 was handed a host `event` hook and
   pumped every `session.idle` / `session.error` / `session.status` into the dispatch
   registry; the v2 personality subscribed to nothing, so a child that finished two

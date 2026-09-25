@@ -795,6 +795,20 @@ export function buildTmSearchTool(deps: {
           const groups = settled.filter((g) => g.hits.length > 0)
           for (const g of settled) if (g.note) notes.push(g.note)
           if (groups.length === 0) {
+            // "no results" and "never asked" are different facts, and the old
+            // sentence collapsed them: a live v2 session spent its round retrying
+            // four engines that had each been dropped by our own gate before any
+            // request left the process.
+            const attempted = settled.filter((g) => !g.note).length
+            if (attempted === 0) {
+              return toToolResult(
+                tmError(
+                  tool,
+                  "execute",
+                  `auto(${queryClass}: ${routes.join("+")}) 的 ${routes.length} 条腿一条都没请求出去——全部在发出请求前就被本站门禁剔除（见上面的原因）。这不是引擎没有结果，是我们没放行。出路：把这些引擎主机加进 TM_WEBFETCH_ALLOWED_DOMAINS（逗号分隔，"*" 放开全部主机，需要重启宿主），或改用显式引擎: ${roster.join(", ")}。`,
+                ),
+              )
+            }
             return toToolResult(
               tmError(
                 tool,

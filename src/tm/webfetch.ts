@@ -84,6 +84,19 @@ const WEBFETCH_MAX_REDIRECTS = 5
 
 /** True when `hostname` is the domain itself or a subdomain of it. */
 export function hostAllowed(hostname: string, allowlist: readonly string[]): boolean {
+  // "*" is an operator setting and it means what it says for EVERY consumer.
+  // This predicate used to answer false for it, because the wildcard branch lived
+  // here at the call site of checkWebUrl only — so tm_search, which asks this
+  // function directly, skipped all four legs of its own fan-out on the v2
+  // personality (v2 has no dialog, so it defaults the list to "*").  A search
+  // front that reports "没有返回可提取的结果" while its engines were never even
+  // asked is the overstated-claim shape this product exists to refuse.
+  //
+  // What this predicate does NOT decide: the address question.  The egress red
+  // line is applied by checkWebUrl / classifyHost BEFORE any fetch, per redirect
+  // hop, so a wildcard can never open 169.254.169.254 — do not read it as a
+  // security check from here.
+  if (allowlist.some((raw) => String(raw ?? "").trim() === "*")) return true
   const host = hostname.toLowerCase().replace(/\.$/, "")
   return allowlist.some((raw) => {
     const dom = String(raw ?? "").trim().toLowerCase()
@@ -148,7 +161,7 @@ export function checkWebUrl(raw: unknown, allowlist: readonly string[]): UrlVerd
         `正在请求官方确认窗；批准仅对本次有效。本地开发服务器的 UI 验证更该用 tm_browser（那才是为它设计的通道）。`,
     }
   }
-  if (!allowlist.includes("*") && !hostAllowed(url.hostname, allowlist)) {
+  if (!hostAllowed(url.hostname, allowlist)) {
     return {
       ok: false,
       askable: true,

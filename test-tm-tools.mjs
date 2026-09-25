@@ -910,6 +910,18 @@ try {
       "remote .env spelling refused (R6 red line applies to URLs)",
     )
     assert.equal(tm.checkWebUrl("https://any.example.com/x", ["*"]).ok, true, '"*" opens every host')
+    // #new (v2): "*" is the value the v2 personality defaults to, because a 2.x
+    // plugin cannot raise the dialog that an off-allowlist host used to route to.
+    // hostAllowed() used to answer false for it — the wildcard branch lived only in
+    // checkWebUrl — so tm_search dropped ALL FOUR legs of its own fan-out on every
+    // v2 call and then reported "没有返回可提取的结果".  The predicate must agree with
+    // the verdict function, or the two consumers drift into two different policies.
+    assert.equal(tm.hostAllowed("any.example.com", ["*"]), true, "the predicate itself honours the operator's wildcard")
+    assert.equal(tm.hostAllowed("evil.test", ["example.com"]), false, "a narrowed list still refuses (and suffix matching is still dot-anchored)")
+    assert.equal(tm.hostAllowed("notexample.com", ["example.com"]), false, "a suffix without the dot never passes")
+    assert.equal(tm.hostAllowed("sub.example.com", ["*", "other.tld"]), true, "one "*" entry opens the list regardless of order")
+    assert.equal(tm.checkWebUrl("https://169.254.169.254/latest/meta-data/", ["*"]).ok, false, "and the wildcard still cannot open the metadata endpoint")
+    assert.equal(tm.checkWebUrl("https://169.254.169.254/latest/meta-data/", ["*"]).askable, undefined, "the address red line has no consent path, wildcard or not")
     // HTML → text
     const stripped = tm.htmlToText(
       "<html><script>evil()</script><style>x{}</style><body><h1>Title</h1><p>Hello <b>world</b></p><!-- c --></body></html>",
@@ -1286,6 +1298,49 @@ try {
     const searched = await searchTool.execute({ query: "left-pad", engine: "npm" }, wctx)
     assert.equal(legs, 1, "the same query twice costs one engine round")
     assert.ok(String(searched.output).includes("left-pad"), "and the second call still returns real hits, not an empty result")
+    // #new — the v2 wildcard shape, end to end.  The v2 personality defaults
+    // TM_WEBFETCH_ALLOWED_DOMAINS to "*" (a 2.x plugin cannot raise the dialog an
+    // off-allowlist host used to route to), and hostAllowed() answered false for that
+    // value, so EVERY auto leg was dropped before the request left the process and the
+    // user saw three queries all answered "没有返回可提取的结果".  The fix is one
+    // predicate; this pins both the repair and the honest sentence for a narrowed list.
+    {
+      const starCfg = { ...tm.resolveTmConfig({ TM_WEBFETCH_ALLOWED_DOMAINS: "*" }) }
+      assert.deepEqual(starCfg.webfetchAllowedDomains, ["*"], "the env really does resolve to the wildcard")
+      let starLegs = 0
+      const starTool = sm.buildTmSearchTool({
+        pipelines: fakePipes(),
+        cfg: starCfg,
+        cache: cm.createWebCache({ dir: mktmp("cache-star"), ttlSec: 300 }),
+        fetchImpl: async (u) => (starLegs++, legUrls.push(String(u)), res200(npmJson, "application/json")),
+      })
+      const starOut = String((await starTool.execute({ query: "left-pad", engine: "npm" }, wctx)).output)
+      assert.equal(starLegs, 1, "under "*" the engine leg is actually fetched")
+      assert.ok(starOut.includes("left-pad"), "and the answer carries hits instead of an allowlist excuse")
+      let starAuto = 0
+      const starAutoTool = sm.buildTmSearchTool({
+        pipelines: fakePipes(),
+        cfg: starCfg,
+        cache: cm.createWebCache({ dir: mktmp("cache-star-auto"), ttlSec: 300 }),
+        fetchImpl: async () => (starAuto++, res200("{\"hits\":[]}", "application/json")),
+      })
+      const autoOut = String((await starAutoTool.execute({ query: "初音未来演唱会" }, wctx)).output)
+      assert.ok(starAuto >= 3, `auto fans out under "*" instead of skipping every leg (asked ${starAuto})`)
+      assert.ok(!autoOut.includes("不在白名单，已跳过"), "no leg is dropped for an allowlist reason under the wildcard")
+      // A narrowed list still refuses — and when nothing was asked, the reply says so
+      // instead of blaming the engines for results we never requested.
+      let narrowed = 0
+      const narrowedSearch = sm.buildTmSearchTool({
+        pipelines: fakePipes(),
+        cfg: { ...tm.resolveTmConfig({}), webfetchAllowedDomains: ["example.invalid"] },
+        cache: cm.createWebCache({ dir: mktmp("cache-narrow"), ttlSec: 300 }),
+        fetchImpl: async () => (narrowed++, res200("{\"hits\":[]}", "application/json")),
+      })
+      const narrowOut = String((await narrowedSearch.execute({ query: "初音未来演唱会" }, wctx)).output)
+      assert.equal(narrowed, 0, "a narrowed list still keeps the engines un-fetched")
+      assert.match(narrowOut, /一条都没请求出去/, "and the refusal names our gate as the cause, not the engine")
+      assert.match(narrowOut, /TM_WEBFETCH_ALLOWED_DOMAINS/, "naming the operator's remedy")
+    }
     const wfOnEngineUrl = wf.buildTmWebfetchTool({
       pipelines: fakePipes(),
       cfg: tm.resolveTmConfig({}),
