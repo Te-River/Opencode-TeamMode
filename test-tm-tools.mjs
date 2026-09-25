@@ -3861,6 +3861,38 @@ try {
       assert.equal(loop.askable, true, "…but a local dev server is something a user CAN judge, so it asks")
       const named = WF.checkWebUrl("http://localhost:5173/", ["*"])
       assert.equal(named.askable, true, "a .localhost name asks too")
+      // A gate needs an exit the operator can walk, and on OpenCode 2.x the dialog
+      // is not available to a plugin at all.  Naming THIS host in the allowlist is
+      // that exit — an explicit decision about 127.0.0.1, which a wildcard is not —
+      // while the metadata range stays shut under every setting (pinned above).
+      const local = WF.checkWebUrl("http://127.0.0.1:8787/admin", ["127.0.0.1"])
+      assert.equal(local.ok, true, "an allowlist that NAMES the loopback host lets it through")
+      const localNamed = WF.checkWebUrl("http://localhost:5173/", ["localhost", "cn.bing.com"])
+      assert.equal(localNamed.ok, true, "and a named .localhost dev server likewise")
+      assert.equal(WF.checkWebUrl("http://10.1.2.3:8080/api", ["127.0.0.1"]).ok, false, "naming one private host does not open the whole RFC1918 space")
+      assert.equal(WF.checkWebUrl("http://10.1.2.3:8080/api", ["127.0.0.1"]).askable, true, "the unnamed one still asks (v1) rather than passing quietly")
+      assert.equal(WF.checkWebUrl("http://169.254.169.254/latest/meta-data/", ["169.254.169.254"]).ok, false, "and naming the METADATA endpoint explicitly still does not open it — that range has no consent path at all")
+      assert.match(String(WF.checkWebUrl("http://127.0.0.1:8787/", ["cn.bing.com"]).message), /TM_WEBFETCH_ALLOWED_DOMAINS/, "the refusal names the operator's remedy instead of only the dialog that will never open")
+      // …but an ask with no dialog is a gate with no exit, which is exactly the v2
+      // shape. The policy seam is one setter, and the address red line is not on it.
+      try {
+        assert.equal(WF.setPrivateSpacePolicy("allow"), "allow", "TM_PRIVATE_SPACE=allow is accepted")
+        const loop = WF.checkWebUrl("http://127.0.0.1:8787/admin", ["*"])
+        assert.equal(loop.ok, true, "loopback passes when the operator opted out of asking")
+        assert.equal(loop.via, "private-allowed", "and the verdict SAYS why it passed, so a report cannot call it an allowlist hit")
+        assert.equal(WF.checkWebUrl("http://10.1.2.3:8080/api", ["*"]).ok, true, "private space as a class, not one named host")
+        const meta = WF.checkWebUrl("http://169.254.169.254/latest/meta-data/", ["*"])
+        assert.equal(meta.ok, false, "the metadata endpoint is refused under private-allow too")
+        assert.equal(meta.askable, undefined, "and it stays non-consentable: the policy cannot be traded for it")
+        assert.equal(WF.setPrivateSpacePolicy("deny"), "deny", "deny is a third state, not a typo for ask")
+        const off = WF.checkWebUrl("http://127.0.0.1:8787/", ["*"])
+        assert.equal(off.ok, false, "deny refuses private space outright")
+        assert.equal(off.askable, undefined, "and does not pretend a dialog will come")
+        assert.equal(WF.setPrivateSpacePolicy("nonsense"), "ask", "an unparseable value falls back to ASK, the v1 default")
+        assert.equal(WF.privateSpacePolicy(), "ask", "readable, so the boot line and the tool agree")
+      } finally {
+        WF.setPrivateSpacePolicy("ask")
+      }
       const pub = WF.checkWebUrl("https://cn.bing.com/search?q=x", ["*"])
       assert.equal(pub.ok, true, "a public host is untouched by the egress rule")
       console.log("13. egress red line: OK (metadata/link-local/multicast/reserved + IPv4-mapped and DNS64 carriers are hard; loopback/RFC1918/ULA/CGNAT/.localhost ask and \"*\" cannot answer for them)")

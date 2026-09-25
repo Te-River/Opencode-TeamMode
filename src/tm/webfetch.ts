@@ -106,7 +106,7 @@ export function hostAllowed(hostname: string, allowlist: readonly string[]): boo
 }
 
 export type UrlVerdict =
-  | { ok: true; url: URL }
+  | { ok: true; url: URL; via?: "explicit-host" | "private-allowed" }
   | {
       ok: false
       message: string
@@ -116,6 +116,37 @@ export type UrlVerdict =
       askable?: boolean
       url?: URL
     }
+
+export type PrivateSpacePolicy = "ask" | "allow" | "deny"
+
+/**
+ * What happens to a PRIVATE-space target (loopback, RFC1918, ULA, CGNAT,
+ * `.localhost`).  This is NOT the domain allowlist — it is the one place where an
+ * address class, not a hostname, decides — and it stays separate on purpose:
+ * the FORBIDDEN ranges (cloud metadata, link-local, reserved, multicast) have no
+ * policy at all and are refused under every setting.
+ *
+ * "ask" is v1's answer, because v1 can raise the host's dialog.  On OpenCode 2.x a
+ * plugin cannot raise anything (measured: no `ask` on the tool ctx), so "ask" there
+ * is a gate with no exit — which is why the v2 personality sets "allow" unless the
+ * operator says otherwise.  Private space on a laptop is the user's own dev server;
+ * the credential-leak class this policy used to conflate with it is handled by the
+ * forbidden branch, which comes first and cannot be configured.
+ */
+let privateSpace: PrivateSpacePolicy = "ask"
+
+export function setPrivateSpacePolicy(raw: unknown): PrivateSpacePolicy {
+  const v = String(raw ?? "").trim().toLowerCase()
+  privateSpace = v === "allow" || v === "deny" ? v : "ask"
+  return privateSpace
+}
+
+/** Read at boot from TM_PRIVATE_SPACE so a hand-edited env file works without the
+ *  personality calling the setter (the setter wins when both are present). */
+setPrivateSpacePolicy(typeof process !== "undefined" ? process.env?.TM_PRIVATE_SPACE : "")
+export function privateSpacePolicy(): PrivateSpacePolicy {
+  return privateSpace
+}
 
 /**
  * Validate a fetch target: absolute http(s) URL, host on the allowlist
@@ -152,13 +183,39 @@ export function checkWebUrl(raw: unknown, allowlist: readonly string[]): UrlVerd
     }
   }
   if (egress.level === "private") {
+    // A gate needs an exit the operator can actually walk.  `"*"` deliberately
+    // cannot answer for private space (a wildcard opened for one public host also
+    // opens the office intranet), but an allowlist that NAMES this host does —
+    // that is a decision about `127.0.0.1:8787`, not about every address.  This
+    // matters most on OpenCode 2.x, where a plugin cannot raise the dialog at all:
+    // without it, UI verification of a local dev server had no path through our
+    // governed tools at any setting, and the refusal still told the agent to go
+    // ask somebody who would never appear.
+    const named = allowlist.some((raw) => {
+      const dom = String(raw ?? "").trim().toLowerCase().replace(/\.$/, "")
+      return !!dom && dom !== "*" && (url.hostname.toLowerCase().replace(/\.$/, "") === dom || url.hostname.toLowerCase().endsWith("." + dom))
+    })
+    if (named) return { ok: true, url, via: "explicit-host" }
+    if (privateSpace === "allow") return { ok: true, url, via: "private-allowed" }
+    if (privateSpace === "deny") {
+      return {
+        ok: false,
+        message:
+          `目标 ${url.hostname} 属于私网 / 回环地址段（${egress.via}），本站点策略不放行私网，且这里没有确认窗可弹（OpenCode 2.x 的插件没有弹窗权限）——` +
+          `所以这不是"等人批准"，是到此为止。要访问自己的本地服务，两条出路（都要操作者自己改，然后重启宿主）：` +
+          `TM_PRIVATE_SPACE=allow 放开整段私网，或把这一台主机名写进 TM_WEBFETCH_ALLOWED_DOMAINS（如 127.0.0.1，只放开它自己）。` +
+          `公网内容不受此限制。`,
+      }
+    }
     return {
       ok: false,
       askable: true,
       url,
       message:
         `目标 ${url.hostname} 属于私网 / 回环地址段（${egress.via}），域名白名单——包括 "*"——不能替你放行，只能逐次经用户批准。` +
-        `正在请求官方确认窗；批准仅对本次有效。本地开发服务器的 UI 验证更该用 tm_browser（那才是为它设计的通道）。`,
+        `正在请求官方确认窗；批准仅对本次有效。本地开发服务器的 UI 验证更该用 tm_browser（那才是为它设计的通道）。` +
+        `如果这个会话的宿主给不出确认窗（OpenCode 2.x 的插件没有弹窗权限），出路只有操作者把这一台主机名写进 ` +
+        `TM_WEBFETCH_ALLOWED_DOMAINS（显式主机名，如 127.0.0.1 或 localhost；"*" 不算）后重启宿主。`,
     }
   }
   if (!hostAllowed(url.hostname, allowlist)) {

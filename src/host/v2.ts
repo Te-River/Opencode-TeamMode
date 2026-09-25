@@ -36,6 +36,7 @@ import { DEFAULT_TTL_DAYS, resolveTtlMs, startBlackboardMaintenance } from "../b
 import { parseExtraDeny, resolveEnvProtectMode } from "../envprotect.js"
 import { createTmTools } from "../tm/index.js"
 import { setAskUnavailableNote } from "../tm/perm-ask.js"
+import { setPrivateSpacePolicy } from "../tm/webfetch.js"
 import type { PluginInput, ToolDefinition } from "../types.js"
 import { blackboardNote } from "./note.js"
 import { applyV2BackgroundForce, applyV2PermissionGuards, needsCoarseShellAsk } from "./v2-guard.js"
@@ -110,6 +111,15 @@ export const v2Personality: V2Plugin = {
     // personality in the same process is untouched.
     const v2Env: Record<string, string | undefined> = { ...process.env }
     if (!String(v2Env.TM_WEBFETCH_ALLOWED_DOMAINS ?? "").trim()) v2Env.TM_WEBFETCH_ALLOWED_DOMAINS = "*"
+    // The DOMAIN gate is off on this personality (see the note above): 2.x gives a
+    // plugin no dialog, so "approve to proceed" is an instruction to wait for a
+    // window that never opens.  Private space is NOT opened by the same logic,
+    // because that is not a whitelist question — a default that let a governed tool
+    // GET 192.168.1.1 would put the user's router in the trajectory for a mistake the
+    // model made.  So the answer here is a refusal that names both exits
+    // (TM_PRIVATE_SPACE=allow, or the one host in TM_WEBFETCH_ALLOWED_DOMAINS) instead
+    // of promising a dialog, and `deny` is what a quiet v2 host gets.
+    const privateSpace = setPrivateSpacePolicy(String(v2Env.TM_PRIVATE_SPACE ?? "").trim() || "deny")
 
     // ---------- how our tools reach the model at all (measured in the binary) ----------
     // 2.0.16 decides tool visibility with `options.codemode`: a tool whose value is
@@ -535,6 +545,7 @@ export const v2Personality: V2Plugin = {
         scope_ours: scope.report.ours,
         scope_foreign: scope.report.foreign,
         scope_unknown: scope.report.unknown,
+        private_space: privateSpace,
         tools_codemode: v2CodeModeDirect ? "direct" : "catalog",
         guard_foreign_skipped: guards.report.foreignSkipped,
         subagent_background: bgForce.registrations.length ? "forced-true" : "no-hook",

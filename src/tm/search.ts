@@ -702,7 +702,7 @@ const SEARCH_DESCRIPTION = `Search the web through a governed multi-engine pipel
 - Hits carry a 1-2 line snippet WHEN THE ENGINE PROVIDES ONE (bing b_caption when present, SO score/tags composite, HN points/comments, npm/github descriptions) — never fabricated.  A hit tagged （域名不在白名单，需批准）is readable only after an approval dialog — prefer a hit you can fetch, or tm_browser it.
 - CJK tip: multi-word Chinese queries are auto-quoted on their core phrase for bing; if still noisy, search a single canonical term first (or quote it yourself).
 - Baidu/sogou-style anti-bot shells are gone from the table; empty results still name alternative engines — switch, don't retry the same one.
-- Governance: engine hosts outside a custom TM_WEBFETCH_ALLOWED_DOMAINS route through the OFFICIAL confirmation dialog (approve to proceed); redirects re-checked per hop; env-file URLs and non-http(s) schemes are hard-rejected.
+- Governance: the engine hosts are asked directly unless the operator narrowed TM_WEBFETCH_ALLOWED_DOMAINS (on 1.18.x an off-list engine goes to the host dialog; on 2.x there is no dialog, so it is skipped and the reply says so). Redirects are re-checked per hop; env-file URLs, non-http(s) schemes and the cloud-metadata / link-local ranges are refused under every setting.
 - URL-encode nothing yourself — pass the raw query; this tool encodes it.`
 
 /** Build the tm_search ToolDefinition over the SHARED main pipelines

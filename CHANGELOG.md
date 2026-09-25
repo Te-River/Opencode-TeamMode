@@ -9,6 +9,21 @@ registry saw 1.5.0 as the install-script fix release).
 
 ### Changed
 
+- **v2 dropped the domain allowlist, and every refusal it kept learned to name an
+  exit.** A 2.x plugin cannot raise the host's dialog, so an allowlist was no longer a
+  gate with a procedure attached — it was a wall whose error text told the agent to
+  "wait for user approval" that can never arrive, including a sentence of ours that
+  pointed at tm_browser for local UI verification through that same wall. So:
+  `TM_WEBFETCH_ALLOWED_DOMAINS` defaults to `"*"` here (v1 keeps its 22 seeds and its
+  working dialog), naming ONE host in a narrowed list passes exactly that host, and
+  private space refuses with a message that prints both operator exits
+  (`TM_PRIVATE_SPACE=allow`, or that hostname in the list) instead of promising a
+  click. What did not move: cloud-metadata / link-local / reserved ranges stay
+  refused under every setting — that is an address class, not a whitelist, and opening
+  it by default would put the user's router into the trajectory on the model's mistake.
+  `deny` is a real third state, an unparseable value falls back to v1's `ask`, and the
+  pass verdict carries `via:"private-allowed"` / `"explicit-host"` so a report can
+  never call either an allowlist hit.
 - **`tm_search` was dead on every v2 host, and it answered "没有结果" while doing
   so.** The v2 personality defaults `TM_WEBFETCH_ALLOWED_DOMAINS` to `"*"` (a 2.x
   plugin cannot raise the dialog an off-allowlist host used to route to), but the

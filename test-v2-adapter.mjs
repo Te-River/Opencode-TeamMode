@@ -354,6 +354,11 @@ for (const [url, why] of [
   // Goal 6, applied to the refusal itself: on v2 there is no ask bridge, so a
   // sentence promising "只能逐次经用户批准" would send the agent waiting for a dialog
   // that can never open.  The v2 wording names the absence.
+  // A gate with no reachable exit is the same defect as a lie. Either the refusal
+  // prints what the operator can do (private space: two env exits), or it says in
+  // words that NOTHING can open it (the metadata range — an address class, not a
+  // whitelist). What is not allowed is a sentence that leaves the reader waiting.
+  assert.match(r, /TM_PRIVATE_SPACE|TM_WEBFETCH_ALLOWED_DOMAINS|不可批准|没有"看起来对不对/, `${url}: the refusal names an exit, or says nothing can`)
   if (/用户批准|逐次经/.test(r) && !/不给插件弹出确认窗|无法弹出/.test(r)) {
     assert.fail(`${url}: the refusal promises user approval without saying v2 cannot open that dialog`)
   }
