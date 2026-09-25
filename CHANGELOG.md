@@ -148,6 +148,24 @@ registry saw 1.5.0 as the install-script fix release).
 
 ### Fixed
 
+- **The prompts stopped promising Markdown the host does not render.** The
+  presentation sections told every role that replies support footnotes and KaTeX
+  `$…$` / `$$…$$`, and that mermaid is NOT drawn. Measured against the host's
+  renderer, all three claims are wrong: `$`-math and `[^1]` footnotes arrive as
+  **literal text**, while `mermaid` draws (11 diagram types pass). The first two
+  are the worse kind of stale claim — an agent that trusts the prompt ships a
+  reply whose structure the user reads as backslash noise, and nothing in the
+  session says the tool lied rather than the model. `## Presentation`
+  (shared rules) and `## Output shape` (lead) now carry the **negative** half of
+  the measurement: `==highlight==`, footnotes, a lone `---` rule and `<hr>`,
+  definition lists, `~x~`/`^x^`, `$`-delimited math (inline math takes
+  backslash-parenthesis), an image wrapped in a link, `:short_code:` emoji and an
+  unescaped `|` in a table cell are each named with the shape to use instead, and
+  mermaid is offered as a real artifact while the screenshot stays the answer to
+  "what does this page actually look like". The rule behind the list is stated in
+  the lead's words: a shape you did not confirm renders is a defect you shipped.
+  `README.md` / `README.zh-CN.md` carried the same false claim ("the host does not
+  draw mermaid") in the feature table and now describe the measured set instead.
 - **An engine that stops listening is now refused, not just described.**
   `dupe-guard` has reported `collapse` (same result set, different question)
   since 1.5.x, and a live session showed the advisory form does not work: the

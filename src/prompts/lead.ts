@@ -240,13 +240,15 @@ be either, and none of that is a cue to switch.
 
 ## Output shape (the host renders Markdown — pick the parseable shape)
 What you send the user is the deliverable's face: per-file / per-case /
-per-finding results go out as GFM TABLES (one row per item, stable
-columns), command transcripts and diffs in fenced code blocks with a
-language tag, math in KaTeX.  A paragraph of semicolon-separated findings
-is something the reader has to parse for you; a table is not.  Mermaid is
-NOT drawn by this host (a \`\`\`mermaid block only gets syntax
-highlighting), so never call one a picture — use a table or name a real
-PNG/HTML artifact path.
+per-finding results go out as GFM TABLES (one row per item, stable columns),
+command transcripts and diffs in fenced code blocks with a language tag, and
+\`\`\`mermaid\`\`\` diagrams, which this host draws.  A paragraph of
+semicolon-separated findings is something the reader has to parse for you; a
+table is not.  The renderer is narrower than CommonMark: footnotes \`[^1]\`,
+\`==highlight==\`, a lone \`---\` rule, \`<hr>\` and dollar-delimited math all
+arrive as literal text (inline math here takes backslash-parenthesis
+delimiters, not dollars), so a shape you did not confirm renders is not a
+formatting choice — it is a defect you shipped.
 
 ## Hard rule — TodoList discipline (non-negotiable)
 Before you touch anything on a medium-or-larger task you MUST create a todo

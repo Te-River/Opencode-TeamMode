@@ -336,12 +336,26 @@ assert.ok(leadPrompt.includes("already available,"), "lead: 'already available, 
 assert.ok(leadPrompt.includes("The team exists to be FASTER"), "lead: throughput is the justification for the team")
 assert.ok(leadPrompt.includes("Slow shell work is parallel too"), "lead: slow independent shell steps go to tm_pty, not one chained bash call")
 assert.ok(cfg2.agent["implementer"].prompt.includes("Presentation (the host renders Markdown"), "implementer: presentation-shape section present")
-assert.ok(cfg2.agent["implementer"].prompt.includes("Mermaid is NOT drawn by this host"), "implementer: told a mermaid block is not a picture here")
+// The renderer's supported set was MEASURED on the host, not inferred from
+// CommonMark — and the first version of this section got it backwards in both
+// directions (it promised footnotes and $-math, which arrive as literal text,
+// and it forbade mermaid, which draws).  So the negative half is pinned as
+// loudly as the positive: a prompt that names an unsupported shape is a defect
+// the user has to find.
+assert.ok(cfg2.agent["implementer"].prompt.includes("```mermaid```"), "implementer: mermaid offered as a shape the host draws")
+assert.ok(!/Mermaid is NOT drawn/.test(cfg2.agent["implementer"].prompt), "implementer: the stale 'mermaid is not drawn' claim is gone")
+assert.ok(!/KaTeX/.test(cfg2.agent["implementer"].prompt), "implementer: no unmeasured KaTeX promise left in the supported list")
+assert.ok(!/block quotes, footnotes/.test(cfg2.agent["implementer"].prompt), "implementer: footnotes are no longer promised as a supported shape")
+for (const lit of ["footnotes", "==highlight==", "<hr>", "definition lists", ":short_code:", "LITERAL TEXT"]) {
+  assert.ok(cfg2.agent["implementer"].prompt.includes(lit), `implementer: the unsupported-shape list names ${lit}`)
+}
 assert.ok(cfg2.agent["implementer"].prompt.includes("markdown\n  TABLE with stable\n  columns") || /TABLE with stable/.test(cfg2.agent["implementer"].prompt), "implementer: findings/reports use a table shape")
 assert.ok(cfg2.agent["implementer"].prompt.includes("tm_pty"), "implementer: tm_pty mentioned in the time budget")
-assert.ok(cfg2.agent["reviewer"].prompt.includes("KaTeX"), "reviewer: math renders, so use it")
+assert.ok(cfg2.agent["reviewer"].prompt.includes("backslash") || cfg2.agent["reviewer"].prompt.includes("\\("), "reviewer: the math delimiters that ACTUALLY render are named")
 assert.ok(leadPrompt.includes("## Output shape (the host renders Markdown"), "lead: presentation discipline present")
-assert.ok(leadPrompt.includes("Mermaid is\nNOT drawn by this host"), "lead: told a mermaid block is not a picture")
+assert.ok(leadPrompt.includes("```mermaid``` diagrams, which this host draws"), "lead: mermaid offered, per the measurement")
+assert.ok(!/Mermaid is\nNOT drawn/.test(leadPrompt), "lead: the stale 'mermaid is not drawn' claim is gone")
+assert.ok(leadPrompt.includes("it is a defect you shipped"), "lead: guessing at the renderer is named as shipping a defect")
 assert.ok(leadPrompt.includes("Pre-commit hygiene"), "lead: hygiene check before ANY commit")
 
 /* v1.4.7: approval gate + uncertainty policy + no-ceremony fast path */

@@ -201,20 +201,29 @@ single calls are not.
 
 ## Presentation (the host renders Markdown — use the right shape)
 Replies render as GFM: headings, lists, **tables**, fenced code with syntax
-highlighting, links, block quotes, footnotes, and KaTeX math ($…$,
-$$…$$).  Pick the shape the reader parses fastest:
+highlighting (js / ts / python / json / yaml / bash / sql / html / diff),
+links, images, block quotes, \`<details>\` collapse blocks, and \`\`\`mermaid\`\`\`
+diagrams — this host draws them as pictures.
+The renderer is NOT full CommonMark, and these shapes arrive as LITERAL TEXT,
+so never use them: your reader pays for a mistake you guessed past.
+\`==highlight==\` → use \`<mark>\` · footnotes \`[^1]\` → a plain list ·
+a lone \`---\` rule and \`<hr>\` → a heading · definition lists → a table ·
+\`~x~\` / \`^x^\` → \`<sub>\` / \`<sup>\` ·
+math $…$, $$…$$ and \\[…\\] → the inline \\( … \\) spelling
+is the one that works ·
+an image inside a link \`![a](b)\` wrapped in \`[…](…)\` → an image plus a
+separate link · \`:short_code:\` emoji → write the character itself ·
+a \`|\` inside a table cell → escape it as \`\\|\` or break the line with \`<br>\`.
 - per-file / per-case / per-finding results → a markdown TABLE with stable
   columns (e.g. \`severity | file:line | finding\`, \`suite | result |
   evidence\`), never a paragraph of dashes and semicolons;
 - a command transcript or diff → a fenced code block with its language tag;
-- formulae and units → KaTeX, not a code block;
+- a diagram is a legitimate artifact now that the host draws it, but it is a
+  diagram: for what a page ACTUALLY looks like, take the screenshot;
 - a visual state (a rendered UI, a chart) → tm_browser
   \`take_screenshot { image:true }\` so the picture rides the result, or a
   written file whose path you name.
-Mermaid is NOT drawn by this host — a \`\`\`mermaid block only gets syntax
-highlighting — so never emit a diagram and call it a picture: use a table,
-or produce a real PNG/HTML artifact and give the path.  A table is not a
-licence to paste a wall: the ≤50-line reply budget still applies.
+A table is not a licence to paste a wall: the ≤50-line reply budget still applies.
 
 ## Reply language (the user's language, not the tool's)
 Write the skeleton lines and all prose in the language the USER's request is
