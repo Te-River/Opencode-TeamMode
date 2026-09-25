@@ -3405,6 +3405,23 @@ try {
         )
         assert.ok(/子代理已结算/.test(mixed) && /你自己还占着/.test(mixed), "a mixed round reports both groups, separately worded")
       }
+      // #87: the LIVE regression of #86 still failed, by a different path — the
+      // lead dispatched a SYNCHRONOUS host task (never registered here, the host
+      // collects it inline), so tm_join hit its "nothing to collect" early return
+      // and the lease check — which lived in the header below it — never ran.
+      // A forgotten window must be reported on EVERY answer tm_join gives.
+      {
+        const dSrc = fs.readFileSync(new URL("./dist/tm/dispatch.js", import.meta.url), "utf8")
+        const uses = (dSrc.match(/leaseLine\(\)/g) || []).length
+        assert.ok(uses >= 2, `the lease line is attached to every return path, not just the settled-round header (found ${uses})`)
+        const earlyAt = dSrc.indexOf("if (!mine.length)")
+        assert.ok(earlyAt > 0, "the early 'nothing to collect' return is still findable")
+        const early = dSrc.slice(earlyAt, earlyAt + 900)
+        assert.ok(early.includes("leaseLine"), "…including the early 'nothing to collect' return")
+        // And that message must not diagnose a SUCCESSFUL dispatch as a failure.
+        assert.ok(!/那说明派发生本身没成功/.test(early), "no more asserting the dispatch failed when a sync host task simply never registers here")
+        assert.ok(/同步/.test(early), "it names the real reason instead")
+      }
 
       // the pure helpers that outlived the dispatcher
       assert.deepEqual(dmod.parseIdList('["ses_a","ses_b"]'), ["ses_a", "ses_b"], "a JSON-array string parses (real models send this)")

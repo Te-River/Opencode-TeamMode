@@ -602,9 +602,44 @@ export function buildDispatchTools(deps: DispatchDeps): {
             }
           }
         }
+        // #87: computed BEFORE any early return.  The live regression of #86 was
+        // a lead holding a browser while tm_join answered "nothing to collect" —
+        // a SYNCHRONOUS host task never registers in this table (the host
+        // collects it inline), so the header assembly below never ran, and the
+        // window the user was looking at went unreported again.  A forgotten
+        // browser has to surface on EVERY answer this tool gives.
+        const leaseLine = (): string => {
+          if (typeof deps.browserLeases !== "function") return ""
+          let held: { id: string; owner: string; agent: string; idleMs: number }[] = []
+          try {
+            const done = new Set(mine.filter((r) => r.state !== "running").map((r) => r.sessionID))
+            held = deps.browserLeases().filter((l) => done.has(l.owner) || l.owner === parent)
+          } catch {
+            /* the lease table is an extra, never a reason to fail a join */
+            return ""
+          }
+          const line = leaseTripwire(held, parent) ?? ""
+          if (line) {
+            log({
+              step_id: "join",
+              event: "lease_held",
+              count: held.length,
+              ids: held.map((l) => l.id).join(","),
+            })
+          }
+          return line
+        }
         if (!mine.length) {
+          const lease = leaseLine()
           return toToolResult(
-            `没有待收集的派发${idFilter ? "（ids 未匹配到本会话的子代理，宿主会话树里也没有可认领的子会话）" : ""}。刚派过却看不到？那说明派发生本身没成功——检查上一次宿主 \`task\` 调用的返回值。`,
+            `没有待收集的派发${idFilter ? "（ids 未匹配到本会话的子代理，宿主会话树里也没有可认领的子会话）" : ""}。` +
+              // The old line asserted the dispatch had failed.  Measured live: it
+              // had not — a completed host `task` with a full reply was sitting in
+              // the transcript, and the honest reason is that a synchronous host
+              // task never enters this registry at all.
+              `如果你用的是同步 \`task\`：宿主自己就把结果收回来了，它从不登记在这里，这不是派发失败。` +
+              `只有后台 \`task {background:true}\`（或显式带 ids）需要 tm_join 来取。` +
+              (lease ? `\n${lease}` : ""),
           )
         }
         await settleAdopted(mine, directory)
@@ -688,25 +723,12 @@ export function buildDispatchTools(deps: DispatchDeps): {
             /* the todo endpoint is an extra, never a reason to fail a join */
           }
         }
-        // #80: THE LEASE TRIPWIRE. A child that settled while it still owned a
-        // browser left that window on the user's screen, and the only thing that
-        // was supposed to catch it is a prompt line the child may not have
-        // followed. This is a fact read off the lease table, not a reminder.
-        if (settled && typeof deps.browserLeases === "function") {
-          try {
-            const done = new Set(mine.filter((r) => r.state !== "running").map((r) => r.sessionID))
-            // #86: the CALLER's own lease counts too. Filtering to settled
-            // children alone was the blind spot the live recheck walked into —
-            // the window the user actually sees is usually the lead's.
-            const held = deps.browserLeases().filter((l) => done.has(l.owner) || l.owner === parent)
-            const line = leaseTripwire(held, parent)
-            if (line) {
-              header.push(line)
-              log({ step_id: "join", event: "lease_held", count: held.length, ids: held.map((l) => l.id).join(",") })
-            }
-          } catch {
-            /* the lease table is an extra, never a reason to fail a join */
-          }
+        // #80/#86/#87: THE LEASE TRIPWIRE — one computation (leaseLine above),
+        // attached to every answer this tool gives, so a settled round and an
+        // empty one cannot disagree about whether a window is still open.
+        if (settled) {
+          const lease = leaseLine()
+          if (lease) header.push(lease)
         }
         const wantText = !(args.includeText === false || args.includeText === "false")
         const collectible = mine.filter((r) => r.state !== "running")

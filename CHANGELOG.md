@@ -588,6 +588,19 @@ broken" and "the answer is not what I expected" must not be conflated.
   splits two groups with different wording — a settled child still holding a
   window is a violation to bounce, the caller's own window is a reminder to close
   or explain (keeping one across rounds is legitimate, so it is not accused).
+- **…and the tripwire then missed the second case, on a different branch.** The
+  re-check of the fix above ran the same scenario and again reported nothing —
+  this time because the lead had used a SYNCHRONOUS `task`. The host collects
+  that one inline, so the child never enters this plugin's registry, `tm_join`
+  took its "nothing to collect" early return, and the lease check lived in the
+  header assembly BELOW it. Two defects in one line: the warning was attached to
+  some answers and not others, and the answer it did give asserted something we
+  had not measured — "那说明派发生本身没成功" told the lead its dispatch had
+  failed, while a completed child reply with a full deliverable was sitting in
+  the transcript. The lease line is now computed once, before any return, and
+  rides every one this tool gives; the empty-round answer names the real reason
+  instead (a sync `task` is never registered here — only `task {background:
+  true}`, or an explicit `ids`, needs this tool to collect).
 - **`findstr` joined the tm_bash read-only allowlist.** The verification checklist
   asked for `tasklist | findstr /i msedge`, tm_bash refused `findstr`, and the
   agent spent a second call on `Select-String` to do one read-only lookup — the
