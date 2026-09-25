@@ -93,9 +93,22 @@ this before treating any sentence above as platform-neutral.
   **zero `tm_*`**, while the model's 61 calls in that session went to
   `shell`(42)/`execute`(14)/`edit`(4)/`write`(1). So either plugin tools are
   delivered only through the Code Mode catalog (the way `browser_*` is) or the v2
-  setup did not register them at all — **that is now the first thing to
-  establish**, because if `tm_*` never reaches the model, none of the JIT
-  governance is live on v2 regardless of how many tokens it would have cost.
+  **RESOLVED (2026-09-25, read out of the 2.0.16 binary): the catalog explanation is
+  the right one, and it is our own doing.** Visibility is decided by
+  `options.codemode` — a tool whose value is not `false` is offered ONLY inside the
+  Code Mode catalog, where the host keeps `≤120 chars` of the description's FIRST
+  line under a ~2 000-token budget. `bindV2Tool` never sent `options`, so every
+  `tm_*` we register was catalog-only from the start: the tools WERE live (callable
+  from inside `execute`), and almost none of the governance text written for them
+  ever reached the model. `TM_V2_CODEMODE=direct` now sends the flag, and the cost is
+  MEASURED per role through our own `estimateTokens` (definitions + schemas, after
+  the request-layer trim): architect / implementer / reviewer **2 660** tokens,
+  tester **5 448**, researcher **7 113**, team **8 515** — i.e. direct delivery is
+  affordable for the three build-class roles and expensive for the two network roles
+  plus the lead, where `tm_browser` alone contributes 2 788. **Which default ships is
+  an open question for the user, and slimming `tm_browser`'s description is its own
+  task** — what is no longer allowed is silence about the trade: the boot note says
+  which world this process is in, in both directions.
   What the live session DID confirm: the per-role trim works (the native
   read/grep/glob/list/webfetch/websearch/skill/patch the matrix denies were
   gone from the request).

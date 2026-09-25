@@ -302,6 +302,29 @@ registry saw 1.5.0 as the install-script fix release).
 
 ### Fixed
 
+- **Our governed tools never reached the model as tools.** Reading the 2.0.16
+  binary for something else turned up the switch: tool visibility is decided by
+  `options.codemode`, and a tool whose value is not `false` is offered ONLY through
+  the Code Mode catalog, where the host keeps ≤120 characters of the description's
+  first line. `bindV2Tool` never sent `options`, so every `tm_*` was catalog-only —
+  callable from inside `execute`, and with almost none of the governance text we
+  wrote for it (the offload contract, the handle rules, the close verdicts, the
+  "don't retry removed tools" boundary) ever arriving. That is the real explanation
+  for a live session that registered thirteen tools and then showed the lead six
+  tools and zero `tm_*`. `TM_V2_CODEMODE=direct` sends the flag, and the cost is
+  measured rather than argued — per role, after the request-layer trim: build-class
+  specialists 2 660 tokens, tester 5 448, researcher 7 113, the lead 8 515 (of which
+  `tm_browser` alone is 2 788). The default is unchanged until that trade is decided;
+  what changed is that the boot note now says, in both directions, which world this
+  process is delivering.
+- **A role denied `tm_browser` could still browse on v2.** The host's 45 `browser_*`
+  tools share one permission action named `browser` and never appear in the direct
+  tool surface, so deleting `browser_*` from `event.tools` removed a catalog the
+  assembled request did not contain — while the role kept reaching every one of them
+  from inside `execute`. The whitelist now also projects
+  `{action:"browser", resource:"*", effect:"deny"}` for exactly those roles: the only
+  lever that speaks the host's name for them, since what was broken here was goal 5's
+  network-role restriction, not a nicety.
 - **A `ctx.storage` self-check that never ran is `declared`, not `not-seen`** — and
   one that threw or read back something different is `missing`, not `not-seen`
   either.  `not-seen` means "registered, the host hasn't called it", so wearing it

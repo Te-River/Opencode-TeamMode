@@ -167,6 +167,36 @@ assert.equal(
   "defaultAgent:false opts out of the promotion, the same knob v1 documents",
 )
 await oo.value?.()
+
+// How our tools reach the model AT ALL.  The 2.0.16 binary decides it with
+// `options.codemode`: not-false means "catalog only", where the host keeps the
+// first line of the description (≤120 chars).  That is the real explanation for a
+// live session showing six tools and zero tm_* after a clean registration — and the
+// reason a knob exists: the other half of the trade is that direct definitions ride
+// every request.  Both sides are pinned so nobody has to guess which world they are in.
+assert.equal(
+  byName.tm_join.options?.codemode,
+  undefined,
+  "by default we send no codemode flag, and the boot note says what that costs us (the governance text below the first line never arrives)",
+)
+{
+  const direct = makeFakeCtx({ directory: ws, agents: [] })
+  process.env.TM_V2_CODEMODE = "direct"
+  const dr = await withCapturedConsole(() => plugin.setup(direct.ctx))
+  const dt = Object.fromEntries(direct.tools.list().map((t) => [t.id ?? t.name, t]))
+  assert.equal(dt.tm_join?.options?.codemode, false, "TM_V2_CODEMODE=direct sends codemode:false, which is the host's own switch for a real tool definition")
+  assert.ok(
+    warns.some((w) => /Code Mode 目录/.test(w)),
+    "the default boot says out loud that only the first line of our descriptions reaches the model",
+  )
+  assert.ok(
+    (dr.warns ?? []).some((w) => /TM_V2_CODEMODE=direct/.test(w)) &&
+      !(dr.warns ?? []).some((w) => /只有描述首行/.test(w)),
+    "and the direct boot names the world it is in instead of repeating the warning",
+  )
+  delete process.env.TM_V2_CODEMODE
+  await dr.value?.()
+}
 // …and the claim is only made when it can be OBSERVED.  A live 2.0.16 standalone
 // boot showed the editor holding 7 agents with build and plan present and NONE of
 // ours — the transform receives the agent set from before the config directory
@@ -322,6 +352,19 @@ assert.ok(
   "and the no-specialist-delegation deny survives the translation",
 )
 assert.ok(find("websearch").some((p) => p.effect === agents.team.permission.websearch), "the matrix decides a network action, not a stray config line (the user's value is replaced by what our whitelist says)")
+// The host's 45 browser tools share ONE permission action (`browser`) and never
+// appear in the direct tool surface, so the request-layer `browser_*` deletion
+// alone left a role that is DENIED tm_browser able to browse from inside `execute`
+// — the goal-5 promise broken by an implementation detail nobody had read.
+assert.ok(
+  fake.agents.get("architect").permissions.some((p) => p.action === "browser" && p.effect === "deny" && p.resource === "*"),
+  "a role without tm_browser is denied the host's `browser` action too, not just our door",
+)
+assert.equal(
+  find("browser").length,
+  0,
+  "and the lead, which carries tm_browser with an ask-map, gets no blanket browser deny (that would deny itself)",
+)
 assert.ok(
   find("my_mcp_thing").some((p) => p.effect === "allow" && p.resource === "*"),
   "an action the matrix never mentions — a user's own MCP tool — passes through untouched",

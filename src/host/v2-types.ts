@@ -77,6 +77,14 @@ export interface V2ToolInfo {
   readonly options?: {
     readonly namespace?: string
     readonly permission?: string
+    /**
+     * Read from the 2.0.16 binary, NOT from the SDK types (which have no such
+     * word): host-built tools carry `options:{codemode:false}` and a tool whose
+     * codemode is not false is offered only through the Code Mode catalog, where
+     * its description is cut to the first line.  This is why a live Team session
+     * showed six tools and zero `tm_*` even though registration succeeded.
+     */
+    readonly codemode?: boolean
   }
 }
 

@@ -110,6 +110,19 @@ export const v2Personality: V2Plugin = {
     const v2Env: Record<string, string | undefined> = { ...process.env }
     if (!String(v2Env.TM_WEBFETCH_ALLOWED_DOMAINS ?? "").trim()) v2Env.TM_WEBFETCH_ALLOWED_DOMAINS = "*"
 
+    // ---------- how our tools reach the model at all (measured in the binary) ----------
+    // 2.0.16 decides tool visibility with `options.codemode`: a tool whose value is
+    // not `false` is offered ONLY inside the Code Mode catalog, where the host keeps
+    // the first line of its description (≤120 chars) under a ~2 000-token budget.
+    // `bindV2Tool` used to send no `options` at all, which is the real explanation
+    // for the live session that showed six tools and zero `tm_*` after a successful
+    // registration: the tools were there, and almost none of the governance text we
+    // wrote for them ever arrived.  `TM_V2_CODEMODE=direct` sends the flag; the
+    // default keeps today's behaviour until the token cost is measured, because the
+    // other half of that sentence is that a direct tool definition rides EVERY
+    // request (our own estimate for the full set is 9 528 tokens).
+    const v2CodeModeDirect = /^(1|true|on|yes|direct)$/i.test(String(v2Env.TM_V2_CODEMODE ?? "").trim())
+
     // No SDK client.  v1's `client` carried `file.read`, `find.text`, `session.*`
     // and `pty.*`; the v2 plugin ctx has no such object, and the fs shim that used
     // to stand in for the first two went away with `tm_read`/`tm_grep` (the native
@@ -156,7 +169,9 @@ export const v2Personality: V2Plugin = {
     const derived: string[] = []
     for (const [name, def] of entries) {
       if (V2_UNREGISTERED.has(name)) continue
-      const bound = await bindV2Tool(name, def, directory, (agent, sessionID) => scope.learn(agent, sessionID))
+      const bound = await bindV2Tool(name, def, directory, (agent, sessionID) => scope.learn(agent, sessionID), {
+        codemodeDirect: v2CodeModeDirect,
+      })
       if (!bound) {
         notes.push(`${name}: 没有 execute，未注册`)
         continue
@@ -183,6 +198,14 @@ export const v2Personality: V2Plugin = {
         `${derived.join("/")} 没有 zod 形状，参数表是从描述符文本推出来的（类型靠 name: type 前缀判定，不是 zod 保证）`,
       )
     }
+    // How our tools reach the model at all — said every boot, because the two
+    // answers differ by thousands of tokens and by whether our governance text
+    // arrives at all.
+    notes.push(
+      v2CodeModeDirect
+        ? "TM_V2_CODEMODE=direct：tm_* 带 options.codemode=false，作为真正的工具交付（描述完整，代价是定义随每一次请求走）"
+        : "tm_* 没有带 options.codemode=false：宿主只把它们放进 Code Mode 目录，模型看到的只有描述首行（≤120 字）——我们写在下面的治理文案大部分没送到，需要完整交付请用 TM_V2_CODEMODE=direct 并核对令牌开销",
+    )
     registrations.push(
       await ctx.tool.transform((editor) => {
         for (const b of bindings) editor.add(b.tool)
@@ -488,6 +511,7 @@ export const v2Personality: V2Plugin = {
         scope_ours: scope.report.ours,
         scope_foreign: scope.report.foreign,
         scope_unknown: scope.report.unknown,
+        tools_codemode: v2CodeModeDirect ? "direct" : "catalog",
         guard_foreign_skipped: guards.report.foreignSkipped,
         subagent_background: bgForce.registrations.length ? "forced-true" : "no-hook",
         guard_shell_coarse: escalateShellAsk,

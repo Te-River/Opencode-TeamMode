@@ -198,6 +198,13 @@ export async function bindV2Tool(
   /** Every call to OUR tool tells the host-scope resolver which sessions belong to
    *  Team (#22) — the one fact about a session we can learn from the inside. */
   onCall?: (agent: unknown, sessionID: unknown) => void,
+  /** `codemodeDirect: true` sends `options:{codemode:false}`, which the 2.0.16
+   *  binary uses as the visibility switch: without it a registered tool reaches the
+   *  model ONLY inside the Code Mode catalog, with its description cut to the first
+   *  line — so every governance sentence we wrote below that line never arrives.
+   *  Off by default because the cost is the whole definition set riding every
+   *  request; the number is measured, not argued (see TM_V2_CODEMODE). */
+  opts: { codemodeDirect?: boolean } = {},
 ): Promise<V2ToolBinding | null> {
   if (typeof def?.execute !== "function") return null
   const { schema, exact, source, note } = await inputSchemaFor(def.args)
@@ -205,6 +212,7 @@ export async function bindV2Tool(
     name,
     description: String(def.description ?? ""),
     input: schema,
+    ...(opts.codemodeDirect ? { options: { codemode: false } } : {}),
     async execute(args, ctx): Promise<V2ToolResult> {
       onCall?.((ctx as { agent?: unknown } | undefined)?.agent, (ctx as { sessionID?: unknown } | undefined)?.sessionID)
       // Our tools are defensive about raw model args already (they coerce
