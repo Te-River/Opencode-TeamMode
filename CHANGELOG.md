@@ -31,6 +31,26 @@ registry saw 1.5.0 as the install-script fix release).
   aggregate return of one Code Mode program.  Measured live: a 15,000-token program
   return arrived as `offloaded:true / preview_tokens:58` plus a `tm_fetch` handle.
 
+- **`tm_read` / `tm_grep` / `tm_bash` are retired on v2, and the native file ladder
+  takes their place with its governance intact.** The order AGENTS.md demanded was
+  kept: `execute.after` offload and the `permission.evaluate` red lines landed
+  FIRST, so deleting the aliases did not open a window with neither.  The half that
+  would have been missed is the DENIES: v1's matrix refuses native `read`/`grep`/
+  `glob` to every role (they were the shadow of the governed aliases) and
+  `v2-session.ts` deletes anything the config denies — so projecting those rules
+  onto a host where the aliases are unregistered would have left a role with no way
+  to open a file at all.  `V2_LADDER_ACTIONS` now exempts them in both the triple
+  translation and the removal plan, and group 3 of the v2 suite pins all three
+  facts together (aliases absent, native ladder kept, `execute.after` attached).
+  Nothing was lost on the red-line side either: v1's P2 path scope is the host's own
+  `external_directory` permission action on v2, observed answering `effect:"ask"`
+  with a real `permission.asked` behind it — a dialog where our code used to throw.
+  The same commit drops permission triples for any v1-only action (so a boot can no
+  longer write an `allow tm_read` rule the host cannot honor, and `mergeTriples`
+  collects a stale one from an earlier boot), deletes the fs client shim that only
+  those two tools used, and forks the v2 prompts through `V2_TEXT`: every sentence
+  that named the trio, or called the shell tool `bash`, is rewritten or the build
+  throws.  v1 keeps all three tools and its prompts unchanged.
 - **On v2 the per-command R6 classifier is in charge; the blanket `shell → ask` is
   the fallback.** It was kept as the default only because no live host had been
   seen to call `permission.evaluate` for `shell`, and the probe now records exactly
@@ -223,6 +243,18 @@ registry saw 1.5.0 as the install-script fix release).
 
 ### Fixed
 
+- **A `ctx.storage` self-check that never ran is `declared`, not `not-seen`** — and
+  one that threw or read back something different is `missing`, not `not-seen`
+  either.  `not-seen` means "registered, the host hasn't called it", so wearing it
+  for a failed probe hides exactly the fact the LEDGER (#16) depends on, and
+  wearing it for an untried domain understates a seam that is there.  The row now
+  reads `round-trip → ok`, `absent / threw / read-back-mismatch → missing`,
+  nothing-yet → `declared` when the domain exists.
+- **The v2 no-dialog refusal no longer points at a domain allowlist that v2 does
+  not run.**  With `TM_WEBFETCH_ALLOWED_DOMAINS` defaulting to `"*"`, telling the
+  agent to "改用白名单内的源" sent it looking for a gate that was never the reason,
+  and stayed silent about the one red line that has no consent path at all (the
+  metadata / private-range address policy).
 - **The lead's delegation mandate names `subagent` on v2, not `task`.** Same defect
   shape as the `tm_ptc_run` fork: a rule pointing at a tool the role cannot call
   costs exactly the round it exists to save.  The name is from measurement, not

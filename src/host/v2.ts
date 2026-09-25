@@ -41,19 +41,22 @@ import { blackboardNote } from "./note.js"
 import { applyV2BackgroundForce, applyV2PermissionGuards, needsCoarseShellAsk } from "./v2-guard.js"
 import { applyV2Probe, probeSummary } from "./v2-probe.js"
 import { applyV2NativeOffload } from "./v2-offload.js"
+import { v2CapabilityRows } from "./v2-capabilities.js"
 import { applyV2SessionLayer, removalPlan } from "./v2-session.js"
-import { createV2Client } from "./v2-client.js"
 import { bindV2Tool, type V2ToolBinding } from "./v2-tool.js"
 import { mergeTriples, triplesFromAgentPermission, V1_ONLY_TOOLS } from "./v2-permissions.js"
 import type { V2AgentInfo, V2Context, V2Plugin, V2Registration, V2ToolInfo } from "./v2-types.js"
 
 /** The refusal has to name the real reason: on v2 the absence is the new
  *  protocol, and "旧版协议" would send the model looking for an upgrade the
- *  user already installed. */
+ *  user already installed.  It must ALSO not point at a domain gate this
+ *  personality no longer runs (the default is `"*"`), so the knob it names is
+ *  the host's own permission config, and the address red line is excluded from
+ *  "ask the user" because that one has no consent path at all. */
 export const V2_NO_DIALOG_NOTE =
   "这个宿主（OpenCode v2）不给插件弹出确认窗的入口，所以我没有问任何人就直接拒绝了——" +
-  "我不会在没有对话框的情况下假装用户同意。请改用白名单内的源，" +
-  "或让用户在配置里放行（TM_WEBFETCH_ALLOWED_DOMAINS / 宿主的权限设置），不要重复调用。"
+  "我不会在没有对话框的情况下假装用户同意。请换一个不需要这次访问的源，" +
+  "或让用户在宿主的权限设置里放行（私网/元数据地址是红线，那条没有放行路径），不要重复调用。"
 
 function directoryOf(ctx: V2Context): string {
   const loc = ctx?.location as { directory?: unknown; project?: { directory?: unknown } } | undefined
@@ -82,32 +85,46 @@ export const v2Personality: V2Plugin = {
     const envProtectExtra = parseExtraDeny(process.env.TM_ENV_PROTECT_EXTRA_DENY)
 
     // ---------- the v2 network policy: no domain gate, IP red line only ----------
-// The user's standing instruction for v2 (2026-09-25): do not block network
-// access at all EXCEPT sensitive and internal addresses.  v1's 22-host seed list
-// existed because v1 could open the host's official per-request dialog; on v2 a
-// plugin cannot raise one, so an allowlist became a set of pages the agent can
-// never see and no one can approve -- a gate with no door.  `"*"` therefore
-// replaces the DEFAULT here, and what still holds absolutely is `checkWebUrl`'s
-// address policy underneath it: link-local / metadata / reserved ranges are a hard
-// deny no config can open (and were never consentable), and private space
-// (loopback / RFC1918 / CGNAT / .localhost) stays gated — refused through our
-// tools, which have no dialog to ask with, and opened only by the host's own
-// `effect:"ask"` for the native tools.  IPv4-mapped and DNS64 spellings are
-// unwrapped before that check, so the notation is not a way around it.
-// An explicit TM_WEBFETCH_ALLOWED_DOMAINS always wins; this only changes which
-// default applies, and it is resolved from a COPY of the env so the v1
-// personality in the same process is untouched.
-const v2Env: Record<string, string | undefined> = { ...process.env }
-if (!String(v2Env.TM_WEBFETCH_ALLOWED_DOMAINS ?? "").trim()) v2Env.TM_WEBFETCH_ALLOWED_DOMAINS = "*"
+    // The user's standing instruction for v2 (2026-09-25): do not block network
+    // access at all EXCEPT sensitive and internal addresses.  v1's 22-host seed list
+    // existed because v1 could open the host's official per-request dialog; on v2 a
+    // plugin cannot raise one, so an allowlist became a set of pages the agent can
+    // never see and no one can approve -- a gate with no door.  `"*"` therefore
+    // replaces the DEFAULT here, and what still holds absolutely is `checkWebUrl`'s
+    // address policy underneath it: link-local / metadata / reserved ranges are a hard
+    // deny no config can open (and were never consentable), and private space
+    // (loopback / RFC1918 / CGNAT / .localhost) stays gated — refused through our
+    // tools, which have no dialog to ask with, and opened only by the host's own
+    // `effect:"ask"` for the native tools.  IPv4-mapped and DNS64 spellings are
+    // unwrapped before that check, so the notation is not a way around it.
+    // An explicit TM_WEBFETCH_ALLOWED_DOMAINS always wins; this only changes which
+    // default applies, and it is resolved from a COPY of the env so the v1
+    // personality in the same process is untouched.
+    const v2Env: Record<string, string | undefined> = { ...process.env }
+    if (!String(v2Env.TM_WEBFETCH_ALLOWED_DOMAINS ?? "").trim()) v2Env.TM_WEBFETCH_ALLOWED_DOMAINS = "*"
 
-const tmRuntime = await createTmTools(
-      { directory, project: "", client: createV2Client(), $: undefined } as unknown as PluginInput,
+    // No SDK client.  v1's `client` carried `file.read`, `find.text`, `session.*`
+    // and `pty.*`; the v2 plugin ctx has no such object, and the fs shim that used
+    // to stand in for the first two went away with `tm_read`/`tm_grep` (the native
+    // tools, governed at `execute.after`, are the file ladder now).  What is left
+    // off is reported where it is used rather than papered over: `tm_join` answers
+    // `goal_unchecked reason=no_seam` instead of claiming it looked at the todo
+    // list, and bridging `ctx.session` into the collect path is its own task (#8).
+    const tmRuntime = await createTmTools(
+      { directory, project: "", client: undefined, $: undefined } as unknown as PluginInput,
       {
         mode: envProtectMode,
         extra: envProtectExtra,
         env: v2Env,
+        // The matrix is built from observations that do not exist yet at this line
+        // (the probe, the guards, the offloader all register below), so it is a
+        // LATE-BOUND closure rather than a snapshot taken too early — a row read
+        // before the observation would be exactly the "declared" lie this table
+        // exists to avoid.
+        capabilities: () => v2Matrix(),
       },
     )
+    let v2Matrix: () => ReturnType<typeof v2CapabilityRows> = () => []
 
     const registrations: V2Registration[] = []
     const notes: string[] = []
@@ -139,6 +156,15 @@ const tmRuntime = await createTmTools(
     // parameter names, but the TYPES were read off a `name: type` prefix by
     // regex, not by zod.  Saying nothing would let the log imply a zod-grade
     // shape, so name the tools and say how they were obtained.
+    const retired = entries.map(([name]) => name).filter((n) => V2_UNREGISTERED.has(n))
+    if (retired.length) {
+      // Deliberate absences are said, not silently missing: an agent that reads a
+      // v1 document and finds no `tm_read` needs to learn from the boot log that
+      // this is the design, not a failed install.
+      notes.push(
+        `v2 不注册 ${retired.join("/")} —— 同一件工作交给宿主自己的 read/grep/shell/execute（结果照样被 execute.after 治理），v1 保留这些别名`,
+      )
+    }
     if (derived.length) {
       notes.push(
         `${derived.join("/")} 没有 zod 形状，参数表是从描述符文本推出来的（类型靠 name: type 前缀判定，不是 zod 保证）`,
@@ -250,7 +276,11 @@ const tmRuntime = await createTmTools(
               { escalateShellAsk },
             )
             for (const u of unmapped) unmappedActions.add(u)
-            const merged = mergeTriples((existing as V2AgentInfo).permissions, triples)
+            // `V1_ONLY_TOOLS` is passed as the reclaim set: a triple naming an
+            // action this personality never registers can only have come from an
+            // earlier boot, and a permission rule for a tool the host has never
+            // heard of reads as a capability the user granted.
+            const merged = mergeTriples((existing as V2AgentInfo).permissions, triples, V1_ONLY_TOOLS)
             if (merged.changed) editor.update(id, (a) => { a.permissions = merged.triples })
           }
           if (promoteTeamDefault) {
@@ -363,7 +393,53 @@ const tmRuntime = await createTmTools(
           ? options.temperature
           : 0.2
     const plan = removalPlan(agents as unknown as Record<string, { permission?: Record<string, unknown> }>)
+    // ---------- does ctx.storage actually round-trip? ----------
+    // The LEDGER needs somewhere to live and `ctx.storage` is the candidate; the
+    // difference between "the domain exists" and "a value we wrote comes back"
+    // is not something a type file can settle, so boot asks it one question with a
+    // key that carries no user data and records the answer.
+    const storageProbe: { state: string; detail?: string } = { state: "absent" }
+    {
+      const st = (ctx as { storage?: { set?: unknown; get?: unknown } } | undefined)?.storage
+      if (st && typeof st.set === "function" && typeof st.get === "function") {
+        const key = "team-mode/selfcheck"
+        const marker = `boot-${process.pid}`
+        try {
+          await (st.set as (k: string, v: unknown) => unknown)(key, { marker, at: Date.now() })
+          const back = await (st.get as (k: string) => unknown)(key)
+          const got = (back as { value?: { marker?: unknown } } | null)?.value?.marker ?? (back as { marker?: unknown } | null)?.marker
+          storageProbe.state = got === marker ? "round-trip" : "read-back-mismatch"
+          if (got !== marker) storageProbe.detail = `写回的值不是刚写进去的那个（拿到 ${JSON.stringify(got)?.slice(0, 40)}）`
+        } catch (err) {
+          storageProbe.state = "threw"
+          storageProbe.detail = String((err as Error)?.message ?? err).slice(0, 80)
+        }
+      }
+    }
+
     const session = await applyV2SessionLayer(ctx, { temperature, note, noteAgents: ["team"], plan })
+    // Everything the matrix reports now exists, so the late-bound closure can be
+    // pointed at the real observations.
+    v2Matrix = () =>
+      v2CapabilityRows({
+        ctx,
+        probe,
+        guardsInstalled: guards.installed,
+        backgroundForced: true,
+        offload,
+        sessionHooks: 2,
+        temperature,
+        // Both derived, not asserted: "we think v2 has no X" has to come from the
+        // object we were handed, so a host that grows the seam shows up here
+        // automatically instead of leaving a stale "missing" row forever.
+        // tm_join reads the todo list through the SDK client, and this personality
+        // passes none — so the row is false until #8 bridges `ctx.session` into the
+        // path the tool actually consumes.  Deriving it from ctx rather than
+        // hard-coding `false` is what keeps that honest either way.
+        hasTodoSeam: typeof (ctx as { session?: { todo?: unknown } }).session?.todo === "function",
+        hasAsk: typeof (ctx as { tool?: unknown }).tool === "function",
+        storageState: storageProbe.state,
+      })
     registrations.push(...session.registrations)
     if (!session.registrations.length) {
       notes.push("ctx.session.hook 不存在：工具面裁剪、温度、黑板根目录三项请求层治理都没装上")
@@ -385,6 +461,8 @@ const tmRuntime = await createTmTools(
         agents_default: defaultPromoted === null ? "待观察（宿主异步调用 transform，见 v2-agents 行）" : defaultPromoted ? "team" : "not-promoted",
         request_hooks: session.registrations.length,
         guard_hooks: guards.registrations.length,
+        storage_probe: storageProbe.state,
+        storage_probe_detail: storageProbe.detail ?? "",
         subagent_background: bgForce.registrations.length ? "forced-true" : "no-hook",
         guard_shell_coarse: escalateShellAsk,
         request_temperature: temperature === false ? "off" : temperature,

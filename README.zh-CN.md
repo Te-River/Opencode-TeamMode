@@ -252,7 +252,7 @@ HMAC 句柄，agent 真需要 payload 时用 `tm_fetch` 分页取。
 
 | 工具 | 功能 | 角色 |
 |---|---|---|
-| `tm_read` / `tm_grep` / `tm_bash` / `tm_fetch` | 受治理的文件读 / 正则搜索 / 只读 shell（白名单）/ 句柄分页（JSON 句柄支持 `fields` 点路径投影——刻意小的 jq 子集，如 `items[].name`） | 全部六个 agent |
+| `tm_read` / `tm_grep` / `tm_bash` / `tm_fetch` | 受治理的文件读 / 正则搜索 / 只读 shell（白名单）/ 句柄分页（JSON 句柄支持 `fields` 点路径投影——刻意小的 jq 子集，如 `items[].name`） | 全部六个 agent——**但在 OpenCode 2.x 上前三个不注册，见本表下方说明** |
 | `tm_memory` | 会话 + 项目 + 全局三层记忆库（Markdown + frontmatter）：add / search / list / forget / compact | 全部六个 agent |
 | `tm_board_write` | **黑板的写入侧**：只在 `<board-root>/<session-key>/<task-slug>/NN-<role>-<topic>[-rN].md` 放下一个**新**的 Markdown 文件，文件名由工具自己决定——修订是一个带 `-rN` 的新文件，绝不覆写；回复只给路径和字节数，绝不回传正文。它存在的理由是：落黑板原本需要一个文件工具，而 `architect` / `researcher` 一个都没有（没有 `write`、没有 `edit`、连用来给会话目录打时间戳的 `bash` 都没有），于是这两类角色的超长交付每次都以 `BLACKBOARD WRITE FAILED` + 整篇文档内联回来收场——本项目最看重的那个回复形态，恰恰在最需要的角色身上无法执行。范围是强制的：路径段做规整、目标用 realpath 对齐黑板根（符号链接的任务目录直接拒写）、文件名永远以 `.md` 结尾（所以造不出 `.env`/rc 文件）、正文受 `TM_BOARD_MAX_CHARS` 与会话文件数上限约束 | 全部六个 agent |
 | `tm_ptc_run` | 批量编排：一个程序、N 次受治理调用、零 LLM 回合；联网角色还能在程序里调 `tm.search` / `tm.webfetch` | 全部六个 agent |
@@ -262,6 +262,15 @@ HMAC 句柄，agent 真需要 payload 时用 `tm_fetch` 分页取。
 | `tm_pty` | 在宿主自己的终端会话上**非阻塞执行命令**（`start`/`status`/`list`/`kill`）：独立的构建与测试各自一个会话并行跑，不再串成一条 120 秒的 bash 调用。它不抓输出（命令自己 tee 日志，用 `tm_read` 读），且每次启动都先过 R6 分类器、R2 危险面 glob，再走官方确认窗，才真的建进程 | 仅 Lead |
 | `tm_stats` | **插件把自己的 trajectory 读回来**：卸载挡在上下文之外的 token（扣掉确实回来的预览）、派发重叠省下的秒数（串行代价减去子代理实际占用的墙钟）、PTC 内部量、治理计数（被拦子资源、`tm_pty` 拒绝、bash 超时夹顶、缓存命中、脱敏次数）——外加**宿主能力矩阵**（每个宿主接口标 `已验证/存在未用/待观察/缺失/需人眼`）。只读本插件自己写的文件；OpenCode 升级后第一个跑它。`{ recent: 20 }` 追加一份逐条调用清单——每次卸载结果的句柄和落盘路径都在里面，这就是"看看刚才那个工具到底返回了什么"的办法（宿主不给插件工具卡片留展开位） | 全角色 |
 | `tm_browser` | 交互式浏览器会话（**驱动你的默认浏览器**）：18 个 Playwright 动词（快照优先：`take_snapshot` → 按 uid 寻址的 `click`/`fill`/`drag`…，**并新增多标签页 `new_page` / `close_page`**，可同时持有两个页面）+ 5 个旧版兼容动词（open/navigate/read/screenshot/close）；Playwright 引擎需 Node ≥ 20，不满足或导入失败时自动降级到旧版 CDP 引擎。它开的是**你自己的默认浏览器渠道**（默认装 Edge Beta 就开 Beta），除操作者设 `TM_BROWSER_HEADLESS` 外保持有头；页面自家图片/CSS/JS 靠 `same-site` 子资源策略正常加载；`take_screenshot { image:true }` 会附一张 JPEG，让模型真能看见画面。**一个 agent 一个浏览器**：`open` 返回一个 id（`b1`），之后每条回复都带着它——那个窗口、它的 uid 编号、它经对话框批准过的主机，都属于**你的**会话；用别人的 id 会被拒绝并点名属主（id 是名字，不是钥匙），`close { id:"all" }` 只关你自己的。`click` 报的是**页面做了什么**，而不只是"我发出了鼠标事件"：它点击前后各读一次目标的可观测状态（`aria-expanded`、URL、DOM 节点数），回答形如 `已点击 … · aria-expanded: false → true`；页面还没加载完时会有界重试一次——这正是实测中"点击落在没有 handler 的节点上"的成因；仍然没有变化就说"页面没有任何可观测变化"，而不是暗示成功。`close` 在浏览器的操作系统进程真正退出之前不会说“已确认关闭”——它等 pid、必要时补一次终止，两种结果都会把 pid 写在回复里，因为连接断开不等于浏览器关了；万一拿不到 pid，它会说“进程未核验”，而不是借用那句已确认。本进程启动过却没能收掉的浏览器会记进按工作区隔离的账本（pid、属主 pid、可执行文件），由下一次启动回收——只回收属主进程已死**且**该 pid 现在仍是那个可执行文件的条目，并按整棵进程树终止（Windows 上 `taskkill /T`），绝不动另一个窗口的活标签。**空白页现在会自己解释原因**：`same-site` 无从知道一个站点把自己的脚本包放在与品牌无关的 CDN 上（百度把脚本发在 `bdimg.com`），所以当一页返回 `0 个可寻址节点` 而同时有脚本域名被拦时，回复会直接说明这片空白是**我们的门禁**造成的、点名该域名，并给出 `allow_host { host }`——一个域名一次官方确认窗，只对你的浏览器、只在本次会话，不写任何配置文件（批准后要重新导航，门禁在请求时判定）。而真的需要人工验证的页面（百度安全验证 / Cloudflare / access denied）会被说成一道验证墙，因为对它的正确动作是换来源，不是再试一次 | Lead + Researcher + Tester（仅 UI 验证） |
+
+> **在 OpenCode 2.x 上，其中四个工具是刻意不注册的。**
+> `tm_read` / `tm_grep` / `tm_bash` 由宿主自己的 `read` / `grep` / `glob` / `shell`
+> 接管，`tm_ptc_run` 由宿主的 `execute`（Code Mode）接管——同一件工作，少给模型一个
+> 要挑的工具。治理没有跟着消失：超大的原生结果照样被 `tool.execute.after` 卸载
+> （实测：`shell` 的 12,902 token 变成 78 token 的预览），地址红线和 R6 的按命令分类
+> 都跑在宿主的 `permission.evaluate` 上。安装器写出的六个角色提示词是 v2 变体，
+> 里面点名的是 `read` / `grep` / `shell` 而不是这些别名。
+> 上面这张表描述的是 v1（1.18.x）的工具面，那一份仍然十三个都在。
 
 > **固定工具优先级阶梯（每个任务都适用）：① 用户自己的 MCP/插件工具
 > → ② TeamMode 受治理工具（`tm_*`） → ③ 模型自己的推理。** 它同时是回退链：某个受治理

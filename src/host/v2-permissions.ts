@@ -57,7 +57,41 @@ export const V2_ACTION_NAMES: Readonly<Record<string, string>> = {
  * `allow` for an action the host has never heard of claims a capability that
  * does not exist.
  */
-export const V1_ONLY_TOOLS: ReadonlySet<string> = new Set(["tm_ptc_run"])
+/**
+ * Tools v1 keeps and v2 does not register.
+ *
+ * `tm_ptc_run` left because the host's own Code Mode does the job.  The other
+ * three left for the opposite reason: on v2 the NATIVE read/grep/shell are the
+ * better tools (paged reads, image/PDF attachment, background shell, and — since
+ * 1.7.0's offload layer — they are now governed too, measured at 12,902 tokens
+ * arriving as a 78-token preview).  Retiring them is only safe in that order,
+ * which is why the governance moved to `execute.after` FIRST and this list is the
+ * step that follows it, not the one that precedes it.
+ *
+ * v1 keeps all three: its `tool.execute.before` can rewrite arguments but not
+ * results, so deleting them there would delete offload itself.
+ */
+export const V1_ONLY_TOOLS: ReadonlySet<string> = new Set(["tm_ptc_run", "tm_read", "tm_grep", "tm_bash"])
+
+/**
+ * The v2 file/shell ladder runs through the host's own tools, so the triples that
+ * DENY them must not be projected: v2-session.ts deletes every literal-`deny`
+ * action from the request, and denying `read` while `tm_read` is unregistered
+ * would leave a role with no way to open a file at all.  This is a translation
+ * decision, not an edit to src/agents.ts — v1's matrix keeps its denies and the
+ * two personalities' ladders genuinely differ now.
+ *
+ * Both halves have to agree, so the SAME set is consulted by `toolsToRemove()` in
+ * v2-session.ts; this constant is the one source.  Letting the native file tools
+ * back in does not lower a red line: v1's P2 scope ("stay inside the project +
+ * the store dirs") is the host's own `external_directory` permission action on v2,
+ * observed live answering `effect:"ask"` with a `permission.asked` behind it — a
+ * real dialog where our code used to hard-throw.  The two red lines the host does
+ * NOT know about (the address policy under `webfetch`, R6 under `shell`) are the
+ * ones `v2-guard.ts` puts into `permission.hook("evaluate")`, and that happened
+ * BEFORE this fork, which is the ordering AGENTS.md requires.
+ */
+export const V2_LADDER_ACTIONS: ReadonlySet<string> = new Set(["read", "grep", "glob"])
 
 const V2_ONLY_ACTIONS = new Set(["list", "todowrite", "lsp"])
 
@@ -92,8 +126,18 @@ export function triplesFromAgentPermission(
       continue
     }
     const action = V2_ACTION_NAMES[v1Action] ?? v1Action
+    // A rule for an action v2 never registers claims a capability that does not
+    // exist, and `permission.evaluate` cannot even see it to enforce it.  One
+    // source for the decision: this is the same set v2.ts skips when registering
+    // and gen-v2-config.mjs uses for the markdown frontmatter.
+    if (V1_ONLY_TOOLS.has(action)) continue
     const direct = normalizeEffect(value)
     if (direct) {
+      // The v2 file ladder IS the native read/grep/glob, so a `deny` on them may
+      // not be projected: v2-session.ts deletes every literal-deny action from the
+      // request, and deleting them while tm_read/tm_grep are unregistered would
+      // leave a role with no way to open a file.  An explicit allow still rides.
+      if (V2_LADDER_ACTIONS.has(action) && direct === "deny") continue
       const effect: PermissionEffect =
         options.escalateShellAsk && action === "shell" && direct === "allow" ? "ask" : direct
       triples.push({ action, resource: "*", effect })
@@ -121,14 +165,23 @@ export function triplesFromAgentPermission(
  * actions (the matrix is the whitelist — that is the product's tool-surface
  * promise, and it must not be silently widened by a config edit half-applying
  * it).  Idempotent: running it twice changes nothing.
+ *
+ * `drop` is the reclaim path for an upgrade: a rule naming an action this
+ * personality never registers (a v1-only tool) can only have come from us, and
+ * leaving it behind would keep claiming a capability the host does not have.
  */
 export function mergeTriples(
   existing: ReadonlyArray<PermissionTriple> | undefined | null,
   ours: ReadonlyArray<PermissionTriple>,
+  drop?: ReadonlySet<string>,
 ): { triples: PermissionTriple[]; changed: boolean } {
   const base = Array.isArray(existing) ? existing : []
   const ourActions = new Set(ours.map((t) => t.action))
-  const kept = base.filter((t) => !t || typeof t !== "object" ? false : !ourActions.has(String(t.action)))
+  const kept = base.filter((t) => {
+    if (!t || typeof t !== "object") return false
+    const action = String(t.action)
+    return !ourActions.has(action) && !drop?.has(action)
+  })
   const keptClean = kept.filter((t) => t && typeof t.action === "string" && EFFECTS.has(String(t.effect)))
   const triples = [...keptClean.map((t) => ({ ...t, resource: typeof t.resource === "string" && t.resource ? t.resource : "*" })), ...ours]
   const changed =

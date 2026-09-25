@@ -116,7 +116,6 @@ const V2_TEXT = [
   ["## Recon batching (PTC-first)", "## Recon batching (Code Mode first)"],
   ["Local-repo recon is PTC-first:", "Local-repo recon is Code-Mode-first:"],
   ["cross-referencing searches → ONE tm_ptc_run program", "cross-referencing searches → ONE `execute` program"],
-  ["tm.read / tm.grep / tm.bash ride inside", "tools.tm_read / tools.tm_grep / tools.tm_bash are reachable inside it"],
   /*
    * The delegation half of the lead prompt.  On v2 the host's tool is named
    * `subagent` — measured, not inferred: a live dispatch reached
@@ -138,6 +137,46 @@ const V2_TEXT = [
   ["a background `task` names its own session id", "a background `subagent` names its own session id"],
   ["a synchronous `task` call, so chaining waits", "a synchronous `subagent` call, so chaining waits"],
   ["blocking on `task`", "blocking on `subagent`"],
+  /*
+   * The file ladder (the tm_read / tm_grep / tm_bash retirement).  v2 does not
+   * register those three, so every sentence that routes a role through them has
+   * to name what is actually on the surface instead — and the native tools are
+   * NOT ungoverned here: `execute.after` offloads their oversized results, and
+   * the address / R6 red lines ride `permission.evaluate` (both landed BEFORE
+   * this fork, which is the ordering the retirement requires).
+   *
+   * Two words are host-vocabulary, not ours: v2 names the shell tool `shell`,
+   * and its `background` argument is documented on the native tool (AGENTS.md,
+   * "native shell … has background:true").  The pty line is rewritten around
+   * that, NOT around anything I have measured in a live v2 session — a v2
+   * session has yet to make a background shell call, and #8/#9 are where that
+   * gets checked.  Until then the sentence says only "returns at once".
+   */
+  ["tm_grep / tm_read first, a second lookup only for what it genuinely missed.", "grep / read first, a second lookup only for what it genuinely missed."],
+  ["All file reads / searches / enumeration go through tm_read / tm_grep / tm_bash.\nThe built-in read/grep/glob/list tools are removed from the tool surface —\nretrying them only wastes a turn.  Built-in bash exists only where granted\n(team / implementer / reviewer / tester run commands: build / test / git);\narchitect and researcher have no bash at all — one-off read-only commands\ngo through tm_bash or are reported as a gap.",
+   "File reads / searches / enumeration go through the built-in read / grep /\nglob tools — on this host they ARE the governed path: an oversized result comes\nback as a short preview plus a handle, and `tm_fetch` pages the rest, so a wide\ncall is cheap here and still the right move.  Built-in shell exists only where\ngranted (team / implementer / reviewer / tester run commands: build / test /\ngit); architect and researcher have no shell at all — a one-off read-only\ncommand they cannot run is reported as a gap, not retried."],
+  ["code search → tm_grep · enumeration and quick\n  probes → tm_bash · multi-file", "code search → grep · enumeration and quick\n  probes → glob / shell where granted · multi-file"],
+  ["use the **built-in bash** tool — not tm_bash.  tm_bash hard-blocks them with\nno dialog; built-in bash triggers the official confirmation dialog (once /\nalways / reject).  Dangerous commands (rm / git push / npm publish / etc.)\nalways trigger the dialog regardless of tool.",
+   "there is no second, ungoverned shell to fall back to on this host: the one\n**shell** tool IS the R6 surface, and its classifier only ever makes a rule\nstricter — an env dump or a delete asks the host, which opens its own dialog\n(once / always / reject).  Dangerous commands (rm / git push / npm publish /\netc.) ask regardless of what the config said."],
+  ["probes toward one goal — tm_read / tm_grep / tm_bash\nOR built-in bash alike — your FIRST move is ONE", "probes toward one goal — read / grep / glob / shell alike — your FIRST move is ONE"],
+  ["Plain shell probes the governed channel cannot run\n(e.g. env-path checks, which the tm_* channel hard-blocks by\ndesign) go as ONE compound built-in bash command (`a; b; c` in a\nsingle call)",
+   "Several cheap probes of one kind go as ONE compound `shell`\ncommand (`a; b; c` in a\nsingle call)"],
+  ["searches are PTC work;", "searches are one-program work;"],
+  ["(tm.read / tm.grep / tm.bash ride inside; ALWAYS `return` the", "(the built-in read / grep / shell tools are callable inside it; ALWAYS `return` the"],
+  ["(or one PTC program), never in two.", "(or one `execute` program), never in two."],
+  ["run one cheap tm_grep.  Do NOT pull big payloads", "run one cheap grep.  Do NOT pull big payloads"],
+  ["or tm_grep + tm_bash yourself)", "or grep + shell yourself)"],
+  ["into its OWN tm_pty session (returns at once, the user sees the terminal,\n  every start passes the official dialog) rather than being chained with\n  `;` behind one long bash call.  tm_pty returns no transcript — tee it to\n  a log and read that log when it reports exited.",
+   "into its OWN background `shell` call (`background: true`, which returns at\n  once) rather than being chained with\n  `;` behind one long shell call.  Have it write its own log file and read that\n  log when it reports exited — do not re-run the command to see its output."],
+  ["probes via bash where granted) BEFORE answering from memory.", "probes via shell where granted) BEFORE answering from memory."],
+  ["FIRST there, because that is the only path with the domain allowlist, the\nper-request dialog and the R6 red lines; an MCP fetcher of the same page\nsilently skips all three (and dumps raw HTML into your context).  Fall to a",
+   "FIRST there, because that is the only path with the address red line (no\nmetadata / private-range fetch) and the threshold offload; an MCP fetcher of the\nsame page silently skips both (and dumps raw HTML into your context).  Fall to a"],
+  ["- Files/docs → tm_read · code search →", "- Files/docs → read · code search →"],
+  ["  --help) → built-in bash where granted ·", "  --help) → `shell` where granted ·"],
+  ["## PTC batch orchestration", "## Batch orchestration (Code Mode first)"],
+  ["file tool at all (architect and researcher have no write/edit/bash; reviewer\n  has only the read-only bash, which refuses redirection). Pass the `session`",
+   "file tool at all (architect and researcher have no write / edit / shell, and\n  reviewer's shell is the host's own, classified per command). Pass the `session`"],
+  ["- The host stops a bash command after 120 s unless you pass a larger", "- The host stops a shell command after 120 s unless you pass a larger"],
 ]
 
 function forkBody(text, hits) {

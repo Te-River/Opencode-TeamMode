@@ -21,6 +21,7 @@
  */
 
 import { COMPACTION_CONTEXT } from "../host-hooks.js"
+import { V2_LADDER_ACTIONS } from "./v2-permissions.js"
 import type { V2Registration, V2SessionContext, V2Context } from "./v2-types.js"
 
 /** v1 named three built-in tools differently from v2's tool ids.  Anything not
@@ -43,6 +44,15 @@ const isDeny = (value: unknown): boolean => value === "deny"
  * The tools one agent must never be offered.  Only a literal `deny` removes:
  * the `{ "*": "ask" }` object form means "callable, gated", and deleting such a
  * tool would silently drop a capability the matrix grants with a dialog.
+ *
+ * `read`/`grep`/`glob` are exempted by name (`V2_LADDER_ACTIONS`), which is the
+ * other half of the `tm_read`/`tm_grep`/`tm_bash` retirement: v1 denied the
+ * native file tools because the governed aliases existed, and on v2 those
+ * aliases are not registered, so honouring the deny here would leave a role with
+ * no way to open a file at all.  Nothing is lost by letting them ride — the path
+ * scope P2 enforced in code is the host's own `external_directory` action, which
+ * was observed live answering `effect:"ask"` with a real `permission.asked`
+ * behind it, i.e. a dialog instead of a hard throw.
  */
 export function toolsToRemove(permission: Record<string, unknown> | undefined | null): string[] {
   const names: string[] = []
@@ -54,12 +64,14 @@ export function toolsToRemove(permission: Record<string, unknown> | undefined | 
       // the exact surface the whitelist withholds.
       names.push(BROWSER_CATALOG)
     }
+    const action = TOOL_RENAMES[key] ?? key
+    if (V2_LADDER_ACTIONS.has(action)) continue
     // A `tm_*` key IS a tool name, so a DENY on one has to remove it too —
     // leaving the denied doors in the request would keep charging the model for
     // tools this role may not touch, which is the whole tax this layer exists
     // to stop.  The `tm_*` wildcard itself is an allow; if it ever read "deny",
     // deleting a tool literally named `tm_*` is a no-op.
-    names.push(TOOL_RENAMES[key] ?? key)
+    names.push(action)
   }
   return [...new Set(names)]
 }

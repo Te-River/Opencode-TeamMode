@@ -8,12 +8,13 @@
  * OPPOSITE: that a governed call refuses when the host offers no dialog.
  *
  * Coverage — each group exists because a live host probe measured the failure:
- *   1. registration: all thirteen tm_* land on the v2 tool surface, tm_dispatch
- *      still does not, and each carries a real description + a JSON Schema
+ *   1. registration: the nine tm_* v2 still ships land on the tool surface,
+ *      tm_dispatch and the four retired names do not, and each carries a real
+ *      description + a JSON Schema
  *   2. the result shape: no bare `output` anywhere (the host answers that with
  *      "Tool result declared output without an output schema")
- *   3. the filesystem client shim: tm_read/tm_grep work with no host client,
- *      the P2 path scope still refuses, and a bounded scan says it truncated
+ *   3. the retirement: tm_read/tm_grep/tm_bash are gone AND the native file tools
+ *      are not denied alongside them — the ladder has to arrive, not just shift
  *   4. consent: with no ask bridge an off-allowlist fetch FAILS CLOSED and the
  *      refusal names the v2 reason rather than 旧版协议
  *   5. permissions: the v1 flat map becomes {action,resource,effect} triples,
@@ -33,7 +34,6 @@ import { fileURLToPath } from "node:url"
 import plugin from "./dist/index.js"
 import { agents } from "./dist/agents.js"
 import { commands } from "./dist/commands.js"
-import { createV2Client } from "./dist/host/v2-client.js"
 import { applyV2Probe, probeSummary } from "./dist/host/v2-probe.js"
 import { makeFakeCtx, withCapturedConsole } from "./scripts/lib/fake-ctx.mjs"
 
@@ -51,7 +51,11 @@ const TM_NAMES = [
   "tm_board_write",
 ]
 /** v1's roster minus what v2 deliberately does not register. */
-const V2_NAMES = TM_NAMES.filter((n) => n !== "tm_ptc_run")
+// v2 registers nine of the thirteen: ptc_run left for the host's Code Mode, and
+// read/grep/bash left because the governed native tools replaced them (the
+// offload layer is what made that possible, so the order matters).
+const V2_RETIRED = ["tm_ptc_run", "tm_read", "tm_grep", "tm_bash"]
+const V2_NAMES = TM_NAMES.filter((n) => !V2_RETIRED.includes(n))
 const CTX = { sessionID: "ses_v2", agent: "team", messageID: "msg_1", id: "call_1" }
 const textOf = (res) =>
   (res?.content ?? []).filter((c) => c?.type === "text").map((c) => c.text).join("\n")
@@ -88,18 +92,24 @@ assert.ok(
   !registered.includes("tm_ptc_run"),
   "tm_ptc_run is NOT registered on v2 — the host's own execute (Code Mode) covers it, and v1 keeps the tool",
 )
+for (const gone of ["tm_read", "tm_grep", "tm_bash"]) {
+  assert.ok(
+    !registered.includes(gone),
+    `${gone} is retired on v2: the native tool plus the execute.after offload govern the same job, and v1 keeps the alias`,
+  )
+}
 assert.equal(
   registered.filter((n) => n.startsWith("tm_")).length,
   V2_NAMES.length,
-  `exactly the twelve governed tools v2 ships arrive (got ${registered.filter((n) => n.startsWith("tm_")).join(",")})`,
+  `exactly the nine governed tools v2 ships arrive (got ${registered.filter((n) => n.startsWith("tm_")).join(",")})`,
 )
 for (const name of V2_NAMES) {
   assert.ok(String(byName[name].description ?? "").length > 40, `${name} carries a real description`)
   assert.equal(byName[name].input?.type, "object", `${name}'s input is a JSON Schema object`)
 }
 assert.ok(
-  Object.keys(byName.tm_read.input.properties ?? {}).includes("path"),
-  "tm_read's parameter names survive the zod→JSON Schema translation",
+  Object.keys(byName.tm_webfetch.input.properties ?? {}).includes("url"),
+  "tm_webfetch's parameter names survive the zod→JSON Schema translation",
 )
 
 // tm_join / tm_pty / tm_stats build their args WITHOUT zod, so their shape
@@ -173,32 +183,39 @@ await oo.value?.()
 }
 
 console.log("2. the v2 result shape")
-const readRes = await byName.tm_read.execute({ path: path.join(ws, "sample.txt") }, CTX)
-assert.ok(!("output" in readRes), "no bare `output` key — the host rejects it without an output schema")
-assert.ok(Array.isArray(readRes.content) && readRes.content[0].type === "text", "text arrives as a content part")
-assert.match(textOf(readRes), /v2 adapter test/, "tm_read reaches the file through the fs shim")
+// Driven by tm_join, not by tm_read: the file trio is retired on this
+// personality, so the shape claim has to ride a tool v2 actually registers.
+const joinRes = await byName.tm_join.execute({}, CTX)
+assert.ok(!("output" in joinRes), "no bare `output` key — the host rejects it without an output schema")
+assert.ok(Array.isArray(joinRes.content) && joinRes.content[0].type === "text", "text arrives as a content part")
+assert.ok(textOf(joinRes).length > 0, "and the answer is the text of a content part, not a field beside it")
 console.log("   OK (content parts, attachments ride as file entries)")
 
-console.log("3. the fs client shim, guards intact")
-const outside = await byName.tm_read.execute({ path: path.resolve(os.tmpdir(), "..", "definitely-outside-tree") }, CTX)
-assert.match(textOf(outside), /失败 · phase=permission/, "P2 path scope still refuses — the shim did not bypass governance")
-const grepRes = await byName.tm_grep.execute({ pattern: "NEEDLE", path: ws }, CTX)
-assert.match(textOf(grepRes), /sample\.txt/, "tm_grep finds the hit through the shim")
-assert.ok(!textOf(grepRes).includes("扫描被截断"), "a two-file tree is not reported as truncated")
-
-const wide = workspace("trunc")
-for (let i = 0; i < 4; i++) fs.writeFileSync(path.join(wide, `f${i}.txt`), "NEEDLE\n".repeat(400))
-const shim = createV2Client()
-const { MAX_TOTAL_LINES } = { MAX_TOTAL_LINES: 500 }
-const many = await shim.find.text({ query: { pattern: "NEEDLE", directory: wide } })
-assert.ok(Array.isArray(many.data), "find.text answers in the host's array-of-matches shape")
-const hitLines = many.data.reduce((n, m) => n + (m.lines?.length ?? 0), 0)
-assert.ok(hitLines <= MAX_TOTAL_LINES + 1, `the scan stays bounded (${hitLines} lines)`)
+console.log("3. the retirement: the ladder moves to the native tools, both halves at once")
+// Deleting the aliases is the easy half.  v1's matrix DENIES native
+// read/grep/glob for every role (they were the shadow of tm_read), so if the
+// translation projected those denies, a v2 role would end up with NO file access
+// at all — a retirement that strands the user rather than shifting the door.
+// Both layers have to agree, and both are pinned here.
+const teamLadder = fake.agents.get("team").permissions.filter((p) => ["read", "grep", "glob"].includes(p.action))
+assert.deepEqual(teamLadder.map((p) => p.action), [], "no deny for read/grep/glob is projected into the v2 config")
+for (const gone of ["tm_read", "tm_grep", "tm_bash"]) {
+  assert.equal(
+    fake.agents.get("team").permissions.filter((p) => p.action === gone).length,
+    0,
+    `${gone} has no permission triple either — a rule for an action the host never registers claims a capability that does not exist`,
+  )
+}
+// The governance that made this legal has to be ATTACHED, not intended: the
+// offload reads the native results, so without it the retirement would just stop
+// governing file output.
 assert.ok(
-  JSON.stringify(many.data).includes("扫描被截断"),
-  "a partial answer announces itself instead of reading complete",
+  fake.hookNames().includes("tool.execute.after"),
+  "tool.execute.after is registered — the layer that governs native read/grep/shell results",
 )
-console.log(`   OK (bounded scan, ${hitLines} lines, truncation stated)`)
+const offloadTools = fake.hook("tool.execute.after").handlers?.length ?? 0
+assert.ok(offloadTools > 0, `the offload handler count is observable (${offloadTools})`)
+console.log("   OK (aliases gone, native ladder left in place, governance attached)")
 
 console.log("4. the v2 network policy: nothing gated by domain, everything gated by address")
 // The user's instruction for v2 (2026-09-25): do not block network access at all
@@ -235,7 +252,7 @@ console.log("   OK (public hosts unpoliced by default, metadata/private/loopback
 console.log("5. permission triples, user rules, idempotency")
 const team = fake.agents.get("team")
 const find = (a) => team.permissions.filter((p) => p.action === a)
-assert.ok(find("tm_read").some((p) => p.effect === "allow" && p.resource === "*"), "the whitelist reaches v2 as triples")
+assert.ok(find("tm_join").some((p) => p.effect === "allow" && p.resource === "*"), "the whitelist reaches v2 as triples")
 assert.ok(find("shell").some((p) => p.effect === "allow"), "v1 `bash` is emitted under v2's action name `shell`")
 assert.equal(find("bash").length, 0, "no v1-only action name is left behind as a phantom rule")
 assert.ok(find("subagent").some((p) => p.effect === "allow"), "the lead's delegation grant reaches v2 as `subagent`")
@@ -312,7 +329,7 @@ if (prevFine !== undefined) process.env.TM_R6_FINE_ASK = prevFine
 
 const shape = JSON.parse(before)
 assert.equal(
-  shape.filter((p) => p.action === "tm_read").length,
+  shape.filter((p) => p.action === "tm_join").length,
   1,
   "applying the matrix twice does not duplicate a rule",
 )
@@ -357,11 +374,15 @@ console.log("   OK (a v2 plugin cannot create agents, so it says which are missi
 await second.value?.()
 
 console.log("7. the request layer — the whitelist decides what the model SEES")
+// The synthetic surface is the v2 reality: the native catalog plus the nine
+// tm_* this personality registers.  tm_read/tm_grep/tm_bash/tm_ptc_run are not
+// listed because a v2 host has no such tool to offer — asserting against them
+// would be asserting against a v1 surface.
 const SURFACE = [
   "read", "grep", "glob", "list", "edit", "write", "patch", "shell", "webfetch", "websearch",
   "skill", "question", "todowrite", "subagent", "browser_navigate", "browser_tabs_list",
-  "tm_read", "tm_grep", "tm_bash", "tm_fetch", "tm_memory", "tm_board_write", "tm_ptc_run",
-  "tm_stats", "tm_join", "tm_pty", "tm_browser", "tm_search", "tm_webfetch",
+  "tm_fetch", "tm_memory", "tm_board_write", "tm_stats", "tm_join", "tm_pty",
+  "tm_browser", "tm_search", "tm_webfetch",
 ]
 const event = (agent, options = {}) => ({
   agent,
@@ -375,14 +396,18 @@ const arch = event("architect")
 await fake.hook("session.context").fire(arch)
 const archLeft = Object.keys(arch.tools)
 for (const gone of [
-  "read", "grep", "glob", "list", "edit", "write", "shell", "webfetch", "websearch", "question",
+  "list", "edit", "write", "shell", "webfetch", "websearch", "question",
   "todowrite", "subagent", "browser_navigate", "browser_tabs_list",
   "tm_webfetch", "tm_search", "tm_browser", "tm_join", "tm_pty",
 ]) {
   assert.ok(!archLeft.includes(gone), `architect is not even OFFERED ${gone} (v1 left its description in every request)`)
 }
-for (const keep of ["tm_read", "tm_grep", "tm_bash", "tm_fetch", "tm_memory", "tm_board_write", "tm_ptc_run", "tm_stats"]) {
-  assert.ok(archLeft.includes(keep), `architect keeps its governed ${keep}`)
+// The other half of the retirement: `shell` is denied above (architect owns no
+// command channel on either personality) while read/grep/glob are NOT — that is
+// where a v2 role reads a file now, and its output is governed by
+// `tool.execute.after` rather than by which tool it used.
+for (const keep of ["read", "grep", "glob", "tm_fetch", "tm_memory", "tm_board_write", "tm_stats"]) {
+  assert.ok(archLeft.includes(keep), `architect keeps its ${keep} — the v2 file ladder`)
 }
 assert.equal(
   arch.options.temperature,
@@ -401,7 +426,7 @@ assert.ok(leadLeft.includes("subagent"), "the lead keeps the dispatch lever")
 assert.ok(leadLeft.includes("question") && leadLeft.includes("todowrite"), "and the todo/blocking-question grants its prompt mandates need")
 assert.ok(leadLeft.includes("browser_navigate"), "a network role keeps the host's browser catalog")
 assert.ok(leadLeft.includes("tm_webfetch") && leadLeft.includes("tm_browser"), "granted with an ask-map, so still offered")
-assert.ok(!leadLeft.includes("read"), "the lead has no native read either — tm_read is the governed door")
+assert.ok(leadLeft.includes("read") && leadLeft.includes("shell"), "the lead reads and runs through the native tools — its v1 aliases are retired, not missed")
 
 const preset = event("tester", { temperature: 0.7 })
 await fake.hook("session.context").fire(preset)
@@ -667,6 +692,16 @@ fs.rmSync(path.join(genRoot, "agents", "team.md"), { force: true })
 gen()
 const allRoles = agentFiles.map((f) => fs.readFileSync(path.join(genRoot, "agents", f), "utf8")).join("\n")
 assert.ok(!allRoles.includes("tm_ptc_run"), "no v2 role is told to call a tool v2 does not register")
+// The same rule covers the file trio and the tool NAME the host uses for it: a
+// lead told to reach for `tm_read` or "the built-in bash" calls something that is
+// not on its surface, and the wasted round is exactly what the prompt exists to
+// save.  `bash` survives in ONE place — the markdown code-fence language list,
+// where it is a highlighting name and not a tool — so the check is on the two
+// shapes that DO name a tool.
+for (const gone of ["tm_read", "tm_grep", "tm_bash"]) {
+  assert.ok(!allRoles.includes(gone), `the v2 prompts no longer name ${gone}`)
+}
+assert.ok(!/built-in bash|read-only bash|bash where granted/.test(allRoles), "and they name `shell`, which is what v2 calls it")
 assert.ok(allRoles.includes("`execute` (Code Mode)"), "the batching mandate names the tool v2 actually has")
 // The delegation mandate, forked by MEASUREMENT: a live dispatch reached
 // execute.before {tool:"subagent"} and permission.evaluate {action:"subagent"},
@@ -761,6 +796,42 @@ assert.equal(probe.registrations.length, 4, "all four observations are registere
   )
 }
 console.log(`   OK (4 hooks under host names, names/counts only, ${(rawProbe.match(/\n/g) ?? []).length} probe lines, missing seam reported)`)
+
+console.log("8c. the capability matrix exists on v2 too, from observations")
+{
+  const { renderCapabilityMatrix } = await import("./dist/capabilities.js")
+  const f3 = makeFakeCtx({ directory: probeDir, agents: [] })
+  const p3 = await applyV2Probe(f3.ctx, { env: {} })
+  const rows = (await import("./dist/host/v2-capabilities.js")).v2CapabilityRows({
+    ctx: f3.ctx,
+    probe: p3,
+    guardsInstalled: true,
+    backgroundForced: true,
+    offload: { active: true, registrations: [{}], report: { seen: 3, offloaded: 1 } },
+    sessionHooks: 2,
+    temperature: 0.2,
+    hasTodoSeam: false,
+    hasAsk: false,
+  })
+  const md = renderCapabilityMatrix(rows)
+  assert.ok(md.includes("session.hook(\"context\")") && md.includes("execute.after"), "the matrix names the v2 seams, not v1's SDK")
+  assert.ok(md.includes("ctx.ask") && !/官方确认框.*\bok\b/.test(md), "the dialog seam is never greened on a host that has none")
+  assert.ok(md.includes("todo"), "the missing goal seam is a row, not silence")
+  // `declared` must not be wearable as `ok`: a hook that was attached but never
+  // called is a different fact from one that ran, and after a host upgrade that
+  // difference is the whole report.
+  const ctxRow = rows.find((r) => r.seam.includes('session.hook("context")'))
+  assert.equal(ctxRow.state, "declared", "with no request observed yet, the context seam is declared, NOT ok")
+  await f3.hook("session.context").fire({ agent: "team", tools: { read: {} }, messages: [] })
+  const after = (await import("./dist/host/v2-capabilities.js")).v2CapabilityRows({
+    ctx: f3.ctx, probe: p3, guardsInstalled: true, backgroundForced: true,
+    offload: { active: true, registrations: [{}], report: { seen: 3, offloaded: 1 } },
+    sessionHooks: 2, temperature: 0.2, hasTodoSeam: false, hasAsk: false,
+  })
+  assert.equal(after.find((r) => r.seam.includes('session.hook("context")')).state, "ok", "one real request observed, and the row earns ok")
+  assert.equal(after.find((r) => r.seam.includes("ctx.storage")).state, "declared", "a domain we have never written to stays declared, whatever else improved")
+}
+console.log("   OK (rows derived from observations, declared ≠ ok, missing seams named)")
 
 console.log("9. teardown")
 await cleanup()
