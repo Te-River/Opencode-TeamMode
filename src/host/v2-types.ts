@@ -189,9 +189,24 @@ export interface V2SessionContext {
 }
 
 export interface V2SessionHooks {
-  readonly prompt: { sessionID?: string; prompt: unknown }
   readonly context: V2SessionContext
   readonly compaction: V2SessionContext & { result?: unknown }
+  /*
+   * There is deliberately NO `prompt` point here.  An earlier revision declared
+   * one, and reading it as callable would have built the v2 sub-agent offload on a
+   * hook the host never fires: `.hook("prompt")` appears ZERO times in the 2.0.16
+   * binary (read-only check, per the rule that these types must be re-verified
+   * against a live `npm pack`/host, not against a doc).
+   *
+   * What v2 actually offers for the injected sub-agent reply is a DURABLE EVENT,
+   * `session.synthetic`, whose schema carries `{sessionID, text, description?,
+   * metadata?}` — observable through `ctx.event`, never rewritable.  That asymmetry
+   * is the real limit on Plan B here: a plugin can measure and account for an
+   * oversized child reply, and can keep its child session on the compaction
+   * survival list so it stays reachable, but it cannot swap the body before it
+   * lands the way v1's `chat.message` allowed.  Anything that reads a `prompt`
+   * hook as the v2 answer is wrong.
+   */
 }
 
 export interface V2SessionDomain {
