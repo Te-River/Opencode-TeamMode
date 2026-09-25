@@ -353,7 +353,7 @@ export const v2Personality: V2Plugin = {
             }
             const { triples, unmapped } = triplesFromAgentPermission(
               (agents as Record<string, { permission?: Record<string, unknown> }>)[id]?.permission,
-              { escalateShellAsk },
+              { escalateShellAsk, agentName: id },
             )
             for (const u of unmapped) unmappedActions.add(u)
             // `V1_ONLY_TOOLS` is passed as the reclaim set: a triple naming an

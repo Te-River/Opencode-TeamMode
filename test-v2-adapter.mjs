@@ -390,6 +390,18 @@ assert.equal(
   0,
   "and the lead, which carries tm_browser with an ask-map, gets no blanket browser deny (that would deny itself)",
 )
+// tm_ledger exists ONLY on this personality (v1 has the host's todowrite), so it is in
+// no v1 permission map — which meant nothing named it, and an unruled action is the
+// host's default rather than our stated rule. The lead's list is the lead's.
+assert.ok(
+  fake.agents.get("team").permissions.some((p) => p.action === "tm_ledger" && p.effect === "allow"),
+  "the lead is explicitly allowed its own ledger tool",
+)
+assert.ok(
+  ["architect", "implementer", "reviewer", "tester", "researcher"].every((role) =>
+    fake.agents.get(role).permissions.some((p) => p.action === "tm_ledger" && p.effect === "deny")),
+  "the five specialists are explicitly denied it — the runtime onlyAgent gate now has a rule the user can read",
+)
 assert.ok(
   find("my_mcp_thing").some((p) => p.effect === "allow" && p.resource === "*"),
   "an action the matrix never mentions — a user's own MCP tool — passes through untouched",
@@ -1293,6 +1305,35 @@ for (const dir of made) {
     fs.rmSync(dir, { recursive: true, force: true })
   } catch {
     /* temp dir */
+    // Code Mode is the same browser through a different door: `tools.browser.*` inside an
+  // `execute` program may never surface as its own execute.before, so a gate that only
+  // reads input.url is bypassable by putting the navigate in a program.
+  {
+    const secret = 'AKIA-SUPER-SECRET-TOKEN'
+    const prog = 'const r = await tools.browser_navigate({ tabID: "t1", url: "http://169.254.169.254/latest/meta-data/?t=' + secret + '" })' + String.fromCharCode(10) + 'return r'
+    let cmThrew = ''
+    try {
+      g.fireBefore({ tool: 'execute', input: { program: prog }, agent: 'team', sessionID: 'ses_1' })
+    } catch (err) {
+      cmThrew = String(err && err.message ? err.message : err)
+    }
+    assert.match(cmThrew, /169\.254\.169\.254/, 'the program is refused and the host is named')
+    assert.ok(!cmThrew.includes(secret), 'and the refusal quotes the HOST, never the program text (the query string can carry the token)')
+    assert.equal(g.report.codeModeRefused, 1, 'the code-mode leg counts its own refusals')
+    let cmOk = true
+    try {
+      g.fireBefore({ tool: 'execute', input: { program: 'await tools.browser_navigate({ url: "https://cn.bing.com/search?q=x" })' }, agent: 'team', sessionID: 'ses_1' })
+    } catch {
+      cmOk = false
+    }
+    assert.ok(cmOk, 'a public target inside a program is not disturbed')
+    const before = g.report.classified
+    g.fireBefore({ tool: 'execute', input: { program: 'return 1 + 1' }, agent: 'team', sessionID: 'ses_1' })
+    assert.equal(g.report.classified, before, 'a program that never touches the browser is not classified at all')
+    const cmRes = { content: [{ type: 'text', text: 'METADATA-CREDENTIALS' }], output: 'x' }
+    g.fireAfter({ tool: 'execute', result: cmRes, agent: 'team', sessionID: 'ses_1' })
+    assert.ok(!String(cmRes.content[0].text).includes('METADATA-CREDENTIALS'), 'and if the host ran it anyway, the program result is taken back out')
   }
+}
 }
 console.log("\ntest-v2-adapter.mjs: ALL PASS (11 groups)")

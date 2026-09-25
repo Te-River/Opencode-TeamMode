@@ -124,6 +124,15 @@ export interface TranslateOptions {
    * per-pattern half through `permission.hook("evaluate")`.
    */
   escalateShellAsk?: boolean
+  /**
+   * Which role these triples are for.  Needed for the ONE tool that exists only on this
+   * personality: `tm_ledger` is not in the v1 permission map (v1 has the host's
+   * `todowrite`), so nothing would ever name it, and an unruled action is the host's
+   * default rather than our stated rule.  The lead's list is the lead's: `allow` for it,
+   * `deny` for the five specialists, which also makes the runtime gate
+   * (`onlyAgent: "team"`) visible in the config the user can read.
+   */
+  agentName?: string
 }
 
 /** The v1 `permission` block, as loosely as the host hands it to us. */
@@ -179,6 +188,12 @@ export function triplesFromAgentPermission(
           ? "deny"
           : effects[0] ?? "ask"
       triples.push({ action, resource: "*", effect })
+    }
+  }
+  if (options.agentName) {
+    const ledgerEffect = options.agentName === "team" ? "allow" : "deny"
+    if (!triples.some((x) => x.action === "tm_ledger")) {
+      triples.push({ action: "tm_ledger", resource: "*", effect: ledgerEffect })
     }
   }
   return { triples, unmapped }

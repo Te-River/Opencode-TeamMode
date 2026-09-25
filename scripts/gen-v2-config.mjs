@@ -281,7 +281,7 @@ function emit(dir, name, content) {
 const agentsDir = join(baseDir, "agents")
 const forkHits = new Set()
 for (const [id, cfg] of Object.entries(agents)) {
-  const { triples } = triplesFromAgentPermission(cfg.permission, { escalateShellAsk: false })
+  const { triples } = triplesFromAgentPermission(cfg.permission, { escalateShellAsk: false, agentName: id })
   // An `allow` for a tool v2 never registers would claim a capability that does
   // not exist; V1_ONLY_TOOLS is the same set v2.ts skips when registering.
   const v2Triples = triples.filter((t) => !V1_ONLY_TOOLS.has(t.action))

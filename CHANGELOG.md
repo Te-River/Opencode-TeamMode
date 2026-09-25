@@ -9,6 +9,20 @@ registry saw 1.5.0 as the install-script fix release).
 
 ### Changed
 
+- **The browser gate covers Code Mode, and `tm_ledger` finally has a rule of its own.**
+  `tools.browser.tabs.open(...)` inside an `execute` program reaches the same browser
+  through a door that may never surface as its own `execute.before`, so the gate now
+  reads the URLs named in the program text and refuses the ones the address red line
+  answers for without consent — reporting the HOST only, never the program, because a
+  query string in user code can carry a token. Pinned with the counter-example that
+  matters: a program that embeds a credential in its metadata URL must have that
+  credential absent from the refusal.
+  Separately: `tm_ledger` exists only on v2, so it is in no v1 permission map, which
+  meant no rule ever named it and its reachability rested on the host's default for an
+  unruled action. The translator now projects `allow` for the lead and `deny` for the
+  five specialists (`agentName` on `TranslateOptions`, used by both `v2.ts` and the
+  config generator), so the runtime `onlyAgent` gate has a rule the user can read in
+  `agents/*.md` — and a rebooted config shows it in the frontmatter.
 - **The v2 prompts now send interactive browsing to the host's tools (option A,
   decided 2026-09-25).** Seven exact-string entries join the `V2_TEXT` fork table, so a
   v2 role reads "use the host's `browser_*` tools — `browser_tabs_open` →

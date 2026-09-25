@@ -51,6 +51,9 @@ export interface BrowserGateReport {
   leaked: number
   /** refusals that produced no following result within the window — the door held */
   held: number
+  /** refusals raised against a Code Mode program (`execute`), which reaches the same
+   *  browser through `tools.browser.*` and would otherwise bypass this file entirely */
+  codeModeRefused: number
   /** out-of-scope calls left completely alone, counted rather than invisible */
   foreignSkipped: number
   /** per-tool refusal counts, so "which verb is the hole" is answerable */
@@ -91,6 +94,26 @@ function targetOf(input: unknown): { kind: "url" | "path"; value: string } | nul
   return null
 }
 
+/** Every http(s) host named in a Code Mode program that is refused WITHOUT consent by
+ *  the address red line. Only the hostname is read out and reported — never the program
+ *  text, which is the user's code and may carry a token in its query string. */
+function hardUrlHosts(program: string): string[] {
+  const hits: string[] = []
+  for (const m of program.matchAll(/https?:\/\/([^\s"'`)<>,\\]+)/gi)) {
+    const raw = m[1] ?? ""
+    let host = ""
+    try {
+      host = new URL("http://" + raw.replace(/^[^@]*@/, "")).hostname
+    } catch {
+      continue
+    }
+    if (!host) continue
+    const v = checkWebUrl("http://" + host + "/", [])
+    if (!v.ok && !v.askable) hits.push(host)
+  }
+  return hits
+}
+
 export function applyV2BrowserGate(
   ctx: unknown,
   opts: {
@@ -99,7 +122,7 @@ export function applyV2BrowserGate(
     env?: Record<string, string | undefined>
   },
 ): BrowserGate {
-  const report: BrowserGateReport = { seen: 0, classified: 0, refused: 0, leaked: 0, held: 0, foreignSkipped: 0, byTool: {} }
+  const report: BrowserGateReport = { seen: 0, classified: 0, refused: 0, codeModeRefused: 0, leaked: 0, held: 0, foreignSkipped: 0, byTool: {} }
   const registrations: V2Registration[] = []
   /** key = `${tool}\n${sessionID}` → the refusal we owe that call's answer */
   const pending = new Map<string, { message: string; at: number }>()
@@ -128,6 +151,27 @@ export function applyV2BrowserGate(
     }
     report.seen++
     if (off) return
+    // Code Mode reaches the SAME browser through `tools.browser.tabs.open(...)`, and an
+    // inner call may never surface as its own execute.before event — so a gate that only
+    // reads `input.url` can be walked around by putting the navigate inside a program.
+    // The address red line is the part worth defending there: a program is source text,
+    // and the hosts it names are judgement-free metadata ranges.
+    if (tool === "execute") {
+      const program = (event?.input as { program?: unknown } | undefined)?.program
+      if (typeof program === "string" && /browser[._]|browser_/.test(program)) {
+        for (const host of hardUrlHosts(program)) {
+          report.classified++
+          report.refused++
+          report.codeModeRefused++
+          const message =
+            `你放进 execute 程序里的浏览器调用指向 ${host}，那是不容路由 / 元数据地址段——R6 同级红线，任何配置都不能批准，` +
+            `所以我没有让这个程序跑起来。要本机服务请用有头浏览器自己开，要公网内容请给公开主机名。`
+          pending.set(keyOf(tool, event?.sessionID), { message, at: Date.now() })
+          throw new Error(message)
+        }
+      }
+      return
+    }
     const target = targetOf(event?.input)
     if (!target) return
     report.classified++
@@ -230,5 +274,5 @@ export function applyV2BrowserGate(
 export function browserGateSummary(r: BrowserGateReport): string {
   if (!r.seen) return "原生 browser_* 没被调用过（门禁在场，没数据）"
   const teeth = r.refused === 0 ? "没有拒绝发生过" : r.leaked === 0 ? `${r.refused} 次拒绝全部拦停在门口` : `${r.refused} 次拒绝中 ${r.leaked} 次被宿主放过去（已在返回处换成拒绝语）`
-  return `原生 browser_*：看过 ${r.seen} 次调用 · 可判定目标 ${r.classified} 次 · 拒绝 ${r.refused} 次（${teeth}）· 拦下后无返回 ${r.held} 次 · 非 Team 跳过 ${r.foreignSkipped} 次`
+  return `原生 browser_*/Code Mode：看过 ${r.seen} 次调用（其中 Code Mode 程序拒绝 ${r.codeModeRefused} 次） · 可判定目标 ${r.classified} 次 · 拒绝 ${r.refused} 次（${teeth}）· 拦下后无返回 ${r.held} 次 · 非 Team 跳过 ${r.foreignSkipped} 次`
 }
