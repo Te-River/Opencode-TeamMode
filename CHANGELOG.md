@@ -9,6 +9,23 @@ registry saw 1.5.0 as the install-script fix release).
 
 ### Added
 
+- **The six `/team-*` commands work on v2, as config files.**
+  `ctx.command.transform.add` was measured NOT to reach the UI on 2.0.16, so the
+  commands take the same route the roles now take:
+  `~/.config/opencode/commands/<name>.md`, frontmatter `description` / `agent`,
+  body = the template. v2 expands `$ARGUMENTS` and `$1..$n` exactly as v1 did, so
+  the templates port verbatim — and the generator (`scripts/gen-v2-config.mjs`,
+  renamed from `gen-v2-agents.mjs` now that it emits both) reads them out of
+  `dist/commands.js`, so nobody can edit one file and silently leave the other
+  behind. Pinned by `test-v2-adapter` group 8: twelve files, the lead's
+  `mode: primary` and the specialists' `subagent` deny triples, a body that is
+  the real prompt rather than a paraphrase, no `template` key in frontmatter
+  (the docs forbid it), a re-run that writes nothing, and a hand-written
+  `team.md` refused rather than clobbered. **One thing this cannot verify from
+  here**: v1 runs `/team-plan` as `agent: architect`, while v2 documents
+  `mode: subagent` as "runs only in a child session" — if the live host refuses
+  that, the fix is `mode: "all"` in `src/agents.ts`, since T3 is held by the
+  `subagent: deny` rule and not by `mode`.
 - **On v2 the whitelist now decides what the model is OFFERED, not just what it
   may call.** A permission `deny` on 1.18.x stopped the call but left the tool's
   description and schema in every request, so a role paid tokens for capabilities
@@ -49,7 +66,7 @@ registry saw 1.5.0 as the install-script fix release).
   cross, stated rather than discovered later: `default_agent` does not change the
   agent already stored on an existing session, so an old conversation still
   opens as Build.
-- **`scripts/gen-v2-agents.mjs` projects the six roles into v2 agent files.** A
+- **`scripts/gen-v2-config.mjs` projects the six roles into v2 agent files.** A
   v2 plugin cannot create an agent — `AgentEditor` exposes only
   `list/get/default/update/remove` — so the roles have to reach the host the same
   way the built-in Build and Plan agents do: `~/.config/opencode/agents/<name>.md`

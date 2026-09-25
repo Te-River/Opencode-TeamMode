@@ -27,9 +27,12 @@ import assert from "node:assert"
 import * as fs from "node:fs"
 import * as os from "node:os"
 import * as path from "node:path"
+import { execFileSync } from "node:child_process"
+import { fileURLToPath } from "node:url"
 
 import plugin from "./dist/index.js"
 import { agents } from "./dist/agents.js"
+import { commands } from "./dist/commands.js"
 import { createV2Client } from "./dist/host/v2-client.js"
 import { makeFakeCtx, withCapturedConsole } from "./scripts/lib/fake-ctx.mjs"
 
@@ -328,7 +331,58 @@ assert.equal(
 )
 console.log("   OK (surface trimmed per role, 0.2 restored, board root and survival list on the request)")
 
-console.log("8. teardown")
+console.log("8. the config projection — what the installer copies onto disk")
+const genRoot = workspace("gen")
+const GEN = fileURLToPath(new URL("./scripts/gen-v2-config.mjs", import.meta.url))
+const gen = () => execFileSync(process.execPath, [GEN, "--dir", genRoot], { encoding: "utf8" })
+gen()
+
+const agentFiles = fs.readdirSync(path.join(genRoot, "agents")).sort()
+const cmdFiles = fs.readdirSync(path.join(genRoot, "commands")).sort()
+assert.deepEqual(
+  agentFiles,
+  Object.keys(agents).map((id) => `${id}.md`).sort(),
+  `all six roles are projected as markdown (got ${agentFiles.join(",")})`,
+)
+assert.deepEqual(
+  cmdFiles,
+  Object.keys(commands).map((n) => `${n}.md`).sort(),
+  `every /team-* command is projected (got ${cmdFiles.join(",")})`,
+)
+
+const teamMd = fs.readFileSync(path.join(genRoot, "agents", "team.md"), "utf8")
+const archMd = fs.readFileSync(path.join(genRoot, "agents", "architect.md"), "utf8")
+assert.match(teamMd, /^mode: "primary"$/m, "the lead is selectable as a primary agent")
+assert.match(archMd, /^mode: "subagent"$/m, "the specialists are subagent-mode")
+assert.match(
+  archMd,
+  /action: "subagent"\s*\n\s*resource: "\*"\s*\n\s*effect: "deny"/,
+  "T3 rides the projection: a specialist may not launch children — the lead is the only dispatcher",
+)
+assert.ok(
+  archMd.includes(agents.architect.prompt.trimEnd().slice(0, 80)),
+  "the body IS the projected prompt, not a paraphrase of it",
+)
+
+const planMd = fs.readFileSync(path.join(genRoot, "commands", "team-plan.md"), "utf8")
+assert.match(planMd, /^agent: "architect"$/m, "the command selects its role")
+assert.ok(planMd.includes("$ARGUMENTS"), "the v1 placeholder survives — v2 expands the same tokens")
+assert.ok(
+  !/^template:/m.test(planMd.split("---")[1] ?? ""),
+  "no `template` key in frontmatter — the docs forbid it because the body supplies it",
+)
+
+assert.match(gen(), /已是最新/, "re-running writes nothing (the installer may run it on every update)")
+fs.writeFileSync(path.join(genRoot, "agents", "team.md"), "# my own team agent\n", "utf8")
+assert.match(gen(), /不是我生成的文件/, "a hand-written agents/team.md is refused, never clobbered")
+assert.equal(
+  fs.readFileSync(path.join(genRoot, "agents", "team.md"), "utf8"),
+  "# my own team agent\n",
+  "and its bytes are untouched",
+)
+console.log("   OK (12 files, modes + triples projected, idempotent, foreign files respected)")
+
+console.log("9. teardown")
 await cleanup()
 const undisposed = fake.registrations.filter((r) => !r.disposed)
 assert.equal(undisposed.length, 0, `every registration is disposed on teardown (${undisposed.map((r) => r.label).join(",")})`)
@@ -346,4 +400,4 @@ for (const dir of made) {
     /* temp dir */
   }
 }
-console.log("\ntest-v2-adapter.mjs: ALL PASS (8 groups)")
+console.log("\ntest-v2-adapter.mjs: ALL PASS (9 groups)")
