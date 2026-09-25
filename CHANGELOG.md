@@ -35,6 +35,16 @@ registry saw 1.5.0 as the install-script fix release).
   out loud — "没资格治理".  The boundary is stated in the boot notes rather than papered
   over: outside Team the red lines we inject do not apply either, so that floor is now
   explicitly the host's or the user's own config's job.
+- **JIT coverage in Team mode is now every tool that role can call — and it is a
+  number.** The governed name list grew from eight to thirteen (`websearch`, `edit`,
+  `write`, `patch`, `question` joined the file/shell/web set), and the host's browser
+  catalog is matched by the `browser_` **prefix** rather than by name — 45 tools today,
+  and a list that has to be re-enumerated every release is a list that silently misses
+  the 46th.  What made widening safe is that the decision to rewrite was never really
+  about the name: an unrecognised result shape is still left byte-exact.  And the
+  accounting now separates `本会话族共 N 次调用` from `治理面内 M 次` and `不在治理面 K 次`,
+  printed by `tm_stats`, so "most tool calls are governed" is checkable — and can say
+  what it missed instead of implying it caught everything.
 - **On v2 the network policy is: no domain gate, address red line only.** The user's
   instruction is that nothing may be blocked on the network except sensitive and
   internal addresses.  On v1 the 22-host seed list was tolerable because a plugin

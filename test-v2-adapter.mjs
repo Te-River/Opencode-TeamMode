@@ -736,10 +736,19 @@ const handled = (tool, result) => {
   assert.ok(t.o.report.tokensSaved > 2100 && t.o.report.tokensSaved <= 2250, "the saving is net of the preview, not the payload size")
 }
 {
+  const t = handled("mcp_thing", { content: [{ type: "text", text: BIG }] })
+  t.run()
+  assert.equal(t.ev.result.content[0].text, BIG, "a tool outside the governed surface is not interpreted at all")
+  assert.equal(t.o.report.seen, 0, "…is not counted as governed…")
+  assert.equal(t.o.report.unmatched, 1, "…but IS counted as a gap in the coverage (#23: the number must be able to say it missed something)")
+}
+{
+  // `write` joined the surface with #23: coverage may not depend on which tool the
+  // model picked. Safety did not move — the rewrite is still decided per payload.
   const t = handled("write", { content: [{ type: "text", text: BIG }] })
   t.run()
-  assert.equal(t.ev.result.content[0].text, BIG, "a tool outside the closed list is not interpreted at all")
-  assert.equal(t.o.report.seen, 0, "and not counted — the list is the boundary")
+  assert.ok(t.ev.result.content[0].text.includes("tm_fetch"), "an oversized native write result is offloaded like any other governed tool")
+  assert.equal(t.o.report.seen, 1, "and it counts toward the governed surface")
 }
 {
   const t = handled("read", { stdout: BIG })
@@ -776,10 +785,27 @@ assert.ok(/mode:"structure" \| "lines"/.test(rendered), "and names the two ways 
 assert.ok(/不要为了看一眼把全文读回来/.test(rendered), "it tells the model not to page the whole body back just to look once")
 assert.deepEqual(
   [...NATIVE_GOVERNED_TOOLS].sort(),
-  ["bash", "execute", "glob", "grep", "read", "shell", "subagent", "webfetch"],
-  "the governed list stays closed -- and `execute` is on it because that is the ONLY door native browser output has into the context (the Team surface is edit/execute/question/shell/subagent/write)",
+  ["bash", "edit", "execute", "glob", "grep", "patch", "question", "read", "shell", "subagent", "webfetch", "websearch", "write"],
+  "every tool a Team role can call is on the list (#23) — coverage may not depend on which tool the model happened to pick",
 )
-assert.ok(![...NATIVE_GOVERNED_TOOLS].some((t) => ["agent", "patch", "question", "write", "edit"].includes(t)), "shapes nobody has observed are still not interpreted (`subagent` earns its place: execute.after was measured carrying {content,metadata,output})")
+const { isGovernedNative } = await import("./dist/host/v2-offload.js")
+assert.ok(isGovernedNative("browser_navigate") && isGovernedNative("browser_tabs_list"), "the host's 45 browser tools are covered BY NAMESPACE: a 45-name list would go stale on the 46th and we would not notice")
+assert.ok(!isGovernedNative("todowrite") && !isGovernedNative("mcp_thing"), "and a tool this host does not have is not silently claimed as governed")
+// Widening the NAMES is safe only because the decision to rewrite is made per
+// PAYLOAD: a shape nobody has observed is left byte-exact and counted, never
+// interpreted. Without this, "closed list" was protecting against our own guesswork.
+{
+  const t = handled("edit", { weirdShape: { deeply: "nested" } })
+  t.run()
+  assert.deepEqual(t.ev.result, { weirdShape: { deeply: "nested" } }, "an unknown result shape is not interpreted, even for a tool on the list")
+  assert.equal(t.o.report.seen, 1, "the call was in the governed surface")
+  assert.equal(t.o.report.considered, 0, "…and nothing was rewritten")
+  const u = { tool: "mcp_something", agent: "team", sessionID: "ses_cov", result: { content: [{ type: "text", text: BIG }] } }
+  const h = offloadHarness()
+  await h.f.hook("tool.execute.after").handlers.forEach((fn) => fn(u))
+  assert.equal(h.o.report.unmatched, 1, "a tool we do not govern is COUNTED as a gap instead of being invisible in the coverage number")
+  assert.equal(h.o.report.ours, 1, "…on a session that is ours; the denominator is every call, not only the recognised ones")
+}
 // The v2 envelope: read out of the host's own result mapping, and the reason the
 // v1 matcher is dead there is measurable — `<task ` occurs zero times in 2.0.16.
 // A sub-agent reply arrives wrapped, so governance must swap the BODY and

@@ -258,6 +258,11 @@ export const v2Personality: V2Plugin = {
             event: "personality",
             api: 2,
             native_seen: offload.report.seen,
+            // The coverage denominator (#23): every call we resolved to a Team
+            // session, and the part of it whose tool we do not touch. Printed by
+            // tm_stats, so "most tool calls are JIT-governed" is checkable.
+            native_ours: offload.report.ours,
+            native_unmatched: offload.report.unmatched,
             native_offloaded: offload.report.offloaded,
             native_envelopes: offload.report.envelopes,
             native_tokens_saved: offload.report.tokensSaved,

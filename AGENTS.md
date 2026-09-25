@@ -64,6 +64,17 @@ this before treating any sentence above as platform-neutral.
   `src/host/v2-offload.ts` governs the NATIVE results through
   `tool.hook("execute.after")` — measured on a live host: native `shell` 12 902
   tokens arriving as a 78-token preview, `execute` 15 000 as 58.
+  **The governed name list is now every tool a Team role can call** (user
+  requirement #2: coverage may not depend on which tool the model picked):
+  `read grep glob shell bash webfetch websearch execute edit write patch question
+  subagent` plus the whole `browser_*` namespace matched BY PREFIX, because the host
+  has 45 of them and a 45-name list goes stale on the 46th without notice. Safety did
+  not move with the names — the decision to rewrite is per payload (an unrecognised
+  shape is left byte-exact), which is what the closed name list was really protecting.
+  And coverage is now a NUMBER: the report separates `ours` (every call resolved to a
+  Team session), `seen` (on the governed surface), `unmatched` (ours, but a tool we do
+  not touch) and `offloaded`; `tm_stats` prints them, so "most calls are JIT-governed"
+  can be checked and can also admit what it missed.
 - **Done (1.7.0 line): `tm_read` / `tm_grep` / `tm_bash` retired on v2 only.**
   The ordering AGENTS.md demanded held: governance moved down FIRST
   (`permission.hook("evaluate")` for the address + R6 red lines,

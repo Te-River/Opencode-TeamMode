@@ -58,7 +58,12 @@ export const NATIVE_GOVERNED_TOOLS: ReadonlySet<string> = new Set([
   "shell",
   "bash",
   "webfetch",
+  "websearch",
   "execute",
+  "edit",
+  "write",
+  "patch",
+  "question",
   /*
    * `subagent` is v2's version of Plan B, and it is here because of what was
    * MEASURED rather than what v1 did.  A live run recorded
@@ -77,8 +82,25 @@ export const NATIVE_GOVERNED_TOOLS: ReadonlySet<string> = new Set([
   "subagent",
 ])
 
+/** Is this tool's output inside the governed surface?  The host's browser catalog is
+ *  45 tools sharing one namespace (`browser_*`, each registered with
+ *  `permission:"browser"`), and a snapshot from any of them is exactly the oversized
+ *  payload the offload promise is about — enumerating 45 names would only guarantee
+ *  that a host adding the 46th escapes us.  Unknown RESULT shapes are still left
+ *  untouched; that test is per payload, not per name. */
+export function isGovernedNative(tool: string): boolean {
+  return NATIVE_GOVERNED_TOOLS.has(tool) || tool.startsWith("browser_")
+}
+
 export interface V2OffloadReport {
   seen: number
+  /** every execute.after we resolved to a Team session, governed tool or not — the
+   *  denominator the coverage sentence is read against (#23: "most tool calls are
+   *  JIT-governed" has to be a number, not a feeling) */
+  ours: number
+  /** ours, for a tool whose output we do not touch (unknown tool, or a name the
+   *  governed set has not been widened to) — counted rather than invisible */
+  unmatched: number
   considered: number
   offloaded: number
   /** envelopes RECOGNISED, whether or not they needed rewriting — a counter that
@@ -149,7 +171,7 @@ export function applyV2NativeOffload(
 ): { registrations: Promise<V2Registration>[]; report: V2OffloadReport; active: boolean } {
   const env = deps.env ?? process.env
   const off = /^(0|false|no|off)$/i.test(String(env.TM_NATIVE_OFFLOAD ?? "").trim())
-  const report: V2OffloadReport = { seen: 0, considered: 0, offloaded: 0, envelopes: 0, degraded: 0, tokensSaved: 0, byTool: {} }
+  const report: V2OffloadReport = { seen: 0, ours: 0, unmatched: 0, considered: 0, offloaded: 0, envelopes: 0, degraded: 0, tokensSaved: 0, byTool: {} }
   const hook = (ctx as { tool?: { hook?: unknown } })?.tool?.hook
   if (typeof hook !== "function") {
     // No seam at all: report it, do not silently pretend the promise holds.
@@ -158,12 +180,21 @@ export function applyV2NativeOffload(
   const reg = (hook as (n: string, cb: (e: unknown) => void) => Promise<V2Registration>)("execute.after", (raw) => {
     const event = raw as { tool?: string; result?: unknown; agent?: unknown; sessionID?: unknown }
     const tool = String(event?.tool ?? "")
-    if (!NATIVE_GOVERNED_TOOLS.has(tool)) return
+    // The owner question comes FIRST: a foreign or unattributable session is left
+    // alone no matter which tool it called, and the counters then describe every
+    // call we looked at rather than only the ones we recognised a tool for.
     if (deps.scope) {
       if (deps.scope.count(deps.scope.decide(event)) !== "ours") return
       // A resolved call is also a fact about the session — remember it so a later
       // event that arrives without `agent` still resolves to ours.
       deps.scope.learn(event.agent, event.sessionID)
+    }
+    report.ours++
+    if (!isGovernedNative(tool)) {
+      report.unmatched++
+      report.byTool[tool] ??= { seen: 0, offloaded: 0 }
+      report.byTool[tool].seen++
+      return
     }
     report.seen++
     report.byTool[tool] ??= { seen: 0, offloaded: 0 }

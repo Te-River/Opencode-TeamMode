@@ -377,6 +377,11 @@ export function renderStats(
       const offBits = [
         line.native_offload_active === undefined ? "" : `原生工具治理 ${line.native_offload_active ? "开" : "关（见上方原因）"}`,
         line.native_seen !== undefined ? `原生调用 ${line.native_seen} 次` : "",
+        // #23: the denominator. `原生调用` counts only tools on the governed list,
+        // so without these two the sentence "most of Team's calls are JIT-governed"
+        // would be measured against a number that already excluded what it might miss.
+        line.native_ours !== undefined ? `本会话族共 ${line.native_ours} 次调用` : "",
+        line.native_unmatched ? `其中不在治理面 ${line.native_unmatched} 次（没碰，也不算治理过）` : "",
         line.native_offloaded !== undefined ? `卸载 ${line.native_offloaded} 次` : "",
         // Recognised is not the same as rewritten: this is the number that says
         // "we can read this host's envelope format", and its being 0 while
