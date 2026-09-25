@@ -5,7 +5,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 versioning is semver (the 1.4.x train shipped under working labels; the
 registry saw 1.5.0 as the install-script fix release).
 
-## [1.6.0] - 2026-09-23
+## [1.6.0] - 2026-09-25
 
 > The architectural change 1.5.13 held `1.6.0` back for: the plugin-side
 > dispatcher is gone, and delegation belongs to the host. Everything merged on
