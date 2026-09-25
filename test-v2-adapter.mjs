@@ -331,6 +331,42 @@ assert.equal(
 )
 console.log("   OK (surface trimmed per role, 0.2 restored, board root and survival list on the request)")
 
+console.log("7b. the permission guard — the red line below the allowlist, on the HOST's own web path")
+const { webGuard, shellGuard, needsCoarseShellAsk } = await import("./dist/host/v2-guard.js")
+
+const meta = webGuard(["http://169.254.169.254/latest/meta-data/iam/"])
+assert.equal(meta?.effect, "deny", "native webfetch to the cloud metadata endpoint is DENIED, not asked")
+assert.ok(!meta?.message?.includes("批准"), "and the message offers no consent path — a credential leak is never consentable")
+assert.equal(
+  webGuard(["http://[::ffff:169.254.169.254]/x"]).effect,
+  "deny",
+  "the IPv4-mapped carrier is unwrapped before the policy reads it (changing notation is not a way around)",
+)
+assert.equal(webGuard(["http://127.0.0.1:9/"]).effect, "ask", "loopback stays ASKABLE — private is the user's call, not ours")
+assert.equal(webGuard(["https://example.com/docs"]), null, "a public host is untouched")
+assert.equal(webGuard(["https://example.com/.env"]).effect, "deny", "the remote env-file red line rides along")
+
+assert.equal(shellGuard("npm test", "off"), null, "R6 off classifies nothing")
+assert.equal(shellGuard("Get-ChildItem env:PATH", "audit")?.why, "r6-env", "the env face is recognised per command line")
+assert.equal(shellGuard("rm -rf build", "audit")?.why, "r2-danger", "and so is the R2 danger face")
+assert.equal(shellGuard("npm test", "audit"), null, "an ordinary command gets no verdict — the guard is a floor, not a tax")
+
+const ev = { sessionID: "ses_1", agent: "team", action: "webfetch", resources: ["http://169.254.169.254/"], effect: "allow" }
+await fake.hook("permission.evaluate").fire(ev)
+assert.equal(ev.effect, "deny", "the hook is wired and flips the host's own decision")
+assert.ok(/元数据|保留/.test(String(ev.message)), "with a message naming the rule the agent can read back")
+const loose = { sessionID: "ses_1", agent: "team", action: "webfetch", resources: ["http://127.0.0.1:9/"], effect: "deny" }
+await fake.hook("permission.evaluate").fire(loose)
+assert.equal(loose.effect, "deny", "the guard only ever gets STRICTER — a user rule that already denied is not softened to ask")
+const plain = { sessionID: "ses_1", agent: "team", action: "webfetch", resources: ["https://example.com/"], effect: "allow" }
+await fake.hook("permission.evaluate").fire(plain)
+assert.equal(plain.effect, "allow", "a public fetch is left exactly as the host decided")
+
+assert.equal(needsCoarseShellAsk({}, true), true, "with the hook installed but no live proof it fires, the coarse config ask stays")
+assert.equal(needsCoarseShellAsk({ TM_R6_FINE_ASK: "on" }, true), false, "TM_R6_FINE_ASK=on is what hands shell to the per-command classifier")
+assert.equal(needsCoarseShellAsk({ TM_R6_FINE_ASK: "on" }, false), true, "and without the hook there is nothing to hand it to, so coarse regardless")
+console.log("   OK (metadata denied-not-asked, notation carriers unwrapped, never loosens, coarse-until-proven)")
+
 console.log("8. the config projection — what the installer copies onto disk")
 const genRoot = workspace("gen")
 const GEN = fileURLToPath(new URL("./scripts/gen-v2-config.mjs", import.meta.url))

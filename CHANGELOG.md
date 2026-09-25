@@ -9,6 +9,26 @@ registry saw 1.5.0 as the install-script fix release).
 
 ### Added
 
+- **The egress red line now covers the host's own web tool.** Native `webfetch`
+  on v2 has no notion of `169.254.169.254` — the cloud metadata endpoint whose
+  response is temporary credentials — and it is available to agents we do not
+  configure, so the red line that `checkWebUrl` enforces inside `tm_webfetch`
+  was bypassable simply by not using our tool. `src/host/v2-guard.ts` asks the
+  address question at `permission.hook("evaluate")`, independent of R6:
+  metadata / link-local / reserved is **denied with no consent path offered** (a
+  credential leak is never consentable), IPv4-mapped and DNS64 carriers are
+  unwrapped before the policy reads them, loopback and RFC1918 fall to the
+  host's own `ask`, and a URL pointing at an env file is denied. The hook only
+  ever makes a decision **stricter** — a user rule that already denied is not
+  softened back to ask.
+- **R6's per-command classifier is installed but not trusted yet.** v2's closest
+  equivalent to v1's pattern-object escalation was "ask on every shell command",
+  honest but coarse. The classifier now rides the same `evaluate` hook and counts
+  what it sees, yet the coarse config-level escalation **stays on** until a live
+  host proves `evaluate` is actually called for `shell` — a guard that fails open
+  because we assumed an unproven hook is the opposite of this product.
+  `TM_R6_FINE_ASK=on` hands shell to the classifier; with the hook absent the
+  coarse path wins regardless.
 - **The six `/team-*` commands work on v2, as config files.**
   `ctx.command.transform.add` was measured NOT to reach the UI on 2.0.16, so the
   commands take the same route the roles now take:

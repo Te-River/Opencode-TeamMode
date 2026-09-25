@@ -38,6 +38,7 @@ import { createTmTools } from "../tm/index.js"
 import { setAskUnavailableNote } from "../tm/perm-ask.js"
 import type { PluginInput, ToolDefinition } from "../types.js"
 import { blackboardNote } from "./note.js"
+import { applyV2PermissionGuards, needsCoarseShellAsk } from "./v2-guard.js"
 import { applyV2SessionLayer, removalPlan } from "./v2-session.js"
 import { createV2Client } from "./v2-client.js"
 import { bindV2Tool, type V2ToolBinding } from "./v2-tool.js"
@@ -132,13 +133,25 @@ export const v2Personality: V2Plugin = {
     const missing = bindings.map((b) => b.tool.name).filter((n) => !registeredNames.includes(n))
 
     // ---------- normalize the agents the config declares ----------
+    // ---------- the permission guard (egress red line + R6 per command) ----------
+    // Installed BEFORE the agent transform because whether the config still needs
+    // the coarse `shell -> ask` escalation depends on this hook being there.
+    const guards = await applyV2PermissionGuards(ctx, { envProtectMode })
+    registrations.push(...guards.registrations)
+    if (!guards.installed) {
+      notes.push("ctx.permission.hook 不存在：原生 webfetch 的元数据/私网红线和 R6 的按命令行判定都没地方落")
+    }
+
     const missingAgents: string[] = []
     const unmappedActions = new Set<string>()
     const wantedIds = Object.keys(agents as Record<string, unknown>)
     // R6 on v2: the plugin cannot raise a dialog (probed), but an `ask` EFFECT
-    // the host evaluates DOES open one — coarser than v1's per-pattern
-    // escalation, and refined by #94's evaluate hook.
-    const escalateShellAsk = envProtectMode !== "off"
+    // the host evaluates DOES open one.  Until a live host proves that
+    // `permission.evaluate` actually fires for `shell`, the config keeps the
+    // COARSE escalation (every command asks) — fail-closed beats a fine classifier
+    // nobody has seen run.  TM_R6_FINE_ASK=on hands the decision to the hook.
+    const escalateShellAsk =
+      envProtectMode !== "off" && needsCoarseShellAsk(process.env, guards.installed)
     // Team is ALWAYS the default (the user's standing instruction — see the
     // header for why this cannot be the conservative v1 form).  `default()` on
     // an agent that does not exist would just make the host fall back to build
@@ -180,7 +193,9 @@ export const v2Personality: V2Plugin = {
       notes.push(`白名单里这些键在 v2 没有对应动作，已如实丢弃：${[...unmappedActions].join(",")}`)
     }
     if (escalateShellAsk) {
-      notes.push("R6 已开：shell 升为 ask（v1 是按模式匹配，v2 现在是每条命令都问，#94 会补回按命令行内容判定）")
+      notes.push(
+        "R6 已开：shell 在配置里升为 ask（每条命令都问）。按命令行判定的 evaluate 钩子已装上并在计数，但宿主是否真为 shell 调它还没在活体上证明，所以先不撤粗粒度——TM_R6_FINE_ASK=on 才交给它。",
+      )
     }
 
     // ---------- the request layer ----------
@@ -224,6 +239,8 @@ export const v2Personality: V2Plugin = {
         agents_missing: missingAgents.join(","),
         agents_default: defaultPromoted === null ? "n/a" : defaultPromoted ? "team" : "not-promoted",
         request_hooks: session.registrations.length,
+        guard_hooks: guards.registrations.length,
+        guard_shell_coarse: escalateShellAsk,
         request_temperature: temperature === false ? "off" : temperature,
         request_removed_plan: removedPlanSizes,
         board_ttl_days: ttlDays,
