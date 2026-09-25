@@ -34,6 +34,7 @@ import plugin from "./dist/index.js"
 import { agents } from "./dist/agents.js"
 import { commands } from "./dist/commands.js"
 import { createV2Client } from "./dist/host/v2-client.js"
+import { applyV2Probe, probeSummary } from "./dist/host/v2-probe.js"
 import { makeFakeCtx, withCapturedConsole } from "./scripts/lib/fake-ctx.mjs"
 
 const mktmp = (name) => fs.mkdtempSync(path.join(os.tmpdir(), `tm-v2-${name}-`))
@@ -450,6 +451,59 @@ assert.ok(allRoles.includes("`execute` (Code Mode)"), "the batching mandate name
 assert.ok(allRoles.includes("## Recon batching (Code Mode first)"), "and so does the specialist section heading")
 console.log("   OK (12 files, modes + triples projected, idempotent, foreign files respected, prompt forked)")
 
+console.log("8b. the surface probe — names in, values never")
+const probeDir = workspace("probe")
+const probeFile = path.join(probeDir, "surface.jsonl")
+const summaries = []
+const pfake = makeFakeCtx({ directory: probeDir, agents: [] })
+const probe = await applyV2Probe(pfake.ctx, {
+  env: { TM_V2_PROBE: probeFile },
+  flushMs: 60_000,
+  onSummary: (s) => summaries.push(s),
+})
+assert.equal(probe.enabled, true, "the probe says whether TM_V2_PROBE reached it — an empty file otherwise has two causes")
+// The host's convention is ctx.session.hook("context"): the POINT name, not
+// "session.context".  Registering the dotted form attaches a hook nothing ever
+// fires, and the probe would then report an empty host surface as a fact.
+for (const want of ["session.context", "tool.execute.before", "tool.execute.after", "permission.evaluate"]) {
+  assert.ok(pfake.hookNames().includes(want), `the probe attaches ${want} under the name the host actually calls`)
+}
+// (a legitimate point like `execute.before` already carries a dot, so the check is
+// on the DOMAIN being spelled twice, not on the dot count)
+assert.ok(
+  !pfake.hookNames().some((n) => /^(session|tool|permission)\.\1\./.test(n)),
+  "no hook is registered with the domain spelled into its own name (that attaches a hook nothing fires)",
+)
+await pfake.hook("session.context").fire({ agent: "team", tools: { browser_tabs_open: {}, read: {} } })
+assert.deepEqual(probe.report.toolNames, ["browser_tabs_open", "read"], "the tool surface is recorded BY NAME")
+assert.equal(probeSummary(probe.report).probe_browser_tools, "browser_tabs_open", "the native browser namespace is separable from the rest")
+await pfake.hook("tool.execute.before").fire({ tool: "read", input: { path: "/tmp/private/notes.md" } })
+await pfake.hook("permission.evaluate").fire({ action: "shell", resources: ["Get-ChildItem env:SECRET_TOKEN"] })
+await pfake.hook("permission.evaluate").fire({ action: "webfetch", resources: ["https://internal.example/x?token=abc"] })
+assert.equal(probe.report.evaluations, 2, "every evaluation is counted, named or not")
+assert.equal(probe.report.urlResources, 1, "a URL-bearing resource is counted as a BOOLEAN, never as the URL")
+const rawProbe = fs.readFileSync(probeFile, "utf8")
+for (const secret of ["SECRET_TOKEN", "internal.example", "token=abc", "private/notes.md"]) {
+  assert.ok(!rawProbe.includes(secret), `the probe file never carries the value ${secret} — the R6口径 applies to diagnostics too`)
+}
+assert.ok(rawProbe.includes("shell") && rawProbe.includes("webfetch"), "but the action names land, which is the whole point")
+assert.ok(rawProbe.includes('"inputKeys":["path"]'), "an input's KEY names are recorded, not its argument values")
+assert.equal(summaries.length, 1, "one snapshot at attach — an idle session re-running the context hook must not append per request")
+probe.flush(true)
+assert.equal(summaries.length, 2, "a forced flush is how the final state still lands")
+assert.equal(summaries[1].probe_evaluations, 2, "and it carries the counters, which is what #12 needs")
+const noPerm = makeFakeCtx({ directory: probeDir, agents: [] })
+delete noPerm.ctx.permission
+const probe2 = await applyV2Probe(noPerm.ctx, { env: {} })
+assert.equal(probe2.enabled, false, "with no TM_V2_PROBE the probe observes without writing a file")
+assert.ok(
+  probe2.report.hooksMissing.some((h) => h === "permission.evaluate"),
+  "a seam the host does not expose is NAMED — otherwise 'no browser tools' and 'nobody was listening' are one answer",
+)
+for (const r of probe.registrations) await r.dispose()
+assert.equal(probe.registrations.length, 4, "all four observations are registered as disposables")
+console.log(`   OK (4 hooks under host names, names/counts only, ${(rawProbe.match(/\n/g) ?? []).length} probe lines, missing seam reported)`)
+
 console.log("9. teardown")
 await cleanup()
 const undisposed = fake.registrations.filter((r) => !r.disposed)
@@ -468,4 +522,4 @@ for (const dir of made) {
     /* temp dir */
   }
 }
-console.log("\ntest-v2-adapter.mjs: ALL PASS (9 groups)")
+console.log("\ntest-v2-adapter.mjs: ALL PASS (10 groups)")

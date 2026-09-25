@@ -376,6 +376,20 @@ export function renderStats(
       out.push(`- \`${s}\` · ${bits.join(" · ")}`)
       if (line.agents_missing) out.push(`  - 配置里缺角色：${line.agents_missing}`)
       if (line.tools_missing) out.push(`  - 未出现在宿主表面：${line.tools_missing}`)
+      // The probe is the only place the host's own surface is recorded rather than
+      // described, so it prints separately: a 60-name tool list would bury the
+      // twelve lines above it that say what WE did.
+      const probe = [
+        line.probe_tool_count !== undefined ? `宿主工具面 ${line.probe_tool_count} 个（含 browser ${line.probe_browser_tools ? String(line.probe_browser_tools).split(" ").filter(Boolean).length : 0} 个）` : "",
+        line.probe_agents ? `观测到角色 ${line.probe_agents}` : "",
+        line.probe_executed ? `execute.before 见到：${line.probe_executed}` : "",
+        line.probe_executed_after ? `execute.after 见到：${line.probe_executed_after}` : "",
+        line.probe_evaluations !== undefined ? `permission.evaluate ${line.probe_evaluations} 次（动作：${line.probe_actions || "无"}）` : "",
+        line.probe_url_resources !== undefined ? `其中资源里带 URL 的 ${line.probe_url_resources} 次` : "",
+        line.probe_hooks_missing ? `挂不上的钩子：${line.probe_hooks_missing}` : "",
+      ].filter(Boolean)
+      if (probe.length) out.push(`  - 宿主表面探针 · ${probe.join(" · ")}`)
+      if (line.probe_browser_tools && line.probe_browser_tools !== "") out.push(`  - 原生浏览器工具名：${String(line.probe_browser_tools).split(" ").filter(Boolean).map((n) => `\`${n}\``).join(" ")}`)
       if (line.note) out.push(`  - ${line.note}`)
     }
   }

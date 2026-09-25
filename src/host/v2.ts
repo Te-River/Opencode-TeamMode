@@ -39,6 +39,7 @@ import { setAskUnavailableNote } from "../tm/perm-ask.js"
 import type { PluginInput, ToolDefinition } from "../types.js"
 import { blackboardNote } from "./note.js"
 import { applyV2BackgroundForce, applyV2PermissionGuards, needsCoarseShellAsk } from "./v2-guard.js"
+import { applyV2Probe, probeSummary } from "./v2-probe.js"
 import { applyV2SessionLayer, removalPlan } from "./v2-session.js"
 import { createV2Client } from "./v2-client.js"
 import { bindV2Tool, type V2ToolBinding } from "./v2-tool.js"
@@ -149,6 +150,28 @@ export const v2Personality: V2Plugin = {
     registrations.push(...guards.registrations)
     const bgForce = await applyV2BackgroundForce(ctx)
     registrations.push(...bgForce.registrations)
+    // BEFORE the session layer registers its own context hook, so the probe sees
+    // the host's full surface rather than the set we trimmed — that difference is
+    // exactly what it is there to record.
+    const probe = await applyV2Probe(ctx, {
+      onSummary: (summary) => {
+        try {
+          tmRuntime.pipelines.store.appendTrajectory({
+            tool: "host",
+            step_id: "v2-surface",
+            event: "personality",
+            api: 2,
+            ...summary,
+          })
+        } catch {
+          /* the probe is an extra */
+        }
+      },
+    })
+    registrations.push(...probe.registrations)
+    if (probe.report.hooksMissing.length) {
+      notes.push(`探针没挂上的钩子：${probe.report.hooksMissing.join(", ")}`)
+    }
     if (!guards.installed) {
       notes.push("ctx.permission.hook 不存在：原生 webfetch 的元数据/私网红线和 R6 的按命令行判定都没地方落")
     }
@@ -298,6 +321,7 @@ export const v2Personality: V2Plugin = {
           tools_removed: Object.entries(session.report.removed).map(([k, v]) => `${k}=${v}`).join(" "),
           note_pushed: session.report.notePushed,
           compaction_lines: session.report.compactionLines,
+          ...probeSummary(probe.report),
         })
       } catch {
         /* the trajectory is an extra, never a reason to fail teardown */

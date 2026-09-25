@@ -34,6 +34,25 @@ registry saw 1.5.0 as the install-script fix release).
 
 ### Added
 
+- **`src/host/v2-probe.ts` asks the running host what it actually exposes.** Every
+  v2 decision up to now was made against a *description* of the host — and the
+  type package this repo installs is 1.18.25 while the host that runs is 2.0.16,
+  so reading node_modules could not answer "does `permission.evaluate` fire for
+  `shell`?", "what are the native browser tools named?", or "does an oversized
+  native `read` result reach `execute.after` at all?". The probe registers the
+  same four hooks the guards do, mutates nothing, and records only NAMES: tool
+  ids, agent ids, action ids, an input's key names, the count of resources plus
+  whether any parses as a URL. It never writes a resource value, command line,
+  path or env face — the R6 privacy 口径 applies to a diagnostic too, and a probe
+  file that leaked the user's commands would be a worse bug than the one it
+  answers. `TM_V2_PROBE=<file>` adds a JSONL dump; without it the name sets still
+  fill and a throttled snapshot rides the trajectory as `v2-surface`. Two lessons
+  are encoded in its shape because both were hit while writing it: a snapshot has
+  to be taken **while the process is alive** (the first version only wrote from
+  `dispose`, and a run that gets interrupted never reaches teardown — one live run
+  left a boot line and nothing else), and the probe has to report **whether it was
+  listening at all** (`probe_target`), otherwise "the host has no browser tools"
+  and "nobody handed me an env var" are the same answer.
 - **On v2 every sub-agent dispatch runs in the background.** A foreground
   `subagent` call blocks the lead for the child's entire run, which is the one
   thing the throughput mandate cannot survive, and on v2 background needs no
