@@ -1,5 +1,6 @@
 import type { V2Registration } from "./v2-types.js"
 import { detectContentType } from "../tm/preview.js"
+import { parseHostEnvelope, renderOffloadedSubagent } from "../task-offload.js"
 import { estimateTokens } from "../tm/config.js"
 
 /**
@@ -79,6 +80,11 @@ export interface V2OffloadReport {
   seen: number
   considered: number
   offloaded: number
+  /** envelopes RECOGNISED, whether or not they needed rewriting — a counter that
+   *  moves only on a rewrite cannot tell "the channel is alive, nothing was big"
+   *  apart from "this host's format is not the one we match" (which is exactly how
+   *  the v1 `<task id=` matcher read as zero on v2). */
+  envelopes: number
   degraded: number
   tokensSaved: number
   byTool: Record<string, { seen: number; offloaded: number }>
@@ -137,7 +143,7 @@ export function applyV2NativeOffload(
 ): { registrations: Promise<V2Registration>[]; report: V2OffloadReport; active: boolean } {
   const env = deps.env ?? process.env
   const off = /^(0|false|no|off)$/i.test(String(env.TM_NATIVE_OFFLOAD ?? "").trim())
-  const report: V2OffloadReport = { seen: 0, considered: 0, offloaded: 0, degraded: 0, tokensSaved: 0, byTool: {} }
+  const report: V2OffloadReport = { seen: 0, considered: 0, offloaded: 0, envelopes: 0, degraded: 0, tokensSaved: 0, byTool: {} }
   const hook = (ctx as { tool?: { hook?: unknown } })?.tool?.hook
   if (typeof hook !== "function") {
     // No seam at all: report it, do not silently pretend the promise holds.
@@ -154,6 +160,12 @@ export function applyV2NativeOffload(
     const found = locatableText(event?.result)
     if (!found) return
     report.considered++
+    // A sub-agent reply arrives wrapped in the host's own envelope.  Offloading it
+    // means replacing the BODY and reproducing the wrapper: the host and the UI key
+    // on `<subagent sessionID=…>`, so flattening it into a generic governed result
+    // would delete the very pointer the lead needs to fetch the whole thing back.
+    const envelope = tool === "subagent" ? parseHostEnvelope(found.text) : null
+    if (envelope) report.envelopes++
     const stepId = deps.pipelines.nextStepId()
     // Content class is inferred from the BODY, not from a path we do not have:
     // that is the same basis tm_bash uses, so a 30 KB JSON stdout gets the data
@@ -180,7 +192,10 @@ export function applyV2NativeOffload(
     }
     const parts = found.parts
     const keepTokens = estimateTokens(g.preview)
-    parts[found.index] = { type: "text", text: renderNativeOffload(tool, g) }
+    parts[found.index] = {
+      type: "text",
+      text: envelope ? renderOffloadedSubagent(envelope, g.preview, g.tokens) : renderNativeOffload(tool, g),
+    }
     for (let i = found.index + 1; i < parts.length; i++) {
       if (textPart(parts[i])) parts[i] = { type: "text", text: "" }
     }

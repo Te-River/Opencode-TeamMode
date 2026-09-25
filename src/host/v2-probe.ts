@@ -1,6 +1,7 @@
 import * as fs from "node:fs"
 import * as path from "node:path"
 import type { V2Registration } from "./v2-types.js"
+import { parseHostEnvelope } from "../task-offload.js"
 
 /**
  * The v2 host's real tool surface — observed, not assumed.
@@ -47,6 +48,10 @@ export interface V2ProbeReport {
   messages: number
   taskEnvelopes: number
   maxEnvelopeChars: number
+  /** key names of the first messages the context hook carried (shape, not text) */
+  messageShapes: Array<Record<string, unknown>>
+  /** which host envelope spellings were seen — "v1-task" vs "v2-subagent" */
+  envelopeForms: Set<string>
   /** permission evaluations whose resources carried a URL (count, never the URL) */
   urlResources: number
   evaluations: number
@@ -115,19 +120,24 @@ export async function applyV2Probe(ctx: unknown, opts: ProbeOptions = {}): Promi
     messages: 0,
     taskEnvelopes: 0,
     maxEnvelopeChars: 0,
+    messageShapes: [],
+    envelopeForms: new Set<string>(),
     hooksMissing: [],
     ctxDomains: [],
     probeTarget: file ? path.basename(file) : "",
     lines: 0,
   }
+
+  report.ctxDomains = Object.keys((ctx ?? {}) as Record<string, unknown>).sort()
+
   const seenToolNames = new Set<string>()
   const seenExecuted = new Set<string>()
   const seenExecutedAfter = new Set<string>()
   const seenActions = new Set<string>()
   const seenAgents = new Set<string>()
   const seenBeforeShapes = new Set<string>()
-
-  report.ctxDomains = Object.keys((ctx ?? {}) as Record<string, unknown>).sort()
+  const messageShapes: Array<Record<string, unknown>> = []
+  const envelopeForms = report.envelopeForms
 
   const write = (rec: Record<string, unknown>) => {
     if (!file || report.lines >= maxLines) return
@@ -174,8 +184,22 @@ export async function applyV2Probe(ctx: unknown, opts: ProbeOptions = {}): Promi
     // not "session.context".  Passing the dotted form would register a hook under a
     // name nothing fires, and the probe would report an empty surface as if the host
     // had none.  The label keeps the domain so a missing seam reads unambiguously.
+    // The body is wrapped so a defect HERE can never surface as a failed tool call
+    // or a broken model request: an observer that can break the thing it observes is
+    // not an observer.  (This was not theoretical — a callback referencing a `const`
+    // declared further down the module hit its temporal dead zone while the host was
+    // mid-hook, which is exactly how the shape recorder reported nothing.)
+    const guarded = (event: unknown) => {
+      try {
+        cb(event)
+      } catch (err) {
+        const tag = `${domain}.${point}`
+        if (!report.hooksMissing.includes(`${tag}:callback-threw`)) report.hooksMissing.push(`${tag}:callback-threw`)
+        void err
+      }
+    }
     try {
-      pending.push(Promise.resolve(hook(point, cb) as unknown as V2Registration))
+      pending.push(Promise.resolve(hook(point, guarded) as unknown as V2Registration))
     } catch (err) {
       report.hooksMissing.push(`${domain}.${point}:${String((err as Error)?.message ?? err).slice(0, 60)}`)
     }
@@ -186,13 +210,49 @@ export async function applyV2Probe(ctx: unknown, opts: ProbeOptions = {}): Promi
     const names = Object.keys(event?.tools ?? {})
     const msgs = Array.isArray((event as { messages?: unknown }).messages) ? (event as { messages: unknown[] }).messages : []
     report.messages = Math.max(report.messages, msgs.length)
+    // The KEY NAMES of what a message actually is — recorded because guessing the
+    // shape is what made the v1 envelope matcher quietly dead: the probe reported
+    // "0 envelopes" and the honest reading was "I do not know where this lands",
+    // not "nothing lands".  Names only, never content.
+    if (msgs.length && !messageShapes.length) {
+      for (const m of msgs.slice(0, 3)) {
+        const keys = keysOf(m)
+        const nested: Record<string, string[]> = {}
+        for (const k of keys) {
+          const v = (m as Record<string, unknown>)[k]
+          if (v && typeof v === "object") nested[k] = Array.isArray(v) ? [`array(${v.length})`] : keysOf(v).slice(0, 8)
+        }
+        messageShapes.push({ keys, nested })
+      }
+      report.messageShapes = messageShapes
+      write({ where: "message-shape", shapes: messageShapes })
+    }
     // Shape only: a boolean "this looks like the host's envelope" and a character
     // count.  Nothing of the body is kept, hashed or written.
     for (const m of msgs) {
-      const text = typeof m === "string" ? m : JSON.stringify((m as { parts?: unknown; text?: unknown })?.parts ?? (m as { text?: unknown })?.text ?? "")
-      if (text.includes("state=\"completed\"") && text.includes("<task id=")) {
+      // Read the TEXT of each part.  JSON.stringify was wrong twice over: escaping
+      // the quotes means an envelope inside a part never matches its own parser (so
+      // this counter reported 0 on a host that was emitting them), and it would have
+      // serialized fields nobody should have in a probe file.
+      const texts: string[] = []
+      if (typeof m === "string") texts.push(m)
+      else {
+        const parts = (m as { parts?: unknown })?.parts
+        if (Array.isArray(parts)) {
+          for (const pt of parts) {
+            if (typeof (pt as { text?: unknown })?.text === "string") texts.push((pt as { text: string }).text)
+          }
+        } else if (typeof (m as { text?: unknown })?.text === "string") texts.push((m as { text: string }).text)
+      }
+      // Asked of the same parser the offload uses — a probe that greps for the v1
+      // string while the host emits another reports "0 envelopes" forever, and a
+      // zero like that is indistinguishable from "nothing was big enough".
+      for (const text of texts) {
+        const env = parseHostEnvelope(text)
+        if (!env) continue
         report.taskEnvelopes += 1
         report.maxEnvelopeChars = Math.max(report.maxEnvelopeChars, text.length)
+        report.envelopeForms.add(env.form)
       }
     }
     for (const n of names) seenToolNames.add(n)
@@ -275,6 +335,8 @@ export function probeSummary(report: V2ProbeReport): Record<string, unknown> {
     probe_messages: report.messages,
     probe_task_envelopes: report.taskEnvelopes,
     probe_max_envelope_chars: report.maxEnvelopeChars,
+    probe_message_shapes: JSON.stringify(report.messageShapes).slice(0, 500),
+    probe_envelope_forms: [...report.envelopeForms].join(" "),
     probe_url_resources: report.urlResources,
     probe_hooks_missing: report.hooksMissing.join(" "),
     probe_ctx_domains: report.ctxDomains.join(" "),

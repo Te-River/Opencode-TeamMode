@@ -237,6 +237,32 @@ registry saw 1.5.0 as the install-script fix release).
   without updating the table fails the generator rather than shipping the stale
   sentence.
 
+- **The sub-agent envelope is now recognised in the shape THIS host emits, and the
+  counter that hid that is fixed.**  Read out of the host's own result mapping
+  (read-only; the binary was never touched), v2 wraps a child's reply as
+  `<subagent sessionID="…" state="completed">…</subagent>` — and, for the background
+  completion, with a `description="…"` attribute and a dynamic `state`.  The v1
+  string `<task id=` occurs **zero times** in 2.0.16, so `parseTaskEnvelope` could
+  never fire there: every metric said `task_envelopes: 0`, which read as "no child
+  reply was big enough" and actually meant "the matcher is for another host".  That
+  is the fail-loud rule turned on our own telemetry, and it was the reason a real
+  gap was argued as closed.  `parseHostEnvelope` now recognises both spellings, the
+  offload of a `subagent` result **reproduces the wrapper and swaps only the body**
+  (the sessionID inside it is the pointer the lead needs, and the host/UI key on
+  that element), and a `state="error"` child is deliberately left alone — hiding why
+  a child failed to save tokens is the wrong trade.  `native_envelopes` (recognised)
+  is reported beside `native_offloaded` (rewritten) so the two can never be confused.
+- **A probe hook body can no longer break the request it observes, and says so when
+  it throws.**  One of these callbacks referenced a `const` declared further down the
+  module, so it hit its temporal dead zone while the host was mid-hook: the shape
+  recorder reported nothing, and the missing data was being read as a fact about the
+  host rather than a crash in the observer.  Every callback is now wrapped — the
+  throw is swallowed and recorded as `session.context:callback-threw`, which is also
+  what the message-shape recording needed to be trusted.  Related: the envelope scan
+  walked `JSON.stringify(parts)`, whose escaped quotes mean an envelope never
+  matches its own parser — it reads each part's `text` now, which is how the real v2
+  message shape (`{info, parts[]}`) finally showed up.
+
 - **The v2 surface probe now records the `ctx` domains and the shape of the message
   list**, because two open decisions were being argued from assumptions.  What it
   measured on a live 2.0.16 host:

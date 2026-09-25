@@ -191,6 +191,7 @@ const tmRuntime = await createTmTools(
             api: 2,
             native_seen: offload.report.seen,
             native_offloaded: offload.report.offloaded,
+            native_envelopes: offload.report.envelopes,
             native_tokens_saved: offload.report.tokensSaved,
             native_offload_active: offload.active && offload.registrations.length > 0,
             ...summary,

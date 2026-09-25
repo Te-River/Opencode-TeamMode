@@ -86,6 +86,65 @@ export function renderOffloadedTask(env: TaskEnvelope, preview: string, tokens: 
   ].join("\n")
 }
 
+/* --------------------------------------------------------------------------
+ * v2's envelope is a DIFFERENT SHAPE, and this is not a stylistic note: the
+ * v1 string `<task id=` occurs ZERO times in the 2.0.16 host binary, so a
+ * matcher written against it can never fire there.  What v2 actually emits was
+ * read out of the host's own result mapping (read-only; nothing here assumes a
+ * doc said it):
+ *   synchronous tool result -> `<subagent sessionID="X" state="completed">{output}</subagent>`
+ *   background completion   -> `<subagent sessionID="X" state="{status}" description="D">{text}</subagent>`
+ * Without this the honest reading of `task_envelopes: 0` was "no child reply
+ * was big enough" when the truth is "the matcher cannot see this host's
+ * format" -- the fail-loud rule applied to our own telemetry.
+ * ------------------------------------------------------------------------ */
+const SUBAGENT_RE =
+  /^<subagent\s+sessionID="([^"]*)"\s+state="([^"]*)"(?:\s+description="([^"]*)")?\s*>([\s\S]*?)<\/subagent>\s*$/
+
+export interface HostEnvelope {
+  sessionId: string
+  state: string
+  description: string
+  body: string
+  /** which host emitted it — the two render differently and must not drift */
+  form: "v1-task" | "v2-subagent"
+}
+
+/** Recognise either host spelling.  Returns null for anything else, including a
+ *  v2 envelope whose state is not a completed-looking word — an interrupted or
+ *  failed child has nothing to offload, and rewriting it would hide why it failed. */
+export function parseHostEnvelope(text: unknown): HostEnvelope | null {
+  if (typeof text !== "string") return null
+  const t = text.trim()
+  const v1 = parseTaskEnvelope(t)
+  if (v1) return { sessionId: v1.sessionId, state: "completed", description: "", body: v1.body, form: "v1-task" }
+  const m = SUBAGENT_RE.exec(t)
+  if (!m) return null
+  const state = (m[2] ?? "").trim()
+  if (state !== "completed") return null
+  const body = (m[4] ?? "").trim()
+  if (!body) return null
+  return { sessionId: (m[1] ?? "").trim(), state, description: (m[3] ?? "").trim(), body, form: "v2-subagent" }
+}
+
+/** The v2 replacement: SAME wrapper, same attributes, preview + a pointer in
+ *  place of the body.  The envelope is what the host and the UI key on, so it is
+ *  reproduced rather than replaced by our own object. */
+export function renderOffloadedSubagent(env: HostEnvelope, preview: string, tokens: number): string {
+  const attrs = [`sessionID="${env.sessionId}"`, `state="${env.state}"`, ...(env.description ? [`description="${env.description}"`] : [])]
+  return [
+    `<subagent ${attrs.join(" ")}>`,
+    preview,
+    ``,
+    `[TeamMode 上下文治理] 这条子代理回复的全文（约 ${tokens} token）没有进入本会话——`,
+    `一个字都没丢，就在子会话 ${env.sessionId} 里。需要时二选一：`,
+    `① tm_join { ids: ["${env.sessionId}"] }；② 在界面里点开这张子代理卡片直接看那个会话。`,
+    `只要上面那段预览就够回答的问题，不要为此再花一次往返。`,
+    `</subagent>`,
+  ].join(`
+`)
+}
+
 export interface TaskOffloadDeps {
   /** TM_TASK_OFFLOAD — off restores the host's verbatim injection. */
   enabled: boolean

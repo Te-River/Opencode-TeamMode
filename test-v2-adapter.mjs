@@ -574,6 +574,37 @@ assert.deepEqual(
   "the governed list stays closed -- and `execute` is on it because that is the ONLY door native browser output has into the context (the Team surface is edit/execute/question/shell/subagent/write)",
 )
 assert.ok(![...NATIVE_GOVERNED_TOOLS].some((t) => ["agent", "patch", "question", "write", "edit"].includes(t)), "shapes nobody has observed are still not interpreted (`subagent` earns its place: execute.after was measured carrying {content,metadata,output})")
+// The v2 envelope: read out of the host's own result mapping, and the reason the
+// v1 matcher is dead there is measurable — `<task ` occurs zero times in 2.0.16.
+// A sub-agent reply arrives wrapped, so governance must swap the BODY and
+// reproduce the wrapper: the sessionID inside it is how the lead gets the whole
+// reply back, and a generic governed sentence would delete that pointer.
+{
+  const { parseHostEnvelope } = await import("./dist/task-offload.js")
+  const sync = `<subagent sessionID="ses_c1" state="completed">
+${BIG.slice(0, 400)}
+</subagent>`
+  const withDesc = `<subagent sessionID="ses_c2" state="completed" description="读法清单">
+body
+</subagent>`
+  const failed = `<subagent sessionID="ses_c3" state="error">
+why it broke
+</subagent>`
+  assert.equal(parseHostEnvelope(sync)?.form, "v2-subagent", "the synchronous v2 envelope is recognised")
+  assert.equal(parseHostEnvelope(withDesc)?.description, "读法清单", "and so is the background form with its description attribute")
+  assert.equal(parseHostEnvelope(failed), null, "a FAILED child is not offloaded — hiding why it broke is worse than the tokens")
+  assert.equal(parseHostEnvelope("just text"), null, "non-envelope text is left alone")
+  const e = offloadHarness({
+    govern: () => ({ offloaded: true, ref: "tm://r", access_token: "t", expire_at: 1777000000000, tokens: 3000, preview: "PREVIEW" }),
+  })
+  const ev = { tool: "subagent", result: { content: [{ type: "text", text: sync }], metadata: { sessionID: "ses_c1" } } }
+  e.f.hook("tool.execute.after").handlers.forEach((h) => h(ev))
+  const txt = ev.result.content[0].text
+  assert.ok(/^<subagent sessionID="ses_c1" state="completed">/.test(txt), "the wrapper survives the rewrite, attributes intact")
+  assert.ok(txt.includes("PREVIEW") && txt.includes("tm_join") && txt.includes("ses_c1"), "preview + a pointer naming the child session")
+  assert.ok(!txt.includes(BIG.slice(0, 400)), "the body is gone from the context")
+  assert.equal(e.o.report.envelopes, 1, "recognised is counted even where nothing was rewritten — a zero must not read as 'nothing was big'")
+}
 console.log("   OK (closed tool list, unknown shapes untouched, attachments and metadata preserved, failure degrades, off restores verbatim)")
 
 console.log("8. the config projection — what the installer copies onto disk")
@@ -701,6 +732,34 @@ assert.ok(
 )
 for (const r of probe.registrations) await r.dispose()
 assert.equal(probe.registrations.length, 4, "all four observations are registered as disposables")
+// Three things this suite learned the hard way, now pinned:
+// (1) a throwing hook body may never break somebody's model request, and must
+//     report that it threw rather than leaving an empty host to be inferred;
+// (2) the message KEY NAMES are recorded — the real v2 shape is {info, parts[]} —
+//     which is what any envelope detector has to walk into;
+// (3) the counter uses the SAME parser the offload uses. Grepping for the v1
+//     string made "0 envelopes" mean "wrong matcher", not "nothing was big".
+{
+  const f2 = makeFakeCtx({ directory: probeDir, agents: [] })
+  const p2 = await applyV2Probe(f2.ctx, { env: {} })
+  const body = "1：一\n".repeat(40)
+  await f2
+    .hook("session.context")
+    .fire({
+      agent: "team",
+      tools: { read: {} },
+      messages: [{ info: { role: "user" }, parts: [{ type: "text", text: `<subagent sessionID="ses_a" state="completed" description="读法">\n${body}\n</subagent>` }] }],
+    })
+  assert.deepEqual(p2.report.messageShapes[0]?.keys, ["info", "parts"], "the probe records the host's real message shape as key NAMES")
+  assert.equal(p2.report.taskEnvelopes, 1, "a v2 envelope inside a text part is counted")
+  assert.deepEqual([...p2.report.envelopeForms], ["v2-subagent"], "and labelled with the form the host actually used")
+  assert.ok(p2.report.maxEnvelopeChars > 200, "its length is measured, so a threshold argument has a number behind it")
+  await f2.hook("session.context").fire(null)
+  assert.ok(
+    p2.report.hooksMissing.some((h) => h.includes("callback-threw")),
+    "a throwing observer body is swallowed AND reported — an observer that can break what it observes is not an observer",
+  )
+}
 console.log(`   OK (4 hooks under host names, names/counts only, ${(rawProbe.match(/\n/g) ?? []).length} probe lines, missing seam reported)`)
 
 console.log("9. teardown")

@@ -378,6 +378,10 @@ export function renderStats(
         line.native_offload_active === undefined ? "" : `原生工具治理 ${line.native_offload_active ? "开" : "关（见上方原因）"}`,
         line.native_seen !== undefined ? `原生调用 ${line.native_seen} 次` : "",
         line.native_offloaded !== undefined ? `卸载 ${line.native_offloaded} 次` : "",
+        // Recognised is not the same as rewritten: this is the number that says
+        // "we can read this host's envelope format", and its being 0 while
+        // sub-agents clearly ran says the opposite.
+        line.native_envelopes !== undefined ? `认出的子代理信封 ${line.native_envelopes} 个` : "",
         line.native_tokens_saved !== undefined && Number(line.native_tokens_saved) > 0 ? `省 ${line.native_tokens_saved} token` : "",
       ].filter(Boolean)
       if (s === "v2-agents") {
