@@ -71,7 +71,22 @@ export const V2_ACTION_NAMES: Readonly<Record<string, string>> = {
  * v1 keeps all three: its `tool.execute.before` can rewrite arguments but not
  * results, so deleting them there would delete offload itself.
  */
-export const V1_ONLY_TOOLS: ReadonlySet<string> = new Set(["tm_ptc_run", "tm_read", "tm_grep", "tm_bash"])
+export const V1_ONLY_TOOLS: ReadonlySet<string> = new Set([
+  "tm_ptc_run",
+  "tm_read",
+  "tm_grep",
+  "tm_bash",
+  /*
+   * `tm_pty` executes on the host's OWN terminal sessions through `client.pty.*`,
+   * and the v2 plugin context has no pty domain at all — so registering it meant
+   * shipping a tool whose every start answers "宿主 pty 接口不可用". A tool that
+   * cannot work is the overstated claim, not the fallback. v1 keeps it.
+   * Revisit only when #28 measures the native `shell` background round-trip
+   (what returns, how output is retrieved, how it is cancelled); if the host's own
+   * background shell covers it, this stays retired and the prompt says `shell`.
+   */
+  "tm_pty",
+])
 
 /**
  * The v2 file/shell ladder runs through the host's own tools, so the triples that

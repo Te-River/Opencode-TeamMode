@@ -121,7 +121,14 @@ export const v2Personality: V2Plugin = {
     // default keeps today's behaviour until the token cost is measured, because the
     // other half of that sentence is that a direct tool definition rides EVERY
     // request (our own estimate for the full set is 9 528 tokens).
-    const v2CodeModeDirect = /^(1|true|on|yes|direct)$/i.test(String(v2Env.TM_V2_CODEMODE ?? "").trim())
+    // Delivered as REAL tools by default: the user's call (2026-09-25) was "slim the
+    // description first, then go direct", and the description is now 729 tokens for
+    // tm_browser (was 2 788 for the whole tool), which puts the measured per-role
+    // cost at 2 660 build-class / 4 726 tester / 6 391 researcher / 7 793 lead.
+    // `TM_V2_CODEMODE=off` restores catalog-only for anyone who wants the tokens back
+    // — and the boot note says which world this is, because in catalog mode most of
+    // our governance text never reaches the model at all.
+    const v2CodeModeDirect = !/^(0|false|no|off)$/i.test(String(v2Env.TM_V2_CODEMODE ?? "").trim())
 
     // No SDK client.  v1's `client` carried `file.read`, `find.text`, `session.*`
     // and `pty.*`; the v2 plugin ctx has no such object, and the fs shim that used

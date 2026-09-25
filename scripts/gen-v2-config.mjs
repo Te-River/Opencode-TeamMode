@@ -167,7 +167,7 @@ const V2_TEXT = [
   ["run one cheap tm_grep.  Do NOT pull big payloads", "run one cheap grep.  Do NOT pull big payloads"],
   ["or tm_grep + tm_bash yourself)", "or grep + shell yourself)"],
   ["into its OWN tm_pty session (returns at once, the user sees the terminal,\n  every start passes the official dialog) rather than being chained with\n  `;` behind one long bash call.  tm_pty returns no transcript — tee it to\n  a log and read that log when it reports exited.",
-   "into its OWN background `shell` call (`background: true`, which returns at\n  once) rather than being chained with\n  `;` behind one long shell call.  Have it write its own log file and read that\n  log when it reports exited — do not re-run the command to see its output."],
+   "into its OWN separate `shell` call (one slow step per call, each with its own\n  `timeout`) rather than being chained with\n  `;` behind one long shell call.  Have it write its own log file and read that\n  log when it reports exited — do not re-run the command to see its output."],
   ["probes via bash where granted) BEFORE answering from memory.", "probes via shell where granted) BEFORE answering from memory."],
   ["FIRST there, because that is the only path with the domain allowlist, the\nper-request dialog and the R6 red lines; an MCP fetcher of the same page\nsilently skips all three (and dumps raw HTML into your context).  Fall to a",
    "FIRST there, because that is the only path with the address red line (no\nmetadata / private-range fetch) and the threshold offload; an MCP fetcher of the\nsame page silently skips both (and dumps raw HTML into your context).  Fall to a"],
@@ -202,6 +202,13 @@ const V2_TEXT = [
   ["Do NOT store task state or oversized content there — todo list and\nboard files own those.",
    "Do NOT store task state or oversized content there — the lead's `tm_ledger`\nand board files own those."],
   ["dropped: the list is the user's audit surface (pending / in_progress /\n  completed / blocked)", "dropped: the list is the user's audit surface (open / doing /\n  done / blocked — `tm_ledger` keeps the states, and `blocked` carries the note\n  naming what blocked it)"],
+  /* tm_pty is v1-only on purpose: `client.pty` does not exist on the v2 plugin
+   * ctx, so the tool could only ever answer "pty 接口不可用". The rewritten rules
+   * name no replacement mechanism, because the native `shell` background round-trip
+   * is NOT measured yet (#28) — telling a v2 model "run it in the background" on an
+   * unverified capability is the same guess that broke tm_pty. */
+  ["either: give each its own call, or run it through tm_pty (non-blocking,\n  where granted) and check `status` later.  A tm_pty session writes no\n  transcript back to you, so tee its output to a file (`<cmd> 2>&1 | tee\n  <log>`) and read that file for EVIDENCE once it reports exited.",
+   "either: give each its own call — one slow step per `shell` call, each with its\n  own `timeout` — and tee the output (`<cmd> 2>&1 | tee\n  <log>`) so the log is readable as EVIDENCE while the command runs."],
 ]
 
 function forkBody(text, hits) {

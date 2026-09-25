@@ -9,6 +9,21 @@ registry saw 1.5.0 as the install-script fix release).
 
 ### Changed
 
+- **`tm_*` are delivered as real tools by default on v2, after paying for the text
+  first.** The decision was "slim the description, then go direct", and both halves
+  happened: `tm_browser`'s description went from a narrative of every lesson to the
+  things the model cannot recover from a result (729 tokens; its parameter table is a
+  separate 1 337 of per-parameter truth), and `tm_pty` is no longer registered on v2 at
+  all — with no `client.pty` in the plugin context the tool could only ever answer that
+  its own seam is missing, which is a promise the surface should not make. What
+  `options.codemode:false` now costs per request, measured through our own token口径
+  after the request-layer trim: build-class specialists 2 660 tokens, tester 4 726,
+  researcher 6 391, the lead 7 366. `TM_V2_CODEMODE=off` buys the tokens back and the
+  boot note says which world is running, because in catalog mode the host keeps
+  ≤120 characters of each first description line and most of our governance text is
+  simply never delivered. The v1 prompt text that named `tm_pty` is forked to plain
+  "one slow step per `shell` call" — and deliberately does NOT claim native background
+  shell works, because #28 has not measured that round-trip yet.
 - **The prompts no longer prescribe Chinese wording (user rule).** What the agent
   writes follows the language of the request; that was already the rule in
   `## Reply language`, but three prompt templates contradicted it by handing the

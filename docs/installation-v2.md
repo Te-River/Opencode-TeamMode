@@ -45,6 +45,7 @@ implied:
 | The six roles | injected by the plugin at boot | `~/.config/opencode/agents/*.md`, written by the generator below — a plugin cannot add an agent |
 | The six `/team-*` commands | injected by the plugin | `~/.config/opencode/commands/*.md`, same generator |
 | Default agent | filled only if the user left it alone | **Team is the default on every boot** (the API has no getter), plus `default_agent: "team"` in config, which is the checkable one. Opt out with `"team-mode": { "defaultAgent": false }` |
+| Non-blocking commands | `tm_pty`, on the host's own terminal sessions | **not registered at all** — the v2 plugin context has no pty domain, so the tool could only ever report its own missing seam. Run a slow step as its own `shell` call (one per call, each with its own `timeout`) and tee the output to a log you can read back |
 | File access | `tm_read` / `tm_grep` / `tm_bash` | the host's own `read` / `grep` / `glob` / `shell` — **governed anyway**: oversized results are offloaded through `tool.execute.after`, and out-of-project paths go through the host's own `external_directory` permission (a dialog, where v1 had a hard refusal) |
 | Batch calls | `tm_ptc_run` | the host's own `execute` (Code Mode) |
 | The task ledger | the host's `todowrite` | **`tm_ledger`**, stored in the host's `ctx.storage` (v2 has no `todowrite`) |
@@ -196,6 +197,7 @@ a new release may have changed them. Re-running is cheap — unchanged files are
 | 任务清单 | 宿主 `todowrite` | **`tm_ledger`**，存在宿主的 `ctx.storage` 里（v2 不给插件 `todowrite`） |
 | 征求用户同意 | 宿主官方逐次弹窗 | **插件在 v2 弹不出对话框。** 原本该问的受治理调用一律**直接拒绝**，并说明是"没人可问"而不是"问了被拒"。你看到的弹窗都来自宿主自己（权限规则、越出项目目录） |
 | 联网 | 22 个域名白名单 | **不按域名拦**（`TM_WEBFETCH_ALLOWED_DOMAINS` 默认 `"*"`）——只保留地址红线：元数据 / 链路本地 / 保留网段完全不可授权；私网（回环、RFC1918、CGNAT、`.localhost`）在我们的工具里直接拒 |
+| 非阻塞命令 | `tm_pty`（跑在宿主终端会话上）| **完全不注册**——v2 插件上下文没有 pty 域，这个工具只能报自己缺缝。慢步骤请一条一个 `shell` 调用（各自带 `timeout`），并把输出 tee 到日志好回读 |
 | 子代理 | 需要 `OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS=true` | 原生能力；插件对每次 `subagent` 强制 `background: true`，所以 **2.x 不要去设那个环境变量**（那是 v1 的补丁，在这里什么也不改变，只会让人误判） |
 | 对你其它模式的影响 | 插件钩子是全局的 | **没有影响。** 每个钩子都先看会话归属，所以 `build`、`plan` 和你自己装的 agent 都保持刚装好 OpenCode 时的样子——不会从它们的请求里删工具、不会设温度、不会卸载结果、不会收紧权限、也不会把它们的派发改成后台 |
 

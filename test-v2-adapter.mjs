@@ -51,10 +51,11 @@ const TM_NAMES = [
   "tm_board_write",
 ]
 /** v1's roster minus what v2 deliberately does not register. */
-// v2 registers nine of the thirteen: ptc_run left for the host's Code Mode, and
+// v2 registers eight of the thirteen: ptc_run left for the host's Code Mode,
 // read/grep/bash left because the governed native tools replaced them (the
-// offload layer is what made that possible, so the order matters).
-const V2_RETIRED = ["tm_ptc_run", "tm_read", "tm_grep", "tm_bash"]
+// offload layer is what made that possible, so the order matters), and tm_pty
+// left because the v2 plugin ctx has no pty domain to call at all.
+const V2_RETIRED = ["tm_ptc_run", "tm_read", "tm_grep", "tm_bash", "tm_pty"]
 /** v2 adds what v1 never had: the LEDGER's home, because a v2 host has no
  *  `todowrite` for the mandate to attach to.  v1 registers no such tool — the
  *  v1 personality is frozen, so this arrives through `ledgerStore` being handed
@@ -106,7 +107,7 @@ for (const gone of ["tm_read", "tm_grep", "tm_bash"]) {
 assert.equal(
   registered.filter((n) => n.startsWith("tm_")).length,
   V2_NAMES.length,
-  `exactly the ten governed tools v2 ships arrive (got ${registered.filter((n) => n.startsWith("tm_")).join(",")})`,
+  `exactly the nine governed tools v2 ships arrive (got ${registered.filter((n) => n.startsWith("tm_")).join(",")})`,
 )
 for (const name of V2_NAMES) {
   assert.ok(String(byName[name].description ?? "").length > 40, `${name} carries a real description`)
@@ -124,7 +125,7 @@ assert.ok(
 // `{additionalProperties:true}` with no parameter guidance at all.  The
 // descriptor branch has to recover names AND types, because a schema that says
 // "string" for an enum parameter is the same guidance-free shape in disguise.
-for (const name of ["tm_join", "tm_pty", "tm_stats", "tm_ledger"]) {
+for (const name of ["tm_join", "tm_stats", "tm_ledger"]) {
   const input = byName[name].input
   assert.notEqual(input.additionalProperties, true, `${name} is not the permissive fallback`)
   assert.ok(Object.keys(input.properties ?? {}).length >= 3, `${name} carries properties`)
@@ -138,11 +139,11 @@ assert.equal(
 assert.equal(byName.tm_join.input.properties.waitMs.type, "number", "tm_join.waitMs reads as a number")
 assert.equal(byName.tm_join.input.properties.cancel.type, "boolean", "tm_join.cancel reads as a boolean")
 assert.ok(
-  (byName.tm_pty.input.properties.action.enum ?? []).includes("kill"),
-  "tm_pty.action keeps its verb enum instead of flattening to a string",
+  !registered.includes("tm_pty"),
+  "tm_pty is NOT registered on v2: client.pty does not exist here, so the tool could only ever answer that its own seam is missing",
 )
 assert.equal(byName.tm_stats.input.properties.runs.type, "number", "tm_stats.runs reads as a number")
-for (const name of ["tm_join", "tm_pty", "tm_stats", "tm_ledger"]) {
+for (const name of ["tm_join", "tm_stats", "tm_ledger"]) {
   const first = Object.values(byName[name].input.properties ?? {})[0]
   assert.ok(String(first?.description ?? "").length > 10, `${name} keeps the guidance text, not just names`)
 }
@@ -176,23 +177,22 @@ await oo.value?.()
 // every request.  Both sides are pinned so nobody has to guess which world they are in.
 assert.equal(
   byName.tm_join.options?.codemode,
-  undefined,
-  "by default we send no codemode flag, and the boot note says what that costs us (the governance text below the first line never arrives)",
+  false,
+  "tm_* are delivered as REAL tools by default — the visibility switch is options.codemode:false, and without it the host keeps only the first line of our description",
 )
 {
   const direct = makeFakeCtx({ directory: ws, agents: [] })
-  process.env.TM_V2_CODEMODE = "direct"
+  process.env.TM_V2_CODEMODE = "off"
   const dr = await withCapturedConsole(() => plugin.setup(direct.ctx))
   const dt = Object.fromEntries(direct.tools.list().map((t) => [t.id ?? t.name, t]))
-  assert.equal(dt.tm_join?.options?.codemode, false, "TM_V2_CODEMODE=direct sends codemode:false, which is the host's own switch for a real tool definition")
+  assert.equal(dt.tm_join?.options?.codemode, undefined, "TM_V2_CODEMODE=off restores catalog-only, the cheap world where most governance text never arrives")
   assert.ok(
-    warns.some((w) => /Code Mode 目录/.test(w)),
-    "the default boot says out loud that only the first line of our descriptions reaches the model",
+    (dr.warns ?? []).some((w) => /Code Mode 目录/.test(w)),
+    "the opted-out boot says out loud that only the first line of our descriptions reaches the model",
   )
   assert.ok(
-    (dr.warns ?? []).some((w) => /TM_V2_CODEMODE=direct/.test(w)) &&
-      !(dr.warns ?? []).some((w) => /只有描述首行/.test(w)),
-    "and the direct boot names the world it is in instead of repeating the warning",
+    !warns.some((w) => /Code Mode 目录/.test(w)),
+    "and the default boot does not print that warning, because it is not in that world",
   )
   delete process.env.TM_V2_CODEMODE
   await dr.value?.()
@@ -485,7 +485,7 @@ console.log("7. the request layer — the whitelist decides what the model SEES"
 const SURFACE = [
   "read", "grep", "glob", "list", "edit", "write", "patch", "shell", "webfetch", "websearch",
   "skill", "question", "todowrite", "subagent", "browser_navigate", "browser_tabs_list",
-  "tm_fetch", "tm_memory", "tm_board_write", "tm_stats", "tm_join", "tm_pty", "tm_ledger",
+  "tm_fetch", "tm_memory", "tm_board_write", "tm_stats", "tm_join", "tm_ledger",
   "tm_browser", "tm_search", "tm_webfetch",
 ]
 const event = (agent, options = {}) => ({
@@ -502,7 +502,7 @@ const archLeft = Object.keys(arch.tools)
 for (const gone of [
   "list", "edit", "write", "shell", "webfetch", "websearch", "question",
   "todowrite", "subagent", "browser_navigate", "browser_tabs_list",
-  "tm_webfetch", "tm_search", "tm_browser", "tm_join", "tm_pty", "tm_ledger",
+  "tm_webfetch", "tm_search", "tm_browser", "tm_join", "tm_ledger",
 ]) {
   assert.ok(!archLeft.includes(gone), `architect is not even OFFERED ${gone} (v1 left its description in every request)`)
 }
