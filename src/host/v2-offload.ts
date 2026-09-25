@@ -1,0 +1,168 @@
+import type { V2Registration } from "./v2-types.js"
+import { detectContentType } from "../tm/preview.js"
+import { estimateTokens } from "../tm/config.js"
+
+/**
+ * JIT context governance over the HOST's own tools.
+ *
+ * The whole product rests on one promise: an oversized tool result never enters
+ * the context window — it lands in the run store and the model gets an
+ * ≤80-token preview plus a handle.  That promise was true only inside our own
+ * `tm_*` tools, which is what made `tm_read`/`tm_grep`/`tm_bash` load-bearing
+ * rather than merely nicer.  The moment a role is allowed the native `read` or
+ * `shell` (which is the retirement plan for those three), an un-governed native
+ * result would put the promise back to zero for exactly the tools a user would
+ * most plausibly enable — and the promise would then depend on which tool the
+ * model happened to pick, which is not a guarantee at all.
+ *
+ * So the governance moves to the seam that does not care what the model chose.
+ * `tool.execute.after` hands us the finished result for EVERY tool (measured
+ * live: `{action:"shell"}` reaches `permission.evaluate`, and the same call
+ * reaches `execute.after` with `resultKeys: content / metadata / output`), and
+ * the host documents `result` as mutable.  One hook, both worlds.
+ *
+ * Design constraints this file is written under:
+ * - **It only ever shrinks what reaches the context, never what the tool did.**
+ *   The bytes on disk are the host's; a preview plus a handle replaces the text
+ *   part.  `metadata` and any non-text part (an image attachment) pass through
+ *   untouched — dropping a screenshot to save tokens would be a bad trade.
+ * - **It reuses the same threshold, preview builder, store and HMAC handles as
+ *   `tm_*`**, because a second implementation would drift, and the drift would
+ *   show up as "the same 40 KB was free through one tool and offloaded through
+ *   another".
+ * - **A native result is rendered as native-shaped text.** `tm_*` returns our own
+ *   structured object; overwriting a host tool's text part with `{offloaded:true,
+ *   ref:…}` would hand the model a shape it has no reason to understand.  The
+ *   sentence below says the same facts in prose the tm_* tools already train it
+ *   to act on: how much was saved, the handle, how to page it in.
+ * - Nothing here may throw into somebody's tool call: a governance failure
+ *   degrades to the host's verbatim result, and says so in the trajectory.
+ */
+
+/** Tools whose NATIVE output we govern.  Deliberately a closed list: the
+ *  built-in agent/patch/execute results have shapes we have not observed, and
+ *  guessing at a result shape is how content gets silently deleted. */
+export const NATIVE_GOVERNED_TOOLS: ReadonlySet<string> = new Set([
+  "read",
+  "grep",
+  "glob",
+  "shell",
+  "bash",
+  "webfetch",
+])
+
+export interface V2OffloadReport {
+  seen: number
+  considered: number
+  offloaded: number
+  degraded: number
+  tokensSaved: number
+  byTool: Record<string, { seen: number; offloaded: number }>
+}
+
+interface OffloadDeps {
+  /** the shared tm pipeline instance — one store, one step counter, one threshold table */
+  pipelines: {
+    nextStepId: () => string
+    govern: (stepId: string, tool: string, content: string, opts: { contentType: ReturnType<typeof detectContentType>; clue?: string }) => unknown
+  }
+  env?: Record<string, string | undefined>
+}
+
+const textPart = (p: unknown): p is { type: string; text: string } =>
+  !!p && typeof p === "object" && (p as { type?: unknown }).type === "text" && typeof (p as { text?: unknown }).text === "string"
+
+/** The host's result shape, as measured: `{content, metadata, output}` with
+ *  `content` an array of parts.  Every other shape is left alone rather than
+ *  interpreted — an unknown shape we rewrite is content destruction. */
+function locatableText(result: unknown): { parts: unknown[]; index: number; text: string } | null {
+  const r = result as { content?: unknown } | null | undefined
+  if (!r || !Array.isArray(r.content)) return null
+  let joined = ""
+  let index = -1
+  for (let i = 0; i < r.content.length; i++) {
+    const p = r.content[i]
+    if (!textPart(p)) continue
+    if (index < 0) index = i
+    joined += (index === i && joined === "" ? "" : joined ? "\n" : "") + p.text
+  }
+  if (index < 0 || !joined) return null
+  return { parts: r.content, index, text: joined }
+}
+
+/** Rendered in the user's tool-output language (the tm_* strings are Chinese and
+ *  flow into every reply an agent writes about them). */
+export function renderNativeOffload(
+  tool: string,
+  governed: { offloaded: true; ref: string; access_token: string; expire_at: number; tokens: number; preview: string },
+): string {
+  const when = new Date(governed.expire_at).toISOString().replace("T", " ").slice(0, 16)
+  return [
+    `（原生 ${tool} 的输出过大，已按 JIT 治理卸载：${governed.tokens} token 没有进入上下文——全文在句柄里，不在下面这段里。）`,
+    "",
+    governed.preview,
+    "",
+    `取全文：tm_fetch { ref:"${governed.ref}", access_token:"${governed.access_token}", mode:"structure" | "lines" }（过期 ${governed.expire_at} · ${when}）`,
+    "只要摘要就到此为止；需要具体行请用 mode:\"lines\" 分段取，不要为了看一眼把全文读回来。",
+  ].join("\n")
+}
+
+export function applyV2NativeOffload(
+  ctx: unknown,
+  deps: OffloadDeps,
+): { registrations: Promise<V2Registration>[]; report: V2OffloadReport; active: boolean } {
+  const env = deps.env ?? process.env
+  const off = /^(0|false|no|off)$/i.test(String(env.TM_NATIVE_OFFLOAD ?? "").trim())
+  const report: V2OffloadReport = { seen: 0, considered: 0, offloaded: 0, degraded: 0, tokensSaved: 0, byTool: {} }
+  const hook = (ctx as { tool?: { hook?: unknown } })?.tool?.hook
+  if (typeof hook !== "function") {
+    // No seam at all: report it, do not silently pretend the promise holds.
+    return { registrations: [], report, active: false }
+  }
+  const reg = (hook as (n: string, cb: (e: unknown) => void) => Promise<V2Registration>)("execute.after", (raw) => {
+    const event = raw as { tool?: string; result?: unknown }
+    const tool = String(event?.tool ?? "")
+    if (!NATIVE_GOVERNED_TOOLS.has(tool)) return
+    report.seen++
+    report.byTool[tool] ??= { seen: 0, offloaded: 0 }
+    report.byTool[tool].seen++
+    if (off) return
+    const found = locatableText(event?.result)
+    if (!found) return
+    report.considered++
+    const stepId = deps.pipelines.nextStepId()
+    // Content class is inferred from the BODY, not from a path we do not have:
+    // that is the same basis tm_bash uses, so a 30 KB JSON stdout gets the data
+    // tier here and there too.
+    const contentType = detectContentType(found.text)
+    let governed: unknown
+    try {
+      governed = deps.pipelines.govern(stepId, `native:${tool}`, found.text, {
+        contentType,
+        clue: `原生 ${tool} 的结果`,
+      })
+    } catch {
+      report.degraded++
+      return
+    }
+    if (!governed || typeof governed !== "object" || (governed as { offloaded?: unknown }).offloaded !== true) return
+    const g = governed as {
+      offloaded: true
+      ref: string
+      access_token: string
+      expire_at: number
+      tokens: number
+      preview: string
+    }
+    const parts = found.parts
+    const keepTokens = estimateTokens(g.preview)
+    parts[found.index] = { type: "text", text: renderNativeOffload(tool, g) }
+    for (let i = found.index + 1; i < parts.length; i++) {
+      if (textPart(parts[i])) parts[i] = { type: "text", text: "" }
+    }
+    report.offloaded++
+    report.tokensSaved += Math.max(0, estimateTokens(found.text) - keepTokens)
+    report.byTool[tool].offloaded++
+  })
+  return { registrations: [reg], report, active: !off }
+}

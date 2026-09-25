@@ -43,6 +43,27 @@ registry saw 1.5.0 as the install-script fix release).
 
 ### Added
 
+- **JIT context governance now covers the host's OWN tools.** The offload promise
+  — an oversized tool result never reaches the context window; it lands in the run
+  store and the model gets an ≤80-token preview plus a handle — held only inside
+  `tm_*`, which is what made `tm_read`/`tm_grep`/`tm_bash` load-bearing rather than
+  merely better. Governance therefore moved to the seam that does not care what the
+  model picked: `tool.hook("execute.after")` sees every finished result, so
+  `src/host/v2-offload.ts` reuses the SAME thresholds, preview builder, store and
+  HMAC handles as the tm_* path and replaces an oversized text part with preview +
+  `tm_fetch` handle. Verified on a live host: a native `shell` reading a 50 KB file
+  produced `native:shell offloaded:true tokens:12902 preview_tokens:78
+  ref:tm://runs/…/steps/s0001/result`, and the boot snapshot carried
+  `native_offloaded:1 / native_tokens_saved:12824`.
+  Deliberate limits, all tested: the governed tool list is CLOSED
+  (`read grep glob shell bash webfetch`) because agent/patch/execute have result
+  shapes nobody has observed and rewriting a shape you guessed at is content
+  destruction; an unrecognized shape is left alone rather than interpreted;
+  `metadata` and non-text parts (a screenshot) pass through untouched — dropping an
+  image to save tokens is a bad trade; a governance throw degrades to the host's
+  verbatim result; and `TM_NATIVE_OFFLOAD=off` restores the host's behavior, with
+  the boot note saying whether the switch or a missing seam is why nothing is
+  governed.
 - **`src/host/v2-probe.ts` asks the running host what it actually exposes.** Every
   v2 decision up to now was made against a *description* of the host — and the
   type package this repo installs is 1.18.25 while the host that runs is 2.0.16,

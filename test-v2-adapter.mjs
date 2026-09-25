@@ -435,6 +435,89 @@ await fake.hook("tool.execute.before").fire(noObj)
 assert.equal(noObj.input, null, "an input that is not an object is left alone rather than invented")
 console.log("   OK (background forced on every subagent call, nothing else touched)")
 
+console.log("7d. JIT governance over the HOST's own tools")
+const { applyV2NativeOffload, renderNativeOffload, NATIVE_GOVERNED_TOOLS } = await import("./dist/host/v2-offload.js")
+const BIG = "x".repeat(9000)
+// A stub pipeline so this group tests THIS layer's decisions (which tool, which
+// part, what shape survives); the threshold/preview/store machinery it calls is
+// the same instance tm_* uses and is covered in test-tm-tools.
+function offloadHarness({ govern, env } = {}) {
+  const f = makeFakeCtx({ directory: workspace("off"), agents: [] })
+  const calls = []
+  const pipelines = {
+    nextStepId: (() => { let n = 0; return () => `s${String(++n).padStart(4, "0")}` })(),
+    govern: (stepId, tool, content, opts) => {
+      calls.push({ stepId, tool, len: content.length, contentType: opts.contentType })
+      return govern ? govern(stepId, tool, content, opts) : content
+    },
+  }
+  const o = applyV2NativeOffload(f.ctx, { pipelines, env: env ?? {} })
+  return { f, o, calls }
+}
+const handled = (tool, result) => {
+  const { f, o } = offloadHarness({ govern: () => ({ offloaded: true, ref: "tm://runs/r/steps/s0001/result", access_token: "tok", expire_at: 1777000000000, tokens: 2400, preview: "PREVIEW≤80" }) })
+  const ev = { tool, result }
+  const hook = f.hook("tool.execute.after")
+  return { ev, run: () => hook.handlers.forEach((h) => h(ev)), o }
+}
+{
+  const img = { type: "file", uri: "file:///a.png", mime: "image/png", name: "shot" }
+  const t = handled("shell", { content: [{ type: "text", text: BIG }, img, { type: "text", text: "tail" }], metadata: { cwd: "/w" }, output: BIG })
+  t.run()
+  assert.equal(t.o.report.offloaded, 1, "an oversized native shell result is offloaded")
+  assert.equal(t.o.report.seen, 1, "and counted as seen whether or not it needed it")
+  const parts = t.ev.result.content
+  assert.ok(parts[0].text.includes("tm_fetch") && parts[0].text.includes("tm://runs/r/steps/s0001/result"), "the text part becomes preview + handle")
+  assert.ok(!parts[0].text.includes(BIG.slice(0, 40)), "the full body is NOT still in the part the model reads")
+  assert.deepEqual(parts[1], img, "a screenshot attachment is never dropped to save tokens")
+  assert.equal(parts[2].text, "", "a second text part is blanked rather than left carrying the payload")
+  assert.deepEqual(t.ev.result.metadata, { cwd: "/w" }, "metadata passes through untouched")
+  // 9000 ASCII chars ≈ 2250 tokens by the CJK-aware口径, preview "PREVIEW≤80" is a
+  // handful — so the saving is measured off the body minus what actually arrived.
+  assert.ok(t.o.report.tokensSaved > 2100 && t.o.report.tokensSaved <= 2250, "the saving is net of the preview, not the payload size")
+}
+{
+  const t = handled("write", { content: [{ type: "text", text: BIG }] })
+  t.run()
+  assert.equal(t.ev.result.content[0].text, BIG, "a tool outside the closed list is not interpreted at all")
+  assert.equal(t.o.report.seen, 0, "and not counted — the list is the boundary")
+}
+{
+  const t = handled("read", { stdout: BIG })
+  t.run()
+  assert.equal(t.o.report.considered, 0, "an UNRECOGNIZED result shape is left alone rather than guessed at")
+}
+{
+  const { f } = offloadHarness({ govern: () => { throw new Error("store down") } })
+  const ev = { tool: "shell", result: { content: [{ type: "text", text: BIG }] } }
+  f.hook("tool.execute.after").handlers.forEach((h) => h(ev))
+  assert.ok(ev.result.content[0].text === BIG || ev.result.content[0].text.length > 1000, "a governance failure degrades to the host's verbatim result")
+}
+{
+  const off = offloadHarness({
+    env: { TM_NATIVE_OFFLOAD: "off" },
+    govern: () => ({ offloaded: true, ref: "r", access_token: "a", expire_at: 1, tokens: 1, preview: "p" }),
+  })
+  const ev = { tool: "shell", result: { content: [{ type: "text", text: BIG }] } }
+  off.f.hook("tool.execute.after").handlers.forEach((h) => h(ev))
+  assert.equal(ev.result.content[0].text, BIG, "TM_NATIVE_OFFLOAD=off restores the host's verbatim injection")
+  assert.equal(off.o.report.seen, 1, "it still sees the call, so tm_stats can say the switch is why nothing moved")
+  assert.equal(off.o.active, false, "and reports itself inactive so the boot note can say so out loud")
+}
+{
+  const noHook = { tool: {} }
+  const o = applyV2NativeOffload(noHook, { pipelines: { nextStepId: () => "s1", govern: () => "" } })
+  assert.equal(o.registrations.length, 0, "a host with no tool.hook yields no seam — reported, not assumed")
+  assert.equal(o.active, false, "and `active` means governance IS running, not merely that the switch is on")
+  assert.equal(applyV2NativeOffload({ tool: { hook: () => Promise.resolve({ dispose: async () => {} }) } }, { pipelines: { nextStepId: () => "s1", govern: () => "" }, env: { TM_NATIVE_OFFLOAD: "off" } }).active, false, "switching it off reads the same because the effect is the same: nothing is governed")
+}
+const rendered = renderNativeOffload("shell", { offloaded: true, ref: "tm://runs/r/steps/s0001/result", access_token: "tok", expire_at: 1777000000000, tokens: 2400, preview: "PREVIEW" })
+assert.ok(/2400 token 没有进入上下文/.test(rendered), "the sentence states how much did NOT arrive")
+assert.ok(/mode:"structure" \| "lines"/.test(rendered), "and names the two ways to page the body back")
+assert.ok(/不要为了看一眼把全文读回来/.test(rendered), "it tells the model not to page the whole body back just to look once")
+assert.ok([...NATIVE_GOVERNED_TOOLS].every((t) => ["read", "grep", "glob", "shell", "bash", "webfetch"].includes(t)), "the governed list is closed — agent/execute/patch shapes stay uninterpreted")
+console.log("   OK (closed tool list, unknown shapes untouched, attachments and metadata preserved, failure degrades, off restores verbatim)")
+
 console.log("8. the config projection — what the installer copies onto disk")
 const genRoot = workspace("gen")
 const GEN = fileURLToPath(new URL("./scripts/gen-v2-config.mjs", import.meta.url))
@@ -565,4 +648,4 @@ for (const dir of made) {
     /* temp dir */
   }
 }
-console.log("\ntest-v2-adapter.mjs: ALL PASS (10 groups)")
+console.log("\ntest-v2-adapter.mjs: ALL PASS (11 groups)")

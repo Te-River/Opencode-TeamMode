@@ -40,6 +40,7 @@ import type { PluginInput, ToolDefinition } from "../types.js"
 import { blackboardNote } from "./note.js"
 import { applyV2BackgroundForce, applyV2PermissionGuards, needsCoarseShellAsk } from "./v2-guard.js"
 import { applyV2Probe, probeSummary } from "./v2-probe.js"
+import { applyV2NativeOffload } from "./v2-offload.js"
 import { applyV2SessionLayer, removalPlan } from "./v2-session.js"
 import { createV2Client } from "./v2-client.js"
 import { bindV2Tool, type V2ToolBinding } from "./v2-tool.js"
@@ -150,6 +151,13 @@ export const v2Personality: V2Plugin = {
     registrations.push(...guards.registrations)
     const bgForce = await applyV2BackgroundForce(ctx)
     registrations.push(...bgForce.registrations)
+    // JIT governance over the HOST's tools, so the offload promise does not depend
+    // on which tool the model happened to pick (see v2-offload.ts for why a
+    // per-tool promise is no promise).  Registered BEFORE the probe so the probe's
+    // throttled snapshot can carry its counters — a counter that only lands at
+    // teardown is a counter that does not exist.
+    const offload = await applyV2NativeOffload(ctx, { pipelines: tmRuntime.pipelines })
+    registrations.push(...(await Promise.all(offload.registrations)))
     // BEFORE the session layer registers its own context hook, so the probe sees
     // the host's full surface rather than the set we trimmed — that difference is
     // exactly what it is there to record.
@@ -161,6 +169,10 @@ export const v2Personality: V2Plugin = {
             step_id: "v2-surface",
             event: "personality",
             api: 2,
+            native_seen: offload.report.seen,
+            native_offloaded: offload.report.offloaded,
+            native_tokens_saved: offload.report.tokensSaved,
+            native_offload_active: offload.active && offload.registrations.length > 0,
             ...summary,
           })
         } catch {
@@ -171,6 +183,14 @@ export const v2Personality: V2Plugin = {
     registrations.push(...probe.registrations)
     if (probe.report.hooksMissing.length) {
       notes.push(`探针没挂上的钩子：${probe.report.hooksMissing.join(", ")}`)
+    }
+    // Three states, three sentences: "no seam", "you turned it off" and "it is
+    // running" are different facts for the user, and collapsing them is how a
+    // fallback gets read as a setting.
+    if (offload.registrations.length === 0) {
+      notes.push('这个宿主没有 tool.hook("execute.after")：原生 read/shell 的大输出不会被卸载，JIT 承诺只在 tm_* 上成立')
+    } else if (!offload.active) {
+      notes.push("TM_NATIVE_OFFLOAD=off：原生工具的大输出按宿主原样进上下文（承诺退回 tm_* 范围）")
     }
     if (!guards.installed) {
       notes.push("ctx.permission.hook 不存在：原生 webfetch 的元数据/私网红线和 R6 的按命令行判定都没地方落")
