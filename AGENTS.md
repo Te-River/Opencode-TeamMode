@@ -1,7 +1,7 @@
 # Opencode-TeamMode — Agent Guide
 
 ## What this is
-OpenCode Desktop plugin that injects a multi-agent team (6 agents, 6 commands) into the user's workspace. Published as `@te-river/opencode-team-mode` on npm.
+OpenCode Desktop plugin that ships a multi-agent team (6 agents, 6 commands). On OpenCode 1.18.x the plugin injects those agents and commands into the config itself; on OpenCode 2.x a plugin **cannot create an agent at all**, so the same six roles reach the host as config files the installer writes. Published as `@te-river/opencode-team-mode` on npm.
 
 ## Design goals (business context)
 1. **A complete "Team" mode** — one lead + five specialists orchestrated by a deterministic routing table, a count-based approval gate, and structured STATUS/CHANGES/FINDINGS/EVIDENCE/HANDOFF handoffs.
@@ -11,11 +11,88 @@ OpenCode Desktop plugin that injects a multi-agent team (6 agents, 6 commands) i
 5. **Web access with a fixed tool priority ladder (network roles: team lead + researcher ONLY; tester carries tm_browser for UI verification)** — ① governed tm_search (multi-engine search front: `auto` default — query-classified parallel fan-out, host+path dedup, weighted-RRF fusion — over seven engines bing / stackoverflow / hn / bilibili / moegirl HTML+API + npm / github JSON, all no-API-key + CN-reachable; extracted title+URL(+snippet) hit lists, SO keyless quota tracked with auto-swap to bing, CJK phrase protection + github qualifier folding, empty results name alternative engines; sogou/so/baidu/bing-int REMOVED after the 2026-09-14 anti-bot-shell benchmark) / tm_browser (interactive; playwright-core primary on Node >= 20, auto-degrade to cdp-legacy; 18 snapshot-first verbs + 5 compat verbs + 1 gate verb `allow_host`) / tm_webfetch (single fetch; SERP pages auto-extract to hit lists); OUT-OF-ALLOWLIST targets ask via ctx.ask -- the host's official dialog (verified 1.18.30: plugin tool ctx carries ask(req) bridging PermissionV2.ask; findLast makes the explicit {"*": "ask"} rule beat the tm_* wildcard allow, so the dialog always pops; R6 env-file/scheme lines stay hard, never consentable) → ② user MCP/plugin tools → ③ report as gap, never simulate; tm_browser drives the user's own Chromium headful via CDP pipe with an isolated profile (a real browser data dir is REFUSED before spawn — browsing as the user while a force-kill reaper owns the process is not a neutral choice) and a network-layer domain allowlist; architect/implementer/reviewer have no network grant. All governed tools are PARALLEL-SAFE (sync step counter on a single-threaded loop → distinct step ids; per-step payload files → no clobbering) — pinned by the §6p parallel test. THE GENERAL ladder (all agents, every task) is ① the user's own MCP/plugin tools → ② tm_* → ③ the model's own reasoning (reported as a gap, never fabricated); the web channel above is the ONE stated exception — governed tm_* stays first there because it is the only path carrying the allowlist, the per-request dialog and the R6 red lines, so swapping in a user fetcher for the same page would silently skip all three plus the offload.
 6. **A governed tool must not overstate what happened — this is the product, not a polish item.** Every claim a tool makes about itself has to be checkable by the one party who pays for being wrong (the user), and this is what the live sessions keep testing: `已确认关闭` only when an OS pid was actually verified gone (`进程未核验` when no pid was obtained, `警告：关闭未完全成功` when leftovers remain — and the warning may not then tell the user to close a window whose process is already dead); `已点击` only after the page shows a delta, never for "playwright delivered a mouse event"; a blank page is attributed to OUR gate, to a 验证墙, or to the site — never collapsed into "该网站没有内容"; an off-allowlist page that loaded says WHETHER it was the static seed, a dialog the user just answered, or a saved "always" that answered in 30 ms without asking anybody (an approval is not an allowlist — a saved rule is project-wide and the per-agent consent it bypasses never existed); `缓存命中` and the arrival format are stated rather than assumed; and a window somebody left open is REPORTED (`tm_join`'s lease tripwire covers the settled children AND the caller's own browser) rather than silently reaped 180 s later. The reason is economic, not aesthetic: an unverified "done" costs the user the round AND the bug, which is the one outcome a throughput-mandated team is not allowed to produce.
 
+## The v2 delta (2026-09-25, in force)
+
+The goals above were written against OpenCode 1.18.x. These are the places where
+the 2.x port changes the business claim rather than the implementation — read
+this before treating any sentence above as platform-neutral.
+
+- **Goal 1's injection is gone on v2.** `AgentEditor` has no `add`, so the six
+  roles are `~/.config/opencode/agents/*.md` (frontmatter + body = the system
+  prompt) written by the installer and projected from `dist/agents.js` by
+  `scripts/gen-v2-agents.mjs` — never hand-copied, or the prompts drift. The
+  plugin still owns the permission matrix (it merges its triples onto whatever
+  the config declares) and still promotes Team as the default on every boot
+  (`default()` has no getter, so v1's "only fill it if the user left it alone"
+  is not expressible; the standing instruction is that Team is always the
+  default, and `defaultAgent:false` opts out).
+- **Goal 5's "ask the user" does not exist on v2.** A plugin cannot raise the
+  host's official dialog (live-probed: declaring `options.permission` on our own
+  tool triggered no evaluation and no prompt). Governed calls therefore **fail
+  closed** with a v2-worded refusal instead of asking, and the only dialog left
+  is one the host raises on its own (`effect:"ask"` from a permission rule or
+  `permission.hook("evaluate")`). Anything that reads the v1 ask path as a model
+  for v2 is wrong.
+- **Goal 4 is now the hard floor, and it has to cover the host's own tools.**
+  `tool.hook("execute.after")` takes a mutable `result` (docs example reassigns
+  it; a live probe confirmed the write lands), so offload + ≤80-token preview +
+  HMAC handle must extend to native `read`/`grep`/`shell`/`webfetch`. A promise
+  that only holds while the model happens to pick `tm_*` is not a promise.
+- **Decided, not yet done: `tm_read` / `tm_grep` / `tm_bash` retire on v2 only.**
+  Native read pages by offset/limit at 2 000 lines / 50 KiB, attaches images and
+  PDF, native shell already shortens large output into managed storage and has
+  `background:true`. The ordering is not optional: **move the governance into
+  `permission.hook("evaluate")` (P2/P3 — its `resources[0]` carries the exact
+  command line or path) and `execute.after` (the empty-result self-report)
+  FIRST, then delete the tools**, or there is a window with neither. v1 keeps all
+  three because v1 cannot rewrite a tool result at all — which means the two
+  personalities now ship **different tool surfaces and the prompts must fork per
+  personality** (v1 names `tm_read`, v2 names `read`).
+- **The bloat number, measured:** 13 `tm_*` = **9 528 tokens per model request**
+  (descriptions 6 639 + schemas 2 889), of which the three retiring tools are
+  only **986** while `tm_browser` alone is **2 287**. Cutting overlapping tools
+  is not the lever; `delete event.tools.X` in `session.hook("context")` per role
+  is (architect/implementer/reviewer drop ~5K each per request).
+- **`tm_browser` is probe-gated, not decided.** The host ships 45 `browser_*`
+  tools and a `browser` deny rule with `resource:"*"` removes the whole catalog,
+  so the shape worth testing is "thin door over the host's own panel" via
+  `ctx.rpc("experimental.browser")` — whether a plugin can drive that
+  user-visible panel has never been verified live. If it cannot, playwright-core
+  stays and the tax is real. What is already known as lost either way: no
+  subresource policy on the native side, no headless ("screenshots require a
+  focused visible tab"), and no per-target consent.
+- **`tm_search` survives because native `websearch` needs a key.** All four
+  providers (Exa / Firecrawl / Parallel / Tavily) require an API key or
+  `/connect`, while the governed front's whole premise is zero-key and
+  CN-reachable. Native `webfetch` has **no egress red line**, which is a new
+  hole: on v2 a Build-class agent can fetch `169.254.169.254` past
+  `checkWebUrl`, so the metadata/link-local policy must be re-armed on the
+  native path.
+- **Goal 6 gains one more instance.** `inputSchemaFor` now reports `source`,
+  because a table *derived by regex from a descriptor string* and a table
+  *translated by zod* are both `exact` but are not the same claim — the boot log
+  names which tools got which.
+- **The "all agents 0.2" invariant cannot live in agent config on v2**
+  (`temperature` is a documented legacy field and the runner "preserves these
+  values but does not yet send them with model requests"); it must go through
+  `session.hook("context").options`. Background subagents, by contrast, are
+  native on v2 (`subagent {background:true}`, default nesting depth one = T3's
+  "only the lead dispatches" for free), so the
+  `OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS` env hack in the installers is
+  v1-only and must fork rather than delete.
+- **The installer's v2 job is three things, and the plugin-install half of it is
+  the host's:** `opencode plugin add` (installs AND writes the global config;
+  `list/check/update/remove` exist) is first-party, so v1's cache-purge and
+  npm-re-resolve machinery is obsolete there. What nothing else can do is write
+  `agents/*.md`, `commands/*.md`, and `default_agent` (which must come last — a
+  default naming a missing agent makes the host fall back to `build` silently).
+
 ## Commands
 | Action | Command |
 |---|---|
 | Build | `npm run build` (tsc -> dist/) |
-| Test | `npm test` (runs `scripts/run-tests.mjs`: tsc first, then the 7 `test-*.mjs` suites CONCURRENTLY — cap min(4, cpus−1), the two real-browser suites (test-browser + test-tm-tools §6o) serialized by an IN-PROCESS boolean (`browserBusy`), NOT a lock file so a crashed suite cannot strand the next one, per-suite buffered output, markdown summary table, exit code aggregated; measured 151 s wall vs 401 s serial. Caveat: output is buffered per suite, so piping a run through `head` kills the writer mid-suite and looks like a hang that belongs to no product code — read a file instead. Filters: `npm test -- browser stats` is `node scripts/run-tests.mjs browser`; `npm run test:serial` for one-at-a-time debugging; `npm run test:one <filter>` skips tsc) |
+| Test | `npm test` (runs `scripts/run-tests.mjs`: tsc first, then the 8 `test-*.mjs` suites CONCURRENTLY — cap min(4, cpus−1), the two real-browser suites (test-browser + test-tm-tools §6o) serialized by an IN-PROCESS boolean (`browserBusy`), NOT a lock file so a crashed suite cannot strand the next one, per-suite buffered output, markdown summary table, exit code aggregated; measured 53 s wall vs 117 s serial on the v2 host machine. Caveat: output is buffered per suite, so piping a run through `head` kills the writer mid-suite and looks like a hang that belongs to no product code — read a file instead. Filters: `npm test -- browser stats` is `node scripts/run-tests.mjs browser`; `npm run test:serial` for one-at-a-time debugging; `npm run test:one <filter>` skips tsc) |
+| Generate v2 roles | `node scripts/gen-v2-agents.mjs [--dir <path>] [--print] [--force]` — run after editing `src/agents.ts` or the prompts, then restart the host (or `opencode reload`) |
 | Dev watch | `npm run dev` |
 
 All test suites must pass before committing.
