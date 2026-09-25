@@ -5,6 +5,28 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 versioning is semver (the 1.4.x train shipped under working labels; the
 registry saw 1.5.0 as the install-script fix release).
 
+## [Unreleased]
+
+### Fixed
+
+- **The v2 argument table for `tm_join` / `tm_pty` / `tm_stats` now says what
+  its parameters are.** Those three build their `args` without zod, so the shape
+  reaches the v2 adapter as `{ key: { descriptor: "name: type (guidance)" } }`.
+  Handed to `z.object()` it threw
+  `undefined is not an object (evaluating 'schema._zod.def')`, the adapter caught
+  the throw and returned `{additionalProperties: true}` — so the model saw three
+  tools with **no parameter guidance at all**, which is the round-trip cost the
+  descriptor exists to prevent. The adapter now recognizes the descriptor shape
+  and derives a JSON Schema from it. Deriving it the obvious way was still
+  wrong: the type was read off the first token of the whole line, which is the
+  parameter NAME plus its colon (`ids:`, `action:`, `runs:`), so every enum,
+  array and number flattened to `string` and the schema looked populated while
+  teaching nothing. The type is read from what follows `name:` and the guidance
+  text is kept verbatim as the description. `inputSchemaFor` also reports
+  `source`, and the boot log names the tools whose table was **derived from a
+  descriptor** rather than translated by zod — `exact` is true for both, but
+  they are not the same claim.
+
 ## [1.6.0] - 2026-09-25
 
 > The architectural change 1.5.13 held `1.6.0` back for: the plugin-side

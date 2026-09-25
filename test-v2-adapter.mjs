@@ -91,6 +91,41 @@ assert.ok(
   Object.keys(byName.tm_read.input.properties ?? {}).includes("path"),
   "tm_read's parameter names survive the zod→JSON Schema translation",
 )
+
+// tm_join / tm_pty / tm_stats build their args WITHOUT zod, so their shape
+// arrives as `{ key: { descriptor: "name: type (guidance)" } }`.  Handing that
+// to z.object() throws `undefined is not an object (evaluating 'schema._zod.def')`
+// — measured live, where all three reached the model as a permissive
+// `{additionalProperties:true}` with no parameter guidance at all.  The
+// descriptor branch has to recover names AND types, because a schema that says
+// "string" for an enum parameter is the same guidance-free shape in disguise.
+for (const name of ["tm_join", "tm_pty", "tm_stats"]) {
+  const input = byName[name].input
+  assert.notEqual(input.additionalProperties, true, `${name} is not the permissive fallback`)
+  assert.ok(Object.keys(input.properties ?? {}).length >= 3, `${name} carries properties`)
+}
+assert.equal(byName.tm_join.input.properties.ids.type, "array", "tm_join.ids reads `string[]` as an array")
+assert.equal(
+  byName.tm_join.input.properties.ids.items?.type,
+  "string",
+  "tm_join.ids says of what",
+)
+assert.equal(byName.tm_join.input.properties.waitMs.type, "number", "tm_join.waitMs reads as a number")
+assert.equal(byName.tm_join.input.properties.cancel.type, "boolean", "tm_join.cancel reads as a boolean")
+assert.ok(
+  (byName.tm_pty.input.properties.action.enum ?? []).includes("kill"),
+  "tm_pty.action keeps its verb enum instead of flattening to a string",
+)
+assert.equal(byName.tm_stats.input.properties.runs.type, "number", "tm_stats.runs reads as a number")
+for (const name of ["tm_join", "tm_pty", "tm_stats"]) {
+  const first = Object.values(byName[name].input.properties ?? {})[0]
+  assert.ok(String(first?.description ?? "").length > 10, `${name} keeps the guidance text, not just names`)
+}
+assert.match(
+  warns.join("\n"),
+  /描述符/,
+  "the boot log names which schemas were DERIVED from descriptors (exact≠zod-grade)",
+)
 console.log(`   OK (${registered.length} tools, parameter surfaces translated)`)
 
 console.log("2. the v2 result shape")

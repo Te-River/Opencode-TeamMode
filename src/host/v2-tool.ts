@@ -35,6 +35,73 @@ async function loadZod(): Promise<Record<string, unknown> | null> {
   }
 }
 
+/** A descriptor entry: `{ key: { descriptor: "name: type (…) — guidance" } }`.
+ *  Three tools ship this shape (tm_join / tm_pty / tm_stats) because their args
+ *  are built without zod, and feeding it to `z.object()` throws
+ *  `undefined is not an object (evaluating 'schema._zod.def')` — measured live,
+ *  where those three reached the model with NO parameter guidance at all.
+ *  The descriptor's leading `name: type` is parseable, and the whole string is
+ *  the guidance, so translating it is strictly better than a permissive schema. */
+const DESCRIPTOR_HEAD = /^([A-Za-z_][A-Za-z0-9_]*)\s*:\s*([\s\S]*)$/
+
+/** `typed` is what follows the `name:` in the descriptor — the type is read off
+ *  its first token.  Passing the whole line instead would read the parameter
+ *  NAME plus its colon (`action:`), which matches no type shape at all, so every
+ *  descriptor would collapse to `string` and the enum/array/number guidance
+ *  would be silently lost.  `full` stays the description verbatim: the guidance
+ *  after the type is the part the model actually needs. */
+function descriptorToProperty(full: string, typed: string): Record<string, unknown> {
+  const head = (typed.trim().match(/^[^\s(,]+/) ?? [""])[0]
+  let type = "string"
+  let enumValues: string[] | undefined
+  if (/^[A-Za-z][\w.]*\[\]$/.test(head)) {
+    type = "array"
+  } else if (/^\d+$/.test(head) || /^(number|int|integer)/i.test(head)) {
+    type = "number"
+  } else if (/^(true|false|boolean)$/i.test(head)) {
+    type = "boolean"
+  } else if (/^[A-Za-z0-9_|-]*\|[A-Za-z0-9_|-]+$/.test(head)) {
+    enumValues = head.split("|").filter(Boolean)
+    type = "string"
+  }
+  const prop: Record<string, unknown> = { type }
+  if (type === "array") prop.items = { type: "string" }
+  if (enumValues) prop.enum = enumValues
+  prop.description = full.trim()
+  return prop
+}
+
+function fromDescriptors(shape: Record<string, unknown>): {
+  schema: Record<string, unknown>
+  required: string[]
+} | null {
+  const properties: Record<string, unknown> = {}
+  const required: string[] = []
+  let seen = 0
+  for (const [key, value] of Object.entries(shape)) {
+    const text =
+      typeof value === "string"
+        ? `${key}: ${value}`
+        : typeof (value as { descriptor?: unknown })?.descriptor === "string"
+          ? String((value as { descriptor: string }).descriptor)
+          : null
+    if (!text) continue
+    seen++
+    const m = text.match(DESCRIPTOR_HEAD)
+    properties[key] = m
+      ? descriptorToProperty(text, m[2] ?? "")
+      : { type: "string", description: text }
+    // `(required)` is explicit in the fallback schemas; `(optional` marks the
+    // rest.  Anything unmarked stays optional — execute() coerces raw args
+    // itself, and a wrong `required` makes the host reject a valid call.
+    if (/\(required\)/i.test(text) && !/optional/i.test(text)) required.push(key)
+  }
+  if (!seen || seen !== Object.keys(shape).length) return null
+  const schema: Record<string, unknown> = { type: "object", properties, additionalProperties: false }
+  if (required.length) schema.required = required
+  return { schema, required }
+}
+
 /**
  * `args` is a ZodRawShape (see `src/tm/args-schema.ts`) — but it is a
  * *descriptor* when zod could not be loaded, and it may already be a JSON
@@ -44,22 +111,27 @@ async function loadZod(): Promise<Record<string, unknown> | null> {
  */
 export async function inputSchemaFor(
   args: unknown,
-): Promise<{ schema: Record<string, unknown>; exact: boolean; note?: string }> {
+): Promise<{ schema: Record<string, unknown>; exact: boolean; source: string; note?: string }> {
   if (args && typeof args === "object") {
     const shape = args as Record<string, unknown>
     if (typeof shape.type === "string" && (shape.properties || shape.additionalProperties !== undefined)) {
-      return { schema: shape, exact: true }
+      return { schema: shape, exact: true, source: "json-schema" }
+    }
+    const descriptors = fromDescriptors(shape)
+    if (descriptors) {
+      return { schema: descriptors.schema, exact: true, source: "descriptor" }
     }
     const z = await loadZod()
     const toJSONSchema = z?.toJSONSchema as ((s: unknown) => Record<string, unknown>) | undefined
     if (z && toJSONSchema) {
       try {
         const schema = toJSONSchema((z.object as (s: unknown) => unknown)(shape))
-        return { schema, exact: true }
+        return { schema, exact: true, source: "zod" }
       } catch (err) {
         return {
           schema: { type: "object", additionalProperties: true },
           exact: false,
+          source: "permissive",
           note: `zod 形状转换失败：${(err as { message?: unknown })?.message ?? String(err)}`,
         }
       }
@@ -68,6 +140,7 @@ export async function inputSchemaFor(
   return {
     schema: { type: "object", additionalProperties: true },
     exact: false,
+    source: "permissive",
     note: "宿主未提供 zod，参数表退化为不限形状",
   }
 }
@@ -105,6 +178,11 @@ export function v2Result(res: unknown): V2ToolResult {
 export interface V2ToolBinding {
   readonly tool: V2ToolInfo
   readonly inputExact: boolean
+  /** How the schema was obtained: "zod" | "json-schema" | "descriptor" |
+   *  "permissive".  `exact` alone cannot tell a translated zod shape from a
+   *  regex read of a descriptor string, and the boot log must not claim the
+   *  two are the same fact. */
+  readonly inputSource: string
   readonly note?: string
 }
 
@@ -119,7 +197,7 @@ export async function bindV2Tool(
   directory: string,
 ): Promise<V2ToolBinding | null> {
   if (typeof def?.execute !== "function") return null
-  const { schema, exact, note } = await inputSchemaFor(def.args)
+  const { schema, exact, source, note } = await inputSchemaFor(def.args)
   const tool: V2ToolInfo = {
     name,
     description: String(def.description ?? ""),
@@ -132,5 +210,5 @@ export async function bindV2Tool(
       return v2Result(res)
     },
   }
-  return { tool, inputExact: exact, note }
+  return { tool, inputExact: exact, inputSource: source, note }
 }

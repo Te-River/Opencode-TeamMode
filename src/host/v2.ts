@@ -82,6 +82,7 @@ export const v2Personality: V2Plugin = {
     // ---------- register the governed tools ----------
     const entries = Object.entries(tmRuntime.tools as Record<string, ToolDefinition>)
     const bindings: V2ToolBinding[] = []
+    const derived: string[] = []
     for (const [name, def] of entries) {
       const bound = await bindV2Tool(name, def, directory)
       if (!bound) {
@@ -89,7 +90,17 @@ export const v2Personality: V2Plugin = {
         continue
       }
       if (!bound.inputExact) notes.push(`${name}: 参数表不精确（${bound.note ?? "未知原因"}）`)
+      else if (bound.inputSource === "descriptor") derived.push(name)
       bindings.push(bound)
+    }
+    // A descriptor-derived table is `exact` in the sense that the model sees the
+    // parameter names, but the TYPES were read off a `name: type` prefix by
+    // regex, not by zod.  Saying nothing would let the log imply a zod-grade
+    // shape, so name the tools and say how they were obtained.
+    if (derived.length) {
+      notes.push(
+        `${derived.join("/")} 没有 zod 形状，参数表是从描述符文本推出来的（类型靠 name: type 前缀判定，不是 zod 保证）`,
+      )
     }
     registrations.push(
       await ctx.tool.transform((editor) => {
