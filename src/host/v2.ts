@@ -42,7 +42,7 @@ import { applyV2BackgroundForce, applyV2PermissionGuards, needsCoarseShellAsk } 
 import { applyV2SessionLayer, removalPlan } from "./v2-session.js"
 import { createV2Client } from "./v2-client.js"
 import { bindV2Tool, type V2ToolBinding } from "./v2-tool.js"
-import { mergeTriples, triplesFromAgentPermission } from "./v2-permissions.js"
+import { mergeTriples, triplesFromAgentPermission, V1_ONLY_TOOLS } from "./v2-permissions.js"
 import type { V2AgentInfo, V2Context, V2Plugin, V2Registration, V2ToolInfo } from "./v2-types.js"
 
 /** The refusal has to name the real reason: on v2 the absence is the new
@@ -92,9 +92,18 @@ export const v2Personality: V2Plugin = {
 
     // ---------- register the governed tools ----------
     const entries = Object.entries(tmRuntime.tools as Record<string, ToolDefinition>)
+    // v1 keeps tm_ptc_run; v2 does not register it.  The host's own `execute`
+    // (Code Mode) already runs "one program, N governed calls, zero round-trips,
+    // only the aggregate entering the context", and a live session showed our
+    // governed results still come back offloaded through it — so shipping a
+    // second batch runner would hand the model two tools for one job.  The
+    // module stays in the tree because the frozen v1 personality needs it, and
+    // the prompts the v2 config files carry are forked by gen-v2-config.mjs.
+    const V2_UNREGISTERED = V1_ONLY_TOOLS
     const bindings: V2ToolBinding[] = []
     const derived: string[] = []
     for (const [name, def] of entries) {
+      if (V2_UNREGISTERED.has(name)) continue
       const bound = await bindV2Tool(name, def, directory)
       if (!bound) {
         notes.push(`${name}: 没有 execute，未注册`)
@@ -236,6 +245,7 @@ export const v2Personality: V2Plugin = {
         api: 2,
         directory,
         tools_registered: registeredNames.length,
+        tools_v1_only: [...V2_UNREGISTERED].join(","),
         tools_total: bindings.length,
         tools_missing: missing.join(","),
         agents_missing: missingAgents.join(","),

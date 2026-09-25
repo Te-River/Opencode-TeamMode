@@ -47,6 +47,18 @@ export const V2_ACTION_NAMES: Readonly<Record<string, string>> = {
   apply_patch: "patch",
 }
 
+/**
+ * Tools the v1 personality registers and the v2 one does NOT — the host's own
+ * `execute` (Code Mode) already covers `tm_ptc_run` on v2 (proved against a live
+ * session: parallel governed calls, results still offloaded through handles).
+ *
+ * This is the single source for that fact: `v2.ts` skips them when registering,
+ * and `scripts/gen-v2-config.mjs` drops their permission triples, because an
+ * `allow` for an action the host has never heard of claims a capability that
+ * does not exist.
+ */
+export const V1_ONLY_TOOLS: ReadonlySet<string> = new Set(["tm_ptc_run"])
+
 const V2_ONLY_ACTIONS = new Set(["list", "todowrite", "lsp"])
 
 function normalizeEffect(value: unknown): PermissionEffect | null {

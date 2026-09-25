@@ -7,6 +7,31 @@ registry saw 1.5.0 as the install-script fix release).
 
 ## [Unreleased]
 
+### Changed
+
+- **`tm_ptc_run` is v1-only: v2 does not register it.** The host's own
+  `execute` (Code Mode) already runs "one program, N tool calls, zero
+  round-trips, only the aggregate entering the context", and a live v2 session
+  both used it that way (`Promise.all` over `tm_webfetch` + three `tm_search`)
+  and showed our governed results still come back as
+  `offloaded:true / tokens:41511 / preview_tokens:79 / tm://…` handles. Shipping
+  a second batch runner would hand the model two tools for one job, so v2
+  registers twelve governed tools while v1 — which has no Code Mode — keeps the
+  thirteenth. The module stays in the tree for the frozen v1 personality.
+  `V1_ONLY_TOOLS` is now the single source: the v2 runtime skips those names when
+  registering, and the generated `agents/*.md` drops their permission triples,
+  because an `allow` for an action the host never heard of claims a capability
+  that does not exist.
+- **The v2 prompts no longer name a tool v2 cannot call.** Eight sentences across
+  the lead and the shared rules told every role to collapse ≥3 probes into one
+  `tm_ptc_run`; on v2 that is a mandate pointing at a missing tool, which costs
+  exactly the round it exists to save. `scripts/gen-v2-config.mjs` now carries a
+  `V2_TEXT` table of exact source strings rewritten to name `execute` (Code Mode)
+  instead, and **it throws if a key stops matching**, so editing a prompt without
+  updating the table fails the generator rather than silently shipping the stale
+  sentence. This is the first use of the personality fork the
+  `tm_read`/`tm_grep`/`tm_bash` retirement will need.
+
 ### Added
 
 - **On v2 every sub-agent dispatch runs in the background.** A foreground

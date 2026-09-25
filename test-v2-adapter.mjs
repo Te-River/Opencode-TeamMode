@@ -49,6 +49,8 @@ const TM_NAMES = [
   "tm_webfetch", "tm_browser", "tm_ptc_run", "tm_join", "tm_pty", "tm_stats",
   "tm_board_write",
 ]
+/** v1's roster minus what v2 deliberately does not register. */
+const V2_NAMES = TM_NAMES.filter((n) => n !== "tm_ptc_run")
 const CTX = { sessionID: "ses_v2", agent: "team", messageID: "msg_1", id: "call_1" }
 const textOf = (res) =>
   (res?.content ?? []).filter((c) => c?.type === "text").map((c) => c.text).join("\n")
@@ -77,16 +79,20 @@ const byName = Object.fromEntries(fake.tools.list().map((t) => [t.id ?? t.name, 
 const registered = Object.keys(byName)
 
 console.log("1. registration")
-for (const name of TM_NAMES) {
+for (const name of V2_NAMES) {
   assert.ok(registered.includes(name), `${name} is registered on the v2 tool surface`)
 }
 assert.ok(!registered.includes("tm_dispatch"), "tm_dispatch stays unregistered on v2 too")
+assert.ok(
+  !registered.includes("tm_ptc_run"),
+  "tm_ptc_run is NOT registered on v2 — the host's own execute (Code Mode) covers it, and v1 keeps the tool",
+)
 assert.equal(
   registered.filter((n) => n.startsWith("tm_")).length,
-  TM_NAMES.length,
-  `exactly the thirteen governed tools arrive (got ${registered.filter((n) => n.startsWith("tm_")).join(",")})`,
+  V2_NAMES.length,
+  `exactly the twelve governed tools v2 ships arrive (got ${registered.filter((n) => n.startsWith("tm_")).join(",")})`,
 )
-for (const name of TM_NAMES) {
+for (const name of V2_NAMES) {
   assert.ok(String(byName[name].description ?? "").length > 40, `${name} carries a real description`)
   assert.equal(byName[name].input?.type, "object", `${name}'s input is a JSON Schema object`)
 }
@@ -434,7 +440,15 @@ assert.equal(
   "# my own team agent\n",
   "and its bytes are untouched",
 )
-console.log("   OK (12 files, modes + triples projected, idempotent, foreign files respected)")
+// The personality fork: v2 does not register tm_ptc_run, so a v2 role must not
+// be told to use it.  gen() above already throws if a V2_TEXT key stops
+// matching (the source was edited and the table was not), so these two
+// assertions are the other half — the substitution landed in the bytes on disk.
+const allRoles = agentFiles.map((f) => fs.readFileSync(path.join(genRoot, "agents", f), "utf8")).join("\n")
+assert.ok(!allRoles.includes("tm_ptc_run"), "no v2 role is told to call a tool v2 does not register")
+assert.ok(allRoles.includes("`execute` (Code Mode)"), "the batching mandate names the tool v2 actually has")
+assert.ok(allRoles.includes("## Recon batching (Code Mode first)"), "and so does the specialist section heading")
+console.log("   OK (12 files, modes + triples projected, idempotent, foreign files respected, prompt forked)")
 
 console.log("9. teardown")
 await cleanup()

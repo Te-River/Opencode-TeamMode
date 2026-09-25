@@ -48,7 +48,7 @@ const force = flag("force")
 
 const { agents } = await import(new URL("../dist/agents.js", import.meta.url).href)
 const { commands } = await import(new URL("../dist/commands.js", import.meta.url).href)
-const { triplesFromAgentPermission } = await import(
+const { triplesFromAgentPermission, V1_ONLY_TOOLS } = await import(
   new URL("../dist/host/v2-permissions.js", import.meta.url).href
 )
 
@@ -91,6 +91,55 @@ const body = (prompt) => {
   return text.startsWith("---") ? text.replace(/^---/, "\\---") : text
 }
 
+/**
+ * The personality fork, in one place.
+ *
+ * v2 does not register `tm_ptc_run` — the host's own `execute` (Code Mode)
+ * already runs "one program, N tool calls, zero round-trips, only the aggregate
+ * entering the context", and a live session proved the governed tm_* results
+ * still come back offloaded through it.  v1 has no Code Mode, so it keeps the
+ * tool and keeps these sentences untouched.
+ *
+ * A prompt that names a tool the model cannot call is not a style problem — it
+ * costs the round the mandate exists to save — so the v2 markdown says what v2
+ * can actually do.  Every key below MUST be found in the shared source or the
+ * generator fails: a silent no-op here would ship the v1 sentence to a v2 model
+ * and look like success.  `test-v2-adapter` group 8 pins both halves.
+ */
+const V2_TEXT = [
+  ["tm_ptc_run program, keeping only the handle.", "`execute` (the host's Code Mode tool) program, keeping only the handle."],
+  ["Batch the recon in one tm_ptc_run program", "Batch the recon in one `execute` program"],
+  ["batch recon via tm_ptc_run,", "batch recon via `execute`,"],
+  ["is ONE tm_ptc_run, not a chain.", "is ONE `execute` (Code Mode) call, not a chain."],
+  ["multi-file batch recon → tm_ptc_run (one program,", "multi-file batch recon → `execute` (one program,"],
+  ["your FIRST move is ONE tm_ptc_run program:", "your FIRST move is ONE `execute` (Code Mode) program:"],
+  ["## Recon batching (PTC-first)", "## Recon batching (Code Mode first)"],
+  ["Local-repo recon is PTC-first:", "Local-repo recon is Code-Mode-first:"],
+  ["cross-referencing searches → ONE tm_ptc_run program", "cross-referencing searches → ONE `execute` program"],
+  ["tm.read / tm.grep / tm.bash ride inside", "tools.tm_read / tools.tm_grep / tools.tm_bash are reachable inside it"],
+]
+
+function forkBody(text, hits) {
+  let out = text
+  for (const [from, to] of V2_TEXT) {
+    if (!out.includes(from)) continue
+    out = out.split(from).join(to)
+    hits.add(from)
+  }
+  return out
+}
+
+/** Every key must land in at least one role, or the fork is silently stale. */
+function assertForkApplied(hits) {
+  const dead = V2_TEXT.map(([from]) => from).filter((from) => !hits.has(from))
+  if (dead.length) {
+    throw new Error(
+      `v2 提示词分叉有 ${dead.length} 条没命中任何角色（源文改了，这里没跟上）：\n  - ` +
+        dead.join("\n  - "),
+    )
+  }
+}
+
 const written = []
 const skipped = []
 
@@ -118,10 +167,16 @@ function emit(dir, name, content) {
 }
 
 const agentsDir = join(baseDir, "agents")
+const forkHits = new Set()
 for (const [id, cfg] of Object.entries(agents)) {
   const { triples } = triplesFromAgentPermission(cfg.permission, { escalateShellAsk: false })
-  emit(agentsDir, id, agentFrontmatter(cfg, triples) + body(cfg.prompt) + "\n")
+  // An `allow` for a tool v2 never registers would claim a capability that does
+  // not exist; V1_ONLY_TOOLS is the same set v2.ts skips when registering.
+  const v2Triples = triples.filter((t) => !V1_ONLY_TOOLS.has(t.action))
+  const text = forkBody(body(cfg.prompt), forkHits)
+  emit(agentsDir, id, agentFrontmatter(cfg, v2Triples) + text + "\n")
 }
+assertForkApplied(forkHits)
 
 const commandsDir = join(baseDir, "commands")
 for (const [name, cfg] of Object.entries(commands)) {
