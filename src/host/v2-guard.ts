@@ -114,6 +114,47 @@ export interface GuardReport {
   shellMatched: number
 }
 
+export interface BackgroundForceReport {
+  seen: number
+  forced: number
+}
+
+/**
+ * Every sub-agent dispatch runs in the background.
+ *
+ * The user's standing instruction (2026-09-25). It is not a preference tweak: a
+ * foreground `subagent` call blocks the lead for the whole child run, which is
+ * the one thing the throughput mandate cannot survive — and on v2 background is
+ * a first-class host capability (`subagent {background:true}` returns
+ * immediately and the parent is notified when the child finishes), so nothing
+ * has to be opted into at the environment level the way v1 needed
+ * `OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS`.
+ *
+ * `execute.before` takes a mutable `input` (docs say "inspect or REPLACE"; a
+ * live host confirmed the write lands), so this is the honest place to enforce
+ * it — a prompt rule thousands of tokens earlier is not the same thing.  An
+ * input that is not an object is left alone rather than invented.
+ */
+export async function applyV2BackgroundForce(
+  ctx: V2Context,
+): Promise<{ registrations: V2Registration[]; report: BackgroundForceReport }> {
+  const report: BackgroundForceReport = { seen: 0, forced: 0 }
+  const tool = ctx.tool
+  if (!tool || typeof tool.hook !== "function") return { registrations: [], report }
+  const registrations = [
+    await tool.hook("execute.before", (event) => {
+      if (String(event?.tool ?? "") !== "subagent") return
+      const input = event.input as Record<string, unknown> | undefined
+      if (!input || typeof input !== "object" || Array.isArray(input)) return
+      report.seen++
+      if (input.background === true) return
+      input.background = true
+      report.forced++
+    }),
+  ]
+  return { registrations, report }
+}
+
 export async function applyV2PermissionGuards(
   ctx: V2Context,
   opts: { envProtectMode: EnvProtectMode },

@@ -9,6 +9,15 @@ registry saw 1.5.0 as the install-script fix release).
 
 ### Added
 
+- **On v2 every sub-agent dispatch runs in the background.** A foreground
+  `subagent` call blocks the lead for the child's entire run, which is the one
+  thing the throughput mandate cannot survive, and on v2 background needs no
+  environment flag at all. So `applyV2BackgroundForce` sits on the mutable
+  `execute.before` input and sets `background: true` — overriding an explicit
+  `false` and the `"True"` string form alike — and leaves an input that is not an
+  object alone rather than inventing one. v1 keeps its opt-in flag because there
+  the host genuinely rejects `task {background:true}` without
+  `OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS`.
 - **The egress red line now covers the host's own web tool.** Native `webfetch`
   on v2 has no notion of `169.254.169.254` — the cloud metadata endpoint whose
   response is temporary credentials — and it is available to agents we do not

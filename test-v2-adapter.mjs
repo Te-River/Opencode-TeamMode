@@ -367,6 +367,24 @@ assert.equal(needsCoarseShellAsk({ TM_R6_FINE_ASK: "on" }, true), false, "TM_R6_
 assert.equal(needsCoarseShellAsk({ TM_R6_FINE_ASK: "on" }, false), true, "and without the hook there is nothing to hand it to, so coarse regardless")
 console.log("   OK (metadata denied-not-asked, notation carriers unwrapped, never loosens, coarse-until-proven)")
 
+console.log("7c. every sub-agent dispatch runs in the background")
+const bg = { tool: "subagent", sessionID: "ses_1", agent: "team", input: { agent: "researcher", prompt: "x" } }
+await fake.hook("tool.execute.before").fire(bg)
+assert.equal(bg.input.background, true, "an omitted background becomes true — a foreground child blocks the lead for its whole run")
+const bgFalse = { tool: "subagent", sessionID: "ses_1", agent: "team", input: { agent: "tester", background: false } }
+await fake.hook("tool.execute.before").fire(bgFalse)
+assert.equal(bgFalse.input.background, true, "even an explicit false is overridden — v2 needs no env flag for this")
+const bgStr = { tool: "subagent", sessionID: "ses_1", agent: "team", input: { agent: "reviewer", background: "True" } }
+await fake.hook("tool.execute.before").fire(bgStr)
+assert.strictEqual(bgStr.input.background, true, "the string form becomes the real boolean, not a truthy string")
+const untouched = { tool: "shell", sessionID: "ses_1", agent: "team", input: { command: "npm test" } }
+await fake.hook("tool.execute.before").fire(untouched)
+assert.deepEqual(untouched.input, { command: "npm test" }, "other tools are never rewritten")
+const noObj = { tool: "subagent", sessionID: "ses_1", agent: "team", input: null }
+await fake.hook("tool.execute.before").fire(noObj)
+assert.equal(noObj.input, null, "an input that is not an object is left alone rather than invented")
+console.log("   OK (background forced on every subagent call, nothing else touched)")
+
 console.log("8. the config projection — what the installer copies onto disk")
 const genRoot = workspace("gen")
 const GEN = fileURLToPath(new URL("./scripts/gen-v2-config.mjs", import.meta.url))

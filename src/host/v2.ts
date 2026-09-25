@@ -38,7 +38,7 @@ import { createTmTools } from "../tm/index.js"
 import { setAskUnavailableNote } from "../tm/perm-ask.js"
 import type { PluginInput, ToolDefinition } from "../types.js"
 import { blackboardNote } from "./note.js"
-import { applyV2PermissionGuards, needsCoarseShellAsk } from "./v2-guard.js"
+import { applyV2BackgroundForce, applyV2PermissionGuards, needsCoarseShellAsk } from "./v2-guard.js"
 import { applyV2SessionLayer, removalPlan } from "./v2-session.js"
 import { createV2Client } from "./v2-client.js"
 import { bindV2Tool, type V2ToolBinding } from "./v2-tool.js"
@@ -138,6 +138,8 @@ export const v2Personality: V2Plugin = {
     // the coarse `shell -> ask` escalation depends on this hook being there.
     const guards = await applyV2PermissionGuards(ctx, { envProtectMode })
     registrations.push(...guards.registrations)
+    const bgForce = await applyV2BackgroundForce(ctx)
+    registrations.push(...bgForce.registrations)
     if (!guards.installed) {
       notes.push("ctx.permission.hook 不存在：原生 webfetch 的元数据/私网红线和 R6 的按命令行判定都没地方落")
     }
@@ -240,6 +242,7 @@ export const v2Personality: V2Plugin = {
         agents_default: defaultPromoted === null ? "n/a" : defaultPromoted ? "team" : "not-promoted",
         request_hooks: session.registrations.length,
         guard_hooks: guards.registrations.length,
+        subagent_background: bgForce.registrations.length ? "forced-true" : "no-hook",
         guard_shell_coarse: escalateShellAsk,
         request_temperature: temperature === false ? "off" : temperature,
         request_removed_plan: removedPlanSizes,
