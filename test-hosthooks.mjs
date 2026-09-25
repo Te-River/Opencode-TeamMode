@@ -410,7 +410,12 @@ console.log("hosthooks. tool.definition / chat.params / compaction / shell.env /
       { run_id: "r1", step_id: "v2-surface", native_seen: 7 },
     ])
     eq(snaps.filter((s) => s.step_id === "v2-surface" && s.run_id === "r1").length, 1, "one run's repeated snapshots collapse to the newest")
-    eq(snaps[0].native_seen, 7, "and the surviving one is the informative last write, newest-first")
+    // A `v2-surface` line is written whenever the host surface changes, so a
+    // newest-N window used to push the boot record out — and the boot record is the
+    // only carrier of the Team-scope counts and the browser-gate line a live session
+    // went looking for and could not find. It now reserves its slot.
+    eq(snaps[0].step_id, "v2-boot", "the boot record survives no matter how many surface snapshots followed it")
+    eq(snaps[1].native_seen, 7, "and the surviving surface snapshot is still the informative last write")
     eq(snaps.length, 3, "distinct (run, step) records are not collapsed together")
   }
   eq(summarizeEvents([{ ts: iso(0), tool: "tm_dispatch", event: "start" }, { ts: iso(1000), tool: "tm_dispatch", event: "idle", ms: 1000 }]).dispatch.overlapSavedMs, 0, "a single dispatch claims no overlap saving")

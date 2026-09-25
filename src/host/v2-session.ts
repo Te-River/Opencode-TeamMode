@@ -114,6 +114,13 @@ export interface SessionLayerReport {
   removed: Record<string, number>
   notePushed: boolean
   compactionLines: number
+  /** Did a `tm_*` name ever appear in an assembled request's own tool surface?
+   *  This is the only evidence that direct delivery happened: `options.codemode:false`
+   *  is what WE send, and a live 2.0.16 session proved the host still put every
+   *  `tm_*` in the Code Mode catalog ("They cannot be called directly…") while the
+   *  model's own callable list was nine native tools. Reporting the sent flag as if it
+   *  were the outcome is the overstated claim this product exists to refuse. */
+  tmInRequestSurface: boolean
 }
 
 /**
@@ -132,6 +139,7 @@ export async function applyV2SessionLayer(
     removed: {},
     notePushed: false,
     compactionLines: 0,
+    tmInRequestSurface: false,
   }
   const session = ctx.session
   if (!session || typeof session.hook !== "function") {
@@ -159,9 +167,20 @@ export async function applyV2SessionLayer(
         }
         if (cut) report.removed[agent] = (report.removed[agent] ?? 0) + cut
       }
+      // The observation that settles the delivery question: whatever is left in the
+      // request's own tool map is what the model can call directly. A `tm_*` name
+      // appearing here means direct delivery worked; never appearing means the host
+      // kept our tools in the Code Mode catalog regardless of `options.codemode`.
+      if (event.tools && typeof event.tools === "object") {
+        for (const name of Object.keys(event.tools)) {
+          if (name.startsWith("tm_")) {
+            report.tmInRequestSurface = true
+            break
+          }
+        }
+      }
 
-      if (input.temperature !== false && event.options && typeof event.options === "object") {
-        // Only fill it when the request carries none: a per-session model variant
+      if (input.temperature !== false && event.options && typeof event.options === "object") {        // Only fill it when the request carries none: a per-session model variant
         // the user chose outranks our invariant.
         if (event.options.temperature === undefined) event.options.temperature = input.temperature
       }

@@ -316,7 +316,20 @@ export function bootSnapshots(
 ): Array<Record<string, unknown>> {
   const last = new Map<string, number>()
   lines.forEach((line, i) => last.set(`${String(line.run_id ?? "?")}|${String(line.step_id ?? "?")}`, i))
-  return [...last.values()].sort((a, b) => b - a).slice(0, limit).map((i) => lines[i])
+  const idx = [...last.values()].sort((a, b) => b - a)
+  // The boot record is the line that answers "which personality ran, and what did
+  // it find missing" — and it is also the only carrier of the Team-scope counts and
+  // the native-browser gate line. A plain newest-N used to drop it: the probe writes
+  // `v2-surface` whenever the host surface changes, so a long session pushed
+  // `v2-boot` out of the window and tm_stats quietly stopped showing the two facts
+  // the user asked about (a live session searched the output for them and found
+  // neither). Reserve the slots for the records that matter, then fill.
+  const prio = (i: number) => {
+    const s = String(lines[i]?.step_id ?? "")
+    return s === "v2-shutdown" ? 1 : s === "v2-boot" || s === "boot" ? 0 : 2
+  }
+  const ordered = [...idx].sort((a, b) => prio(a) - prio(b) || b - a)
+  return ordered.slice(0, Math.max(1, limit)).map((i) => lines[i])
 }
 
 /** Markdown, in the shapes the host renders fastest (tables, not prose). */
@@ -418,6 +431,15 @@ export function renderStats(
           : "",
         line.guard_foreign_skipped ? `门禁为非 Team 会话让路 ${line.guard_foreign_skipped} 次` : "",
         line.browser_gate ? `原生 browser_* 门禁：${line.browser_gate}` : "",
+        // The honest half of the delivery question: what we SENT (tools_codemode) and
+        // what the assembled request actually CARRIED (tools_in_request). On 2.0.16 the
+        // two disagree, and printing only the first would let a boot line claim a
+        // delivery mode the host never gave.
+        line.tools_codemode ? `工具交付：发出=${line.tools_codemode} · 请求内实际可见=见下方 shutdown 行` : "",
+        // The shutdown line is the only one that can carry the observation, since the
+        // first request has not happened at boot. Both halves print, so a sent flag can
+        // never be read as an outcome again.
+        line.tools_in_request ? `工具交付：请求内实际可见=${line.tools_in_request}（direct 是否被宿主采纳只看这一项）` : "",
         line.browser_gate_note ? `  ${line.browser_gate_note}` : "",
         line.native_capped !== undefined ? `快照按寻址预算截断 ${line.native_capped} 次（不是卸载：ref 留在上下文里）` : "",
       ].filter(Boolean)

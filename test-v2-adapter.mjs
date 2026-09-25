@@ -177,22 +177,22 @@ await oo.value?.()
 // every request.  Both sides are pinned so nobody has to guess which world they are in.
 assert.equal(
   byName.tm_join.options?.codemode,
-  false,
-  "tm_* are delivered as REAL tools by default — the visibility switch is options.codemode:false, and without it the host keeps only the first line of our description",
+  undefined,
+  "by default we send nothing: on 2.0.16 the host keeps tm_* in the Code Mode catalog even WITH options.codemode:false (measured in a live session — the model's callable list was the nine native tools), so the flag is opt-in and the outcome is read from tools_in_request, not from what we sent",
 )
 {
   const direct = makeFakeCtx({ directory: ws, agents: [] })
-  process.env.TM_V2_CODEMODE = "off"
+  process.env.TM_V2_CODEMODE = "direct"
   const dr = await withCapturedConsole(() => plugin.setup(direct.ctx))
   const dt = Object.fromEntries(direct.tools.list().map((t) => [t.id ?? t.name, t]))
-  assert.equal(dt.tm_join?.options?.codemode, undefined, "TM_V2_CODEMODE=off restores catalog-only, the cheap world where most governance text never arrives")
+  assert.equal(dt.tm_join?.options?.codemode, false, "TM_V2_CODEMODE=direct still sends codemode:false, for a host that honours it")
   assert.ok(
-    (dr.warns ?? []).some((w) => /Code Mode 目录/.test(w)),
-    "the opted-out boot says out loud that only the first line of our descriptions reaches the model",
+    (dr.warns ?? []).some((w) => /tm_stats 的 tools_in_request|Code Mode 目录/.test(w)),
+    "and the boot note says the outcome is verified, not promised",
   )
   assert.ok(
-    !warns.some((w) => /Code Mode 目录/.test(w)),
-    "and the default boot does not print that warning, because it is not in that world",
+    warns.some((w) => /Code Mode 目录/.test(w)),
+    "the DEFAULT boot says so out loud — the default is catalog-only, and the note points at tools_in_request instead of promising a delivery mode",
   )
   delete process.env.TM_V2_CODEMODE
   await dr.value?.()

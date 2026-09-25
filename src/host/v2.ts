@@ -142,7 +142,16 @@ export const v2Personality: V2Plugin = {
     // `TM_V2_CODEMODE=off` restores catalog-only for anyone who wants the tokens back
     // — and the boot note says which world this is, because in catalog mode most of
     // our governance text never reaches the model at all.
-    const v2CodeModeDirect = !/^(0|false|no|off)$/i.test(String(v2Env.TM_V2_CODEMODE ?? "").trim())
+    // `TM_V2_CODEMODE` is now OPT-IN for direct delivery. Measured on a live 2.0.16
+    // desktop session (export read 2026-09-26): with `options.codemode:false` sent for
+    // every tool, the host still delivered all ten `tm_*` inside the Code Mode catalog
+    // ("They cannot be called directly…"), and the model's own callable list was the
+    // nine native tools. So the flag changes what we send, not what the model gets —
+    // and shipping it as the default made the README claim a delivery mode the host
+    // never gave. `direct` stays available as an experiment for a build that honours it,
+    // and the shutdown line reports both halves: `tools_codemode` (sent) and
+    // `tools_in_request` (what the assembled request actually carried).
+    const v2CodeModeDirect = /^(1|true|yes|on|direct)$/i.test(String(v2Env.TM_V2_CODEMODE ?? "").trim())
 
     // No SDK client in the v1 sense.  v1's `client` carried `file.read`, `find.text`,
     // `session.*` and `pty.*`; the v2 plugin ctx has no such object, and the fs shim
@@ -227,11 +236,14 @@ export const v2Personality: V2Plugin = {
     }
     // How our tools reach the model at all — said every boot, because the two
     // answers differ by thousands of tokens and by whether our governance text
-    // arrives at all.
+    // arrives at all. Both branches describe only what WE send: on 2.0.16 a live
+    // session showed `options.codemode:false` does not actually move the tools out of
+    // the Code Mode catalog, so the outcome is verified from the shutdown line's
+    // `tools_in_request` (or tm_stats), never from this flag.
     notes.push(
       v2CodeModeDirect
-        ? "TM_V2_CODEMODE=direct：tm_* 带 options.codemode=false，作为真正的工具交付（描述完整，代价是定义随每一次请求走）"
-        : "tm_* 没有带 options.codemode=false：宿主只把它们放进 Code Mode 目录，模型看到的只有描述首行（≤120 字）——我们写在下面的治理文案大部分没送到，需要完整交付请用 TM_V2_CODEMODE=direct 并核对令牌开销",
+        ? "TM_V2_CODEMODE=direct：我们发了 options.codemode=false。宿主是否因此改成直接交付，要看 tm_stats 的 tools_in_request（2.0.16 实测：仍然只在 Code Mode 目录里，模型可直接调用的是那九个原生工具）"
+        : "tm_* 未带 options.codemode=false：宿主把它们放进 Code Mode 目录，模型看到的只有描述首行（≤120 字）——我们写在下面的治理文案大部分没送到。2.0.16 实测：TM_V2_CODEMODE=direct 也不改变这一点，所以默认留在此状态，真实交付情况以 tools_in_request 为准",
     )
     registrations.push(
       await ctx.tool.transform((editor) => {
@@ -631,6 +643,9 @@ export const v2Personality: V2Plugin = {
           browser_gate_leaked: browserGate.report.leaked,
           browser_gate_held: browserGate.report.held,
           browser_gate_note: browserGateSummary(browserGate.report),
+          // What the model could actually call, read off the assembled requests —
+          // the half of the delivery story the sent flag cannot tell.
+          tools_in_request: session.report.tmInRequestSurface ? "tm-in-request" : "catalog-only",
           native_capped: offload.report.capped,
           ...probeSummary(probe.report),
         })

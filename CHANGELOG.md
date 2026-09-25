@@ -21,6 +21,23 @@ registry saw 1.5.0 as the install-script fix release).
 
 ### Changed
 
+- **`options.codemode:false` does not deliver tools directly on 2.0.16, and the
+  default no longer claims it does.** A live desktop session answered the A–F forensic
+  prompt with the fact: every `tm_*` arrived inside the host's Code Mode catalog ("They
+  cannot be called directly…"), and the model's own callable list was the nine native
+  tools — while our boot line cheerfully reported `tools_codemode: direct`, i.e. what
+  we SENT read as what the host DID. `TM_V2_CODEMODE` is now opt-in (`direct`), the
+  default sends nothing, and the shutdown record adds `tools_in_request`, derived from
+  whether a `tm_*` name ever appeared in an assembled request's own tool map.
+  `tm_stats` prints both halves side by side (`发出=… · 请求内实际可见=…`) so the flag can
+  never impersonate the outcome again.
+- **`tm_stats` used to drop the two lines users ask for.** The boot section showed the
+  newest few `tool:"host"` records, but the probe writes a `v2-surface` line whenever
+  the host surface changes — so in a long session the boot record (the ONLY carrier of
+  the Team-scope counts and the native-browser-gate line) was crowded out. A live
+  session searched our own output for 作用域 and 原生 browser\_* and found neither. The
+  boot and shutdown records now reserve their slots.
+
 - **A live 2.0.16 run found a gap we had been describing as closed: on v2, `tm_join`
   cannot collect a host `subagent` child.** The lead dispatched a background
   `architect`, the child completed, the host injected its reply — and `tm_join`
