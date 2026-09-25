@@ -5,7 +5,19 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 versioning is semver (the 1.4.x train shipped under working labels; the
 registry saw 1.5.0 as the install-script fix release).
 
-## [Unreleased]
+## [1.6.1] - 2026-09-26
+
+> **What this release does and does not claim about OpenCode 2.x.** Verified live on a
+> real `opencode v2.0.16` (sandboxed config dir, plugin loaded from a probe file, the
+> user's global config untouched): the v2 personality boots with all nine governed
+> tools registered, `ctx.storage` round-trips, the request/guard/browser-gate hooks and
+> the event feed all arm, and a model turn actually called `tm_search` and got real
+> npm results back — plus a private-space refusal that reached the model verbatim with
+> both operator exits named. NOT verified live: anything that needs the DESKTOP
+> (the `browser_*` catalog and its side panel do not exist in `--standalone`), the
+> installer's v2 branch (`opencode plugin add` can only install a PUBLISHED package, so
+> it is untestable before a release), and whether `/team-*` runs as the role it selects.
+> Those are the items that turn "v2-capable" into "v2-adapted", and they belong to 1.7.0.
 
 ### Changed
 
