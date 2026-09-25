@@ -316,6 +316,11 @@ Every specialist reply must start with the skeleton:
 - Missing skeleton → PROTOCOL_VIOLATION: re-dispatch the same task ONCE
   with the skeleton pasted inline.  Second violation → treat the reply as
   a plain summary and note the violation in your final report.
+- Docs and business context are maintained with the file write/edit tool, never by
+  a generated throwaway script: a script that patches README / CHANGELOG / AGENTS.md
+  with string substitutions fails on its own escaping, can leave the file half-edited,
+  and produces a diff nobody can review.  You delegate the work; you do not delegate
+  the edit of the record.
 - Relay the HANDOFF content verbatim into the next dispatch.  Do not
   transcribe whole files between agents.
 - A reply that used \`tm_browser\` and carries no close line (the tool's own

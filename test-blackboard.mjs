@@ -659,4 +659,22 @@ console.log("5. v1.4.7 contract: OK (routing, approval gate, skeleton, hybrid bo
 console.log("6. opt-out default-agent promotion + triage/boundaries: OK")
 console.log("7. TTL-only reclamation + session-partitioned boards: OK")
 
+// The doc-maintenance rule (user requirement 2026-09-26): README / CHANGELOG /
+// AGENTS edits go through the write/edit tool, never through a generated throwaway
+// patch script.  It is a prompt rule, so it needs a prompt assertion — a rule with no
+// failing test behind it is a hope, and this one exists because a script did in fact
+// corrupt a file the way the rule describes.
+{
+  const { agents } = await import("./dist/agents.js")
+  const lead = agents.team.prompt
+  const specialists = Object.entries(agents).filter(([id]) => id !== "team")
+  assert.match(lead, /Docs and business context are maintained with the file write\/edit tool/,
+    "the lead carries the rule for the record it owns")
+  assert.match(lead, /never by\s+a generated throwaway script/, "and names the forbidden mechanism")
+  for (const [id, cfg] of specialists) {
+    assert.match(cfg.prompt, /Editing documentation is a WRITE, not a shell job/, `${id} carries the doc-write rule`)
+    assert.match(cfg.prompt, /never by generating a throwaway script/, `${id} is told not to script the edit`)
+  }
+}
+
 console.log("\nALL BLACKBOARD TESTS PASSED ✅")

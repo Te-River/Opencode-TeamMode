@@ -21,6 +21,27 @@ registry saw 1.5.0 as the install-script fix release).
 
 ### Changed
 
+- **Doc and business-context edits must go through the write/edit tool — a generated
+  throwaway patch script is forbidden by prompt rule now** (user requirement
+  2026-09-26). The rule earned itself: while patching markdown through ad-hoc scripts
+  this session, a literal backslash-n inside a script's string became a real newline
+  and corrupted the file twice, and a script that died on an assert left a document
+  half-patched with nothing to point at. The edit tool refusing because the text does
+  not match is the safety net that approach throws away — and a script reports success
+  on a file it mangled. Written into SHARED_RULES (all five specialists) and the lead
+  prompt, pinned by a test-blackboard assertion on both, recorded as prompt-design
+  principle 11 in AGENTS.md.
+- **README and business context now state the v2 browsing shape (option A) as product
+  claims, not implementation notes**: the side panel belongs to the host's own browser
+  service, so the network roles (lead / researcher / tester) go to `browser_*` on the
+  desktop with `tm_browser` as the CLI/standalone door; the gate rides
+  `tool.execute.before` because `permission.evaluate` does not fire for `browser_*`; a
+  refused call the host ran anyway has its PAGE replaced by the refusal, and `tm_stats`
+  prints refused and leaked as two numbers rather than one claim; snapshots are capped
+  (every `[ref=…]` line kept — measured 261 of 261 refs for 1 044 of 11 326 tokens)
+  instead of offloaded; and `TM_PRIVATE_SPACE` is documented with why v2 defaults to
+  `deny`. Both language pairs of the README and both env tables updated.
+
 - **The browser gate covers Code Mode, and `tm_ledger` finally has a rule of its own.**
   `tools.browser.tabs.open(...)` inside an `execute` program reaches the same browser
   through a door that may never surface as its own `execute.before`, so the gate now

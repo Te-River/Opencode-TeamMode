@@ -299,6 +299,28 @@ through with `tm_fetch` when it genuinely needs the payload.
 > Everything above this note describes the v1 (1.18.x) surface, which still ships
 > all thirteen.
 
+> **On OpenCode 2.x, interactive browsing is the host's, and it stays ours.** The
+> desktop renders a browser in its side panel, and that panel attaches to the
+> server's own browser service — a plugin cannot register a page of its own into it
+> (forensics: `docs/research/browser-pane.md`). So the three roles with network
+> grants (lead, researcher, tester) are pointed at the host's `browser_*` tools
+> first, and `tm_browser` remains the governed door for hosts with no desktop
+> browser attached (CLI, standalone). Handing browsing over did not mean handing
+> governance over: `permission.evaluate` was observed NOT firing for `browser_*`, so
+> our gate sits on `tool.execute.before` instead — it classifies the URL of every
+> navigate/open, the path of every `browser_preview`, and every browser URL named
+> inside an `execute` program, refuses the ones out of policy, and if the host runs a
+> refused call anyway it replaces the page with the same refusal, so no
+> out-of-policy content reaches the context, the store or the trajectory. What we
+> cannot do is un-make a request the host already performed, and the reply says so
+> rather than claiming a block; `tm_stats` prints the two numbers apart (refused /
+> leaked past the refusal). One exception to the offload rule lives here: a
+> `browser_snapshot` is an addressing table, not a document, so it is CAPPED (every
+> `[ref=…]` line kept, static text dropped, budget `TM_NATIVE_SNAPSHOT_MAX_TOKENS`
+> default 1 200 — the same budget `tm_browser` runs at) rather than replaced by a
+> handle. Measured on a 261-ref page: a head cut keeps 118 refs, this keeps 261 of
+> them using 1 044 of 11 326 tokens.
+
 > **Fixed tool priority ladder (every task): ① the user's own MCP/plugin
 > tools → ② TeamMode governed tools (`tm_*`) → ③ the model's own reasoning.**
 > It doubles as the fallback chain: when a tool errors (no browser on this
@@ -596,6 +618,9 @@ for overrides, extra agents and disabling roles.
 | `TM_V2_CODEMODE` | **direct** — **v2 only** | How our tools reach the model. OpenCode 2.x decides tool visibility with `options.codemode`: We send `options.codemode:false` by default, so the tools arrive as real definitions with their full descriptions — measured cost per request: build-class specialists ≈2 660 tokens, tester ≈4 726, researcher ≈6 391, the lead ≈7 366. `off` restores catalog-only, where the host keeps ≤120 chars of each first description line and `tm_*` are callable only from inside `execute`. The boot log and `tm_stats` say which of the two you are in |
 | `TM_LEDGER_MAX_ITEMS` | 200 | Ceiling on `tm_ledger` items per session. The host's `ctx.storage` has no TTL and no quota (measured), so the list refuses to grow past this instead of quietly dropping the oldest asks — and a refusal is something the lead can act on, while a silent truncation is a claim nobody can re-check |
 | `TM_V2_PROBE` | — (v2 only) | Path to a JSONL file where the surface probe records the host's real tool ids, permission action names and argument key names. Names and counts only — never a command line, path, URL or env value. It is how "does the host actually have X?" gets answered from the running build instead of from a doc; without it the same name sets still ride the trajectory so `tm_stats` can show them |
+| `TM_PRIVATE_SPACE` | `ask` on v1 · `deny` on **v2** | What private space (loopback, RFC1918, ULA, CGNAT, `.localhost`) does through our tools: `ask` routes it to the host dialog (v1 can raise one), `allow` opens the class, `deny` refuses it. v2 defaults to `deny` because a plugin there cannot raise a dialog — telling the agent to wait for a window that will never open is not a gate with a procedure — so the refusal prints both operator exits instead (`allow`, or that one hostname in `TM_WEBFETCH_ALLOWED_DOMAINS`). Never conflated with the FORBIDDEN ranges: cloud-metadata / link-local / reserved are refused under every setting and every allowlist, with no consent path |
+| `TM_V2_BROWSER_GATE` | on — **v2 only** | The gate over the host's `browser_*` catalog (URLs and preview paths at `execute.before`, plus the browser URLs named inside an `execute` program). `off` restores the host's ungoverned browsing; the boot line and `tm_stats` say which world is running |
+| `TM_NATIVE_SNAPSHOT_MAX_TOKENS` | 1200 — **v2 only** | The budget a native `browser_snapshot` / `browser_find` keeps in context. Addressing lines win it before static text does; past `budget × 4` the reply states how many ref lines did not fit, and kept + dropped always equals the total |
 | `TM_ASK_TIMEOUT_MIN` | `1` | minutes before an unanswered dialog is auto-rejected (floored at 1 min — safe: a racing reply audits as benign `already-closed`; the host's reply event reaching the plugin ~120 s late is event-bus delivery lag, not a click delay). Every governed tool ALSO ends the wait itself at this + 15 s, because the gate is only armed when R6 is on and the client can reply — and a tool that waits forever reads as a hang, not as a request for your attention |
 | `TM_ASK_TIMEOUT_FLOOR_MIN` | `1` | minimum enforced for the ask timeout above |
 | `TM_ENV_PROTECT_EXTRA_DENY` | — | extra block patterns (regex; always hard block, never dialog-governed) |

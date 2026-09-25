@@ -281,6 +281,18 @@ HMAC 句柄，agent 真需要 payload 时用 `tm_fetch` 分页取。
 > 里面点名的是 `read` / `grep` / `shell` 而不是这些别名。
 > 上面这张表描述的是 v1（1.18.x）的工具面，那一份仍然十三个都在。
 
+> **在 OpenCode 2.x 上，交互式浏览交给宿主，治理仍在我们手里。** 桌面端侧边栏挂的是**服务端自己的**浏览器
+> 服务——插件没法把自己的页面注册进去（取证：`docs/research/browser-pane.md`）。所以三个有联网授权的角色
+> （领队 / researcher / tester）优先用宿主的 `browser_*` 工具，`tm_browser` 退为"宿主没接桌面浏览器时"
+> （CLI / standalone）的受治理通道。交出去的是浏览器，不是治理：活体观测里 `browser_*` **不触发**
+> `permission.evaluate`，所以门禁改挂在 `tool.execute.before` 上——判定每次 navigate/open 的 URL、每次
+> `browser_preview` 的路径，以及写在 `execute` 程序里的浏览器 URL；不合规则就拒绝，而宿主若把已拒绝的调用
+> 照样跑了，就把页面换成同一段拒绝语，越权内容不会进上下文、store 或轨迹。宿主已发出的请求我们撤回不了，
+> 这照实说，不谎称拦住过；`tm_stats` 把两个数分开给（拒绝 N 次 / 被放过去 M 次）。卸载规则在此有一条例外：
+> `browser_snapshot` 是**寻址表**不是文档，所以它是**截断**（每行 `[ref=…]` 都留、丢静态文字，预算
+> `TM_NATIVE_SNAPSHOT_MAX_TOKENS` 默认 1 200，与 `tm_browser` 同口径）而不是换成句柄。261 个 ref 的页面实测：
+> 从头截断只剩 118 个 ref，这种方式 261 个全留，11 326 token 里只占 1 044。
+
 > **固定工具优先级阶梯（每个任务都适用）：① 用户自己的 MCP/插件工具
 > → ② TeamMode 受治理工具（`tm_*`） → ③ 模型自己的推理。** 它同时是回退链：某个受治理
 > 工具报错（这台机器没浏览器、主机被拦），agent 会说明情况降到下一级，

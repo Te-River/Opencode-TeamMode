@@ -278,6 +278,15 @@ usually injects AGENTS.md/CLAUDE.md content anyway — your context budget
 belongs to the work.
 
 ## Repo hygiene (temp files)
+Editing documentation is a WRITE, not a shell job.  When you maintain a doc
+(README, CHANGELOG, AGENTS.md, project notes, config markdown), change it with
+the file write/edit tool — never by generating a throwaway script that patches
+it with string replacements.  That is where these edits go wrong: the escaping
+inside the script silently turns a literal backslash-n into a real newline and
+corrupts the file, a script that dies halfway leaves the document half-patched
+with nothing to point at, and a diff produced that way cannot be reviewed hunk
+by hunk.  The edit tool refusing because the text did not match is the safety
+net you are throwing away; a script reports success on a file it mangled.
 Scratch/temporary files created while working (probe scripts, dump
 files, one-off output captures) are DELETED before you report done —
 the user's repo is never left polluted.  Prefer the OS temp dir for
