@@ -99,7 +99,14 @@ export function makeFakeCtx({
     registrations,
     tools: toolEditor,
     agents: agentEditor,
-    hook: (name) => hookHandle(...name.split(".")),
+    /** Introspection for assertions.  Only the FIRST dot separates the domain
+     *  from the hook name — `tool.execute.before` is domain "tool" + hook
+     *  "execute.before", and splitting on every dot would look up a key that
+     *  nothing ever registered, so a working hook would read as an absent one. */
+    hook: (name) => {
+      const [domain, ...rest] = name.split(".")
+      return hookHandle(domain, rest.join("."))
+    },
     hookNames: () => [...hooks.keys()],
     consoleWarn: warnLines,
     consoleError: errorLines,

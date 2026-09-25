@@ -77,7 +77,6 @@ export interface V2ToolInfo {
   readonly options?: {
     readonly namespace?: string
     readonly permission?: string
-    readonly codemode?: boolean
   }
 }
 

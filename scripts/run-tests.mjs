@@ -41,6 +41,41 @@ const FILTERS = argv.filter((a) => !a.startsWith("--"))
 /** Suites that launch a REAL browser — never two at once. */
 const BROWSER_SUITES = new Set(["test-tm-tools.mjs", "test-browser.mjs"])
 
+/**
+ * One throwaway store root for the whole run.
+ *
+ * Every suite boots a real runtime, and a runtime in a NON-git workspace
+ * creates a per-workspace shard (`w-<hash>/…`) under the developer's SHARED
+ * tmpdir base.  Hundreds piled up there, because `TM_STORE_RECLAIM=off` (rightly
+ * — boot-time reclamation is product behaviour for the user's machine, not a
+ * test fixture) means nothing ever prunes them.  Pointing the two store roots at
+ * Redirecting the two store roots at one throwaway directory moves the bulk of
+ * what a run writes out of the shared bucket, and it goes away when the run ends.
+ *
+ * NOT YET SOLVED, stated rather than assumed: a full run still leaves new
+ * `w-<hash>/` shards behind (measured +16 per run on 2026-09-25), so at least
+ * one path derives the auto store base without consulting these two knobs —
+ * the `memories/` tier lives under the shared BASE by design, not under either
+ * directory.  Until that is traced this is the honest record: the redirect
+ * reduces the litter, it does not prevent it.
+ *
+ * §6q is unaffected: it exercises pruneStaleStoreShards()/
+ * reclaimLegacyStoreBuckets() against its own synthetic base rather than by
+ * booting a runtime, and the few tests that set TM_BLACKBOARD_DIR themselves
+ * still override this default.
+ */
+const storeRoot = fs.mkdtempSync(path.join(os.tmpdir(), "tm-test-store-"))
+process.on("exit", () => {
+  try {
+    fs.rmSync(storeRoot, { recursive: true, force: true, maxRetries: 3, retryDelay: 50 })
+  } catch {
+    /* swallowed below — the existence check is the part that has to be honest */
+  }
+  // win32 fs.rmSync can silently no-op on non-ASCII paths, so say where the
+  // directory is if it is still there rather than claiming it was cleaned.
+  if (fs.existsSync(storeRoot)) console.log(`（测试 store 目录未能删除，可手动清理：${storeRoot}）`)
+})
+
 const allSuites = fs
   .readdirSync(REPO)
   .filter((f) => /^test-.*\.mjs$/.test(f))
@@ -71,7 +106,12 @@ const run = (file) =>
     const child = spawn(process.execPath, [file], {
       cwd: REPO,
       windowsHide: true,
-      env: { ...process.env, TM_STORE_RECLAIM: "off" },
+      env: {
+        ...process.env,
+        TM_STORE_RECLAIM: "off",
+        TM_BLACKBOARD_DIR: path.join(storeRoot, "blackboard"),
+        TM_TRAJECTORY_DIR: path.join(storeRoot, "trajectory"),
+      },
     })
     let out = ""
     let err = ""
