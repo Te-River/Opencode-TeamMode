@@ -9,6 +9,33 @@ registry saw 1.5.0 as the install-script fix release).
 
 ### Added
 
+- **On v2 the whitelist now decides what the model is OFFERED, not just what it
+  may call.** A permission `deny` on 1.18.x stopped the call but left the tool's
+  description and schema in every request, so a role paid tokens for capabilities
+  it was forbidden to use — measured at 9 528 tokens per request across the
+  thirteen governed tools alone, before the host's own catalog. v2 can `delete
+  event.tools.<name>` inside `session.hook("context")`, so `src/host/v2-session.ts`
+  now removes every denied tool from the assembled request: native
+  `read`/`grep`/`glob`/`list`/`edit`/`write`/`shell`/`webfetch`/`websearch`, the
+  denied `tm_*` doors, and — where `tm_browser` is denied — the host's entire
+  `browser_*` catalog as well. Only a literal `deny` removes; an `{"*":"ask"}`
+  entry means "callable, gated" and stays offered, or the dialog would have
+  nothing to gate.
+- **Two v1 behaviors that had no v2 home got one.** `temperature` 0.2 rides the
+  request (it is a documented legacy agent field on v2 and the runner "preserves
+  these values but does not yet send them"), and the resolved blackboard root
+  goes into the lead's system parts per request — a v2 agent is a config FILE, so
+  it cannot carry a per-workspace path the way v1's config hook could. Neither
+  overwrites what is already there: a temperature the request already carries (a
+  user's model variant) outranks our default, and the note and the compaction
+  survival list land once even though the host reloads plugins in-process and the
+  hook runs before every single model call.
+- **v2 starts the blackboard TTL sweeper it previously lacked.** The workspace
+  note the lead receives promises "the plugin sweeps task directories idle for
+  more than N days (at startup and hourly)". On v2 nothing called
+  `startBlackboardMaintenance`, so that promise was false — and a cleanup claim
+  with no mechanism behind it is the same overstated "done" this product exists
+  to refuse. It now runs, unref'd and idempotent as on v1.
 - **Team is now the default agent on v2 as well.** v1 filled `default_agent`
   only when it was empty or `build`, because overwriting a choice the user made
   is not ours to make. v2 cannot express that condition: `AgentEditor` exposes

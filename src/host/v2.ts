@@ -32,10 +32,13 @@
  */
 
 import { agents } from "../agents.js"
+import { DEFAULT_TTL_DAYS, resolveTtlMs, startBlackboardMaintenance } from "../blackboard.js"
 import { parseExtraDeny, resolveEnvProtectMode } from "../envprotect.js"
 import { createTmTools } from "../tm/index.js"
 import { setAskUnavailableNote } from "../tm/perm-ask.js"
 import type { PluginInput, ToolDefinition } from "../types.js"
+import { blackboardNote } from "./note.js"
+import { applyV2SessionLayer, removalPlan } from "./v2-session.js"
 import { createV2Client } from "./v2-client.js"
 import { bindV2Tool, type V2ToolBinding } from "./v2-tool.js"
 import { mergeTriples, triplesFromAgentPermission } from "./v2-permissions.js"
@@ -180,6 +183,34 @@ export const v2Personality: V2Plugin = {
       notes.push("R6 已开：shell 升为 ask（v1 是按模式匹配，v2 现在是每条命令都问，#94 会补回按命令行内容判定）")
     }
 
+    // ---------- the request layer ----------
+    // The whitelist was only ever a DENY, which stops a call but leaves the
+    // tool's description in every request.  Here it becomes a request-level
+    // removal, and the two things v1 baked into the team prompt (the resolved
+    // board root) or into the agent config (temperature) ride the request
+    // instead — a v2 agent is a config FILE and cannot carry a per-workspace
+    // path, and `temperature` is a legacy agent field the runner no longer
+    // sends.  This also starts the blackboard TTL sweeper, which v1 owns and v2
+    // otherwise silently lacked: the note promises a sweep, so shipping it
+    // without the sweeper would be the exact overstated claim this product is
+    // built to refuse.
+    const ttlMs = resolveTtlMs(options as never)
+    const ttlDays = Math.round(ttlMs / (24 * 60 * 60 * 1000)) || DEFAULT_TTL_DAYS
+    const note = blackboardNote(startBlackboardMaintenance(directory, ttlMs), ttlDays)
+    const temperature: number | false =
+      options.temperature === false
+        ? false
+        : typeof options.temperature === "number"
+          ? options.temperature
+          : 0.2
+    const plan = removalPlan(agents as unknown as Record<string, { permission?: Record<string, unknown> }>)
+    const session = await applyV2SessionLayer(ctx, { temperature, note, noteAgents: ["team"], plan })
+    registrations.push(...session.registrations)
+    if (!session.registrations.length) {
+      notes.push("ctx.session.hook 不存在：工具面裁剪、温度、黑板根目录三项请求层治理都没装上")
+    }
+    const removedPlanSizes = [...plan.entries()].map(([id, set]) => `${id}=${set.size}`).join(" ")
+
     try {
       tmRuntime.pipelines.store.appendTrajectory({
         tool: "host",
@@ -192,6 +223,10 @@ export const v2Personality: V2Plugin = {
         tools_missing: missing.join(","),
         agents_missing: missingAgents.join(","),
         agents_default: defaultPromoted === null ? "n/a" : defaultPromoted ? "team" : "not-promoted",
+        request_hooks: session.registrations.length,
+        request_temperature: temperature === false ? "off" : temperature,
+        request_removed_plan: removedPlanSizes,
+        board_ttl_days: ttlDays,
         env_protect: envProtectMode,
         note: notes.join(" · "),
       })

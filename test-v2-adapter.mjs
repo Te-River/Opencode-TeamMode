@@ -257,7 +257,78 @@ assert.ok(
 console.log("   OK (a v2 plugin cannot create agents, so it says which are missing)")
 await second.value?.()
 
-console.log("7. teardown")
+console.log("7. the request layer — the whitelist decides what the model SEES")
+const SURFACE = [
+  "read", "grep", "glob", "list", "edit", "write", "patch", "shell", "webfetch", "websearch",
+  "skill", "question", "todowrite", "subagent", "browser_navigate", "browser_tabs_list",
+  "tm_read", "tm_grep", "tm_bash", "tm_fetch", "tm_memory", "tm_board_write", "tm_ptc_run",
+  "tm_stats", "tm_join", "tm_pty", "tm_browser", "tm_search", "tm_webfetch",
+]
+const event = (agent, options = {}) => ({
+  agent,
+  system: [],
+  messages: [],
+  options,
+  tools: Object.fromEntries(SURFACE.map((n) => [n, { description: "d", input: {} }])),
+})
+
+const arch = event("architect")
+await fake.hook("session.context").fire(arch)
+const archLeft = Object.keys(arch.tools)
+for (const gone of [
+  "read", "grep", "glob", "list", "edit", "write", "shell", "webfetch", "websearch", "question",
+  "todowrite", "subagent", "browser_navigate", "browser_tabs_list",
+  "tm_webfetch", "tm_search", "tm_browser", "tm_join", "tm_pty",
+]) {
+  assert.ok(!archLeft.includes(gone), `architect is not even OFFERED ${gone} (v1 left its description in every request)`)
+}
+for (const keep of ["tm_read", "tm_grep", "tm_bash", "tm_fetch", "tm_memory", "tm_board_write", "tm_ptc_run", "tm_stats"]) {
+  assert.ok(archLeft.includes(keep), `architect keeps its governed ${keep}`)
+}
+assert.equal(
+  arch.options.temperature,
+  0.2,
+  "the all-agents-0.2 invariant rides the request — agent config cannot carry it on v2 (legacy field, and the runner does not send it)",
+)
+assert.ok(
+  !arch.system.some((p) => String(p?.text ?? "").includes("## Team Blackboard")),
+  "the resolved board root goes to the lead only, exactly as v1 appends it",
+)
+
+const lead = event("team")
+await fake.hook("session.context").fire(lead)
+const leadLeft = Object.keys(lead.tools)
+assert.ok(leadLeft.includes("subagent"), "the lead keeps the dispatch lever")
+assert.ok(leadLeft.includes("question") && leadLeft.includes("todowrite"), "and the todo/blocking-question grants its prompt mandates need")
+assert.ok(leadLeft.includes("browser_navigate"), "a network role keeps the host's browser catalog")
+assert.ok(leadLeft.includes("tm_webfetch") && leadLeft.includes("tm_browser"), "granted with an ask-map, so still offered")
+assert.ok(!leadLeft.includes("read"), "the lead has no native read either — tm_read is the governed door")
+
+const preset = event("tester", { temperature: 0.7 })
+await fake.hook("session.context").fire(preset)
+assert.equal(preset.options.temperature, 0.7, "a temperature already on the request is never overwritten — the user's model variant outranks our default")
+assert.ok(Object.keys(preset.tools).includes("browser_navigate"), "the tester keeps the browser for UI verification")
+assert.ok(!Object.keys(preset.tools).includes("tm_search"), "…but not the open web")
+
+const comp = event("team")
+await fake.hook("session.compaction").fire(comp)
+assert.equal(comp.system.length, 6, "the must-survive list is pushed onto the summary request")
+await fake.hook("session.compaction").fire(comp)
+assert.equal(comp.system.length, 6, "and re-firing does not duplicate it (the hook runs before every request)")
+// This fake has been booted TWICE on purpose (the idempotence group above), which
+// is what the live host does when it reloads a plugin in-process — so two
+// handlers are attached to session.context right now, and the note guard is the
+// only thing standing between that and a note repeated every round.
+const reloaded = event("team")
+await fake.hook("session.context").fire(reloaded)
+assert.equal(
+  reloaded.system.filter((p) => String(p?.text ?? "").includes("## Team Blackboard")).length,
+  1,
+  "two registered handlers ran over one request and the board note still landed exactly once",
+)
+console.log("   OK (surface trimmed per role, 0.2 restored, board root and survival list on the request)")
+
+console.log("8. teardown")
 await cleanup()
 const undisposed = fake.registrations.filter((r) => !r.disposed)
 assert.equal(undisposed.length, 0, `every registration is disposed on teardown (${undisposed.map((r) => r.label).join(",")})`)
@@ -275,4 +346,4 @@ for (const dir of made) {
     /* temp dir */
   }
 }
-console.log("\ntest-v2-adapter.mjs: ALL PASS (7 groups)")
+console.log("\ntest-v2-adapter.mjs: ALL PASS (8 groups)")
