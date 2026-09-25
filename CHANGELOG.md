@@ -21,6 +21,18 @@ registry saw 1.5.0 as the install-script fix release).
 
 ### Changed
 
+- **A live 2.0.16 run found a gap we had been describing as closed: on v2, `tm_join`
+  cannot collect a host `subagent` child.** The lead dispatched a background
+  `architect`, the child completed, the host injected its reply — and `tm_join`
+  answered "no pending dispatch matched", because (1) we no longer create child
+  sessions ourselves, so the in-process registry never sees the dispatch, (2) the
+  adoption fallback reads `client.session.children`, and the v2 plugin context has no
+  client at all, (3) claiming an explicitly named id verifies parentage through
+  `client.session.get` for the same reason. The event feed now subscribes, so the
+  missing piece is one bridge: `ctx.session.get` as the parentage check inside
+  `dispatch.ts`, with the feed as the source of candidate session ids. Until that
+  lands, the honest statement is the one the child's completion gives: the reply
+  reaches the lead through the host's own injection, not through our collect path.
 - **Doc and business-context edits must go through the write/edit tool — a generated
   throwaway patch script is forbidden by prompt rule now** (user requirement
   2026-09-26). The rule earned itself: while patching markdown through ad-hoc scripts
