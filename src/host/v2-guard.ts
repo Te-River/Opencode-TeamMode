@@ -195,9 +195,22 @@ export async function applyV2PermissionGuards(
 }
 
 /** Does the config still need the coarse `shell -> ask` escalation?  Only while
- *  the fine path is switched off; with TM_R6_FINE_ASK=on the evaluate hook is the
- *  one deciding, so escalating every command would mask it. */
+ *  the fine path is switched off; with the classifier in charge, escalating every
+ *  command would mask it.
+ *  Was the coarse default until a live host proved the seam exists: a
+ * `--standalone` run of the v2 personality recorded
+ * `{action:"shell", resourceCount:1, hasUrl:false}` reaching `evaluate` for a real
+ * `git status --short` (2026-09-25), which is the observation this function was
+ * waiting for.  So the classifier is in charge by default and the escalation is
+ * the fallback again — `TM_R6_FINE_ASK=off` restores "every command asks", which is
+ * what a user should reach for if their host build turns out not to fire the hook.
+ * An absent hook still forces coarse: no seam, no per-command judgement.
+ */
 export function needsCoarseShellAsk(env: NodeJS.ProcessEnv, guardsInstalled: boolean): boolean {
   if (!guardsInstalled) return true
-  return !/^(1|true|yes|on)$/i.test(String(env.TM_R6_FINE_ASK ?? "").trim())
+  const v = String(env.TM_R6_FINE_ASK ?? "").trim()
+  // Only an EXPLICIT off falls back; an empty or unparseable value keeps the
+  // classifier, because "unset" is now the supported configuration.
+  if (/^(0|false|no|off)$/i.test(v)) return true
+  return false
 }

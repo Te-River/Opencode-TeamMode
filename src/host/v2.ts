@@ -180,10 +180,11 @@ export const v2Personality: V2Plugin = {
     const unmappedActions = new Set<string>()
     const wantedIds = Object.keys(agents as Record<string, unknown>)
     // R6 on v2: the plugin cannot raise a dialog (probed), but an `ask` EFFECT
-    // the host evaluates DOES open one.  Until a live host proves that
-    // `permission.evaluate` actually fires for `shell`, the config keeps the
-    // COARSE escalation (every command asks) — fail-closed beats a fine classifier
-    // nobody has seen run.  TM_R6_FINE_ASK=on hands the decision to the hook.
+    // the host evaluates DOES open one.  A live `--standalone` run recorded
+    // `{action:"shell", resourceCount:1}` reaching `permission.evaluate` for a real
+    // command, so the per-command classifier is now in charge and the config keeps
+    // the COARSE escalation (every command asks) only as the fallback:
+    // `TM_R6_FINE_ASK=off`, or no hook installed to hand the decision to.
     const escalateShellAsk =
       envProtectMode !== "off" && needsCoarseShellAsk(process.env, guards.installed)
     // Team is ALWAYS the default (the user's standing instruction — see the
@@ -228,7 +229,9 @@ export const v2Personality: V2Plugin = {
     }
     if (escalateShellAsk) {
       notes.push(
-        "R6 已开：shell 在配置里升为 ask（每条命令都问）。按命令行判定的 evaluate 钩子已装上并在计数，但宿主是否真为 shell 调它还没在活体上证明，所以先不撤粗粒度——TM_R6_FINE_ASK=on 才交给它。",
+        guards.installed
+          ? "R6 已开，但 TM_R6_FINE_ASK=off 显式要回粗粒度：shell 在配置里升为 ask（每条命令都问），按命令行判定的 evaluate 钩子不再决定这件事。"
+          : "R6 已开，但这个宿主没给 permission.hook：按命令行的红线无处可挂，只能把 shell 整体升为 ask（每条命令都问）——这是退路，不是设计。",
       )
     }
 

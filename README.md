@@ -565,6 +565,8 @@ for overrides, extra agents and disabling roles.
 | Env var | Default | Purpose |
 |---|---|---|
 | `TM_ENV_PROTECT` | `strict` | R6 mode: `strict` / `standard` / `off` (off also disarms the approval timer) |
+| `TM_R6_FINE_ASK` | classifier (v2 only) | On **v2** the command line is judged per-call by the host's `permission.evaluate` hook, so an ordinary `git status` asks nothing and an env dump still does. `off` falls back to asking about EVERY shell command — which is also what happens automatically on a host that does not expose the hook, and the boot note says which of the two caused it. v1 is unaffected: it classifies in the tool-call hook either way |
+| `TM_V2_PROBE` | — (v2 only) | Path to a JSONL file where the surface probe records the host's real tool ids, permission action names and argument key names. Names and counts only — never a command line, path, URL or env value. It is how "does the host actually have X?" gets answered from the running build instead of from a doc; without it the same name sets still ride the trajectory so `tm_stats` can show them |
 | `TM_ASK_TIMEOUT_MIN` | `1` | minutes before an unanswered dialog is auto-rejected (floored at 1 min — safe: a racing reply audits as benign `already-closed`; the host's reply event reaching the plugin ~120 s late is event-bus delivery lag, not a click delay). Every governed tool ALSO ends the wait itself at this + 15 s, because the gate is only armed when R6 is on and the client can reply — and a tool that waits forever reads as a hang, not as a request for your attention |
 | `TM_ASK_TIMEOUT_FLOOR_MIN` | `1` | minimum enforced for the ask timeout above |
 | `TM_ENV_PROTECT_EXTRA_DENY` | — | extra block patterns (regex; always hard block, never dialog-governed) |

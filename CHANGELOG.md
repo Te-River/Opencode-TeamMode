@@ -9,6 +9,15 @@ registry saw 1.5.0 as the install-script fix release).
 
 ### Changed
 
+- **On v2 the per-command R6 classifier is in charge; the blanket `shell → ask` is
+  the fallback.** It was kept as the default only because no live host had been
+  seen to call `permission.evaluate` for `shell`, and the probe now records exactly
+  that (`{action:"shell", resourceCount:1}` for a real `git status --short`). A
+  config that asks about every command would mask the hook the evidence was
+  gathered for. Coarse remains reachable — `TM_R6_FINE_ASK=off`, or any host that
+  does not expose `permission.hook` — and the boot note now says **which** of the
+  two causes applies, since one message covering two causes is how a fallback gets
+  mistaken for a setting.
 - **`tm_ptc_run` is v1-only: v2 does not register it.** The host's own
   `execute` (Code Mode) already runs "one program, N tool calls, zero
   round-trips, only the aggregate entering the context", and a live v2 session

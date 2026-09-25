@@ -217,19 +217,55 @@ await reboot.value?.()
 const wsR6 = workspace("r6")
 const r6Fake = makeFakeCtx({ directory: wsR6, options: { envProtect: true }, agents: sixAgents.map((a) => ({ ...a, permissions: [] })) })
 const prevEnv = process.env.TM_ENV_PROTECT
+const prevFine = process.env.TM_R6_FINE_ASK
+delete process.env.TM_R6_FINE_ASK
 process.env.TM_ENV_PROTECT = "on"
 const r6 = await withCapturedConsole(() => plugin.setup(r6Fake.ctx))
 process.env.TM_ENV_PROTECT = prevEnv
 const r6Team = r6Fake.agents.get("team")
+// The classifier is in charge by default now (a live host proved
+// permission.evaluate fires for shell), so the config must NOT blanket-ask every
+// command — that would mask the very hook the evidence was gathered for.
 assert.ok(
-  r6Team.permissions.some((p) => p.action === "shell" && p.effect === "ask"),
-  "with R6 on, shell escalates to `ask` — the host opens a real dialog (probed: it honors ask)",
+  !r6Team.permissions.some((p) => p.action === "shell" && p.effect === "ask"),
+  "R6 on + the evaluate hook installed → no blanket `ask` on shell; the per-command classifier decides",
 )
 assert.ok(
-  r6.warns.some((w) => /每条命令都问/.test(w)),
-  "and the coarser-than-v1 shape of that escalation is said out loud, not passed off as parity",
+  !r6.warns.some((w) => /每条命令都问/.test(w)),
+  "and the coarse-escalation note is not printed when nothing was escalated",
 )
 await r6.value?.()
+
+process.env.TM_R6_FINE_ASK = "off"
+process.env.TM_ENV_PROTECT = "on"
+const r6Coarse = await withCapturedConsole(() => plugin.setup(r6Fake.ctx))
+process.env.TM_ENV_PROTECT = prevEnv
+delete process.env.TM_R6_FINE_ASK
+assert.ok(
+  r6Fake.agents.get("team").permissions.some((p) => p.action === "shell" && p.effect === "ask"),
+  "TM_R6_FINE_ASK=off is the explicit way back: shell escalates to `ask` and the host opens its dialog",
+)
+assert.ok(
+  r6Coarse.warns.some((w) => /每条命令都问/.test(w) && /off/.test(w)),
+  "and the note names the knob as the cause, not the host",
+)
+await r6Coarse.value?.()
+
+const noHook = makeFakeCtx({ directory: wsR6, options: { envProtect: true }, agents: sixAgents.map((a) => ({ ...a, permissions: [] })) })
+delete noHook.ctx.permission
+process.env.TM_ENV_PROTECT = "on"
+const r6NoHook = await withCapturedConsole(() => plugin.setup(noHook.ctx))
+process.env.TM_ENV_PROTECT = prevEnv
+assert.ok(
+  noHook.agents.get("team").permissions.some((p) => p.action === "shell" && p.effect === "ask"),
+  "a host with no permission.hook falls back to coarse REGARDLESS of the knob — fail-closed",
+)
+assert.ok(
+  r6NoHook.warns.some((w) => /没给 permission.hook/.test(w)),
+  "and says WHICH reason applies, because two causes with one message is how a fallback gets mistaken for a setting",
+)
+await r6NoHook.value?.()
+if (prevFine !== undefined) process.env.TM_R6_FINE_ASK = prevFine
 
 const shape = JSON.parse(before)
 assert.equal(
@@ -369,10 +405,17 @@ const plain = { sessionID: "ses_1", agent: "team", action: "webfetch", resources
 await fake.hook("permission.evaluate").fire(plain)
 assert.equal(plain.effect, "allow", "a public fetch is left exactly as the host decided")
 
-assert.equal(needsCoarseShellAsk({}, true), true, "with the hook installed but no live proof it fires, the coarse config ask stays")
-assert.equal(needsCoarseShellAsk({ TM_R6_FINE_ASK: "on" }, true), false, "TM_R6_FINE_ASK=on is what hands shell to the per-command classifier")
-assert.equal(needsCoarseShellAsk({ TM_R6_FINE_ASK: "on" }, false), true, "and without the hook there is nothing to hand it to, so coarse regardless")
-console.log("   OK (metadata denied-not-asked, notation carriers unwrapped, never loosens, coarse-until-proven)")
+// The live probe settled this: `{action:"shell", resourceCount:1}` reached
+// permission.evaluate for a real command, so the classifier is the DEFAULT and the
+// every-command config ask is the fallback.  A default that flipped because nobody
+// remembered why it was conservative is worse than the conservative default, so the
+// reason is pinned in both directions.
+assert.equal(needsCoarseShellAsk({}, true), false, "hook installed → the per-command classifier decides, no blanket config ask")
+assert.equal(needsCoarseShellAsk({ TM_R6_FINE_ASK: "off" }, true), true, "TM_R6_FINE_ASK=off is the explicit way back to coarse")
+assert.equal(needsCoarseShellAsk({ TM_R6_FINE_ASK: "0" }, true), true, "and the 0/false/no spellings mean the same")
+assert.equal(needsCoarseShellAsk({ TM_R6_FINE_ASK: "on" }, false), true, "no hook → nothing to hand it to, so coarse regardless of the knob")
+assert.equal(needsCoarseShellAsk({ TM_R6_FINE_ASK: "garbage" }, true), false, "an unparseable value keeps the supported configuration rather than silently degrading")
+console.log("   OK (metadata denied-not-asked, notation carriers unwrapped, never loosens, classifier-in-charge by default)")
 
 console.log("7c. every sub-agent dispatch runs in the background")
 const bg = { tool: "subagent", sessionID: "ses_1", agent: "team", input: { agent: "researcher", prompt: "x" } }

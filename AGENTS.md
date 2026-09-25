@@ -100,11 +100,30 @@ this before treating any sentence above as platform-neutral.
   link-local / reserved = deny with no consent path, IPv4-mapped and DNS64
   carriers unwrapped first, private = the host's own ask, env-file URL = deny),
   and it only ever gets STRICTER than whatever the host or a user rule already
-  chose. The same hook carries R6's per-command classification, but the coarse
-  config-level `shell -> ask` is deliberately **kept** until a live host proves
-  `evaluate` fires for `shell` at all -- `TM_R6_FINE_ASK=on` is the opt-in, and
-  the hook counts what it sees (`shellMatched`) so that proof is measurable
-  rather than assumed.
+  chose. The same hook carries R6's per-command classification, and it is now IN
+  CHARGE: a live `--standalone` run recorded `{action:"shell", resourceCount:1}`
+  reaching `permission.evaluate` for a real `git status --short`, which is the
+  proof the coarse config-level `shell -> ask` was being kept for. So the blanket
+  escalation is the FALLBACK, reached either by `TM_R6_FINE_ASK=off` or by the host
+  not exposing `permission.hook` at all — and the boot note names WHICH of the two
+  applies, because two causes sharing one message is how a fallback gets mistaken
+  for a setting. The hook keeps counting what it sees (`shellMatched`) so the
+  classifier's own hit rate stays measurable rather than assumed.
+- **What the Team agent is actually OFFERED on v2 (measured, not documented).**
+  Six tools in the request: `edit execute question shell subagent write`. That list
+  is the ground truth for three otherwise-guessed things. ① `read`, `grep`, `glob`,
+  `webfetch`, `websearch`, `skill`, `patch` are absent **because our own matrix
+  denies them and the request layer deletes denied tools** — the host has those
+  actions (it names them in `permission.evaluate` and in our triples), so retiring
+  `tm_read`/`tm_grep` is a permission flip plus governance, not a search for a
+  missing tool; and inside `execute` (Code Mode) the native names genuinely do not
+  exist — `tools.read`/`tools.shell`/`tools.webfetch` return `Unknown tool` while
+  `typeof` reports `"function"` for all three, so a probe that trusts `typeof` gets
+  a false positive. ② `todowrite` is gone, which is why the LEDGER rule has no home
+  on v2 (#16). ③ `execute.after` sees a native `shell` result with keys
+  `content / metadata / output`, which is the precondition for putting JIT offload
+  over the native tools (#5) — without that observation the retirement of
+  `tm_bash` would have been an assumption.
 - **Goal 6 gains one more instance.** `inputSchemaFor` now reports `source`,
   because a table *derived by regex from a descriptor string* and a table
   *translated by zod* are both `exact` but are not the same claim — the boot log
