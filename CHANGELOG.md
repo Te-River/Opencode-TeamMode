@@ -223,6 +223,20 @@ registry saw 1.5.0 as the install-script fix release).
 
 ### Fixed
 
+- **`tm_join` no longer reports "there is nothing to adopt" on a host it could not
+  query.**  Three outcomes collapsed into one sentence: the host surface is absent
+  (v2's client shim exposes only `file.read`/`find.text`, so there is no
+  `session.children`), the call failed, and "we asked and the tree had nothing".
+  The empty-round answer asserted the third — `宿主会话树里也没有可认领的子会话` — in all
+  three cases, which is a claim about the host's session tree that nobody measured.
+  A lead that believes it stops waiting for a report that exists, i.e. the exact
+  silent loss the adoption path was written to prevent.  `adoptFromHost` now returns
+  `{adopted, looked, why}` and the sentence is chosen from it: an unqueried tree says
+  so and names the missing seam, a failed query carries the host's own error text,
+  and a genuinely empty tree keeps the old confirmed wording.  The reason text names
+  the missing SEAM rather than "v2", since the same absence occurs on a v1-shaped
+  client without `session.messages`.
+
 - **The store-shard reclaim pass could not fire for the users who needed it.**
   Sharding moved each non-git workspace's store to `<tmpdir>/opencode-team/w-<hash>`
   and added a boot prune for siblings idle past the TTL — but the call passed

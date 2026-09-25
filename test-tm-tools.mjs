@@ -3360,7 +3360,33 @@ try {
         await rt.dispose()
 
         const { rt: noKids } = await seeded("disp-nochildren", { noChildren: true })
-        assert.ok((await noKids.tools.tm_join.execute({}, LEAD)).output.includes("没有待收集的派发"), "no children endpoint -> the same honest answer, no crash")
+        const noEndpoint = await noKids.tools.tm_join.execute({}, LEAD)
+        assert.ok(noEndpoint.output.includes("没有待收集的派发"), "no children endpoint -> an answer, no crash")
+        // …but the answer may not claim it LOOKED.  Three outcomes used to collapse
+        // into one sentence ("宿主会话树里也没有可认领的子会话"), which on the v2 client
+        // shim — no session domain at all — asserted a negative nobody measured.  A
+        // lead that believes it stops waiting for a report that exists, which is the
+        // silent loss this adoption path was added to prevent.
+        assert.ok(!/会话树里也没有可认领/.test(noEndpoint.output), "an unavailable seam may not report 'confirmed nothing there'")
+        assert.match(noEndpoint.output, /没有看过会话树|没能查看/, "…and says which of the two happened")
+        {
+          const looked = await tm.createTmTools(
+            { directory: process.cwd(), client: { session: { messages: async () => ({}), children: async () => ({ data: [] }) } }, $: () => ({}) },
+            {},
+          )
+          const emptyAfterLooking = await looked.tools.tm_join.execute({ ids: ["ses_nope"] }, LEAD)
+          assert.ok(/会话树里也没有可认领的子会话/.test(emptyAfterLooking.output), "a host we DID query still gets the confirmed-empty sentence — the fix is a distinction, not a silencing")
+          await looked.dispose()
+
+          const threw = await tm.createTmTools(
+            { directory: process.cwd(), client: { session: { messages: async () => ({}), children: async () => { throw new Error("ECONNREFUSED") } } }, $: () => ({}) },
+            {},
+          )
+          const broken = await threw.tools.tm_join.execute({ ids: ["ses_nope"] }, LEAD)
+          assert.ok(/没能查看宿主会话树/.test(broken.output) && !/会话树里也没有可认领/.test(broken.output), "a failed query reports as a failed query, never as an empty tree")
+          assert.match(broken.output, /ECONNREFUSED/, "…and carries the host's own reason so the lead can tell transport from absence")
+          await threw.dispose()
+        }
         await noKids.dispose()
       }
 
@@ -3509,7 +3535,10 @@ try {
         assert.ok(uses >= 2, `the lease line is attached to every return path, not just the settled-round header (found ${uses})`)
         const earlyAt = dSrc.indexOf("if (!mine.length)")
         assert.ok(earlyAt > 0, "the early 'nothing to collect' return is still findable")
-        const early = dSrc.slice(earlyAt, earlyAt + 900)
+        // The window has to cover the WHOLE early answer: the sentence that names
+        // the real reason now sits behind the looked/did-not-look branch, so a
+        // narrower slice would fail for layout rather than for the defect.
+        const early = dSrc.slice(earlyAt, earlyAt + 1600)
         assert.ok(early.includes("leaseLine"), "…including the early 'nothing to collect' return")
         // And that message must not diagnose a SUCCESSFUL dispatch as a failure.
         assert.ok(!/那说明派发生本身没成功/.test(early), "no more asserting the dispatch failed when a sync host task simply never registers here")

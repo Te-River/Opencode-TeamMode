@@ -465,15 +465,25 @@ export function buildDispatchTools(deps: DispatchDeps): {
     parent: string,
     directory: string | undefined,
     only: Set<string> | null,
-  ): Promise<number> {
-    if (typeof api?.children !== "function" || !parent) return 0
+  ): Promise<{ adopted: number; looked: boolean; why: string }> {
+    // Three outcomes used to collapse into `0`: the host surface is absent (v2's
+    // client shim has no `session` domain), the call failed, and "we asked and
+    // there was nothing".  The empty-round answer reads "宿主会话树里也没有可认领的
+    // 子会话", which is a claim about case three — asserted in cases one and two,
+    // where nobody looked.  A lead that believes it will stop waiting for a report
+    // that exists, which is the silent loss this function exists to prevent.
+    // The reason names the MISSING SEAM, not a host generation: the same absence
+    // occurs on a v1-shaped client that lacks `session.messages`, and a sentence
+    // blaming "v2" there would be false in the opposite direction.
+    if (typeof api?.children !== "function") return { adopted: 0, looked: false, why: "这个宿主客户端没有给出 session.children（可辨认的 session API 缺失），我没有看过会话树" }
+    if (!parent) return { adopted: 0, looked: false, why: "调用方会话 id 缺失，无从查询子会话" }
     let un: Unwrapped
     try {
       un = unwrapClientResult(await api.children({ path: { id: parent }, ...(directory ? { query: { directory } } : {}) }))
-    } catch {
-      return 0
+    } catch (err) {
+      return { adopted: 0, looked: false, why: `查询会话树失败：${describeHostError(err)}` }
     }
-    if (!un.ok || !Array.isArray(un.data)) return 0
+    if (!un.ok || !Array.isArray(un.data)) return { adopted: 0, looked: false, why: "宿主返回了无法解析的会话树结果" }
     let adopted = 0
     for (const raw of un.data as Array<Record<string, unknown>>) {
       const sid = String(raw?.id ?? "").trim()
@@ -497,7 +507,7 @@ export function buildDispatchTools(deps: DispatchDeps): {
       adopted++
       log({ step_id: "join", event: "adopt", child: sid, agent: parsed.agent, label: rec.label })
     }
-    return adopted
+    return { adopted, looked: true, why: adopted ? "" : "会话树里没有被认领标题的子会话" }
   }
 
   /** Claim ONE explicitly named child of the calling session — the host's own
@@ -586,10 +596,19 @@ export function buildDispatchTools(deps: DispatchDeps): {
             (r) => (!parent || r.parentSessionID === parent) && (!idFilter || idFilter.has(r.sessionID)),
           )
         let mine = owned()
+        // Whether we got to LOOK at the host's tree, and what it said — the empty
+        // answer must not claim "there is nothing to adopt" on a host we cannot
+        // query, so the fact travels with the attempt rather than being inferred.
+        let adoption: { adopted: number; looked: boolean; why: string } = {
+          adopted: 0,
+          looked: false,
+          why: "本进程已经认全了要收的子代理，没有去查会话树",
+        }
         // This process has never seen some (or all) of what the lead is asking
         // for — the host's session tree, not our memory, is the authority.
         if (mine.length < (idFilter ? idFilter.size : 1)) {
-          if (await adoptFromHost(parent, directory, idFilter)) mine = owned()
+          adoption = await adoptFromHost(parent, directory, idFilter)
+          if (adoption.adopted) mine = owned()
           // Plan B: a NAMED id may be the host's own `task` child (no ·tm
           // marker, so the tree walk above never claims it).  Collecting it is
           // how the lead reads back a result we replaced with a pointer — the
@@ -631,8 +650,18 @@ export function buildDispatchTools(deps: DispatchDeps): {
         }
         if (!mine.length) {
           const lease = leaseLine()
+          // The parenthetical is now chosen by whether we actually looked, so a
+          // host we cannot query no longer reports as "confirmed: nothing there".
+          const saw = adoption.looked
+          const inner = idFilter
+            ? saw
+              ? "（ids 未匹配到本会话的子代理，宿主会话树里也没有可认领的子会话）"
+              : `（ids 未匹配到；而且我没能查看宿主会话树：${adoption.why}）`
+            : saw
+              ? ""
+              : `（注意：${adoption.why}，所以"确实没有子代理"这个结论我给不出）`
           return toToolResult(
-            `没有待收集的派发${idFilter ? "（ids 未匹配到本会话的子代理，宿主会话树里也没有可认领的子会话）" : ""}。` +
+            `没有待收集的派发${inner}。` +
               // The old line asserted the dispatch had failed.  Measured live: it
               // had not — a completed host `task` with a full reply was sitting in
               // the transcript, and the honest reason is that a synchronous host
