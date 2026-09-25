@@ -942,7 +942,7 @@ console.log("7d2. the native snapshot stays ADDRESSABLE, and the browser gate ha
   const scope = createTeamScope(["team"])
   const gf = makeFakeCtx({ directory: workspace("gate"), agents: [] })
   const g = applyV2BrowserGate(gf.ctx, { allowlist: ["*"], env: {}, scope })
-  assert.equal(g.registrations.length, 2, "both halves of the gate register (before + after)")
+  assert.equal(g.registrations.length, 3, "before + after + the sweeper's teardown — the host reloads plugins in this process, so a timer that outlives teardown would add another sweeper per boot")
   let threw = ""
   try {
     g.fireBefore({ tool: "browser_navigate", input: { url: "http://169.254.169.254/latest/meta-data/" }, agent: "team", sessionID: "ses_1" })
