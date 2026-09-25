@@ -39,6 +39,7 @@ import { setAskUnavailableNote } from "../tm/perm-ask.js"
 import type { PluginInput, ToolDefinition } from "../types.js"
 import { blackboardNote } from "./note.js"
 import { applyV2BackgroundForce, applyV2PermissionGuards, needsCoarseShellAsk } from "./v2-guard.js"
+import { applyV2EventFeed } from "./v2-events.js"
 import { applyV2Probe, probeSummary } from "./v2-probe.js"
 import { applyV2NativeOffload } from "./v2-offload.js"
 import { v2CapabilityRows } from "./v2-capabilities.js"
@@ -490,6 +491,7 @@ export const v2Personality: V2Plugin = {
         // passes none — so the row is false until #8 bridges `ctx.session` into the
         // path the tool actually consumes.  Deriving it from ctx rather than
         // hard-coding `false` is what keeps that honest either way.
+        eventFeed: feed.report,
         hasTodoSeam: typeof (ctx as { session?: { todo?: unknown } }).session?.todo === "function",
         hasAsk: typeof (ctx as { tool?: unknown }).tool === "function",
         storageState: storageProbe.state,
@@ -498,6 +500,16 @@ export const v2Personality: V2Plugin = {
     registrations.push(...session.registrations)
     if (!session.registrations.length) {
       notes.push("ctx.session.hook 不存在：工具面裁剪、温度、黑板根目录三项请求层治理都没装上")
+    }
+    // v1 handed the plugin a host `event` hook and pumped every session.idle /
+    // session.error / session.status into the child registry.  This personality had
+    // no subscription at all (#8), so a child that settled two seconds after the
+    // dispatch stayed "running" for the whole wait budget and `tm_join` reported a
+    // state it had never observed — goal #6's failure shape, and a bug rather than
+    // a limitation now that `ctx.event.subscribe()` is measured to work.
+    const feed = await applyV2EventFeed(ctx, { onEvent: (ev) => tmRuntime.observeDispatchEvent(ev) })
+    if (!feed.report.active) {
+      notes.push(`事件流没接通（${feed.report.stopped ?? "原因未知"}）：tm_join 的结算检测只剩等待预算内的轮询，子代理结算了也要等到超时才报告`)
     }
     const removedPlanSizes = [...plan.entries()].map(([id, set]) => `${id}=${set.size}`).join(" ")
 
@@ -526,6 +538,8 @@ export const v2Personality: V2Plugin = {
         tools_codemode: v2CodeModeDirect ? "direct" : "catalog",
         guard_foreign_skipped: guards.report.foreignSkipped,
         subagent_background: bgForce.registrations.length ? "forced-true" : "no-hook",
+        event_feed: feed.report.active ? "subscribed" : "absent",
+        event_feed_detail: feed.report.stopped ?? "",
         guard_shell_coarse: escalateShellAsk,
         request_temperature: temperature === false ? "off" : temperature,
         request_removed_plan: removedPlanSizes,
@@ -571,6 +585,13 @@ export const v2Personality: V2Plugin = {
           tools_removed: Object.entries(session.report.removed).map(([k, v]) => `${k}=${v}`).join(" "),
           note_pushed: session.report.notePushed,
           compaction_lines: session.report.compactionLines,
+          // Accumulates for the whole process, so it can only be written at
+          // teardown: this is the number that answers "did the feed stay alive, and
+          // did the host rename the event types under us after the last upgrade?"
+          event_received: feed.report.received,
+          event_forwarded: feed.report.forwarded,
+          event_unknown_types: Object.entries(feed.report.unknown).map(([k, v]) => `${k}=${v}`).join(" "),
+          event_stopped: feed.report.stopped ?? "",
           ...probeSummary(probe.report),
         })
       } catch {

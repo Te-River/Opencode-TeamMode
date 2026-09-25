@@ -42,6 +42,9 @@ interface Inputs {
   /** Team-scope isolation (#22): how many hook events resolved to one of our six
    *  roles, how many were somebody else's, and how many the host never told us. */
   scope?: { report: { ours: number; foreign: number; unknown: number } }
+  /** The `ctx.event.subscribe()` feed (#8).  `received` is the observation that
+   *  makes this row `ok` rather than `declared`: an event that actually arrived. */
+  eventFeed?: { active: boolean; received: number; forwarded: number; unknown: Record<string, number>; stopped?: string }
 }
 
 const has = (list: readonly string[], want: (x: string) => boolean) => list.some(want)
@@ -109,8 +112,20 @@ export function v2CapabilityRows(i: Inputs): CapabilityRow[] {
     {
       seam: "ctx.event.subscribe() → 事件流",
       feature: "看见别的会话发生了什么（结算、注入、跨会话信号）",
-      state: domains.includes("event") ? "declared" : "missing",
-      evidence: "static",
+      state: !i.eventFeed
+          ? domains.includes("event")
+            ? "declared"
+            : "missing"
+          : i.eventFeed.received > 0
+            ? "ok"
+            : i.eventFeed.active
+              ? "not-seen"
+              : "missing",
+      // Counted, not asserted: `active` only means subscribe() returned
+      // something iterable.  `received > 0` is the observation that a 2.x host
+      // really does push session events at a plugin, which is what tm_join's
+      // settle detection needed and never had (#8).
+      evidence: i.eventFeed && i.eventFeed.received > 0 ? "event" : "static",
       // This row used to say the opposite — that the public shape needed an Effect
       // runtime and therefore could not be used with our empty `dependencies`. A
       // live 2.0.16 probe disproved it, so the correction is the whole point: the

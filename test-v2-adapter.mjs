@@ -1067,6 +1067,106 @@ console.log("8c. the capability matrix exists on v2 too, from observations")
 }
 console.log("   OK (rows derived from observations, declared ≠ ok, missing seams named)")
 
+console.log("8d. the event feed (#8): tm_join's settle detection on v2")
+{
+  const { applyV2EventFeed, FEED_TYPES } = await import("./dist/host/v2-events.js")
+  const repoRoot = path.dirname(fileURLToPath(import.meta.url))
+  const v2src = fs.readFileSync(path.join(repoRoot, "src", "host", "v2.ts"), "utf8")
+  // The bug this module exists for: v1 pumped host events into the child registry
+  // and v2 subscribed to nothing, so a settled child stayed "running" and tm_join
+  // reported a state it had never observed.  A unit test alone would not catch the
+  // bug coming back, so the wiring is pinned too.
+  assert.ok(/applyV2EventFeed\(ctx, \{ onEvent:/.test(v2src), "the personality opens the feed")
+  assert.ok(/tmRuntime\.observeDispatchEvent\(ev\)/.test(v2src), "and hands every forwarded event to the dispatcher")
+  assert.ok(/event_forwarded/.test(v2src) && /event_unknown_types/.test(v2src), "what it saw is written down at teardown")
+  assert.ok(/事件流没接通/.test(v2src), "and a host that will not stream says so out loud at boot")
+
+  // (a) no subscribe on this host -> inactive with a reason, and nothing thrown
+  const silent = await applyV2EventFeed({}, { onEvent: () => {} })
+  assert.equal(silent.report.active, false, "no ctx.event domain means no feed")
+  assert.match(silent.report.stopped ?? "", /no ctx\.event\.subscribe/, "and the reason is named, not blank")
+
+  // (b) the async-iterable shape: whitelist forwarded, everything else counted by NAME
+  const seen = []
+  const pushed = []
+  let returnCalled = 0
+  // The idle branch yields a tick rather than spinning: an async generator that is
+  // never suspended at a yield cannot process the return() the feed asks for on
+  // stop(), so a test stream that only awaits timers would hang teardown (measured —
+  // the first draft of this group hung exactly there).
+  const stream = {
+    [Symbol.asyncIterator]: async function* () {
+      try {
+        while (true) {
+          await new Promise((r) => setTimeout(r, 2))
+          const raw = pushed.shift()
+          yield raw ?? { type: "session.tick", properties: {} }
+        }
+      } finally {
+        returnCalled++
+      }
+    },
+  }
+  const feed = await applyV2EventFeed(
+    { event: { subscribe: async () => stream } },
+    { onEvent: (ev) => seen.push(ev) },
+  )
+  assert.equal(feed.report.active, true, "subscribe() returning an iterable is an open feed")
+  // The host's spellings differ across generations; a name we do not recognise is
+  // counted and stays unseen rather than being forwarded on a guess.
+  pushed.push({ type: "session.idle", properties: { sessionID: "s1" } })
+  pushed.push({ type: "permission.evaluated", properties: { sessionID: "s1", secret: "NEVER-LOG-THIS" } })
+  pushed.push({ kind: "session.status", payload: { sessionID: "s1", status: { type: "idle" } } })
+  await new Promise((r) => setTimeout(r, 60))
+  assert.deepEqual(seen.map((e) => e.type), ["session.idle", "session.status"], "only whitelisted types reach the consumer, under either spelling")
+  assert.deepEqual(seen[1].properties, { sessionID: "s1", status: { type: "idle" } }, "properties-vs-payload is normalized to the HostEvent the dispatcher reads")
+  assert.deepEqual(Object.keys(feed.report.unknown), ["permission.evaluated", "session.tick"], "an unseen type is recorded by NAME only (the idle ticks land here too)")
+  assert.ok(!JSON.stringify(feed.report).includes("NEVER-LOG-THIS"), "and never with its payload — the privacy rule applies to the feed too")
+  assert.equal(feed.report.forwarded, 2, "forwarded counted")
+  await feed.stop()
+  assert.equal(returnCalled, 1, "stop() closes the SAME iterator the loop is pulling from")
+  const beforeStop = seen.length
+  pushed.push({ type: "session.idle", properties: { sessionID: "s2" } })
+  await new Promise((r) => setTimeout(r, 25))
+  assert.equal(seen.length, beforeStop, "after stop() nothing more is forwarded")
+  assert.ok(FEED_TYPES.includes("session.error") && FEED_TYPES.includes("session.idle"), "the dispatcher's own vocabulary is what the whitelist holds")
+
+  // (c) a host that pushes instead of being pulled (callback subscribe on the stream)
+  const pulled = []
+  const cbFeed = await applyV2EventFeed(
+    { event: { subscribe: async () => ({ subscribe: (cb) => { cb({ type: "session.error", properties: { sessionID: "s9" } }) } }) } },
+    { onEvent: (e) => pulled.push(e) },
+  )
+  assert.equal(cbFeed.report.active, true, "the push-shaped stream is also a feed")
+  assert.deepEqual(pulled.map((e) => e.type), ["session.error"], "and it reaches the consumer")
+
+  // (d) a throwing consumer may not escape into the host's event loop
+  const bad = await applyV2EventFeed(
+    { event: { subscribe: async () => ({ subscribe: (cb) => cb({ type: "session.idle", properties: {} }) }) } },
+    { onEvent: () => { throw new Error("consumer exploded") } },
+  )
+  assert.match(bad.report.stopped ?? "", /consumer exploded/, "the failure is recorded as the reason the feed stopped")
+
+  // (e) the capability row reads off these counters, never off the domain's existence
+  const { v2CapabilityRows } = await import("./dist/host/v2-capabilities.js")
+  const f4 = makeFakeCtx({ directory: probeDir, agents: [] })
+  const p4 = await applyV2Probe(f4.ctx, { env: {} })
+  const base = {
+    ctx: f4.ctx, probe: p4, guardsInstalled: true, backgroundForced: true,
+    offload: { active: true, registrations: [{}], report: { seen: 3, offloaded: 1 } },
+    sessionHooks: 2, temperature: 0.2, hasTodoSeam: false, hasAsk: false,
+  }
+  const rowOf = (r) => r.find((x) => x.seam.includes("ctx.event"))
+  assert.equal(rowOf(v2CapabilityRows({ ...base, eventFeed: { active: true, received: 0, forwarded: 0, unknown: {} } })).state, "not-seen",
+    "subscribed but nothing has arrived yet is NOT a green row")
+  const live = rowOf(v2CapabilityRows({ ...base, eventFeed: { active: true, received: 4, forwarded: 2, unknown: { "permission.evaluated": 2 } } }))
+  assert.equal(live.state, "ok", "an event that actually arrived is what earns ok")
+  assert.equal(live.evidence, "event", "and the row says where the evidence came from")
+  assert.equal(rowOf(v2CapabilityRows({ ...base, eventFeed: { active: false, received: 0, forwarded: 0, unknown: {}, stopped: "subscribe threw" } })).state, "missing",
+    "a feed that could not open is a missing seam, not a quiet one")
+}
+console.log("   OK (whitelist by name, payload never recorded, iterator closed on teardown, row derived from counters)")
+
 console.log("9. teardown")
 await cleanup()
 const undisposed = fake.registrations.filter((r) => !r.disposed)

@@ -48,6 +48,7 @@ implied:
 | Non-blocking commands | `tm_pty`, on the host's own terminal sessions | **not registered at all** — the v2 plugin context has no pty domain, so the tool could only ever report its own missing seam. Run a slow step as its own `shell` call (one per call, each with its own `timeout`) and tee the output to a log you can read back |
 | File access | `tm_read` / `tm_grep` / `tm_bash` | the host's own `read` / `grep` / `glob` / `shell` — **governed anyway**: oversized results are offloaded through `tool.execute.after`, and out-of-project paths go through the host's own `external_directory` permission (a dialog, where v1 had a hard refusal) |
 | Batch calls | `tm_ptc_run` | the host's own `execute` (Code Mode) |
+| Sub-agent settlement | the host `event` hook | `ctx.event.subscribe()` — zero-dependency async iterable, filtered by event-type name (`src/host/v2-events.ts`). Without it `tm_join` cannot tell a settled child from a running one; `tm_stats` reports what the feed forwarded and which type names went unrecognised (names only, never payloads) |
 | The task ledger | the host's `todowrite` | **`tm_ledger`**, stored in the host's `ctx.storage` (v2 has no `todowrite`) |
 | Asking the user | the host's official per-request dialog | **a plugin cannot open a dialog on v2.** Governed calls that would have asked instead **fail closed** with a refusal that says why. The dialogs you do see are raised by the host itself (permission rules, out-of-project access) |
 | Web access | a 22-host allowlist | **no domain gate** (`TM_WEBFETCH_ALLOWED_DOMAINS` defaults to `"*"`) — everything is reachable except the address red line: cloud-metadata / link-local / reserved ranges are denied with no consent path, private space (loopback, RFC1918, CGNAT, `.localhost`) is refused through our tools |
@@ -194,6 +195,7 @@ a new release may have changed them. Re-running is cheap — unchanged files are
 | 默认 agent | 只在用户没动过时补位 | **每次启动都把 Team 设成默认**（v2 没有读取接口），再加配置里的 `default_agent: "team"`（这一条才是你核对得动的）。退出方式：`"team-mode": { "defaultAgent": false }` |
 | 读文件 / 搜代码 / 跑命令 | `tm_read` / `tm_grep` / `tm_bash` | 宿主的 `read` / `grep` / `glob` / `shell`，**治理照旧**：超大结果照样在 `tool.execute.after` 被卸载成预览 + 句柄，跨出项目的路径走宿主自己的 `external_directory` 权限（v1 是硬拒，v2 是弹窗） |
 | 批量调用 | `tm_ptc_run` | 宿主自己的 `execute`（Code Mode） |
+| 子代理结算检测 | 宿主的 `event` 钩子 | `ctx.event.subscribe()`——零依赖的 async iterable，按事件类型名过滤（`src/host/v2-events.ts`）。没有它 `tm_join` 分不清「已结算」和「仍在跑」；`tm_stats` 会给出转发了多少、哪些类型名没认出来（只记名字，绝不记负载） |
 | 任务清单 | 宿主 `todowrite` | **`tm_ledger`**，存在宿主的 `ctx.storage` 里（v2 不给插件 `todowrite`） |
 | 征求用户同意 | 宿主官方逐次弹窗 | **插件在 v2 弹不出对话框。** 原本该问的受治理调用一律**直接拒绝**，并说明是"没人可问"而不是"问了被拒"。你看到的弹窗都来自宿主自己（权限规则、越出项目目录） |
 | 联网 | 22 个域名白名单 | **不按域名拦**（`TM_WEBFETCH_ALLOWED_DOMAINS` 默认 `"*"`）——只保留地址红线：元数据 / 链路本地 / 保留网段完全不可授权；私网（回环、RFC1918、CGNAT、`.localhost`）在我们的工具里直接拒 |

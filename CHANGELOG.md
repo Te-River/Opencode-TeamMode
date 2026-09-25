@@ -9,6 +9,20 @@ registry saw 1.5.0 as the install-script fix release).
 
 ### Changed
 
+- **v2 can finally see a sub-agent settle (#8).** v1 was handed a host `event` hook and
+  pumped every `session.idle` / `session.error` / `session.status` into the dispatch
+  registry; the v2 personality subscribed to nothing, so a child that finished two
+  seconds after its dispatch stayed "running" for the whole `waitMs` budget and
+  `tm_join` reported a state it had never observed — goal #6's failure shape, and a bug
+  rather than a limitation now that `ctx.event.subscribe()` is measured to be a
+  zero-dependency async iterable on 2.0.16. `src/host/v2-events.ts` opens that seam and
+  forwards only whitelisted type names: event spellings changed wholesale between host
+  generations, so an unrecognised type is counted by NAME and never forwarded on a guess,
+  and its payload never reaches the trajectory (the privacy red line covers the feed as
+  much as the guard). `stop()` closes the SAME iterator the pull loop holds, the
+  capability row now reads off these counters instead of the domain's existence
+  (subscribed-but-nothing-arrived is `not-seen`, not green), and a host that will not
+  stream says 事件流没接通（原因）at boot instead of leaving a `tm_join` that looks healthy.
 - **`tm_*` are delivered as real tools by default on v2, after paying for the text
   first.** The decision was "slim the description, then go direct", and both halves
   happened: `tm_browser`'s description went from a narrative of every lesson to the
