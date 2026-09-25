@@ -65,6 +65,17 @@ const BROWSER_SUITES = new Set(["test-tm-tools.mjs", "test-browser.mjs"])
  * still override this default.
  */
 const storeRoot = fs.mkdtempSync(path.join(os.tmpdir(), "tm-test-store-"))
+// Children get storeRoot AS THEIR TMPDIR, which is what actually stops the leak:
+// a non-git workspace's store lives at `<os.tmpdir()>/opencode-team/w-<hash>`, so
+// overriding TM_BLACKBOARD_DIR / TM_TRAJECTORY_DIR alone still grew one shard in
+// the developer's real Temp per throwaway workspace (2,067 had accumulated, 74 of
+// them inside the last hour).  Redirecting the tmp root puts EVERYTHING a test
+// writes under the directory we already delete at exit — run stores, shards,
+// browser profiles, memory mirrors — not just the two trees an env override
+// reaches.  (Verified that `os.tmpdir()` reads TMPDIR/TEMP/TMP per call rather
+// than caching, so this takes effect in the child without a Node flag.)
+const childTmp = path.join(storeRoot, "tmp")
+fs.mkdirSync(childTmp, { recursive: true })
 process.on("exit", () => {
   try {
     fs.rmSync(storeRoot, { recursive: true, force: true, maxRetries: 3, retryDelay: 50 })
@@ -98,16 +109,19 @@ if (!suites.length) {
 const run = (file) =>
   new Promise((resolve) => {
     const started = Date.now()
-    // TM_STORE_RECLAIM=off: a suite that builds a runtime in a temp dir would
-    // otherwise run the boot-time store reclamation against the DEVELOPER'S
-    // real tmpdir bucket (it did — 503 MB of expired runs vanished mid-test).
-    // Cleanup is product behaviour for the user's machine, not a test fixture;
-    // the reclamation itself is covered by calling its functions directly.
+    // TM_STORE_RECLAIM=off: cleanup at boot is product behaviour for the user's
+    // machine, not a test fixture, and the reclamation itself is covered by
+    // calling its functions directly.  With the child tmp root redirected (below)
+    // this is now belt-and-braces — the bucket it would reach is ours — but a
+    // mid-suite sweep of a SANDBOX still has no reason to run, so it stays off.
     const child = spawn(process.execPath, [file], {
       cwd: REPO,
       windowsHide: true,
       env: {
         ...process.env,
+        TMPDIR: childTmp,
+        TEMP: childTmp,
+        TMP: childTmp,
         TM_STORE_RECLAIM: "off",
         TM_BLACKBOARD_DIR: path.join(storeRoot, "blackboard"),
         TM_TRAJECTORY_DIR: path.join(storeRoot, "trajectory"),

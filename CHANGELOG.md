@@ -197,6 +197,30 @@ registry saw 1.5.0 as the install-script fix release).
 
 ### Fixed
 
+- **The store-shard reclaim pass could not fire for the users who needed it.**
+  Sharding moved each non-git workspace's store to `<tmpdir>/opencode-team/w-<hash>`
+  and added a boot prune for siblings idle past the TTL — but the call passed
+  `sharedBase`, which inside a repository is `<repo>/.git/opencode-team` (a directory
+  that can never contain a shard), *and* skipped the pass unless the current
+  workspace was non-git.  Two independent reasons for the same outcome: someone who
+  works mostly inside repositories booted the plugin in a git workspace every time
+  and so never swept the bucket their throwaway sessions had been filling — 2,067
+  orphaned directories on the machine this was found on.  The prune now names the
+  tmpdir bucket explicitly (the way the legacy-bucket reclaim already correctly did)
+  and takes `keep: null` to mean "this workspace has no live shard", so the TTL — not
+  the current workspace's identity — is what spares a session in another window.
+  Proven end to end: a boot in a sandboxed git workspace removes a 40-day-old shard
+  and keeps a fresh sibling.
+- **The test runner no longer grows the developer's Temp bucket.** Overriding
+  `TM_BLACKBOARD_DIR`/`TM_TRAJECTORY_DIR` redirected only those two trees, so every
+  throwaway workspace a suite created still left a permanent `w-*` shard in the real
+  bucket — and `TM_STORE_RECLAIM=off`, added precisely to keep tests out of that
+  bucket, is also what stopped anything cleaning it up.  Children now get the run's
+  sandbox AS their `TMPDIR`/`TEMP`/`TMP`, so run stores, shards, browser profiles and
+  memory mirrors all live inside the directory the runner deletes at exit.  Measured:
+  2,067 → 2,067 shards across a full run (was ~+16), and serial wall time fell from
+  ~130 s to ~49 s — the bucket was being scanned at boot, so the leak was slowing
+  every session, not just occupying directories.
 - **The prompts stopped promising Markdown the host does not render.** The
   presentation sections told every role that replies support footnotes and KaTeX
   `$…$` / `$$…$$`, and that mermaid is NOT drawn. Measured against the host's

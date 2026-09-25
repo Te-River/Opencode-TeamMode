@@ -1983,6 +1983,61 @@ try {
       assert.ok(fs.existsSync(path.join(base, "w-0000000002")), "the LIVE shard survives even when its mtimes are old")
       assert.ok(fs.existsSync(path.join(base, "memories")), "non-shard siblings (the memory tree) are none of its business")
       assert.deepEqual(tm.pruneStaleStoreShards(path.join(base, "nope"), path.join(base, "w-0000000002"), 1), [], "a missing base is a no-op, never a throw")
+    // …and the pass is not gated on the CURRENT workspace being non-git.  It was,
+    // which is how one machine accumulated 2,067 orphaned shards: someone who works
+    // mostly in repositories never once booted the non-git branch that prunes them,
+    // because a git workspace's own store IS the shared base and looks nothing like
+    // a shard.  `keep: null` = "this workspace has no live shard to protect".
+    {
+      const b2 = path.join(mktmp("shardbase2"), "opencode-team")
+      const stale = new Date(Date.now() - 30 * 24 * 3600 * 1000)
+      for (const d of ["w-00000000aa", "w-00000000bb"]) {
+        const p = path.join(b2, d)
+        fs.mkdirSync(p, { recursive: true })
+        fs.utimesSync(p, stale, stale)
+      }
+      const gone2 = tm.pruneStaleStoreShards(b2, null, 5 * 24 * 3600 * 1000)
+      assert.deepEqual(gone2.sort(), ["w-00000000aa", "w-00000000bb"], "with no live shard to protect, BOTH stale shards are reclaimed")
+      // the live-shard-protecting form still works, so the fix is a gate change, not a semantic one
+      fs.mkdirSync(path.join(b2, "w-00000000cc"), { recursive: true })
+      fs.utimesSync(path.join(b2, "w-00000000cc"), stale, stale)
+      assert.deepEqual(tm.pruneStaleStoreShards(b2, path.join(b2, "w-00000000cc"), 5 * 24 * 3600 * 1000), [], "and a named live shard is still spared")
+    }
+    {
+      // End to end, in a SANDBOXED git workspace: boot with reclaim on and prove a
+      // stale sibling in the tmpdir base disappears.  The workspace gets its own .git
+      // directory rather than borrowing this repo's, so the test never writes into
+      // the developer's real store, and TMPDIR already points at the runner's
+      // throwaway root (see scripts/run-tests.mjs).
+      const gitWs = mktmp("gitws")
+      fs.mkdirSync(path.join(gitWs, ".git"), { recursive: true })
+      const bucket = path.join(os.tmpdir(), "opencode-team")
+      const staleShard = path.join(bucket, "w-000000dead")
+      const freshShard = path.join(bucket, "w-100000dead")
+      fs.mkdirSync(staleShard, { recursive: true })
+      fs.mkdirSync(freshShard, { recursive: true })
+      const old = new Date(Date.now() - 40 * 24 * 3600 * 1000)
+      fs.utimesSync(staleShard, old, old)
+      const prevReclaim = process.env.TM_STORE_RECLAIM
+      process.env.TM_STORE_RECLAIM = "on"
+      try {
+        const rGit = await tm.createTmTools({ directory: gitWs, client: {}, $: () => ({}) }, {})
+        assert.ok(rGit.store.trajectoryRoot.startsWith(path.join(gitWs, ".git")), "a git workspace keeps its store inside its own .git")
+        assert.ok(!fs.existsSync(staleShard), "…and a git boot STILL reclaims the stale non-git shards (this is the wiring that used to be missing)")
+        assert.ok(fs.existsSync(freshShard), "while a fresh sibling — possibly another window's live session — survives the TTL gate")
+        await rGit.dispose?.()
+      } finally {
+        if (prevReclaim === undefined) delete process.env.TM_STORE_RECLAIM
+        else process.env.TM_STORE_RECLAIM = prevReclaim
+        for (const d of [staleShard, freshShard]) {
+          try {
+            fs.rmSync(d, { recursive: true, force: true })
+          } catch {
+            /* sandbox */
+          }
+        }
+      }
+    }
     }
     // …and the UPGRADE orphan: sharding left the pre-shard blackboard/ (runs +
     // webcache) and trajectory/ at the shared base with no sweeper pointed at

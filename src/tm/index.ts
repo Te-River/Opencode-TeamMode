@@ -141,7 +141,11 @@ export function workspaceStoreKey(directory: string): string {
  *  what it removed). */
 export function pruneStaleStoreShards(
   base: string,
-  keep: string,
+  /** the live shard to protect; `null` when this workspace has no shard (a git
+   *  workspace stores at the base itself), which means every stale sibling is fair
+   *  game — the TTL, not the identity of the current workspace, is what keeps a
+   *  session's data alive */
+  keep: string | null,
   ttlMs: number,
   now: number = Date.now(),
 ): string[] {
@@ -152,7 +156,7 @@ export function pruneStaleStoreShards(
   } catch {
     return removed
   }
-  const keepName = path.basename(keep)
+  const keepName = keep ? path.basename(keep) : ""
   for (const name of names) {
     if (!/^w-[0-9a-f]{10}$/.test(name) || name === keepName) continue
     const dir = path.join(base, name)
@@ -299,17 +303,25 @@ export async function createTmTools(
   // test runner never reaches into the developer's real Temp.
   if (cfg.storeReclaim !== "off") {
     const ttlMs = cfg.blackboardTtlDays * 24 * 60 * 60 * 1000
-    if (!gitUsable) {
-      try {
-        pruneStaleStoreShards(sharedBase, storeBase, ttlMs)
-      } catch {
-        /* cleanup only — a failed prune must never cost the session its tools */
-      }
+    // Shards live in the TMPDIR bucket and nowhere else — a git workspace's store
+    // is inside its own `.git`, which never contains a `w-*`.  So the prune has to
+    // name that bucket explicitly rather than reuse `sharedBase`: passing sharedBase
+    // meant a git boot swept a directory that can only ever be empty of shards, and
+    // the pass was additionally gated on `!gitUsable`.  Two independent reasons why
+    // one machine accumulated 2,067 orphaned shards while its owner worked mostly
+    // inside repositories.  A git workspace therefore protects no live shard
+    // (`keep: null`), and the TTL — not the current workspace's identity — is what
+    // spares a session running in another window.
+    const shardBucket = path.join(os.tmpdir(), "opencode-team")
+    try {
+      pruneStaleStoreShards(shardBucket, gitUsable ? null : storeBase, ttlMs)
+    } catch {
+      /* cleanup only — a failed prune must never cost the session its tools */
     }
     // The pre-shard layout lives at the TMPDIR base and nowhere else: inside a
     // repo, `blackboard/`+`trajectory/` ARE the live store.
     try {
-      reclaimLegacyStoreBuckets(path.join(os.tmpdir(), "opencode-team"), ttlMs)
+      reclaimLegacyStoreBuckets(shardBucket, ttlMs)
     } catch {
       /* same: reclamation is never worth failing a session over */
     }
