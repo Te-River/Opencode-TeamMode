@@ -7,6 +7,22 @@ registry saw 1.5.0 as the install-script fix release).
 
 ## [Unreleased]
 
+### Added
+
+- **`scripts/gen-v2-agents.mjs` projects the six roles into v2 agent files.** A
+  v2 plugin cannot create an agent — `AgentEditor` exposes only
+  `list/get/default/update/remove` — so the roles have to reach the host the same
+  way the built-in Build and Plan agents do: `~/.config/opencode/agents/<name>.md`
+  (or the `agents` config key). The generator reads `dist/agents.js` rather than
+  copying any prompt text, so the markdown body is the same string the v1
+  personality injects, `REPLY_CONTRACT` and `SHARED_RULES` included, and the
+  permission triples come from `triplesFromAgentPermission` — the same
+  translation the runtime applies, which is what keeps the two from drifting.
+  Running it against this repo's roles is also what proved the T3 invariant
+  survives the projection: `team` gets `subagent: allow`, all five specialists
+  get `deny`. Files it did not generate are refused unless `--force`, and
+  `--print` previews without writing.
+
 ### Fixed
 
 - **The v2 argument table for `tm_join` / `tm_pty` / `tm_stats` now says what
