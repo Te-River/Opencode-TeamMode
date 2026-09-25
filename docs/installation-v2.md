@@ -34,6 +34,7 @@ opencode --version        # 1.18.x → installation.md ;  2.x → this page
 | Asking the user | the host's official per-request dialog | **a plugin cannot open a dialog on v2.** Governed calls that would have asked instead **fail closed** with a refusal that says why. The dialogs you do see are raised by the host itself (permission rules, out-of-project access) |
 | Web access | a 22-host allowlist | **no domain gate** (`TM_WEBFETCH_ALLOWED_DOMAINS` defaults to `"*"`) — everything is reachable except the address red line: cloud-metadata / link-local / reserved ranges are denied with no consent path, private space (loopback, RFC1918, CGNAT, `.localhost`) is refused through our tools |
 | Sub-agents | needs `OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS=true` | native; the plugin forces `background: true` on every `subagent` call, so **do not set that env var for 2.x** (it is a v1 workaround and changes nothing here) |
+| Effect on your other modes | the plugin's hooks are global | **none.** Every hook checks the session's owner first, so `build`, `plan` and any agent you installed yourself stay exactly as a fresh OpenCode leaves them — no tool is deleted from their requests, no temperature is set, nothing is offloaded, no permission is tightened, no dispatch is converted to background |
 
 ### Prerequisite
 
@@ -172,6 +173,7 @@ a new release may have changed them. Re-running is cheap — unchanged files are
 | 征求用户同意 | 宿主官方逐次弹窗 | **插件在 v2 弹不出对话框。** 原本该问的受治理调用一律**直接拒绝**，并说明是"没人可问"而不是"问了被拒"。你看到的弹窗都来自宿主自己（权限规则、越出项目目录） |
 | 联网 | 22 个域名白名单 | **不按域名拦**（`TM_WEBFETCH_ALLOWED_DOMAINS` 默认 `"*"`）——只保留地址红线：元数据 / 链路本地 / 保留网段完全不可授权；私网（回环、RFC1918、CGNAT、`.localhost`）在我们的工具里直接拒 |
 | 子代理 | 需要 `OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS=true` | 原生能力；插件对每次 `subagent` 强制 `background: true`，所以 **2.x 不要去设那个环境变量**（那是 v1 的补丁，在这里什么也不改变，只会让人误判） |
+| 对你其它模式的影响 | 插件钩子是全局的 | **没有影响。** 每个钩子都先看会话归属，所以 `build`、`plan` 和你自己装的 agent 都保持刚装好 OpenCode 时的样子——不会从它们的请求里删工具、不会设温度、不会卸载结果、不会收紧权限、也不会把它们的派发改成后台 |
 
 ### 前置条件
 

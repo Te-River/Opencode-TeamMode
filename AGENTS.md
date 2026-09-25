@@ -17,6 +17,23 @@ The goals above were written against OpenCode 1.18.x. These are the places where
 the 2.x port changes the business claim rather than the implementation — read
 this before treating any sentence above as platform-neutral.
 
+- **Everything the plugin changes is Team-scoped (user requirement, 2026-09-25).**
+  Every v2 hook fires for EVERY session on the host, so `src/host/v2-scope.ts` is the
+  one answer each layer asks before it writes: the per-role tool trim, `temperature`
+  0.2, the board note, the compaction survival list, the native-result offload, the
+  R6/egress permission strictening, and the forced `background: true` all no-op for
+  `build`, `plan`, or any agent that is not one of our six — those modes must look
+  exactly like a freshly installed OpenCode. A session also becomes "ours" when one of
+  our own tools serves it (`bindV2Tool`'s `onCall` → `learn`), because the host does not
+  promise `agent` on every event. The third verdict, `unknown`, is deliberately NOT
+  treated as ours: isolation outranks coverage, so an unresolved call is left completely
+  alone — and it is COUNTED (`scope_unknown`) and printed by `tm_stats` with the sentence
+  "没资格治理", because a governance layer that silently stopped applying after a host
+  upgrade is the overstated claim this product exists to refuse. The consequence is said
+  out loud in the boot notes rather than hidden: outside Team the red lines we inject
+  (metadata/private addresses, R6 classification) do NOT apply either — that floor is the
+  host's or the user's own config's job. (v1 cannot be scoped this way: its `config` hook
+  and bash escalation sit in the FROZEN personality.)
 - **Goal 1's injection is gone on v2.** `AgentEditor` has no `add`, and
   `ctx.command.transform.add` was measured NOT to reach the UI, so the six roles
   and the six `/team-*` commands are config files —

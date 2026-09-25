@@ -288,6 +288,12 @@ through with `tm_fetch` when it genuinely needs the payload.
 > preview), and the address red line plus R6's per-command classification ride the
 > host's `permission.evaluate`.  `tm_ledger` is the one tool that exists ONLY on v2 (the lead's list needs a home where
 > `todowrite` does not).
+> **Nothing we change reaches outside Team.** Every v2 hook fires for every session on
+> the host, so the tool-surface trim, the 0.2 temperature, the blackboard note, the offload
+> of native results, the R6/address strictening and the forced-background dispatch all ask
+> "is this one of our six roles?" first — `build`, `plan` and your own agents stay as a
+> fresh install leaves them. Calls whose owner the host did not tell us are left alone too,
+> and counted (`tm_stats` prints `作用域：我们 · 他人 · 未判定`).
 > The installer writes the v2 variants of the six
 > role prompts, which name `read` / `grep` / `shell` instead of the aliases.
 > Everything above this note describes the v1 (1.18.x) surface, which still ships

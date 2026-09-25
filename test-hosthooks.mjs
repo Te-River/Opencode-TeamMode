@@ -383,7 +383,7 @@ console.log("hosthooks. tool.definition / chat.params / compaction / shell.env /
     const boot = summarizeEvents([
       { ts: iso(0), tool: "host", step_id: "v2-boot", event: "personality", api: 2, tools_registered: 12, tools_total: 12, tools_v1_only: "tm_ptc_run", agents_default: "team", request_hooks: 2, request_temperature: 0.2, subagent_background: "forced-true", guard_hooks: 1, note: "参数表是推导的" },
       { ts: iso(1), tool: "host", step_id: "v2-shutdown", event: "personality", api: 2, guard_seen: 7, guard_actions: "shell=5 read=2", guard_shell_matched: 1, subagent_seen: 2, subagent_forced: 2, tools_removed: "architect=19 team=8" },
-      { ts: iso(2), run_id: "rA", tool: "host", step_id: "v2-surface", event: "personality", api: 2, native_offload_active: true, native_seen: 1, native_offloaded: 1, native_tokens_saved: 12824, probe_tool_count: 6, probe_agents: "team", probe_executed: "shell", probe_actions: "shell", probe_evaluations: 1 },
+      { ts: iso(2), run_id: "rA", tool: "host", step_id: "v2-surface", event: "personality", api: 2, native_offload_active: true, native_seen: 1, native_offloaded: 1, native_tokens_saved: 12824, scope_ours: 9, scope_foreign: 2, scope_unknown: 1, guard_foreign_skipped: 1, probe_tool_count: 6, probe_agents: "team", probe_executed: "shell", probe_actions: "shell", probe_evaluations: 1 },
       { ts: iso(3), run_id: "rA", tool: "host", step_id: "v2-agents", event: "personality", api: 2, agents_default: "team", agents_normalized: true },
     ])
     const bmd = renderStats(boot, { runDirs: 1, roots: [] })
@@ -392,6 +392,8 @@ console.log("hosthooks. tool.definition / chat.params / compaction / shell.env /
     ok(bmd.includes("v1 独有 `tm_ptc_run`"), "…and saying out loud which tool v2 does NOT ship")
     ok(bmd.includes("子代理 forced-true") && bmd.includes("温度 0.2"), "…plus the two request-layer promises")
     ok(bmd.includes("shell=5"), "…and what the guard actually SAW, so the fine-grained R6 flip is decidable from data")
+    ok(bmd.includes("作用域：我们 9 · 他人 2 · 未判定 1"), "…and the Team-scope counts, so 'we only touch Team' is a number rather than a promise")
+    ok(bmd.includes("未判定 1 次") && bmd.includes("没资格治理"), "…naming what an unresolved owner means: untouched, and therefore also not governed")
     ok(bmd.includes("architect=19"), "…and the per-role tool trim, measured rather than claimed")
     // The native-offload counters ride the snapshot line, and a counter that is
     // written but never printed is the same defect this section was added to fix.

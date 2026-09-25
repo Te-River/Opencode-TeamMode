@@ -101,6 +101,12 @@ export interface SessionLayerInput {
   /** Which agent ids receive the note — v1 gave it to the lead only. */
   noteAgents: string[]
   plan: Map<string, Set<string>>
+  /** Team-scope isolation (#22).  `session.context` fires for EVERY agent on the
+   *  host, so temperature, the board note and the compaction survival list are
+   *  writes to somebody else's request unless the agent is one of ours.  The tool
+   *  trim is already keyed by agent (a foreign role is not in the plan, so nothing
+   *  is deleted); this closes the other three. */
+  scope?: import("./v2-scope.js").TeamScope
 }
 
 export interface SessionLayerReport {
@@ -137,6 +143,12 @@ export async function applyV2SessionLayer(
   registrations.push(
     await session.hook("context", (event: V2SessionContext) => {
       const agent = String(event?.agent ?? "")
+      // Anything below this line MUTATES the outgoing request.  On a host where
+      // one plugin serves every agent, an unguarded write here would set a build
+      // session's temperature, push our board note into a plan session's system
+      // prompt, and delete tools the user's own config granted (#22).
+      if (input.scope && input.scope.count(input.scope.decide(event)) !== "ours") return
+      input.scope?.learn(agent, (event as { sessionID?: unknown }).sessionID)
       const denied = input.plan.get(agent)
       if (denied?.size && event.tools && typeof event.tools === "object") {
         let cut = 0
@@ -170,6 +182,7 @@ export async function applyV2SessionLayer(
 
   registrations.push(
     await session.hook("compaction", (event: V2SessionContext) => {
+      if (input.scope && input.scope.count(input.scope.decide(event)) !== "ours") return
       if (!Array.isArray(event?.system)) return
       for (const line of COMPACTION_CONTEXT) {
         if (event.system.some((p) => (p as { text?: unknown })?.text === line)) continue

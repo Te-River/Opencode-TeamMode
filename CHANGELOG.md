@@ -9,6 +9,19 @@ registry saw 1.5.0 as the install-script fix release).
 
 ### Changed
 
+- **On v2, everything the plugin changes is now scoped to Team mode** (user
+  requirement).  Every v2 hook fires for every session on the host, so the per-role tool
+  trim, the 0.2 temperature, the board note, the compaction survival list, the native
+  result offload, the R6/address permission strictening and the forced
+  `background: true` each ask one shared question first — is this one of our six roles?
+  `build`, `plan` and any agent the user installed are now left exactly as a fresh
+  OpenCode would leave them.  A session also counts as ours once one of our tools serves
+  it, since the host does not promise `agent` on every event; when it cannot be resolved
+  the call is treated as NOT ours (isolation beats coverage) and counted, and
+  `tm_stats` prints `作用域：我们 N · 他人 N · 未判定 N` plus what the last number means
+  out loud — "没资格治理".  The boundary is stated in the boot notes rather than papered
+  over: outside Team the red lines we inject do not apply either, so that floor is now
+  explicitly the host's or the user's own config's job.
 - **On v2 the network policy is: no domain gate, address red line only.** The user's
   instruction is that nothing may be blocked on the network except sensitive and
   internal addresses.  On v1 the 22-host seed list was tolerable because a plugin

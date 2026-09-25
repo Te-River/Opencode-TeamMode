@@ -405,8 +405,21 @@ export function renderStats(
         line.subagent_forced !== undefined ? `子代理强制后台 ${line.subagent_forced}/${line.subagent_seen}` : "",
         line.tools_removed ? `本轮从请求里删掉：${line.tools_removed}` : "",
         line.note_pushed === undefined ? "" : `黑板注记 ${line.note_pushed ? "已送达" : "未触发"}`,
+        // #22: the isolation counts are the proof that "we only touch Team" is a
+        // measured property, not a claim. `未判定` is never folded into 我们 — a
+        // host that stopped shipping `agent` on its events must show up as a number.
+        line.scope_ours !== undefined
+          ? `作用域：我们 ${line.scope_ours} · 他人 ${line.scope_foreign} · 未判定 ${line.scope_unknown}`
+          : "",
+        line.guard_foreign_skipped ? `门禁为非 Team 会话让路 ${line.guard_foreign_skipped} 次` : "",
       ].filter(Boolean)
       out.push(`- \`${s}\` · ${bits.join(" · ")}`)
+      if (line.scope_unknown !== undefined && Number(line.scope_unknown) > 0) {
+        out.push(
+          `  - 未判定 ${line.scope_unknown} 次：宿主事件里没带 agent。这些调用我们一律没碰（隔离优先于覆盖率），` +
+            `所以它们也没被 JIT 治理——不是"治理过了"，是"没资格治理"。`,
+        )
+      }
       if (line.agents_missing) out.push(`  - 配置里缺角色：${line.agents_missing}`)
       if (line.tools_missing) out.push(`  - 未出现在宿主表面：${line.tools_missing}`)
       // The probe is the only place the host's own surface is recorded rather than

@@ -34,6 +34,7 @@ import {
   type EnvProtectMode,
 } from "../envprotect.js"
 import { classifyHost } from "../tm/egress.js"
+import type { TeamScope } from "./v2-scope.js"
 import type { V2Context, V2Registration } from "./v2-types.js"
 
 export interface GuardDecision {
@@ -112,6 +113,9 @@ export interface GuardReport {
    *  config-level ask is still in force — this is the evidence that decides
    *  whether TM_R6_FINE_ASK can become the default. */
   shellMatched: number
+  /** evaluations skipped because the session belongs to a non-Team agent (#22) —
+   *  the number that tells the user how much of this floor is not ours to hold */
+  foreignSkipped: number
 }
 
 export interface BackgroundForceReport {
@@ -137,6 +141,7 @@ export interface BackgroundForceReport {
  */
 export async function applyV2BackgroundForce(
   ctx: V2Context,
+  opts: { scope?: TeamScope } = {},
 ): Promise<{ registrations: V2Registration[]; report: BackgroundForceReport }> {
   const report: BackgroundForceReport = { seen: 0, forced: 0 }
   const tool = ctx.tool
@@ -144,6 +149,10 @@ export async function applyV2BackgroundForce(
   const registrations = [
     await tool.hook("execute.before", (event) => {
       if (String(event?.tool ?? "") !== "subagent") return
+      // #22: rewriting the input of a call that is not ours is the clearest kind
+      // of side effect — a user who chose a synchronous dispatch in build mode
+      // would have it taken away by a plugin installed for Team.
+      if (opts.scope && opts.scope.count(opts.scope.decide(event)) !== "ours") return
       const input = event.input as Record<string, unknown> | undefined
       if (!input || typeof input !== "object" || Array.isArray(input)) return
       report.seen++
@@ -157,9 +166,9 @@ export async function applyV2BackgroundForce(
 
 export async function applyV2PermissionGuards(
   ctx: V2Context,
-  opts: { envProtectMode: EnvProtectMode },
+  opts: { envProtectMode: EnvProtectMode; scope?: TeamScope },
 ): Promise<{ registrations: V2Registration[]; report: GuardReport; installed: boolean }> {
-  const report: GuardReport = { seen: 0, byAction: {}, strictened: 0, denied: 0, shellMatched: 0 }
+  const report: GuardReport = { seen: 0, byAction: {}, strictened: 0, denied: 0, shellMatched: 0, foreignSkipped: 0 }
   const permission = ctx.permission
   if (!permission || typeof permission.hook !== "function") {
     return { registrations: [], report, installed: false }
@@ -171,6 +180,14 @@ export async function applyV2PermissionGuards(
       const resources: string[] = (Array.isArray(event?.resources) ? event.resources : []).map(String)
       report.seen++
       report.byAction[action] = (report.byAction[action] ?? 0) + 1
+      // #22: the host evaluates permissions for every agent.  Tightening a rule a
+      // build/plan session is running under is a change to somebody else's mode,
+      // so inside Team only — and the count says how much of that floor is
+      // therefore NOT ours to enforce (see the note in the boot line).
+      if (opts.scope && opts.scope.count(opts.scope.decide(event)) !== "ours") {
+        report.foreignSkipped++
+        return
+      }
 
       const decision =
         action === "webfetch" || action === "websearch"

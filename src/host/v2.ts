@@ -44,6 +44,7 @@ import { applyV2NativeOffload } from "./v2-offload.js"
 import { v2CapabilityRows } from "./v2-capabilities.js"
 import { applyV2SessionLayer, removalPlan } from "./v2-session.js"
 import { createStorageLedgerStore } from "../tm/ledger.js"
+import { createTeamScope } from "./v2-scope.js"
 import { bindV2Tool, type V2ToolBinding } from "./v2-tool.js"
 import { mergeTriples, triplesFromAgentPermission, V1_ONLY_TOOLS } from "./v2-permissions.js"
 import type { V2AgentInfo, V2Context, V2Plugin, V2Registration, V2ToolInfo } from "./v2-types.js"
@@ -79,6 +80,11 @@ export const v2Personality: V2Plugin = {
     }
 
     const directory = directoryOf(ctx)
+    // ---------- Team-scope isolation (#22, the user's requirement 2026-09-25) ----------
+    // Every v2 hook fires for EVERY agent on this host.  This one object is what
+    // each layer asks before it mutates a request, a result, or a permission —
+    // build/plan and any third-party agent must look exactly like a fresh install.
+    const scope = createTeamScope(Object.keys(agents))
     setAskUnavailableNote(V2_NO_DIALOG_NOTE)
 
     const options = (ctx.options ?? {}) as Record<string, unknown>
@@ -150,7 +156,7 @@ export const v2Personality: V2Plugin = {
     const derived: string[] = []
     for (const [name, def] of entries) {
       if (V2_UNREGISTERED.has(name)) continue
-      const bound = await bindV2Tool(name, def, directory)
+      const bound = await bindV2Tool(name, def, directory, (agent, sessionID) => scope.learn(agent, sessionID))
       if (!bound) {
         notes.push(`${name}: 没有 execute，未注册`)
         continue
@@ -200,16 +206,22 @@ export const v2Personality: V2Plugin = {
     // ---------- the permission guard (egress red line + R6 per command) ----------
     // Installed BEFORE the agent transform because whether the config still needs
     // the coarse `shell -> ask` escalation depends on this hook being there.
-    const guards = await applyV2PermissionGuards(ctx, { envProtectMode })
+    const guards = await applyV2PermissionGuards(ctx, { envProtectMode, scope })
+    // Said out loud because it is a promise with a boundary: the user's rule is
+    // that nothing outside Team may be touched, and the honest consequence is that
+    // the red lines we inject are therefore NOT protecting a build session either.
+    notes.push(
+      "已按 Team 作用域收口：工具面裁剪、温度、黑板提示、原生结果卸载、R6 与地址红线、subagent 强制后台，都只对我们六个角色的会话生效；build / plan 等其余模式保持宿主出厂行为（代价：那些会话也不由我们补红线，需要全局红线请让宿主自己的 permission 规则承担）",
+    )
     registrations.push(...guards.registrations)
-    const bgForce = await applyV2BackgroundForce(ctx)
+    const bgForce = await applyV2BackgroundForce(ctx, { scope })
     registrations.push(...bgForce.registrations)
     // JIT governance over the HOST's tools, so the offload promise does not depend
     // on which tool the model happened to pick (see v2-offload.ts for why a
     // per-tool promise is no promise).  Registered BEFORE the probe so the probe's
     // throttled snapshot can carry its counters — a counter that only lands at
     // teardown is a counter that does not exist.
-    const offload = await applyV2NativeOffload(ctx, { pipelines: tmRuntime.pipelines })
+    const offload = await applyV2NativeOffload(ctx, { pipelines: tmRuntime.pipelines, scope })
     registrations.push(...(await Promise.all(offload.registrations)))
     // BEFORE the session layer registers its own context hook, so the probe sees
     // the host's full surface rather than the set we trimmed — that difference is
@@ -424,7 +436,7 @@ export const v2Personality: V2Plugin = {
       }
     }
 
-    const session = await applyV2SessionLayer(ctx, { temperature, note, noteAgents: ["team"], plan })
+    const session = await applyV2SessionLayer(ctx, { temperature, note, noteAgents: ["team"], plan, scope })
     // Everything the matrix reports now exists, so the late-bound closure can be
     // pointed at the real observations.
     v2Matrix = () =>
@@ -446,6 +458,7 @@ export const v2Personality: V2Plugin = {
         hasTodoSeam: typeof (ctx as { session?: { todo?: unknown } }).session?.todo === "function",
         hasAsk: typeof (ctx as { tool?: unknown }).tool === "function",
         storageState: storageProbe.state,
+        scope,
       })
     registrations.push(...session.registrations)
     if (!session.registrations.length) {
@@ -470,6 +483,12 @@ export const v2Personality: V2Plugin = {
         guard_hooks: guards.registrations.length,
         storage_probe: storageProbe.state,
         storage_probe_detail: storageProbe.detail ?? "",
+        // Read at teardown, so these are counts of what actually happened in this
+        // process — the number that says whether the isolation was exercised at all.
+        scope_ours: scope.report.ours,
+        scope_foreign: scope.report.foreign,
+        scope_unknown: scope.report.unknown,
+        guard_foreign_skipped: guards.report.foreignSkipped,
         subagent_background: bgForce.registrations.length ? "forced-true" : "no-hook",
         guard_shell_coarse: escalateShellAsk,
         request_temperature: temperature === false ? "off" : temperature,

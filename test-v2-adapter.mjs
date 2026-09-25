@@ -575,6 +575,82 @@ await fake.hook("tool.execute.before").fire(noObj)
 assert.equal(noObj.input, null, "an input that is not an object is left alone rather than invented")
 console.log("   OK (background forced on every subagent call, nothing else touched)")
 
+console.log("7e. Team-scope isolation — nothing outside Team may be touched (#22)")
+// The user's rule: every change the plugin makes must stay inside Team mode, and
+// build/plan/a third-party agent have to look like a fresh install.  Each v2 hook
+// fires for EVERY session on the host, so this is not a property the layers can
+// get by accident — it is a question each one asks before it writes.
+{
+  const { createTeamScope } = await import("./dist/host/v2-scope.js")
+  const s = createTeamScope(["team", "researcher"])
+  assert.equal(s.decide({ agent: "team" }), "ours")
+  assert.equal(s.decide({ agent: "build" }), "foreign")
+  assert.equal(s.decide({ agent: undefined, sessionID: "ses_x" }), "unknown", "no agent and an unseen session is NOT ours")
+  s.learn("researcher", "ses_x")
+  assert.equal(s.decide({ sessionID: "ses_x" }), "ours", "a session we served a tool call for is known even if the event omits agent")
+  assert.equal(s.decide({ sessionID: "ses_y" }), "unknown", "…and that memory does not generalize to strangers")
+  s.count("foreign"); s.count("foreign"); s.count("unknown")
+  assert.deepEqual({ ...s.report }, { ours: 0, foreign: 2, unknown: 1 }, "the counts are what tm_stats reads; a skipped call must leave a trace")
+
+  const f = makeFakeCtx({ directory: ws, agents: [] })
+  const { applyV2PermissionGuards, applyV2BackgroundForce } = await import("./dist/host/v2-guard.js")
+  const { applyV2NativeOffload } = await import("./dist/host/v2-offload.js")
+  const scope = createTeamScope(["team", "architect", "implementer", "reviewer", "tester", "researcher"])
+  const gg = await applyV2PermissionGuards(f.ctx, { envProtectMode: "off", scope })
+  const bgg = await applyV2BackgroundForce(f.ctx, { scope })
+  const off = applyV2NativeOffload(f.ctx, {
+    pipelines: { nextStepId: () => "s0001", govern: () => ({ offloaded: true, ref: "tm://x", access_token: "t", expire_at: 1, tokens: 900, preview: "P" }) },
+    env: {},
+    scope,
+  })
+  const BIG = "y".repeat(9000)
+  // ① somebody else's permission decision stays theirs
+  const evForeign = { sessionID: "ses_build", agent: "build", action: "webfetch", resources: ["http://169.254.169.254/"], effect: "allow" }
+  await f.hook("permission.evaluate").handlers.forEach((h) => h(evForeign))
+  assert.equal(evForeign.effect, "allow", "a build session's metadata fetch is not ours to flip — Team-scoped by request")
+  assert.equal(gg.report.foreignSkipped, 1, "and the skip is COUNTED, because the size of that hole is a fact the user can act on")
+  const evOurs = { sessionID: "ses_team", agent: "team", action: "webfetch", resources: ["http://169.254.169.254/"], effect: "allow" }
+  await f.hook("permission.evaluate").handlers.forEach((h) => h(evOurs))
+  assert.equal(evOurs.effect, "deny", "the same fetch inside Team is still denied")
+  // ② somebody else's dispatch is not converted to background
+  const bForeign = { tool: "subagent", sessionID: "ses_build", agent: "build", input: { prompt: "x" } }
+  await f.hook("tool.execute.before").handlers.forEach((h) => h(bForeign))
+  assert.equal(bForeign.input.background, undefined, "a build agent's synchronous dispatch stays synchronous")
+  assert.ok(bgg.report.seen >= 0 && bgg.report.forced === 0, "and nothing was forced")
+  const bOurs = { tool: "subagent", sessionID: "ses_team", agent: "team", input: { prompt: "x" } }
+  await f.hook("tool.execute.before").handlers.forEach((h) => h(bOurs))
+  assert.equal(bOurs.input.background, true, "ours still gets it")
+  // ③ somebody else's tool result is never rewritten, and never copied into our store
+  const rForeign = { content: [{ type: "text", text: BIG }], metadata: { keep: 1 } }
+  await f.hook("tool.execute.after").handlers.forEach((h) => h({ tool: "shell", sessionID: "ses_build", agent: "build", result: rForeign }))
+  assert.equal(rForeign.content[0].text, BIG, "a build session's oversized stdout reaches context untouched")
+  assert.equal(off.report.seen, 0, "and it is not counted as governed — the coverage number must not lie by omission")
+  const rOurs = { content: [{ type: "text", text: BIG }] }
+  await f.hook("tool.execute.after").handlers.forEach((h) => h({ tool: "shell", sessionID: "ses_team", agent: "team", result: rOurs }))
+  assert.ok(rOurs.content[0].text.includes("tm://x"), "ours does get offloaded")
+  // ④ the request layer: a foreign agent's tools, temperature and system prompt are
+  //    exactly what the host assembled
+  const foreignReq = {
+    agent: "build",
+    system: [],
+    messages: [],
+    options: {},
+    tools: Object.fromEntries(["read", "shell", "webfetch", "tm_browser"].map((n) => [n, { description: "d", input: {} }])),
+  }
+  await fake.hook("session.context").fire(foreignReq)
+  assert.equal(Object.keys(foreignReq.tools).length, 4, "build is offered every tool the host gave it — we delete nothing for a stranger")
+  assert.equal(foreignReq.options.temperature, undefined, "and we do not set its temperature")
+  assert.equal(foreignReq.system.length, 0, "no board note in somebody else's system prompt")
+  // ⑤ an event with no agent at all is treated as NOT ours (isolation wins over
+  //    coverage), and the count is where the loss becomes visible.
+  const anon = { content: [{ type: "text", text: BIG }] }
+  await f.hook("tool.execute.after").handlers.forEach((h) => h({ tool: "shell", sessionID: "ses_never_seen", result: anon }))
+  assert.equal(anon.content[0].text, BIG, "unknown owner → untouched")
+  assert.equal(scope.report.unknown >= 1, true, "…but counted as unknown, which is how a host that drops `agent` gets noticed")
+  for (const r of [...gg.registrations, ...bgg.registrations, ...(await Promise.all(off.registrations))]) await r.dispose()
+}
+console.log("   OK (five layers ask who owns the call; foreign untouched, unknown untouched and counted)")
+
 console.log("7d. JIT governance over the HOST's own tools")
 const { applyV2NativeOffload, renderNativeOffload, NATIVE_GOVERNED_TOOLS } = await import("./dist/host/v2-offload.js")
 const BIG = "x".repeat(9000)

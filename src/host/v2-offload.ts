@@ -1,4 +1,5 @@
 import type { V2Registration } from "./v2-types.js"
+import type { TeamScope } from "./v2-scope.js"
 import { detectContentType } from "../tm/preview.js"
 import { parseHostEnvelope, renderOffloadedSubagent } from "../task-offload.js"
 import { estimateTokens } from "../tm/config.js"
@@ -97,6 +98,11 @@ interface OffloadDeps {
     govern: (stepId: string, tool: string, content: string, opts: { contentType: ReturnType<typeof detectContentType>; clue?: string }) => unknown
   }
   env?: Record<string, string | undefined>
+  /** Team-scope isolation (#22): a non-Team session's result is nobody's to rewrite
+   *  but the host's, and an unknown owner is treated as not-ours and COUNTED — a
+   *  governance layer that silently stopped applying is the same overstated claim
+   *  this product exists to refuse. */
+  scope?: TeamScope
 }
 
 const textPart = (p: unknown): p is { type: string; text: string } =>
@@ -150,9 +156,15 @@ export function applyV2NativeOffload(
     return { registrations: [], report, active: false }
   }
   const reg = (hook as (n: string, cb: (e: unknown) => void) => Promise<V2Registration>)("execute.after", (raw) => {
-    const event = raw as { tool?: string; result?: unknown }
+    const event = raw as { tool?: string; result?: unknown; agent?: unknown; sessionID?: unknown }
     const tool = String(event?.tool ?? "")
     if (!NATIVE_GOVERNED_TOOLS.has(tool)) return
+    if (deps.scope) {
+      if (deps.scope.count(deps.scope.decide(event)) !== "ours") return
+      // A resolved call is also a fact about the session — remember it so a later
+      // event that arrives without `agent` still resolves to ours.
+      deps.scope.learn(event.agent, event.sessionID)
+    }
     report.seen++
     report.byTool[tool] ??= { seen: 0, offloaded: 0 }
     report.byTool[tool].seen++

@@ -195,6 +195,9 @@ export async function bindV2Tool(
   name: string,
   def: ToolDefinition,
   directory: string,
+  /** Every call to OUR tool tells the host-scope resolver which sessions belong to
+   *  Team (#22) — the one fact about a session we can learn from the inside. */
+  onCall?: (agent: unknown, sessionID: unknown) => void,
 ): Promise<V2ToolBinding | null> {
   if (typeof def?.execute !== "function") return null
   const { schema, exact, source, note } = await inputSchemaFor(def.args)
@@ -203,6 +206,7 @@ export async function bindV2Tool(
     description: String(def.description ?? ""),
     input: schema,
     async execute(args, ctx): Promise<V2ToolResult> {
+      onCall?.((ctx as { agent?: unknown } | undefined)?.agent, (ctx as { sessionID?: unknown } | undefined)?.sessionID)
       // Our tools are defensive about raw model args already (they coerce
       // string booleans and JSON-array strings themselves), so nothing is
       // normalized here beyond a guaranteed object.

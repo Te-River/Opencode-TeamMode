@@ -39,6 +39,9 @@ interface Inputs {
   hasAsk: boolean
   /** what the boot round-trip self-check found: absent | round-trip | read-back-mismatch | threw */
   storageState: string
+  /** Team-scope isolation (#22): how many hook events resolved to one of our six
+   *  roles, how many were somebody else's, and how many the host never told us. */
+  scope?: { report: { ours: number; foreign: number; unknown: number } }
 }
 
 const has = (list: readonly string[], want: (x: string) => boolean) => list.some(want)
@@ -135,6 +138,21 @@ export function v2CapabilityRows(i: Inputs): CapabilityRow[] {
             : i.storageState === "threw" || i.storageState === "read-back-mismatch"
               ? `自检没通过（${i.storageState}）：域在，但我们写的东西没有原样回来`
               : "域在，本次启动还没往里写过东西",
+    },
+    {
+      seam: "Team 作用域隔离",
+      feature: "每个钩子动手之前先问「这是我们六个角色吗」——不是就完全别碰（build / plan / 用户自己的 agent 保持刚装好 OpenCode 的样子）",
+      // ok only means what it says: a resolved call was actually skipped or served.
+      // `unknown` is not a pass — it is the host not telling us who owns the call,
+      // and every one of those is a call our governance deliberately did NOT touch.
+      state: !i.scope ? "declared" : i.scope.report.unknown ? "unverified" : "ok",
+      evidence: "runtime",
+      note: !i.scope
+        ? "本进程的钩子还没被调用过，没东西可判"
+        : ` ours=${i.scope.report.ours} foreign=${i.scope.report.foreign} unknown=${i.scope.report.unknown}` +
+          (i.scope.report.unknown
+            ? " —— 这些次宿主没在事件里带 agent：按「不是我们的」处理，宁可少治理，也不多改别人的会话"
+            : ""),
     },
   ]
   if (typeof i.temperature === "number") {
