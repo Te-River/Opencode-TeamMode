@@ -133,6 +133,18 @@ registry saw 1.5.0 as the install-script fix release).
   survives the projection: `team` gets `subagent: allow`, all five specialists
   get `deny`. Files it did not generate are refused unless `--force`, and
   `--print` previews without writing.
+- **`tm_stats` now answers "which half of the plugin is running, and what did it
+  see".** The v2 boot record was written to the trajectory and never read back,
+  so "the plugin loaded" stayed a claim the user could not check from inside a
+  session — and the question the v2 line actually needs answered (does
+  `permission.evaluate` fire for `shell`? that is what gates retiring the coarse
+  `shell → ask` escalation) is only observable as a *count*, which exists in the
+  process and vanishes with it. v2 now writes a `v2-shutdown` line carrying the
+  guard's per-action tally, the shell-classifier hit count, how many `subagent`
+  calls were forced to the background, and how many tools were removed from
+  requests, and `renderStats` prints the newest four boot/shutdown lines under
+  `启动与人格` — including what the personality said was *missing* (`agents_missing`,
+  `tools_missing`) rather than only what it said was present.
 
 ### Fixed
 

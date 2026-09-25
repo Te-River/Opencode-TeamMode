@@ -376,7 +376,24 @@ console.log("hosthooks. tool.definition / chat.params / compaction / shell.env /
   ok(renderStats(s, { runDirs: 1, roots: [] }).includes("lead 在 tm_join 里干等"), "…and it is a visible row, because 'parallel' that parks the lead is not parallel")
   eq(s.degrades, [{ seam: "tm_browser/playwright-core", reason: "playwright-core import failed" }], "an engine fallback is listed with its reason, not swallowed")
   // one child alone proves nothing
+  {
+    // The v2 boot record was being WRITTEN and never read back, so "the plugin
+    // loaded and here is what it could not do" stayed a claim the user could not
+    // check from inside a session — which is the whole reason tm_stats exists.
+    const boot = summarizeEvents([
+      { ts: iso(0), tool: "host", step_id: "v2-boot", event: "personality", api: 2, tools_registered: 12, tools_total: 12, tools_v1_only: "tm_ptc_run", agents_default: "team", request_hooks: 2, request_temperature: 0.2, subagent_background: "forced-true", guard_hooks: 1, note: "参数表是推导的" },
+      { ts: iso(1), tool: "host", step_id: "v2-shutdown", event: "personality", api: 2, guard_seen: 7, guard_actions: "shell=5 read=2", guard_shell_matched: 1, subagent_seen: 2, subagent_forced: 2, tools_removed: "architect=19 team=8" },
+    ])
+    const bmd = renderStats(boot, { runDirs: 1, roots: [] })
+    ok(bmd.includes("启动与人格"), "tm_stats renders the boot record, not just the spend")
+    ok(bmd.includes("人格 **v2**") && bmd.includes("工具 12/12"), "…naming the personality that ran and how many tools landed")
+    ok(bmd.includes("v1 独有 `tm_ptc_run`"), "…and saying out loud which tool v2 does NOT ship")
+    ok(bmd.includes("子代理 forced-true") && bmd.includes("温度 0.2"), "…plus the two request-layer promises")
+    ok(bmd.includes("shell=5"), "…and what the guard actually SAW, so the fine-grained R6 flip is decidable from data")
+    ok(bmd.includes("architect=19"), "…and the per-role tool trim, measured rather than claimed")
+  }
   eq(summarizeEvents([{ ts: iso(0), tool: "tm_dispatch", event: "start" }, { ts: iso(1000), tool: "tm_dispatch", event: "idle", ms: 1000 }]).dispatch.overlapSavedMs, 0, "a single dispatch claims no overlap saving")
+
   // …and after tm_dispatch is GONE there is no start line at all: the number
   // has to survive on what a collected host `task` child still reports — its
   // own settle time plus its own duration.

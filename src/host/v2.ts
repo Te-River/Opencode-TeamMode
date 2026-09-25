@@ -277,6 +277,31 @@ export const v2Personality: V2Plugin = {
     }
 
     return async () => {
+      // The counters only exist in this process, so they have to be written down
+      // before teardown — otherwise "did permission.evaluate ever fire for
+      // shell?" (#12, the thing gating the fine-grained R6 ask) is unanswerable
+      // after the fact, and tm_stats would keep showing a boot line that says
+      // what was installed but never what it saw.
+      try {
+        tmRuntime.pipelines.store.appendTrajectory({
+          tool: "host",
+          step_id: "v2-shutdown",
+          event: "personality",
+          api: 2,
+          guard_seen: guards.report.seen,
+          guard_actions: Object.entries(guards.report.byAction).map(([k, v]) => `${k}=${v}`).join(" "),
+          guard_shell_matched: guards.report.shellMatched,
+          guard_strictened: guards.report.strictened,
+          guard_denied: guards.report.denied,
+          subagent_seen: bgForce.report.seen,
+          subagent_forced: bgForce.report.forced,
+          tools_removed: Object.entries(session.report.removed).map(([k, v]) => `${k}=${v}`).join(" "),
+          note_pushed: session.report.notePushed,
+          compaction_lines: session.report.compactionLines,
+        })
+      } catch {
+        /* the trajectory is an extra, never a reason to fail teardown */
+      }
       for (const r of registrations) {
         try {
           await r.dispose()

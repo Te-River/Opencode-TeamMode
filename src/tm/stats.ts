@@ -140,6 +140,10 @@ export interface TmStats {
     argsCoerced: number
   }
   degrades: Array<{ seam: string; reason: string }>
+  /** `tool:"host"` lines — which personality booted, what it could not do.
+   *  Without this the v2 boot record is written and never read back, so "the
+   *  plugin loaded" stays a claim the user cannot check from a session. */
+  boot: Array<Record<string, unknown>>
 }
 
 function num(v: unknown): number {
@@ -163,6 +167,7 @@ export function summarizeEvents(events: readonly TrajEvent[]): TmStats {
     ptc: { runs: 0, calls: 0, errors: 0, retries: 0, sumMs: 0 },
     governance: { blockedSubresources: 0, blockedHosts: [], ptyRefused: 0, clampedTimeouts: 0, clampSavedMs: 0, offloadDegraded: 0, webCacheHits: 0, evalMasks: 0, taskEnvelopes: 0, taskOffloads: 0, taskOffloadTokens: 0, argsCoerced: 0 },
     degrades: [],
+    boot: [],
   }
   const byTool = new Map<string, ToolStat>()
   const hosts = new Set<string>()
@@ -194,6 +199,7 @@ export function summarizeEvents(events: readonly TrajEvent[]): TmStats {
       if (!first || at < first) first = at
       if (at > last) last = at
     }
+    if (tool === "host" && e.step_id) stats.boot.push({ ...e })
     if (ev === "call") row(tool).calls++
     if (ev === "result") {
       const r = row(tool)
@@ -344,6 +350,35 @@ export function renderStats(
     `| 由宿主会话树接管 / 认领宿主 task 子会话 | ${d.adopted} / ${d.claims} |`,
     `| lead 在 tm_join 里干等 | ${d.waitMs ? `${secs(d.waitMs)}（${d.waits} 次等待${d.repeatWaits ? ` · 其中 ${d.repeatWaits} 次是连续等待——等待期间你没有产出` : ""}）` : "—"} |`,
   )
+
+  const b = stats.boot
+  if (b.length) {
+    out.push("", "### 启动与人格（哪一半在跑、它说自己缺什么）", "")
+    for (const line of [...b].reverse().slice(0, 4)) {
+      const s = String(line.step_id ?? "?")
+      const api = line.api === 2 ? "v2" : line.api === 1 ? "v1" : String(line.api ?? "?")
+      const bits = [
+        `人格 **${api}**`,
+        line.tools_registered !== undefined ? `工具 ${line.tools_registered}/${line.tools_total}` : "",
+        line.tools_v1_only ? `v1 独有 \`${line.tools_v1_only}\`` : "",
+        line.request_hooks ? `请求层 ${line.request_hooks} 钩子` : "",
+        line.request_temperature !== undefined ? `温度 ${line.request_temperature}` : "",
+        line.subagent_background ? `子代理 ${line.subagent_background}` : "",
+        line.guard_hooks ? `门禁 ${line.guard_hooks} 钩子` : "",
+        line.guard_shell_coarse === undefined ? "" : `shell 粗粒度 ask ${line.guard_shell_coarse ? "开" : "关"}`,
+        line.agents_default ? `默认角色 ${line.agents_default}` : "",
+        line.guard_seen !== undefined ? `门禁看到 ${line.guard_seen} 次评估（${line.guard_actions || "无动作"}）` : "",
+        line.guard_shell_matched !== undefined ? `其中 shell 命中分类器 ${line.guard_shell_matched} 次` : "",
+        line.subagent_forced !== undefined ? `子代理强制后台 ${line.subagent_forced}/${line.subagent_seen}` : "",
+        line.tools_removed ? `本轮从请求里删掉：${line.tools_removed}` : "",
+        line.note_pushed === undefined ? "" : `黑板注记 ${line.note_pushed ? "已送达" : "未触发"}`,
+      ].filter(Boolean)
+      out.push(`- \`${s}\` · ${bits.join(" · ")}`)
+      if (line.agents_missing) out.push(`  - 配置里缺角色：${line.agents_missing}`)
+      if (line.tools_missing) out.push(`  - 未出现在宿主表面：${line.tools_missing}`)
+      if (line.note) out.push(`  - ${line.note}`)
+    }
+  }
 
   const p = stats.ptc
   const g = stats.governance
