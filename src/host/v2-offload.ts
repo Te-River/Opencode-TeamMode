@@ -1,6 +1,6 @@
 import type { V2Registration } from "./v2-types.js"
 import type { TeamScope } from "./v2-scope.js"
-import { detectContentType } from "../tm/preview.js"
+import { capTokens, capKeepingAddressing, detectContentType } from "../tm/preview.js"
 import { parseHostEnvelope, renderOffloadedSubagent } from "../task-offload.js"
 import { estimateTokens } from "../tm/config.js"
 
@@ -103,6 +103,10 @@ export interface V2OffloadReport {
   unmatched: number
   considered: number
   offloaded: number
+  /** addressing results (native browser snapshots) that stayed IN context, capped
+   *  rather than replaced by a handle — the tokens they cost are counted, and so is
+   *  the fact that we chose a usable `ref` over the smaller number */
+  capped: number
   /** envelopes RECOGNISED, whether or not they needed rewriting — a counter that
    *  moves only on a rewrite cannot tell "the channel is alive, nothing was big"
    *  apart from "this host's format is not the one we match" (which is exactly how
@@ -150,6 +154,38 @@ function locatableText(result: unknown): { parts: unknown[]; index: number; text
 
 /** Rendered in the user's tool-output language (the tm_* strings are Chinese and
  *  flow into every reply an agent writes about them). */
+/**
+ * Tools whose result IS an addressing table: native `browser_click` / `browser_fill`
+ * take a `ref` out of the snapshot, so a preview that drops the ref tokens does not
+ * save the model a round-trip — it makes it click the wrong element, or spend a call
+ * re-snapshotting.  For these two the text stays in context, capped, with the handle
+ * kept for the tail.  1 200 tokens is the budget tm_browser's own snapshot already
+ * runs at, so the governed door and the native one cost the same window space.
+ */
+export const ADDRESSING_NATIVE_TOOLS: ReadonlySet<string> = new Set(["browser_snapshot", "browser_find"])
+export const NATIVE_SNAPSHOT_MAX_TOKENS = 1200
+
+export function snapshotTokenBudget(env: Record<string, string | undefined> | undefined): number {
+  const raw = Number(String(env?.TM_NATIVE_SNAPSHOT_MAX_TOKENS ?? "").trim())
+  return Number.isFinite(raw) && raw >= 100 ? Math.min(20_000, Math.floor(raw)) : NATIVE_SNAPSHOT_MAX_TOKENS
+}
+
+export function renderAddressingCap(
+  tool: string,
+  capped: string,
+  governed: { ref: string; access_token: string; expire_at: number; tokens: number },
+): string {
+  const when = new Date(governed.expire_at).toISOString().replace("T", " ").slice(0, 16)
+  return (
+    capped +
+    `
+
+（原生 ${tool} 的快照按 JIT 治理截到预算内，没有整体卸载：截断部分里的 ref 不在你眼前，` +
+    `需要时用 tm_fetch { ref:"${governed.ref}", access_token:"${governed.access_token}", mode:"lines" } 分段取回再点，` +
+    `不要为了看一眼把全文读回来。原文 ${governed.tokens} token · 过期 ${governed.expire_at} · ${when}）`
+  )
+}
+
 export function renderNativeOffload(
   tool: string,
   governed: { offloaded: true; ref: string; access_token: string; expire_at: number; tokens: number; preview: string },
@@ -171,7 +207,7 @@ export function applyV2NativeOffload(
 ): { registrations: Promise<V2Registration>[]; report: V2OffloadReport; active: boolean } {
   const env = deps.env ?? process.env
   const off = /^(0|false|no|off)$/i.test(String(env.TM_NATIVE_OFFLOAD ?? "").trim())
-  const report: V2OffloadReport = { seen: 0, ours: 0, unmatched: 0, considered: 0, offloaded: 0, envelopes: 0, degraded: 0, tokensSaved: 0, byTool: {} }
+  const report: V2OffloadReport = { seen: 0, ours: 0, unmatched: 0, considered: 0, offloaded: 0, capped: 0, envelopes: 0, degraded: 0, tokensSaved: 0, byTool: {} }
   const hook = (ctx as { tool?: { hook?: unknown } })?.tool?.hook
   if (typeof hook !== "function") {
     // No seam at all: report it, do not silently pretend the promise holds.
@@ -234,6 +270,25 @@ export function applyV2NativeOffload(
       preview: string
     }
     const parts = found.parts
+    if (ADDRESSING_NATIVE_TOOLS.has(tool)) {
+      // The snapshot is an addressing table, not a document: replacing it with a
+      // handle would strand the next click. Cap it, keep the handle for the tail,
+      // and count the tokens that DID enter.
+      const budget = snapshotTokenBudget(deps.env)
+      const cut = capKeepingAddressing(found.text, budget)
+      const capped = cut.addressesDropped > 0 ? `${cut.text}
+
+（预算 ${budget} token 之内只装下了部分寻址行：另有 ${cut.addressesDropped} 行带 ref 的内容被截掉了，要点对它们先用 tm_fetch mode:"lines" 取回，或缩小范围重新拍一次快照——不要凭猜去点。）` : cut.text
+      const rendered = renderAddressingCap(tool, capped, g)
+      parts[found.index] = { type: "text", text: rendered }
+      for (let i = found.index + 1; i < parts.length; i++) {
+        if (textPart(parts[i])) parts[i] = { type: "text", text: "" }
+      }
+      report.capped++
+      report.tokensSaved += Math.max(0, estimateTokens(found.text) - estimateTokens(rendered))
+      report.byTool[tool].offloaded++
+      return
+    }
     const keepTokens = estimateTokens(g.preview)
     parts[found.index] = {
       type: "text",

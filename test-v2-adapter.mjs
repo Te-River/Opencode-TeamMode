@@ -643,6 +643,7 @@ await fake.hook("tool.execute.before").fire(noObj)
 assert.equal(noObj.input, null, "an input that is not an object is left alone rather than invented")
 console.log("   OK (background forced on every subagent call, nothing else touched)")
 
+
 console.log("7e. Team-scope isolation — nothing outside Team may be touched (#22)")
 // The user's rule: every change the plugin makes must stay inside Team mode, and
 // build/plan/a third-party agent have to look like a fresh install.  Each v2 hook
@@ -863,6 +864,110 @@ why it broke
   assert.equal(e.o.report.envelopes, 1, "recognised is counted even where nothing was rewritten — a zero must not read as 'nothing was big'")
 }
 console.log("   OK (closed tool list, unknown shapes untouched, attachments and metadata preserved, failure degrades, off restores verbatim)")
+
+console.log("7d2. the native snapshot stays ADDRESSABLE, and the browser gate has teeth")
+{
+  const { estimateTokens } = await import("./dist/tm/config.js")
+  // A native `browser_snapshot` is not a document, it is an addressing table:
+  // `browser_click {tabID, ref}` reads the ref straight out of it. Offloading the
+  // whole result — which is what the generic rule does to everything else — would
+  // have saved tokens and cost the click, so this is the counter-example that pins
+  // the difference.
+  // A realistic snapshot is decoration plus addressing: the tree's text lines are the
+  // bulk, and the interactive nodes are scattered through it. This is the payload shape
+  // that decides whether JIT over native browsing is a help or a hazard.
+  const refs = Array.from({ length: 260 }, (_, i) => `  - button "提交 #${i}" [ref=e${i + 1}]`)
+  const prose = Array.from({ length: 220 }, (_, i) => `  - StaticText "段落 ${i}：这里是一段很长的说明文字，用来说明静态节点在快照里占掉的预算，模型不会去点它。"`)
+  const snap = [
+    "- RootWebArea 示例站",
+    ...prose.flatMap((p, i) => (i % 4 === 0 ? [refs[i % refs.length], p] : [p])),
+    ...refs.slice(220),
+    `  - link "页尾" [ref=e999]`,
+  ].join(String.fromCharCode(10))
+  const before = new Set([...snap.matchAll(/ref=e\d+/g)].map((m) => m[0]))
+  const t = handled("browser_snapshot", { content: [{ type: "text", text: snap }], metadata: {}, output: snap })
+  t.run()
+  const out = String(t.ev.result.content[0].text)
+  assert.equal(t.o.report.capped, 1, "a snapshot is capped, not offloaded")
+  assert.equal(t.o.report.offloaded, 0, "and it never claims to have been offloaded")
+  const after = new Set([...out.matchAll(/ref=e\d+/g)].map((m) => m[0]))
+  assert.equal(after.size, before.size, `EVERY addressing token survives the cap — a dropped ref is a wrong-element click (${after.size} of ${before.size})`)
+  assert.ok(estimateTokens(snap) > 1200, "the input really is over the budget, so this is a cap and not a pass-through")
+  const headCut = new Set([...snap.split(String.fromCharCode(10)).slice(0, 300).join(String.fromCharCode(10)).matchAll(/ref=e\d+/g)].map((m) => m[0])).size
+  assert.ok(after.size > headCut, `a head cut would have stranded refs in the tail (${headCut} visible there vs ${after.size} here})`)
+  assert.match(out, /tm_fetch \{ ref:/, "and the capped tail ships with a handle to page back in")
+  assert.match(out, /分段取回|不要凭猜去点|ref/, "and the note tells the model what is in front of it")
+  const cost = estimateTokens(out)
+  const raw = estimateTokens(snap)
+  // The rule the assertion pins is the interesting one: refs buy their own space up to
+  // budget x 4 (ADDRESSING_OVERTAKE_FACTOR), so the cost is bounded by the addressing
+  // content, NOT by the nominal budget — and it still has to be smaller than the raw
+  // payload, or we are governing nothing.
+  assert.ok(cost <= 1200 * 4 + 250, `the snapshot stays under the overtake ceiling (${cost} tokens vs ceiling 4 800, raw ${raw})`)
+  assert.ok(cost < raw / 2, `and the cap took more than half the payload out (${raw} -> ${cost})`)
+  assert.ok(cost > 900, `without pretending a 260-node page fits in a 200-token slot (${cost})`)
+  assert.ok(!/PREVIEW≤80/.test(out), "the 80-token preview path is NOT what a snapshot gets")
+  // The adversarial case: a page whose addressing content alone blows past the ceiling.
+  // Governance must then SAY how many refs are missing — that is the difference between
+  // a bounded context and a wrong-element click reported as success.
+  {
+    const huge = Array.from({ length: 2000 }, (_, i) => `  - button "n${i}" [ref=e${i + 1}]`).join(String.fromCharCode(10))
+    const t2 = handled("browser_snapshot", { content: [{ type: "text", text: huge }], metadata: {}, output: huge })
+    t2.run()
+    const out2 = String(t2.ev.result.content[0].text)
+    const kept2 = new Set([...out2.matchAll(/ref=e\d+/g)].map((m) => m[0])).size
+    assert.ok(kept2 < 2000, `a page beyond the ceiling is genuinely capped (${kept2} refs kept)`)
+    assert.match(out2, /另有 \d+ 行带 ref 的内容被截掉/, "and the reply counts the addressing lines that did not fit")
+    const m2 = out2.match(/另有 (\d+) 行带 ref/)
+    const dropped = Number(m2 ? m2[1] : -1)
+    assert.equal(kept2 + dropped, 2000, "kept + dropped is the whole page — the arithmetic the model acts on has to close")
+  }
+
+  // The gate: two layers, because the before-hook's power to abort is a host promise
+  // nobody has made. Layer 2 is also the measurement.
+  const { applyV2BrowserGate, browserGateSummary } = await import("./dist/host/v2-browser-gate.js")
+  const { createTeamScope } = await import("./dist/host/v2-scope.js")
+  const scope = createTeamScope(["team"])
+  const gf = makeFakeCtx({ directory: workspace("gate"), agents: [] })
+  const g = applyV2BrowserGate(gf.ctx, { allowlist: ["*"], env: {}, scope })
+  assert.equal(g.registrations.length, 2, "both halves of the gate register (before + after)")
+  let threw = ""
+  try {
+    g.fireBefore({ tool: "browser_navigate", input: { url: "http://169.254.169.254/latest/meta-data/" }, agent: "team", sessionID: "ses_1" })
+  } catch (err) {
+    threw = String(err?.message ?? err)
+  }
+  assert.match(threw, /元数据|不可批准/, "the door refuses the cloud-metadata endpoint in words")
+  const leakedRes = { content: [{ type: "text", text: "AKIA-FAKE-CREDENTIALS" }], output: "AKIA-FAKE-CREDENTIALS" }
+  g.fireAfter({ tool: "browser_navigate", result: leakedRes, agent: "team", sessionID: "ses_1" })
+  assert.ok(!String(leakedRes.content[0].text).includes("AKIA-FAKE"), "when the host walks past the throw anyway, the page content is taken back out")
+  assert.match(String(leakedRes.content[0].text), /被宿主放过去/, "and the reply says the gate leaked instead of pretending it held")
+  assert.equal(g.report.leaked, 1, "the leak is counted — that number is the evidence the gate has teeth or does not")
+  let ok = true
+  try {
+    g.fireBefore({ tool: "browser_navigate", input: { url: "https://cn.bing.com/search?q=x" }, agent: "team", sessionID: "ses_1" })
+  } catch {
+    ok = false
+  }
+  assert.ok(ok, "an allowed target is not disturbed")
+  let pathThrew = ""
+  try {
+    g.fireBefore({ tool: "browser_preview", input: { path: "D:/proj/.env" }, agent: "team", sessionID: "ses_1" })
+  } catch (err) {
+    pathThrew = String(err?.message ?? err)
+  }
+  assert.match(pathThrew, /R6|环境文件/, "and the one native verb that reads the server's own disk rides the env-file red line")
+  let foreign = true
+  try {
+    g.fireBefore({ tool: "browser_navigate", input: { url: "http://169.254.169.254/" }, agent: "build", sessionID: "ses_other" })
+  } catch {
+    foreign = false
+  }
+  assert.ok(foreign, "a non-Team session is left exactly as the user configured it (#22)")
+  assert.equal(g.report.foreignSkipped, 1, "and skipping it is counted, not silent")
+  assert.match(browserGateSummary(g.report), /原生 browser_\*/, "the summary reads as a sentence for tm_stats")
+}
+console.log("   OK (snapshot refs stay addressable under the cap; the gate refuses, detects its own leaks, and stays out of other agents' way)")
 
 console.log("8. the config projection — what the installer copies onto disk")
 const genRoot = workspace("gen")

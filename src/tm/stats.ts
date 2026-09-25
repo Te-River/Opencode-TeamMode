@@ -417,6 +417,9 @@ export function renderStats(
           ? `作用域：我们 ${line.scope_ours} · 他人 ${line.scope_foreign} · 未判定 ${line.scope_unknown}`
           : "",
         line.guard_foreign_skipped ? `门禁为非 Team 会话让路 ${line.guard_foreign_skipped} 次` : "",
+        line.browser_gate ? `原生 browser_* 门禁：${line.browser_gate}` : "",
+        line.browser_gate_note ? `  ${line.browser_gate_note}` : "",
+        line.native_capped !== undefined ? `快照按寻址预算截断 ${line.native_capped} 次（不是卸载：ref 留在上下文里）` : "",
       ].filter(Boolean)
       out.push(`- \`${s}\` · ${bits.join(" · ")}`)
       if (line.scope_unknown !== undefined && Number(line.scope_unknown) > 0) {

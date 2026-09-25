@@ -9,6 +9,32 @@ registry saw 1.5.0 as the install-script fix release).
 
 ### Changed
 
+- **Native `browser_*` now rides OUR gate, and its snapshots stay addressable**
+  (option A, decided 2026-09-25: browsing goes to the host's own tools because that
+  is the only browser the desktop's side panel shows — `docs/research/browser-pane.md`).
+  Handing browsing to the host used to mean handing it an ungoverned channel:
+  `permission.evaluate` is not observed firing for `browser_*`, so the domain list, the
+  address red line and the R6 env-file rule had a bypass the length of a tool name.
+  `src/host/v2-browser-gate.ts` closes it at `tool.execute.before` with two layers,
+  because the before-hook's power to ABORT is a host promise nobody made us: refuse at
+  the door, and if an answer for that refused call still arrives, replace the page
+  content with the same refusal so it never enters the context, the run store or the
+  trajectory. Layer 2 is also the measurement — `leaked` is the count of refusals the
+  host walked past, and it is printed instead of a claim that the gate held. The verbs
+  that read the server's own disk (`browser_preview {path}`) ride the env-file red line;
+  non-Team sessions are left exactly as configured (#22), and skipping them is counted.
+- **The JIT rule for a snapshot is "cap it", not "offload it".** A native
+  `browser_snapshot` is an addressing table — `browser_click {tabID, ref}` reads its
+  argument out of it — so the generic offload (80-token preview + handle) would have
+  saved tokens and cost the click, or worse bought a click against a ref that is no
+  longer on screen. `capKeepingAddressing()` keeps every line that carries an
+  addressing token and spends the remainder of the budget on static text: measured on a
+  synthetic 261-ref page, a head cut at the 1 200-token budget keeps 118 refs, the
+  addressing-aware cut keeps all 261 for 2 528 tokens where the raw payload is
+  ~3 000 — refs buy their own space up to `budget × 4`, and past that ceiling the reply
+  states how many addressing lines were dropped rather than letting the model guess
+  which ones it cannot see. `tm_stats` distinguishes capped from offloaded, because
+  they are different claims about what entered the context.
 - **v2 dropped the domain allowlist, and every refusal it kept learned to name an
   exit.** A 2.x plugin cannot raise the host's dialog, so an allowlist was no longer a
   gate with a procedure attached — it was a wall whose error text told the agent to

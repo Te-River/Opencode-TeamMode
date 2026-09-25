@@ -1,0 +1,234 @@
+import type { V2Registration } from "./v2-types.js"
+import type { TeamScope } from "./v2-scope.js"
+import { checkWebUrl } from "../tm/webfetch.js"
+import { isEnvFilePath } from "../envprotect.js"
+
+/**
+ * The native browser catalog, put behind OUR gate.
+ *
+ * The host ships 45 `browser_*` tools and renders them in its own side panel, which
+ * is why they are the attractive option (docs/research/browser-pane.md). The cost is
+ * that they are the one part of the surface we did not police: `permission.evaluate`
+ * was observed NOT firing for them in a live 2.0.16 session, so the domain list, the
+ * address red line and the R6 env-file rule all had a working bypass the length of a
+ * tool name. This module closes it at the only seam that is left — `tool.hook
+ * ("execute.before")`, whose `input` is mutable and which sees the exact URL the
+ * model is about to navigate to.
+ *
+ * TWO enforcement layers, because the before-hook's power to abort is a host promise
+ * nobody has made to us:
+ *
+ *  1. refuse at the door: throw with the governance sentence, which is how v1's
+ *     governed tools already answer an out-of-policy target.
+ *  2. if the call happens anyway, take the ANSWER away: an `execute.after` for the
+ *     same tool and session right after our refusal means the throw did not stop it,
+ *     so the page content is replaced by the same refusal. The request may still have
+ *     left the machine (we cannot un-spawn the host's browser from here), but the
+ *     private page never reaches the context window, the run store or the trajectory.
+ *
+ * Layer 2 is also the measurement: `leaked` is the count of refusals the host walked
+ * past. Zero after a session of browser work is the evidence the gate has teeth; a
+ * non-zero number says so in `tm_stats` instead of letting us claim a block we did not
+ * perform — which is the product rule, not a logging nicety.
+ *
+ * Scope discipline (#22) applies first: a non-Team session's browser calls are the
+ * user's own configuration's business, and an unattributable one is treated as NOT
+ * ours. Only Team roles get this rule injected, and only they get the stricter one.
+ */
+
+/** How long after a refusal we still credit the call to it. Generous on purpose: a
+ *  host that queues the tool and then answers is the case we are measuring. */
+const LEAK_WINDOW_MS = 30_000
+
+export interface BrowserGateReport {
+  /** browser_* execute.before events we looked at (Team sessions only) */
+  seen: number
+  /** of those, how many carried a URL or local path we could classify */
+  classified: number
+  /** refusals raised at the door */
+  refused: number
+  /** of those refusals, how many the host walked past anyway (layer 2 fired) */
+  leaked: number
+  /** refusals that produced no following result within the window — the door held */
+  held: number
+  /** out-of-scope calls left completely alone, counted rather than invisible */
+  foreignSkipped: number
+  /** per-tool refusal counts, so "which verb is the hole" is answerable */
+  byTool: Record<string, { seen: number; refused: number; leaked: number }>
+}
+
+export interface BrowserGate {
+  registrations: V2Registration[]
+  report: BrowserGateReport
+  /** The hook bodies are exported through this seam so a test can drive both halves
+   *  (a host that honours the throw, and one that does not) without a live desktop. */
+  fireBefore: (event: unknown) => void
+  fireAfter: (event: unknown) => void
+}
+
+type V2ToolPart = { type?: unknown; text?: unknown }
+
+function locatableText(result: unknown): { parts: unknown[]; index: number; text: string } | null {
+  const content = (result as { content?: unknown })?.content
+  if (!Array.isArray(content)) return null
+  const index = content.findIndex((p) => p && typeof p === "object" && (p as V2ToolPart).type === "text" && typeof (p as V2ToolPart).text === "string")
+  if (index < 0) return null
+  const part = content[index] as V2ToolPart
+  return { parts: content, index, text: String(part.text ?? "") }
+}
+
+/** The addresses a browser call can carry. `url` on navigate / tabs.open, `path` on
+ *  preview and the file verbs, and nothing on the pure-input verbs (click, fill),
+ *  which are governed by whatever page is already open. */
+function targetOf(input: unknown): { kind: "url" | "path"; value: string } | null {
+  const rec = input as { url?: unknown; path?: unknown; targetUrl?: unknown } | null | undefined
+  if (!rec || typeof rec !== "object") return null
+  for (const key of ["url", "targetUrl"] as const) {
+    const v = rec[key]
+    if (typeof v === "string" && v.trim()) return { kind: "url", value: v.trim() }
+  }
+  if (typeof rec.path === "string" && rec.path.trim()) return { kind: "path", value: rec.path.trim() }
+  return null
+}
+
+export function applyV2BrowserGate(
+  ctx: unknown,
+  opts: {
+    allowlist: readonly string[]
+    scope?: TeamScope
+    env?: Record<string, string | undefined>
+  },
+): BrowserGate {
+  const report: BrowserGateReport = { seen: 0, classified: 0, refused: 0, leaked: 0, held: 0, foreignSkipped: 0, byTool: {} }
+  const registrations: V2Registration[] = []
+  /** key = `${tool}\n${sessionID}` → the refusal we owe that call's answer */
+  const pending = new Map<string, { message: string; at: number }>()
+  const off = /^(0|false|no|off)$/i.test(String(opts.env?.TM_V2_BROWSER_GATE ?? "").trim())
+
+  const keyOf = (tool: string, sessionID: unknown) => `${tool}\n${String(sessionID ?? "")}`
+
+  const decide = (target: { kind: "url" | "path"; value: string }): string | null => {
+    if (target.kind === "path") {
+      // R6, applied to the one native verb that reads from the server's own disk.
+      return isEnvFilePath(target.value)
+        ? `原生浏览器要预览的路径 ${target.value} 是环境文件家族（R6 红线），不放行：这类读取没有任何"看起来对不对"可判断，也不存在可批准的窗口。`
+        : null
+    }
+    const verdict = checkWebUrl(target.value, opts.allowlist)
+    return verdict.ok ? null : verdict.message
+  }
+
+  const fireBefore = (raw: unknown): void => {
+    const event = raw as { tool?: unknown; name?: unknown; input?: unknown; agent?: unknown; sessionID?: unknown } | null
+    const tool = String(event?.tool ?? event?.name ?? "")
+    if (!tool.startsWith("browser_")) return
+    if (opts.scope && opts.scope.count(opts.scope.decide(event as { agent?: unknown; sessionID?: unknown })) !== "ours") {
+      report.foreignSkipped++
+      return
+    }
+    report.seen++
+    if (off) return
+    const target = targetOf(event?.input)
+    if (!target) return
+    report.classified++
+    report.byTool[tool] ??= { seen: 0, refused: 0, leaked: 0 }
+    report.byTool[tool].seen++
+    const message = decide(target)
+    if (!message) return
+    report.refused++
+    report.byTool[tool].refused++
+    pending.set(keyOf(tool, event?.sessionID), { message, at: Date.now() })
+    // Layer 1. Thrown rather than returned: the input is mutable, but silently
+    // rewriting a URL the model chose is the guesswork this product refuses — the
+    // model has to see the refusal, and the host has to be the one that surfaces it.
+    throw new Error(message)
+  }
+
+  const fireAfter = (raw: unknown): void => {
+    const event = raw as { tool?: unknown; name?: unknown; result?: unknown; agent?: unknown; sessionID?: unknown } | null
+    const tool = String(event?.tool ?? event?.name ?? "")
+    if (!tool.startsWith("browser_")) return
+    if (off) return
+    // No scope re-check here: the owner question was answered at the door, and a
+    // foreign session never has a pending refusal for this lookup to match.
+    const key = keyOf(tool, event?.sessionID)
+    const owed = pending.get(key)
+    if (!owed) return
+    pending.delete(key)
+    const now = Date.now()
+    if (now - owed.at > LEAK_WINDOW_MS) {
+      report.held++
+      return
+    }
+    // Layer 2: the host produced an answer to a call we refused. Take the content out
+    // and put the refusal in its place — the model must never read a page our policy
+    // says it may not, and a silent pass would be the exact claim we cannot make.
+    report.leaked++
+    if (report.byTool[tool]) report.byTool[tool].leaked++
+    const found = locatableText(event?.result)
+    if (found) {
+      found.parts[found.index] = {
+        type: "text",
+        text: `${owed.message}
+
+（这道门禁本来是在请求前生效的：${tool} 的调用被宿主放过去了，所以我把它的返回换成了这段拒绝语。这个页面的内容没有进入上下文、run store 或轨迹；请求本身已经发生，这一条我没有能力撤回。）`,
+      }
+      for (let i = found.index + 1; i < found.parts.length; i++) {
+        const p = found.parts[i] as V2ToolPart | null
+        if (p && typeof p === "object" && p.type === "text" && typeof p.text === "string") found.parts[i] = { type: "text", text: "" }
+      }
+    }
+  }
+
+  const toolDomain = (ctx as { tool?: { hook?: unknown } } | null | undefined)?.tool
+  if (typeof toolDomain?.hook === "function") {
+    const hook = toolDomain.hook as (name: string, cb: (e: unknown) => void) => Promise<V2Registration>
+    for (const [name, cb] of [
+      ["execute.before", fireBefore],
+      ["execute.after", fireAfter],
+    ] as const) {
+      try {
+        const reg = hook(name, cb)
+        // The host's transform/hook registrars are async; hold the promise so teardown
+        // can await it rather than disposing a registration that never landed.
+        registrations.push({
+          dispose: async () => {
+            try {
+              await (reg as Promise<V2Registration>).then?.((r) => r?.dispose?.())
+            } catch {
+              /* a host that already tore down its registry has nothing left to free */
+            }
+          },
+        })
+      } catch {
+        /* a host that refuses the hook is reported by the capability probe, not here */
+      }
+    }
+  }
+
+  // Sweep refusals that never saw an answer: the door held (the call was aborted and
+  // nothing came back), which is the good case and still has to be counted.
+  const sweeper = setInterval(() => {
+    const now = Date.now()
+    for (const [k, v] of pending) {
+      if (now - v.at > LEAK_WINDOW_MS) {
+        pending.delete(k)
+        report.held++
+      }
+    }
+  }, LEAK_WINDOW_MS)
+  if (typeof sweeper === "object" && sweeper && "unref" in sweeper) (sweeper as { unref?: () => void }).unref?.()
+
+  return {
+    registrations,
+    report,
+    fireBefore,
+    fireAfter,
+  }
+}
+
+export function browserGateSummary(r: BrowserGateReport): string {
+  if (!r.seen) return "原生 browser_* 没被调用过（门禁在场，没数据）"
+  const teeth = r.refused === 0 ? "没有拒绝发生过" : r.leaked === 0 ? `${r.refused} 次拒绝全部拦停在门口` : `${r.refused} 次拒绝中 ${r.leaked} 次被宿主放过去（已在返回处换成拒绝语）`
+  return `原生 browser_*：看过 ${r.seen} 次调用 · 可判定目标 ${r.classified} 次 · 拒绝 ${r.refused} 次（${teeth}）· 拦下后无返回 ${r.held} 次 · 非 Team 跳过 ${r.foreignSkipped} 次`
+}

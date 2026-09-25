@@ -103,6 +103,95 @@ export function detectContentType(content: string, hint?: ContentType): ContentT
  * chars/4 char-count cut would under-count CJK bodies up to 4×), and the
  * marker's own cost is reserved up front so it always survives the cut.
  */
+/**
+ * Cap an ADDRESSING payload — a browser accessibility snapshot, whose [ref=eN] tokens
+ * are the arguments of the next click.
+ *
+ * A head cut (what capTokens does) is the wrong shape here: the interactive nodes are
+ * spread through the tree, so a plain budget loses the tail's refs while keeping
+ * hundreds of tokens of static text nobody will address by. This keeps every line that
+ * carries an addressing token and spends the rest of the budget on the other lines in
+ * their original order. When the addressing lines alone do not fit, it says HOW MANY
+ * were dropped — "some refs are not in front of you" is the fact the model needs, and
+ * a silent tail cut is how a wrong-element click gets reported as 已点击.
+ *
+ * The addressing pattern is deliberately wide (any `key=value` token whose key ends in
+ * `ref` / `id`, plus the `[uid=…]` shape our own tm_browser mints), because matching
+ * the host's future snapshot format is a guess; over-collecting only costs budget.
+ */
+/** How far an addressing payload may overtake its nominal budget: every ref line is
+ *  kept up to `budget × this`, because the alternative is a click against a ref the
+ *  model cannot see. Past that, the note says how many addressing lines were dropped. */
+export const ADDRESSING_OVERTAKE_FACTOR = 4
+
+export function capKeepingAddressing(
+  text: string,
+  maxTokens: number,
+): { text: string; kept: number; dropped: number; total: number; addressesDropped: number } {
+  const ADDRESSIVE = /\b\w*(?:ref|uid)\w*\s*=/i
+  const lines = text.split(String.fromCharCode(10))
+  const cost = lines.map((l) => estimateTokens(l) + 1)
+  // +1 token per join for the newline itself, so the budget is never exceeded by the
+  // sum of parts that individually fit.
+  const totalCost = cost.reduce((a, b) => a + b, 0) + lines.length
+  const addrIdx: number[] = []
+  lines.forEach((l, i) => {
+    if (ADDRESSIVE.test(l)) addrIdx.push(i)
+  })
+  if (totalCost <= maxTokens) {
+    return { text, kept: lines.length, dropped: 0, total: lines.length, addressesDropped: 0 }
+  }
+  const addrSet = new Set(addrIdx)
+  const addrCost = addrIdx.reduce((s, i) => s + cost[i], 0)
+  const picked = new Set<number>()
+  let used = 0
+  let addressesDropped = 0
+  if (addrCost <= maxTokens) {
+    for (const i of addrIdx) {
+      picked.add(i)
+      used += cost[i]
+    }
+    for (let i = 0; i < lines.length; i++) {
+      if (picked.has(i)) continue
+      if (used + cost[i] <= maxTokens) {
+        picked.add(i)
+        used += cost[i]
+      }
+    }
+  } else {
+    // The addressing lines alone overflow the nominal budget. They are the tool's own
+    // addressable surface — a ref that is not in context cannot be clicked, and the
+    // model cannot know which one is missing — so they BUY the space they need, up to
+    // a hard ceiling (the nominal budget × ADDRESSING_OVERTAKE_FACTOR). Beyond that the
+    // snapshot is bigger than the context budget by design, and what does not fit is
+    // counted and announced rather than silently cut.
+    const ceiling = Math.min(addrCost, maxTokens * ADDRESSING_OVERTAKE_FACTOR)
+    for (const i of addrIdx) {
+      if (used + cost[i] <= ceiling) {
+        picked.add(i)
+        used += cost[i]
+      } else addressesDropped++
+    }
+    for (let i = 0; i < lines.length && used < ceiling; i++) {
+      // Only NON-addressing lines may fill the remainder. A line that was already
+      // counted as a dropped ref must not sneak back in here, or the arithmetic the
+      // reply prints ("N 行带 ref 被截掉") stops matching what is on screen — which is
+      // exactly the kind of off-by-one that turns a disclosure into a lie.
+      if (picked.has(i) || addrSet.has(i) || cost[i] > 20) continue
+      picked.add(i)
+      used += cost[i]
+    }
+  }
+  const out = lines.filter((_, i) => picked.has(i))
+  return {
+    text: out.join(String.fromCharCode(10)),
+    kept: out.length,
+    dropped: lines.length - out.length,
+    total: lines.length,
+    addressesDropped,
+  }
+}
+
 export function capTokens(text: string, maxTokens: number): string {
   const marker = " …(截断)"
   let total = 0

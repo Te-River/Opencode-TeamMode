@@ -43,6 +43,8 @@ import { applyV2BackgroundForce, applyV2PermissionGuards, needsCoarseShellAsk } 
 import { applyV2EventFeed } from "./v2-events.js"
 import { applyV2Probe, probeSummary } from "./v2-probe.js"
 import { applyV2NativeOffload } from "./v2-offload.js"
+import { applyV2BrowserGate, browserGateSummary } from "./v2-browser-gate.js"
+import { seedWebfetchDomains } from "../tm/webfetch.js"
 import { v2CapabilityRows } from "./v2-capabilities.js"
 import { applyV2SessionLayer, removalPlan } from "./v2-session.js"
 import { createStorageLedgerStore } from "../tm/ledger.js"
@@ -267,6 +269,19 @@ export const v2Personality: V2Plugin = {
     // BEFORE the session layer registers its own context hook, so the probe sees
     // the host's full surface rather than the set we trimmed — that difference is
     // exactly what it is there to record.
+    // The host's own browser catalog, behind OUR gate (#9): `permission.evaluate` was
+    // observed NOT firing for `browser_*`, so until now the domain list, the address
+    // red line and the R6 env-file rule had a bypass the length of a tool name — in
+    // the one surface that is also the only one with a native side panel.
+    const browserGate = applyV2BrowserGate(ctx, {
+      allowlist: seedWebfetchDomains(tmRuntime.config.webfetchAllowedDomains),
+      scope,
+      env: v2Env,
+    })
+    if (!browserGate.registrations.length) {
+      notes.push("原生 browser_* 的门禁没装上（ctx.tool.hook 不可用）：宿主的 45 个浏览器工具在 Team 会话里也不受我们的域名 / 地址规则约束")
+    }
+    registrations.push(...browserGate.registrations)
     const probe = await applyV2Probe(ctx, {
       onSummary: (summary) => {
         try {
@@ -545,6 +560,7 @@ export const v2Personality: V2Plugin = {
         scope_ours: scope.report.ours,
         scope_foreign: scope.report.foreign,
         scope_unknown: scope.report.unknown,
+        browser_gate: browserGate.registrations.length ? "armed" : "absent",
         private_space: privateSpace,
         tools_codemode: v2CodeModeDirect ? "direct" : "catalog",
         guard_foreign_skipped: guards.report.foreignSkipped,
@@ -603,6 +619,12 @@ export const v2Personality: V2Plugin = {
           event_forwarded: feed.report.forwarded,
           event_unknown_types: Object.entries(feed.report.unknown).map(([k, v]) => `${k}=${v}`).join(" "),
           event_stopped: feed.report.stopped ?? "",
+          browser_gate_seen: browserGate.report.seen,
+          browser_gate_refused: browserGate.report.refused,
+          browser_gate_leaked: browserGate.report.leaked,
+          browser_gate_held: browserGate.report.held,
+          browser_gate_note: browserGateSummary(browserGate.report),
+          native_capped: offload.report.capped,
           ...probeSummary(probe.report),
         })
       } catch {
