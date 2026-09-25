@@ -735,21 +735,47 @@ export function buildDispatchTools(deps: DispatchDeps): {
         // child settled says nothing about the USER'S goal, and the host's own
         // todo list does.  Read-only (GET /session/{id}/todo has no write
         // body), so this can remind but never rewrite.
-        if (settled && typeof api?.todo === "function" && parent) {
-          try {
-            const un = unwrapClientResult(await api.todo({ path: { id: parent }, ...(directory ? { query: { directory } } : {}) }))
-            const open = un.ok ? openHostTodos(un.data) : []
-            if (open.length) {
-              header.push(
-                `⚠ 目标未达成：宿主 todolist 还有 ${open.length} 项未完成 —— ${open.slice(0, 6).map((t) => `「${t.content}」(${t.status})`).join("、")}` +
-                  (open.length > 6 ? ` …+${open.length - 6}` : "") +
-                  `\n按目标指令：要么继续做掉，要么向用户写明哪一条被什么卡住；不要把这轮当成收尾。` +
-                  `（若这些项其实已经做完——例如你刚把派发结果收齐——先用 todowrite 更新状态，再收尾。）`,
-              )
-              log({ step_id: "join", event: "goal_open", count: open.length })
+        //
+        // The check has THREE outcomes and all three must be sayable.  Silence when
+        // the seam is missing (v2's client shim has no `todo`) read as "the goal
+        // check ran and passed", which is the same overstatement this tool was
+        // already fixed for on the adoption path — a settled round is exactly when
+        // an unchecked box matters most.
+        if (settled) {
+          const canCheck = typeof api?.todo === "function" && Boolean(parent)
+          let checked = false
+          if (canCheck) {
+            try {
+              const un = unwrapClientResult(await api!.todo!({ path: { id: parent }, ...(directory ? { query: { directory } } : {}) }))
+              checked = un.ok
+              const open = un.ok ? openHostTodos(un.data) : []
+              if (open.length) {
+                header.push(
+                  `⚠ 目标未达成：宿主 todolist 还有 ${open.length} 项未完成 —— ${open.slice(0, 6).map((t) => `「${t.content}」(${t.status})`).join("、")}` +
+                    (open.length > 6 ? ` …+${open.length - 6}` : "") +
+                    `\n按目标指令：要么继续做掉，要么向用户写明哪一条被什么卡住；不要把这轮当成收尾。` +
+                    // v1 has the built-in `todowrite`; a host without it must not be
+                    // told to call a tool it cannot call (the tm_ptc_run / `task`
+                    // lesson a third time).  Without the write seam the only honest
+                    // move is to say which items are done in the reply.
+                    (typeof api?.todo === "function"
+                      ? `（若这些项其实已经做完——例如你刚把派发结果收齐——先用 todowrite 更新状态，再收尾。）`
+                      : `（这个宿主没给写清单的入口：若这些项其实已完成，就在回复里逐条写明哪条做完了、依据是什么。）`),
+                )
+                log({ step_id: "join", event: "goal_open", count: open.length })
+              }
+            } catch {
+              checked = false
+              /* the todo endpoint is an extra, never a reason to fail a join */
             }
-          } catch {
-            /* the todo endpoint is an extra, never a reason to fail a join */
+          }
+          if (!checked) {
+            header.push(
+              canCheck
+                ? "（目标核对没做成：宿主 todo 端点返回异常，这一轮我没有看到你的清单状态。）"
+                : "（目标核对没做成：这个宿主没给 session.todo 端点，我无法读取宿主清单——`所有子代理已结算` 不等于 `目标已达成`，这一轮请自己核对再收尾。）",
+            )
+            log({ step_id: "join", event: "goal_unchecked", reason: canCheck ? "endpoint_failed" : "no_seam" })
           }
         }
         // #80/#86/#87: THE LEASE TRIPWIRE — one computation (leaseLine above),

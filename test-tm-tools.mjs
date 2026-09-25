@@ -3240,6 +3240,9 @@ try {
           ? undefined
           : async function (o) {
               calls.todo.push(o.path.id)
+              // "THROW" stands for a host whose todo endpoint fails — distinct from
+              // having no endpoint, which is the other thing tm_join must not blur.
+              if (over.todos === "THROW") throw new Error("ECONNRESET")
               return { ok: true, data: over.todos }
             },
         abort: async function (o) {
@@ -3481,6 +3484,35 @@ try {
         assert.ok(!closed.output.includes("目标未达成"), "a clean todo list adds no warning")
         assert.ok(closed.output.includes("全部已结算"), "and the round still reports its own state")
         await doneRt.dispose()
+
+        // …and the two ways the check can NOT happen.  Silence here read as
+        // "checked and clean" on v2 (whose client shim has no session.todo), at
+        // the exact moment a lead decides to wrap up — the same overstatement this
+        // tool already fixed on the adoption path, one floor later.
+        {
+          const { rt: noSeam } = await seeded("disp-goal-noseam", {
+            children: [leftover("ses_g3", "目标 (@reviewer subagent ·tm)")],
+            completedFor: ["ses_g3"],
+            statusMap: {},
+            // no `todos` at all: the seam is absent, exactly like createV2Client()
+          })
+          const unchecked = await noSeam.tools.tm_join.execute({}, LEAD)
+          assert.ok(!unchecked.output.includes("目标未达成"), "an unread list is never reported as an unmet goal")
+          assert.ok(unchecked.output.includes("目标核对没做成"), "…but the round says the check did not run")
+          assert.ok(unchecked.output.includes("不等于"), "…and refuses to let 已结算 read as 已达成")
+          assert.ok(!unchecked.output.includes("todowrite"), "…and does not tell the lead to call a tool this host has no seam for")
+          await noSeam.dispose()
+
+          const { rt: brokenRt } = await seeded("disp-goal-broken", {
+            children: [leftover("ses_g4", "目标 (@architect subagent ·tm)")],
+            completedFor: ["ses_g4"],
+            statusMap: {},
+            todos: "THROW",
+          })
+          const broken = await brokenRt.tools.tm_join.execute({}, LEAD)
+          assert.ok(/目标核对没做成.*返回异常/.test(broken.output), "a failing todo endpoint says it failed, distinctly from having no seam")
+          await brokenRt.dispose()
+        }
       }
 
       // #80: a settled child still holding a browser is reported as a FACT at the

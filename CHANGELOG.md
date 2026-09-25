@@ -237,6 +237,20 @@ registry saw 1.5.0 as the install-script fix release).
   without updating the table fails the generator rather than shipping the stale
   sentence.
 
+- **`tm_join` now says when the goal check COULD NOT RUN.**  The tripwire read the
+  host todo list only `if (settled && typeof api?.todo === "function" && parent)`,
+  so on a host without that seam — v2's client shim has no `session` domain at all —
+  a settled round carried no goal statement whatsoever, and silence reads as
+  "checked and clean" precisely at the moment a lead is deciding to wrap up. Two
+  more details of the same class: the escape hatch told the lead to call
+  `todowrite`, a tool v2 does not expose (the third instance of a mandate pointing
+  at a missing tool, after `tm_ptc_run` and `task`), and a throwing endpoint was
+  swallowed indistinguishably from an absent one. There are now three sayable
+  outcomes — checked-and-open names the items, checked-and-clean says nothing, and
+  unchecked states which of the two failed (`goal_unchecked` with
+  `reason: no_seam | endpoint_failed`) and refuses to let `所有子代理已结算` stand in
+  for `目标已达成`.
+
 - **The sub-agent envelope is now recognised in the shape THIS host emits, and the
   counter that hid that is fixed.**  Read out of the host's own result mapping
   (read-only; the binary was never touched), v2 wraps a child's reply as
