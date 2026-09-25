@@ -152,6 +152,25 @@ assert.equal(
   "defaultAgent:false opts out of the promotion, the same knob v1 documents",
 )
 await oo.value?.()
+// …and the claim is only made when it can be OBSERVED.  A live 2.0.16 standalone
+// boot showed the editor holding 7 agents with build and plan present and NONE of
+// ours — the transform receives the agent set from before the config directory
+// merges — while `--agent team` was nonetheless executing as Team.  "get() found
+// nothing" is therefore not evidence the host lacks the role, and it is certainly
+// not evidence the promotion landed.  The call is still attempted (it is the only
+// channel there is), but an unverifiable promotion must not print as a success.
+{
+  const builtinOnly = makeFakeCtx({
+    directory: ws,
+    agents: [{ id: "build", name: "build" }, { id: "plan", name: "plan" }],
+  })
+  const b = await withCapturedConsole(() => plugin.setup(builtinOnly.ctx))
+  assert.equal(builtinOnly.agents.__default, "team", "the promotion is still attempted against a host whose editor lacks our roles")
+  const line = (b.warns ?? []).join(" ") + (b.errors ?? []).join(" ")
+  assert.ok(/无法核验/.test(line) && /default_agent/.test(line), "…and says out loud that it could not be verified, pointing at the installer key that does work")
+  assert.ok(!/Team 已经是默认/.test(line), "no all-clear is printed for an unobserved promotion")
+  await b.value?.()
+}
 
 console.log("2. the v2 result shape")
 const readRes = await byName.tm_read.execute({ path: path.join(ws, "sample.txt") }, CTX)
@@ -181,13 +200,37 @@ assert.ok(
 )
 console.log(`   OK (bounded scan, ${hitLines} lines, truncation stated)`)
 
-console.log("4. consent fails closed with the v2 reason")
-const web = await byName.tm_webfetch.execute({ url: "https://definitely-not-allowlisted.invalid/page" }, CTX)
-const webText = textOf(web)
-assert.match(webText, /不给插件弹出确认窗/, "the refusal names the v2 absence, not 旧版协议")
-assert.match(webText, /拒绝|白名单/, "and it refuses rather than implying someone approved")
-assert.ok(!/正文|http 200/i.test(webText), "nothing was fetched")
-console.log("   OK (no ask bridge → refuse, and the sentence is true)")
+console.log("4. the v2 network policy: nothing gated by domain, everything gated by address")
+// The user's instruction for v2 (2026-09-25): do not block network access at all
+// EXCEPT sensitive and internal addresses.  On v1 the 22-host seed list was bearable
+// because the plugin could raise the host's official per-request dialog; on v2 it
+// cannot, so an allowlist became a set of pages nobody can approve — a gate with no
+// door.  Hence the default flips to "*" for THIS personality only (v1 keeps its
+// shipped default; the fork goes through createTmTools' `env`, never by mutating
+// process.env).  What must still hold, and hold hardest, is the address policy.
+const pub = await byName.tm_webfetch.execute({ url: "https://example.com/" }, CTX)
+const pubText = textOf(pub)
+// Judged on the ERROR PHASE, not a substring: example.com's own copy reads
+// "…without needing permission", so content matching would make a passing fetch
+// look like a refusal.
+assert.ok(!/phase=permission/.test(pubText), "a public host outside every seed is NOT refused by policy")
+assert.match(pubText, /Example Domain|正文|http/i, "…and is actually fetched (DNS/网络错误可以，门禁错误不行)")
+for (const [url, why] of [
+  ["http://169.254.169.254/latest/meta-data/", "元数据"],
+  ["http://192.168.1.1/", "私网"],
+  ["http://localhost:3000/", "回环"],
+]) {
+  const r = textOf(await byName.tm_webfetch.execute({ url }, CTX))
+  assert.match(r, new RegExp(why), `${url} is still refused as ${why}`)
+  assert.ok(!/正文|<html/i.test(r), `${url} was refused before anything was fetched`)
+  // Goal 6, applied to the refusal itself: on v2 there is no ask bridge, so a
+  // sentence promising "只能逐次经用户批准" would send the agent waiting for a dialog
+  // that can never open.  The v2 wording names the absence.
+  if (/用户批准|逐次经/.test(r) && !/不给插件弹出确认窗|无法弹出/.test(r)) {
+    assert.fail(`${url}: the refusal promises user approval without saying v2 cannot open that dialog`)
+  }
+}
+console.log("   OK (public hosts unpoliced by default, metadata/private/loopback refused, no promise of a dialog that cannot open)")
 
 console.log("5. permission triples, user rules, idempotency")
 const team = fake.agents.get("team")
@@ -291,14 +334,24 @@ assert.ok(
   second.warns.some((w) => Object.keys(agents).every((id) => w.includes(id))),
   "the log names all six roles the installer must provide",
 )
+// This used to assert the OPPOSITE — that the promotion is withheld when
+// editor.get('team') finds nothing.  A live 2.0.16 boot falsified the premise: the
+// transform's editor holds only the built-ins (the config directory has not merged
+// yet), so gating on that look-up suppressed the promotion in the ordinary case and
+// did so silently.  The call is made regardless now, and what is guaranteed instead
+// is that an unverified promotion is SAID, not hidden.
 assert.equal(
   bare.agents.__default,
-  undefined,
-  "the promotion is gated on the role existing — default('team') on a missing agent would leave the host falling back to build with no trace",
+  "team",
+  "the promotion is attempted even against an editor that has not merged the config roles",
 )
 assert.ok(
-  second.warns.some((w) => /没有成为默认/.test(w)),
-  `and a refused promotion is reported, not assumed: ${second.warns.join(" | ")}`,
+  second.warns.some((w) => /无法核验/.test(w) && /default_agent/.test(w)),
+  "…and the boot says the promotion could not be verified, pointing at the installer key that can",
+)
+assert.ok(
+  second.warns.some((w) => /没装过安装器就别假定/.test(w)),
+  `and the note tells the user not to assume the default holds: ${second.warns.join(" | ")}`,
 )
 console.log("   OK (a v2 plugin cannot create agents, so it says which are missing)")
 await second.value?.()
@@ -515,7 +568,12 @@ const rendered = renderNativeOffload("shell", { offloaded: true, ref: "tm://runs
 assert.ok(/2400 token 没有进入上下文/.test(rendered), "the sentence states how much did NOT arrive")
 assert.ok(/mode:"structure" \| "lines"/.test(rendered), "and names the two ways to page the body back")
 assert.ok(/不要为了看一眼把全文读回来/.test(rendered), "it tells the model not to page the whole body back just to look once")
-assert.ok([...NATIVE_GOVERNED_TOOLS].every((t) => ["read", "grep", "glob", "shell", "bash", "webfetch"].includes(t)), "the governed list is closed — agent/execute/patch shapes stay uninterpreted")
+assert.deepEqual(
+  [...NATIVE_GOVERNED_TOOLS].sort(),
+  ["bash", "execute", "glob", "grep", "read", "shell", "webfetch"],
+  "the governed list stays closed -- and `execute` is on it because that is the ONLY door native browser output has into the context (the Team surface is edit/execute/question/shell/subagent/write)",
+)
+assert.ok(![...NATIVE_GOVERNED_TOOLS].some((t) => ["agent", "patch", "question", "subagent", "write", "edit"].includes(t)), "shapes nobody has observed are still not interpreted")
 console.log("   OK (closed tool list, unknown shapes untouched, attachments and metadata preserved, failure degrades, off restores verbatim)")
 
 console.log("8. the config projection — what the installer copies onto disk")

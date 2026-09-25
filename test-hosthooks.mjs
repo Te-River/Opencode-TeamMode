@@ -383,6 +383,8 @@ console.log("hosthooks. tool.definition / chat.params / compaction / shell.env /
     const boot = summarizeEvents([
       { ts: iso(0), tool: "host", step_id: "v2-boot", event: "personality", api: 2, tools_registered: 12, tools_total: 12, tools_v1_only: "tm_ptc_run", agents_default: "team", request_hooks: 2, request_temperature: 0.2, subagent_background: "forced-true", guard_hooks: 1, note: "参数表是推导的" },
       { ts: iso(1), tool: "host", step_id: "v2-shutdown", event: "personality", api: 2, guard_seen: 7, guard_actions: "shell=5 read=2", guard_shell_matched: 1, subagent_seen: 2, subagent_forced: 2, tools_removed: "architect=19 team=8" },
+      { ts: iso(2), run_id: "rA", tool: "host", step_id: "v2-surface", event: "personality", api: 2, native_offload_active: true, native_seen: 1, native_offloaded: 1, native_tokens_saved: 12824, probe_tool_count: 6, probe_agents: "team", probe_executed: "shell", probe_actions: "shell", probe_evaluations: 1 },
+      { ts: iso(3), run_id: "rA", tool: "host", step_id: "v2-agents", event: "personality", api: 2, agents_default: "team", agents_normalized: true },
     ])
     const bmd = renderStats(boot, { runDirs: 1, roots: [] })
     ok(bmd.includes("启动与人格"), "tm_stats renders the boot record, not just the spend")
@@ -391,6 +393,23 @@ console.log("hosthooks. tool.definition / chat.params / compaction / shell.env /
     ok(bmd.includes("子代理 forced-true") && bmd.includes("温度 0.2"), "…plus the two request-layer promises")
     ok(bmd.includes("shell=5"), "…and what the guard actually SAW, so the fine-grained R6 flip is decidable from data")
     ok(bmd.includes("architect=19"), "…and the per-role tool trim, measured rather than claimed")
+    // The native-offload counters ride the snapshot line, and a counter that is
+    // written but never printed is the same defect this section was added to fix.
+    ok(bmd.includes("原生工具治理 开") && bmd.includes("卸载 1 次") && bmd.includes("省 12824 token"), "…and the JIT-over-native-tools evidence prints, not just persists")
+    ok(bmd.includes("execute.before 见到：shell"), "…naming the tool ids the host actually routed")
+    ok(bmd.includes("归一化完成") && !bmd.includes("agents_normalized"), "the transform-time record renders as a sentence, not as raw field names")
+    // A run appends an all-zero snapshot at attach; showing it beside (or instead
+    // of) the informative one is how a working feature reads as a dead one.
+    const { bootSnapshots } = await import("./dist/tm/stats.js")
+    const snaps = bootSnapshots([
+      { run_id: "r0", step_id: "v2-surface", native_seen: 2 },
+      { run_id: "r1", step_id: "v2-surface", native_seen: 0 },
+      { run_id: "r1", step_id: "v2-boot" },
+      { run_id: "r1", step_id: "v2-surface", native_seen: 7 },
+    ])
+    eq(snaps.filter((s) => s.step_id === "v2-surface" && s.run_id === "r1").length, 1, "one run's repeated snapshots collapse to the newest")
+    eq(snaps[0].native_seen, 7, "and the surviving one is the informative last write, newest-first")
+    eq(snaps.length, 3, "distinct (run, step) records are not collapsed together")
   }
   eq(summarizeEvents([{ ts: iso(0), tool: "tm_dispatch", event: "start" }, { ts: iso(1000), tool: "tm_dispatch", event: "idle", ms: 1000 }]).dispatch.overlapSavedMs, 0, "a single dispatch claims no overlap saving")
 

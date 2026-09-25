@@ -9,6 +9,28 @@ registry saw 1.5.0 as the install-script fix release).
 
 ### Changed
 
+- **On v2 the network policy is: no domain gate, address red line only.** The user's
+  instruction is that nothing may be blocked on the network except sensitive and
+  internal addresses.  On v1 the 22-host seed list was tolerable because a plugin
+  could raise the host's per-request dialog; on v2 it cannot raise one, so an
+  allowlist became a list of pages nobody can approve.  v2 now resolves its tool
+  config from a copy of the environment with `TM_WEBFETCH_ALLOWED_DOMAINS` defaulting
+  to `"*"` — an explicit user value still wins, and `createTmTools` gained an `env`
+  option so that v1 keeps its shipped default inside the same process.  What still
+  holds underneath, and is not configurable: link-local / metadata / reserved ranges
+  are denied with no consent path, and private space (loopback, RFC1918, CGNAT,
+  `.localhost`) is refused through our tools since there is no dialog to ask with.
+  Verified against the built runtime: `https://example.com` — in no seed list —
+  returns its page, while `169.254.169.254`, `192.168.1.1` and `localhost:3000` are
+  refused before any request.  A v2 refusal may no longer promise "只能逐次经用户批准"
+  without also saying the host cannot open that dialog.
+- **`execute` (Code Mode) is now governed for output size, which is what JIT over
+  the native browser means here.**  The Team's direct surface on v2 is six tools
+  (`edit execute question shell subagent write`), so every `tools.browser.*`
+  snapshot, tab list and evaluate result reaches the context window ONLY as the
+  aggregate return of one Code Mode program.  Measured live: a 15,000-token program
+  return arrived as `offloaded:true / preview_tokens:58` plus a `tm_fetch` handle.
+
 - **On v2 the per-command R6 classifier is in charge; the blanket `shell → ask` is
   the fallback.** It was kept as the default only because no live host had been
   seen to call `permission.evaluate` for `shell`, and the probe now records exactly
@@ -156,19 +178,23 @@ registry saw 1.5.0 as the install-script fix release).
   `startBlackboardMaintenance`, so that promise was false — and a cleanup claim
   with no mechanism behind it is the same overstated "done" this product exists
   to refuse. It now runs, unref'd and idempotent as on v1.
-- **Team is now the default agent on v2 as well.** v1 filled `default_agent`
-  only when it was empty or `build`, because overwriting a choice the user made
-  is not ours to make. v2 cannot express that condition: `AgentEditor` exposes
-  `default(id)` with no getter, so the only two options are never promoting and
-  promoting every boot. The user's standing instruction is that Team is always
-  the default, so v2 now calls `editor.default("team")` on every boot — gated on
-  the role actually existing, because promoting an agent the host cannot find
-  just makes it fall back to `build` with no trace; the refusal is reported as
-  `Team 没有成为默认`, the boot trajectory records `agents_default`, and
-  `defaultAgent: false` opts out exactly as on v1. One boundary config cannot
-  cross, stated rather than discovered later: `default_agent` does not change the
-  agent already stored on an existing session, so an old conversation still
-  opens as Build.
+- **Team is the default agent on v2 only through the installer's config key — the
+  plugin cannot do it, and now says so.** An earlier draft of this entry claimed
+  `editor.default("team")` promoted Team on every boot and called it live-verified.
+  A controlled experiment falsified that: with `default_agent` set to `build` in
+  `opencode.jsonc`, a standalone boot ran the promotion without error and the key
+  stayed `build`, while `editor.get("team")` returned nothing both before and after.
+  The reason showed up in the same probe — `ctx.agent.transform` receives the agent
+  set from BEFORE the config directory merges, so the editor holds only the seven
+  built-ins, and any look-up of our roles is a look-up at a snapshot.  `agent.reload()`
+  to force a second pass changed nothing the callback could see.  Two consequences,
+  both handled: the promotion is attempted regardless (reading a missing `get()` as
+  "the role does not exist" had been silently suppressing it in the ordinary case),
+  and an unverified promotion is reported as unverified with the pointer that does
+  work — the installer writes `default_agent: "team"`.  The boot record carries
+  `called-unverified` instead of a confident `team`.  One boundary unchanged by any of
+  this: `default_agent` does not rewrite the agent already stored on an existing
+  session, so an old conversation still opens as Build.
 - **`scripts/gen-v2-config.mjs` projects the six roles into v2 agent files.** A
   v2 plugin cannot create an agent — `AgentEditor` exposes only
   `list/get/default/update/remove` — so the roles have to reach the host the same

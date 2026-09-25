@@ -81,11 +81,31 @@ export const v2Personality: V2Plugin = {
     const envProtectMode = options.envProtect ? resolveEnvProtectMode(process.env.TM_ENV_PROTECT) : "off"
     const envProtectExtra = parseExtraDeny(process.env.TM_ENV_PROTECT_EXTRA_DENY)
 
-    const tmRuntime = await createTmTools(
+    // ---------- the v2 network policy: no domain gate, IP red line only ----------
+// The user's standing instruction for v2 (2026-09-25): do not block network
+// access at all EXCEPT sensitive and internal addresses.  v1's 22-host seed list
+// existed because v1 could open the host's official per-request dialog; on v2 a
+// plugin cannot raise one, so an allowlist became a set of pages the agent can
+// never see and no one can approve -- a gate with no door.  `"*"` therefore
+// replaces the DEFAULT here, and what still holds absolutely is `checkWebUrl`'s
+// address policy underneath it: link-local / metadata / reserved ranges are a hard
+// deny no config can open (and were never consentable), and private space
+// (loopback / RFC1918 / CGNAT / .localhost) stays gated — refused through our
+// tools, which have no dialog to ask with, and opened only by the host's own
+// `effect:"ask"` for the native tools.  IPv4-mapped and DNS64 spellings are
+// unwrapped before that check, so the notation is not a way around it.
+// An explicit TM_WEBFETCH_ALLOWED_DOMAINS always wins; this only changes which
+// default applies, and it is resolved from a COPY of the env so the v1
+// personality in the same process is untouched.
+const v2Env: Record<string, string | undefined> = { ...process.env }
+if (!String(v2Env.TM_WEBFETCH_ALLOWED_DOMAINS ?? "").trim()) v2Env.TM_WEBFETCH_ALLOWED_DOMAINS = "*"
+
+const tmRuntime = await createTmTools(
       { directory, project: "", client: createV2Client(), $: undefined } as unknown as PluginInput,
       {
         mode: envProtectMode,
         extra: envProtectExtra,
+        env: v2Env,
       },
     )
 
@@ -214,6 +234,7 @@ export const v2Personality: V2Plugin = {
     // refusal to promote is reported rather than hidden.
     const promoteTeamDefault = options.defaultAgent !== false
     let defaultPromoted: boolean | null = null
+    let defaultPostCheck = "not-attempted"
     if (typeof ctx.agent?.transform === "function") {
       registrations.push(
         await ctx.agent.transform((editor) => {
@@ -232,9 +253,63 @@ export const v2Personality: V2Plugin = {
             if (merged.changed) editor.update(id, (a) => { a.permissions = merged.triples })
           }
           if (promoteTeamDefault) {
-            const ok = !missingAgents.includes("team")
-            if (ok) editor.default("team")
+            // `editor.get("team")` returning nothing is NOT evidence the host does
+            // not know the role — the live run is literally executing as `team` while
+            // this snapshot lists only the 7 built-ins, so the transform receives the
+            // agent set from BEFORE the config directory merged.  Gating the
+            // promotion on that stale look-up is how "Team is always the default"
+            // silently stopped being true, so the call is attempted regardless and
+            // the AFTER view is what gets recorded.
+            let ok = true
+            try {
+              editor.default("team")
+            } catch {
+              ok = false
+            }
             defaultPromoted = ok
+            defaultPostCheck = editor.get?.("team") ? "present-after" : "absent-after"
+          }
+          // Recorded HERE, at the moment of observation.  The host defers this
+          // callback (a live boot reached the trajectory line with
+          // defaultPromoted still null, which printed as a clean-looking "n/a"), so
+          // the boot record cannot claim anything about what has not happened yet —
+          // least of all `agents_missing: ""`, which reads as "all six roles found"
+          // when the truth at that instant was "nobody has looked".
+          try {
+            tmRuntime.pipelines.store.appendTrajectory({
+              tool: "host",
+              step_id: "v2-agents",
+              event: "personality",
+              api: 2,
+              agents_missing: missingAgents.join(" "),
+              agents_default: defaultPromoted === null ? "opt-out" : defaultPostCheck === "present-after" ? "team" : "called-unverified",
+              agents_unmapped: [...unmappedActions].join(" "),
+              agents_normalized: true,
+              agents_default_post: defaultPostCheck,
+              // Is "all six missing" the host having no roles, or the callback
+              // firing before it loaded them?  Those need different fixes and the
+              // difference is not guessable from the outside — the editor's own view
+              // is the only witness.
+              agents_in_editor: (() => {
+                try {
+                  return (editor.list?.() ?? []).length
+                } catch {
+                  return -1
+                }
+              })(),
+              agents_editor_ids: (() => {
+                try {
+                  return (editor.list?.() ?? [])
+                    .map((a: { id?: string }) => String(a?.id ?? "?"))
+                    .filter((n: string) => wantedIds.includes(n) || n === "build" || n === "plan")
+                    .join(" ")
+                } catch {
+                  return "list-threw"
+                }
+              })(),
+            })
+          } catch {
+            /* the record is an extra, never a reason to fail the transform */
           }
         }),
       )
@@ -242,7 +317,18 @@ export const v2Personality: V2Plugin = {
       notes.push("ctx.agent.transform 不存在，角色权限矩阵未规范化")
     }
     if (defaultPromoted === false) {
-      notes.push("Team 没有成为默认：配置里缺 team 角色，宿主会静默回落到 build（先跑安装器写 agents/*.md）")
+      notes.push("Team 没有成为默认：editor.default(\"team\") 抛错了")
+    } else if (defaultPromoted && defaultPostCheck !== "present-after") {
+      // Measured on a live 2.0.16 standalone boot: the call is accepted, `team` is
+      // absent from the editor before AND after, and `default_agent` in
+      // opencode.jsonc keeps the user's value.  The plugin therefore cannot promote
+      // the default on v2 — the transform receives the agent set from before the
+      // config directory merges.  Saying so is the whole point: this file used to
+      // claim the promotion was live-verified, and the only thing that actually
+      // makes Team the default is the installer writing the key.
+      notes.push(
+        "Team 默认：editor.default(\"team\") 已被宿主接受但**无法核验生效**（transform 拿到的是配置合并前的角色集，实测调用后 editor 里仍无 team）。真正让这个要求成立的是安装器写 `default_agent: \"team\"`——没装过安装器就别假定 Team 是默认。",
+      )
     }
     if (unmappedActions.size) {
       notes.push(`白名单里这些键在 v2 没有对应动作，已如实丢弃：${[...unmappedActions].join(",")}`)
@@ -294,8 +380,8 @@ export const v2Personality: V2Plugin = {
         tools_v1_only: [...V2_UNREGISTERED].join(","),
         tools_total: bindings.length,
         tools_missing: missing.join(","),
-        agents_missing: missingAgents.join(","),
-        agents_default: defaultPromoted === null ? "n/a" : defaultPromoted ? "team" : "not-promoted",
+        agents_missing: missingAgents.length ? missingAgents.join(",") : defaultPromoted === null ? "待观察" : "",
+        agents_default: defaultPromoted === null ? "待观察（宿主异步调用 transform，见 v2-agents 行）" : defaultPromoted ? "team" : "not-promoted",
         request_hooks: session.registrations.length,
         guard_hooks: guards.registrations.length,
         subagent_background: bgForce.registrations.length ? "forced-true" : "no-hook",

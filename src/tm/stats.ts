@@ -305,6 +305,20 @@ function secs(ms: number): string {
   return `${(ms / 1000).toFixed(ms >= 10_000 ? 0 : 1)}s`
 }
 
+/** Newest-first host lines worth showing.  A run appends several `v2-surface`
+ *  snapshots of itself (one at attach, then one whenever the counters move), and
+ *  the early ones are legitimately all-zero — showing them buries the line that
+ *  says what actually happened, which is how a working native offload read as a
+ *  dead tool.  Per (run, step_id) the LAST snapshot supersedes the earlier ones. */
+export function bootSnapshots(
+  lines: ReadonlyArray<Record<string, unknown>>,
+  limit = 5,
+): Array<Record<string, unknown>> {
+  const last = new Map<string, number>()
+  lines.forEach((line, i) => last.set(`${String(line.run_id ?? "?")}|${String(line.step_id ?? "?")}`, i))
+  return [...last.values()].sort((a, b) => b - a).slice(0, limit).map((i) => lines[i])
+}
+
 /** Markdown, in the shapes the host renders fastest (tables, not prose). */
 export function renderStats(
   stats: TmStats,
@@ -354,9 +368,24 @@ export function renderStats(
   const b = stats.boot
   if (b.length) {
     out.push("", "### 启动与人格（哪一半在跑、它说自己缺什么）", "")
-    for (const line of [...b].reverse().slice(0, 4)) {
+    for (const line of bootSnapshots(b)) {
       const s = String(line.step_id ?? "?")
       const api = line.api === 2 ? "v2" : line.api === 1 ? "v1" : String(line.api ?? "?")
+      // The native-offload counters are rendered here too: they are written on the
+      // same snapshot, and a fact that is recorded but never printed is the exact
+      // defect this section was added to remove.
+      const offBits = [
+        line.native_offload_active === undefined ? "" : `原生工具治理 ${line.native_offload_active ? "开" : "关（见上方原因）"}`,
+        line.native_seen !== undefined ? `原生调用 ${line.native_seen} 次` : "",
+        line.native_offloaded !== undefined ? `卸载 ${line.native_offloaded} 次` : "",
+        line.native_tokens_saved !== undefined && Number(line.native_tokens_saved) > 0 ? `省 ${line.native_tokens_saved} token` : "",
+      ].filter(Boolean)
+      if (s === "v2-agents") {
+        out.push(
+          `- \`${s}\` · 人格 **${api}** · 默认角色 ${line.agents_default ?? "?"} · 归一化完成${line.agents_missing ? ` · 配置里缺角色：${line.agents_missing}` : ""}${line.agents_unmapped ? ` · 无 v2 对应的动作：${line.agents_unmapped}` : ""}`,
+        )
+        continue
+      }
       const bits = [
         `人格 **${api}**`,
         line.tools_registered !== undefined ? `工具 ${line.tools_registered}/${line.tools_total}` : "",
@@ -388,7 +417,8 @@ export function renderStats(
         line.probe_url_resources !== undefined ? `其中资源里带 URL 的 ${line.probe_url_resources} 次` : "",
         line.probe_hooks_missing ? `挂不上的钩子：${line.probe_hooks_missing}` : "",
       ].filter(Boolean)
-      if (probe.length) out.push(`  - 宿主表面探针 · ${probe.join(" · ")}`)
+      const allBits = [...offBits, ...probe]
+      if (allBits.length) out.push(`  - 原生面与探针 · ${allBits.join(" · ")}`)
       if (line.probe_browser_tools && line.probe_browser_tools !== "") out.push(`  - 原生浏览器工具名：${String(line.probe_browser_tools).split(" ").filter(Boolean).map((n) => `\`${n}\``).join(" ")}`)
       if (line.note) out.push(`  - ${line.note}`)
     }

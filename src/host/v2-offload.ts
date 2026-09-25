@@ -39,9 +39,16 @@ import { estimateTokens } from "../tm/config.js"
  *   degrades to the host's verbatim result, and says so in the trajectory.
  */
 
-/** Tools whose NATIVE output we govern.  Deliberately a closed list: the
- *  built-in agent/patch/execute results have shapes we have not observed, and
- *  guessing at a result shape is how content gets silently deleted. */
+/** Tools whose NATIVE output we govern.  Deliberately a closed list: the built-in
+ *  agent/patch/question results have shapes nobody has observed here, and rewriting
+ *  a shape you guessed at is content destruction, not governance.
+ *
+ *  `execute` is on the list for one specific reason, and it is the reason the
+ *  native browser can be governed at all: the Team's direct tool surface on v2 is
+ *  six tools (edit / execute / question / shell / subagent / write), so
+ *  `tools.browser.*` -- every snapshot, tab list and evaluate result -- reaches the
+ *  context window ONLY as the aggregate return of one Code Mode program.  There is
+ *  no other door, so governing `execute` IS "put JIT on the native browser". */
 export const NATIVE_GOVERNED_TOOLS: ReadonlySet<string> = new Set([
   "read",
   "grep",
@@ -49,6 +56,7 @@ export const NATIVE_GOVERNED_TOOLS: ReadonlySet<string> = new Set([
   "shell",
   "bash",
   "webfetch",
+  "execute",
 ])
 
 export interface V2OffloadReport {

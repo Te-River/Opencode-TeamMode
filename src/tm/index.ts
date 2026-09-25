@@ -118,6 +118,12 @@ export interface CreateTmToolsOptions {
    *  lives at the plugin entry because that is where the host surfaces are
    *  handed to us). */
   capabilities?: () => CapabilityRow[]
+  /** Environment to resolve the tool config from.  Defaults to `process.env`,
+   *  and exists so the two personalities can fork a DEFAULT without mutating the
+   *  host process's env (v1 keeps its shipped behaviour byte-exactly while v2
+   *  opens the domain allowlist, which is a personality decision, not a global
+   *  one).  Anything the user actually set always wins. */
+  env?: Record<string, string | undefined>
 }
 
 /** Collision-free shard key for a workspace path.  It is a HASH rather than a
@@ -259,7 +265,7 @@ export async function createTmTools(
   input: PluginInput,
   opts: CreateTmToolsOptions = {},
 ): Promise<TmRuntime> {
-  const cfg = resolveTmConfig(process.env)
+  const cfg = resolveTmConfig(opts.env ?? process.env)
   const directory =
     typeof input?.directory === "string" && input.directory.length > 0
       ? input.directory
