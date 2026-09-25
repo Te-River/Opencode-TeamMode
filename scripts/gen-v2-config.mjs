@@ -117,6 +117,27 @@ const V2_TEXT = [
   ["Local-repo recon is PTC-first:", "Local-repo recon is Code-Mode-first:"],
   ["cross-referencing searches → ONE tm_ptc_run program", "cross-referencing searches → ONE `execute` program"],
   ["tm.read / tm.grep / tm.bash ride inside", "tools.tm_read / tools.tm_grep / tools.tm_bash are reachable inside it"],
+  /*
+   * The delegation half of the lead prompt.  On v2 the host's tool is named
+   * `subagent` — measured, not inferred: a live dispatch reached
+   * `execute.before {tool:"subagent"}` and `permission.evaluate {action:"subagent"}`.
+   * A mandate that names `task` points at a tool the role cannot call, which costs
+   * the round it exists to save (the tm_ptc_run lesson, same shape).  And on v2
+   * `background` needs no operator flag — the plugin sets it on every dispatch —
+   * so the "pick the shape by rule" instruction is not a choice the model has.
+   */
+  ["## Delegation — the host's task tool, and what you do while it runs", "## Delegation — the host's subagent tool, and what you do while it runs"],
+  ["delegation goes through the host's `task` — governed, visible, killable.", "delegation goes through the host's `subagent` — governed, visible, killable."],
+  ["you will keep following up while they run → `task { background: true }`: the", "you will keep following up while they run → `subagent { background: true }`: the"],
+  ["`task`. Do not choose background when you would only park waiting for it.",
+   "`subagent`. On this host the plugin forces `background: true` on EVERY dispatch, so this is not a choice you make, and the operator flag v1 needed does not exist here."],
+  ["Background needs the operator flag `OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS=true`;",
+   "Assume the card is asynchronous: say who is running instead of pretending to block."],
+  ["without it `task` only blocks, so say so rather than pretending to overlap.",
+   "There is no flag to check and no synchronous fallback to fall back on."],
+  ["a background `task` names its own session id", "a background `subagent` names its own session id"],
+  ["a synchronous `task` call, so chaining waits", "a synchronous `subagent` call, so chaining waits"],
+  ["blocking on `task`", "blocking on `subagent`"],
 ]
 
 function forkBody(text, hits) {

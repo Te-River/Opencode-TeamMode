@@ -629,9 +629,24 @@ assert.equal(
 // be told to use it.  gen() above already throws if a V2_TEXT key stops
 // matching (the source was edited and the table was not), so these two
 // assertions are the other half — the substitution landed in the bytes on disk.
+// Restore the generated lead file first: the case above left a hand-written stub in
+// place precisely to prove the generator refuses to clobber it, and the delegation
+// mandate lives only in the lead — asserting against that stub would test the stub.
+fs.rmSync(path.join(genRoot, "agents", "team.md"), { force: true })
+gen()
 const allRoles = agentFiles.map((f) => fs.readFileSync(path.join(genRoot, "agents", f), "utf8")).join("\n")
 assert.ok(!allRoles.includes("tm_ptc_run"), "no v2 role is told to call a tool v2 does not register")
 assert.ok(allRoles.includes("`execute` (Code Mode)"), "the batching mandate names the tool v2 actually has")
+// The delegation mandate, forked by MEASUREMENT: a live dispatch reached
+// execute.before {tool:"subagent"} and permission.evaluate {action:"subagent"},
+// so a lead told to call `task` is pointed at a tool it does not have — and on v2
+// background needs no operator flag (the plugin forces it), so the v1 sentence
+// about OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS would have the lead checking a
+// switch that does not exist before delegating at all.
+assert.ok(allRoles.includes("delegation goes through the host's `subagent`"), "delegation names the tool v2 actually exposes")
+assert.ok(!/the host's `task`/.test(allRoles), "no mandate points at `task`, which is not on the v2 surface")
+assert.ok(!allRoles.includes("OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS"), "the v1 background flag is not asked of a v2 lead")
+assert.ok(allRoles.includes("forces `background: true` on EVERY dispatch"), "and it is told the shape is not its choice")
 assert.ok(allRoles.includes("## Recon batching (Code Mode first)"), "and so does the specialist section heading")
 console.log("   OK (12 files, modes + triples projected, idempotent, foreign files respected, prompt forked)")
 

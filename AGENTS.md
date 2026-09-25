@@ -79,7 +79,13 @@ this before treating any sentence above as platform-neutral.
   sentences that name them are rewritten by the `V2_TEXT` table in the same
   generator -- exact strings, and **it throws if a key stops matching**, so
   editing a prompt without updating the table fails the build instead of
-  silently shipping a v2 model a rule about a tool it cannot call. This is the
+  silently shipping a v2 model a rule about a tool it cannot call. The lead's delegation
+  section is the SECOND instance of that bug class and is forked the same way: on v2
+  the host's tool is `subagent` (measured -- `execute.before {tool:"subagent"}` and
+  `permission.evaluate {action:"subagent"}`), background needs no operator flag
+  because the plugin forces it, so both the "pick a synchronous `task`" rule and the
+  `OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS=true` sentence are v1 text that would
+  have a v2 lead checking a switch that does not exist.  This is the
   mechanism the `tm_read`/`tm_grep`/`tm_bash` retirement and the missing
   `todowrite` (#16) both depend on.
 - **`tm_browser` is probe-gated, not decided.** The host ships 45 `browser_*`

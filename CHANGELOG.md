@@ -223,6 +223,20 @@ registry saw 1.5.0 as the install-script fix release).
 
 ### Fixed
 
+- **The lead's delegation mandate names `subagent` on v2, not `task`.** Same defect
+  shape as the `tm_ptc_run` fork: a rule pointing at a tool the role cannot call
+  costs exactly the round it exists to save.  The name is from measurement, not
+  inference — a live dispatch reached `execute.before {tool:"subagent"}` and
+  `permission.evaluate {action:"subagent"}`.  Two more v1-isms went with it: the
+  instruction to pick "a plain synchronous `task`" (on v2 the plugin forces
+  `background: true` on every dispatch, so that is not a choice the model has) and
+  the sentence telling the lead that background needs
+  `OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS=true` (it does not exist here, and a
+  lead that goes looking for it wastes a turn checking a switch that was never
+  needed).  `V2_TEXT` throws if a key stops matching, so editing the lead prompt
+  without updating the table fails the generator rather than shipping the stale
+  sentence.
+
 - **The v2 surface probe now records the `ctx` domains and the shape of the message
   list**, because two open decisions were being argued from assumptions.  What it
   measured on a live 2.0.16 host:
