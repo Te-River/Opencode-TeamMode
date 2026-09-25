@@ -56,11 +56,21 @@ this before treating any sentence above as platform-neutral.
   three because v1 cannot rewrite a tool result at all — which means the two
   personalities now ship **different tool surfaces and the prompts must fork per
   personality** (v1 names `tm_read`, v2 names `read`).
-- **The bloat number, measured:** 13 `tm_*` = **9 528 tokens per model request**
-  (descriptions 6 639 + schemas 2 889), of which the three retiring tools are
-  only **986** while `tm_browser` alone is **2 287**. Cutting overlapping tools
-  is not the lever; `delete event.tools.X` in `session.hook("context")` per role
-  is (architect/implementer/reviewer drop ~5K each per request).
+- **The bloat number, and what it is NOT.** Summing the thirteen `tm_*`
+  definitions through our own `estimateTokens` gives **9 528 tokens**
+  (descriptions 6 639 + schemas 2 889) — that is the size of OUR definition set,
+  measured offline against `dist/`. **It is not a per-request cost, and a live
+  2.0.16 session says so:** the `team` agent's assembled request carried
+  **6 tools** (`edit`/`question`/`shell`/`subagent`/`write`/`execute`) and
+  **zero `tm_*`**, while the model's 61 calls in that session went to
+  `shell`(42)/`execute`(14)/`edit`(4)/`write`(1). So either plugin tools are
+  delivered only through the Code Mode catalog (the way `browser_*` is) or the v2
+  setup did not register them at all — **that is now the first thing to
+  establish**, because if `tm_*` never reaches the model, none of the JIT
+  governance is live on v2 regardless of how many tokens it would have cost.
+  What the live session DID confirm: the per-role trim works (the native
+  read/grep/glob/list/webfetch/websearch/skill/patch the matrix denies were
+  gone from the request).
 - **`tm_browser` is probe-gated, not decided.** The host ships 45 `browser_*`
   tools and a `browser` deny rule with `resource:"*"` removes the whole catalog,
   so the shape worth testing is "thin door over the host's own panel" via

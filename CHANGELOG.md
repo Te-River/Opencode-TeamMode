@@ -49,7 +49,7 @@ registry saw 1.5.0 as the install-script fix release).
 - **On v2 the whitelist now decides what the model is OFFERED, not just what it
   may call.** A permission `deny` on 1.18.x stopped the call but left the tool's
   description and schema in every request, so a role paid tokens for capabilities
-  it was forbidden to use — measured at 9 528 tokens per request across the
+  it was forbidden to use — measured offline against dist/ at 9 528 tokens across the
   thirteen governed tools alone, before the host's own catalog. v2 can `delete
   event.tools.<name>` inside `session.hook("context")`, so `src/host/v2-session.ts`
   now removes every denied tool from the assembled request: native
