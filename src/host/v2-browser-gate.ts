@@ -262,6 +262,14 @@ export function applyV2BrowserGate(
     }
   }, LEAK_WINDOW_MS)
   if (typeof sweeper === "object" && sweeper && "unref" in sweeper) (sweeper as { unref?: () => void }).unref?.()
+  // The host reloads plugins IN THIS PROCESS, so an interval that outlives teardown is
+  // not a harmless one: every boot would add another sweeper counting the same
+  // refusals. Clearing it is part of releasing the registration, not a nicety.
+  registrations.push({
+    dispose: async () => {
+      clearInterval(sweeper)
+    },
+  })
 
   return {
     registrations,
