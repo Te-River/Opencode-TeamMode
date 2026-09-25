@@ -55,7 +55,12 @@ const TM_NAMES = [
 // read/grep/bash left because the governed native tools replaced them (the
 // offload layer is what made that possible, so the order matters).
 const V2_RETIRED = ["tm_ptc_run", "tm_read", "tm_grep", "tm_bash"]
-const V2_NAMES = TM_NAMES.filter((n) => !V2_RETIRED.includes(n))
+/** v2 adds what v1 never had: the LEDGER's home, because a v2 host has no
+ *  `todowrite` for the mandate to attach to.  v1 registers no such tool — the
+ *  v1 personality is frozen, so this arrives through `ledgerStore` being handed
+ *  in by v2 alone (see src/tm/index.ts). */
+const V2_ONLY_TOOLS = ["tm_ledger"]
+const V2_NAMES = [...TM_NAMES.filter((n) => !V2_RETIRED.includes(n)), ...V2_ONLY_TOOLS]
 const CTX = { sessionID: "ses_v2", agent: "team", messageID: "msg_1", id: "call_1" }
 const textOf = (res) =>
   (res?.content ?? []).filter((c) => c?.type === "text").map((c) => c.text).join("\n")
@@ -101,7 +106,7 @@ for (const gone of ["tm_read", "tm_grep", "tm_bash"]) {
 assert.equal(
   registered.filter((n) => n.startsWith("tm_")).length,
   V2_NAMES.length,
-  `exactly the nine governed tools v2 ships arrive (got ${registered.filter((n) => n.startsWith("tm_")).join(",")})`,
+  `exactly the ten governed tools v2 ships arrive (got ${registered.filter((n) => n.startsWith("tm_")).join(",")})`,
 )
 for (const name of V2_NAMES) {
   assert.ok(String(byName[name].description ?? "").length > 40, `${name} carries a real description`)
@@ -119,7 +124,7 @@ assert.ok(
 // `{additionalProperties:true}` with no parameter guidance at all.  The
 // descriptor branch has to recover names AND types, because a schema that says
 // "string" for an enum parameter is the same guidance-free shape in disguise.
-for (const name of ["tm_join", "tm_pty", "tm_stats"]) {
+for (const name of ["tm_join", "tm_pty", "tm_stats", "tm_ledger"]) {
   const input = byName[name].input
   assert.notEqual(input.additionalProperties, true, `${name} is not the permissive fallback`)
   assert.ok(Object.keys(input.properties ?? {}).length >= 3, `${name} carries properties`)
@@ -137,7 +142,7 @@ assert.ok(
   "tm_pty.action keeps its verb enum instead of flattening to a string",
 )
 assert.equal(byName.tm_stats.input.properties.runs.type, "number", "tm_stats.runs reads as a number")
-for (const name of ["tm_join", "tm_pty", "tm_stats"]) {
+for (const name of ["tm_join", "tm_pty", "tm_stats", "tm_ledger"]) {
   const first = Object.values(byName[name].input.properties ?? {})[0]
   assert.ok(String(first?.description ?? "").length > 10, `${name} keeps the guidance text, not just names`)
 }
@@ -216,6 +221,62 @@ assert.ok(
 const offloadTools = fake.hook("tool.execute.after").handlers?.length ?? 0
 assert.ok(offloadTools > 0, `the offload handler count is observable (${offloadTools})`)
 console.log("   OK (aliases gone, native ladder left in place, governance attached)")
+
+console.log("3b. tm_ledger — the LEDGER rule gets a home when the host has no todowrite")
+// The lead's prompt mandates the list BEFORE the work; v2 gives a plugin no
+// `todowrite` and no `session.todo` to read, so the mandate had no landing spot
+// and tm_join's goal check had nothing to check.  ctx.storage is the host's own
+// domain (the boot self-check proves a write comes back), which beats a session
+// list left lying in a temp directory.
+const led = byName.tm_ledger
+const LED_KEY = "team-mode/ledger/ses_v2"
+const add1 = await led.execute({ action: "add", text: "把 v2 的 LEDGER 落到 ctx.storage" }, CTX)
+assert.match(textOf(add1), /#1 /, "the reply names the id it minted, so a later round can address it")
+assert.match(textOf(add1), /已写入 ctx\.storage/, "goal #6: the answer says the write REACHED the host, not that it was noted somewhere")
+const afterAdd = await fake.ctx.storage.get(LED_KEY)
+assert.equal(afterAdd?.items?.length, 1, "the item is really in the host's storage under this session")
+const addDup = await led.execute({ action: "add", text: "把 v2 的 LEDGER 落到 ctx.storage。" }, CTX)
+assert.match(textOf(addDup), /已经在清单上/, "the same ask arriving twice is one item, not two the lead has to close twice")
+assert.equal((await fake.ctx.storage.get(LED_KEY)).items.length, 1, "and no second line was written")
+await led.execute({ action: "add", text: "补 v2 单独的安装文档" }, CTX)
+const amb = await led.execute({ action: "done", id: "v2" }, CTX)
+assert.match(textOf(amb), /匹配到 2 条/, "an id that matches two items is refused with the candidates named — a list tool that guesses destroys its own point")
+assert.ok(!/已写入/.test(textOf(amb)), "and nothing was claimed to be saved on the way to that refusal")
+const blk = await led.execute({ action: "blocked", id: 2, note: "等用户拍板文档要不要中英双语" }, CTX)
+assert.match(textOf(blk), /#2 → blocked.*等用户拍板/s, "blocked is a state with the reason attached, not an exit")
+const list = await led.execute({ action: "list" }, CTX)
+assert.match(textOf(list), /未完成 2/, "list counts what is still open")
+assert.match(textOf(list), /\[!\] #2/, "and renders the blocked mark rather than folding it into 未开始")
+const { ledgerGoalLine, normalizeLedger, openItems } = await import("./dist/tm/ledger.js")
+const stored = normalizeLedger(await fake.ctx.storage.get(LED_KEY))
+const goalLine = ledgerGoalLine(stored)
+assert.ok(goalLine && /目标未达成/.test(goalLine) && /卡住/.test(goalLine), "the tripwire line the settled round rides")
+assert.equal(openItems(stored).length, 2, "the ledger survives a storage round-trip through the same parser tm_join uses")
+const done1 = await led.execute({ action: "done", id: 1, note: "这一条就是它自己" }, CTX)
+assert.match(textOf(done1), /#1 → done/, "…and an exact id does land")
+assert.equal(ledgerGoalLine(normalizeLedger(await fake.ctx.storage.get(LED_KEY))).match(/还有 (\d+) 项/u)[1], "1", "the count moves with the list, it is not a constant the tool repeats")
+const notLead = await led.execute({ action: "list" }, { ...CTX, agent: "researcher" })
+assert.match(textOf(notLead), /领队/, "the list is the lead's instrument; a specialist answers in STATUS instead")
+{
+  const bad = makeFakeCtx({ directory: ws, agents: [] })
+  bad.ctx.storage.set = async () => {
+    throw new Error("quota")
+  }
+  const b = await withCapturedConsole(() => plugin.setup(bad.ctx))
+  const badTools = Object.fromEntries(bad.tools.list().map((t) => [t.id ?? t.name, t]))
+  const failed = await badTools.tm_ledger.execute({ action: "add", text: "一条写不进去的要求" }, { ...CTX, sessionID: "ses_bad" })
+  assert.match(textOf(failed), /没写进/, "a store that refuses the write is reported as a failure")
+  assert.ok(!/已写入/.test(textOf(failed)), "and it never says 已写入 on the same breath")
+  assert.equal(await bad.ctx.storage.get("team-mode/ledger/ses_bad"), undefined, "nothing reached storage, which is what the sentence claims")
+  await b.value?.()
+}
+// The other half of the seam: tm_join's goal tripwire has to read the SAME store,
+// because "所有子代理已结算" says nothing about the user's goal.  Pinned textually —
+// a second source of truth for the list would make the warning lie.
+const dispatchSrc = fs.readFileSync("src/tm/dispatch.ts", "utf8")
+assert.ok(/deps\.ledgerStore/.test(dispatchSrc), "tm_join consults the ledger store")
+assert.ok(/ledger_empty/.test(dispatchSrc), "and an empty ledger is its own answer, not a silent pass")
+console.log("   OK (host-backed list, ids that cannot be guessed, a write that says whether it landed)")
 
 console.log("4. the v2 network policy: nothing gated by domain, everything gated by address")
 // The user's instruction for v2 (2026-09-25): do not block network access at all
@@ -374,14 +435,14 @@ console.log("   OK (a v2 plugin cannot create agents, so it says which are missi
 await second.value?.()
 
 console.log("7. the request layer — the whitelist decides what the model SEES")
-// The synthetic surface is the v2 reality: the native catalog plus the nine
+// The synthetic surface is the v2 reality: the native catalog plus the ten
 // tm_* this personality registers.  tm_read/tm_grep/tm_bash/tm_ptc_run are not
 // listed because a v2 host has no such tool to offer — asserting against them
 // would be asserting against a v1 surface.
 const SURFACE = [
   "read", "grep", "glob", "list", "edit", "write", "patch", "shell", "webfetch", "websearch",
   "skill", "question", "todowrite", "subagent", "browser_navigate", "browser_tabs_list",
-  "tm_fetch", "tm_memory", "tm_board_write", "tm_stats", "tm_join", "tm_pty",
+  "tm_fetch", "tm_memory", "tm_board_write", "tm_stats", "tm_join", "tm_pty", "tm_ledger",
   "tm_browser", "tm_search", "tm_webfetch",
 ]
 const event = (agent, options = {}) => ({
@@ -398,7 +459,7 @@ const archLeft = Object.keys(arch.tools)
 for (const gone of [
   "list", "edit", "write", "shell", "webfetch", "websearch", "question",
   "todowrite", "subagent", "browser_navigate", "browser_tabs_list",
-  "tm_webfetch", "tm_search", "tm_browser", "tm_join", "tm_pty",
+  "tm_webfetch", "tm_search", "tm_browser", "tm_join", "tm_pty", "tm_ledger",
 ]) {
   assert.ok(!archLeft.includes(gone), `architect is not even OFFERED ${gone} (v1 left its description in every request)`)
 }
@@ -423,6 +484,7 @@ const lead = event("team")
 await fake.hook("session.context").fire(lead)
 const leadLeft = Object.keys(lead.tools)
 assert.ok(leadLeft.includes("subagent"), "the lead keeps the dispatch lever")
+assert.ok(leadLeft.includes("tm_ledger"), "the lead keeps the list it is mandated to keep — v2 has no todowrite to lean on")
 assert.ok(leadLeft.includes("question") && leadLeft.includes("todowrite"), "and the todo/blocking-question grants its prompt mandates need")
 assert.ok(leadLeft.includes("browser_navigate"), "a network role keeps the host's browser catalog")
 assert.ok(leadLeft.includes("tm_webfetch") && leadLeft.includes("tm_browser"), "granted with an ask-map, so still offered")
@@ -714,6 +776,13 @@ assert.ok(!/the host's `task`/.test(allRoles), "no mandate points at `task`, whi
 assert.ok(!allRoles.includes("OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS"), "the v1 background flag is not asked of a v2 lead")
 assert.ok(allRoles.includes("forces `background: true` on EVERY dispatch"), "and it is told the shape is not its choice")
 assert.ok(allRoles.includes("## Recon batching (Code Mode first)"), "and so does the specialist section heading")
+// The LEDGER mandate needs the same fork: v2 has no `todowrite`, so a lead told
+// to "create a todo list" has no named tool to do it with, and the statuses are a
+// different enum than the host's.  A rule with no verb is the rule that quietly
+// stops being followed.
+const leadMd = fs.readFileSync(path.join(genRoot, "agents", "team.md"), "utf8")
+assert.ok(leadMd.includes("`tm_ledger`"), "the v2 lead's LEDGER rule names the tool that holds the list")
+assert.ok(!/todo list|TodoList|in_progress/.test(leadMd), "and never names todowrite's vocabulary, which this host does not have")
 console.log("   OK (12 files, modes + triples projected, idempotent, foreign files respected, prompt forked)")
 
 console.log("8b. the surface probe — names in, values never")

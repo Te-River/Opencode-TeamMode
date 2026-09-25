@@ -35,6 +35,7 @@ import { buildPtcArgsSchema, buildWebfetchArgsSchema, buildMemoryArgsSchema, bui
 import { buildPtcRunTool } from "./ptc/index.js"
 import { buildStatsTool } from "./stats.js"
 import { buildBoardWriteTool } from "./board.js"
+import { buildLedgerTool } from "./ledger.js"
 import { createWebCache } from "./cache.js"
 import type { CapabilityRow } from "../capabilities.js"
 import { buildTmWebfetchTool } from "./webfetch.js"
@@ -51,6 +52,21 @@ export {
   parseMemoryMarkdown,
   renderMemoryMarkdown,
 } from "./memory.js"
+export {
+  buildLedgerTool,
+  createStorageLedgerStore,
+  normalizeLedger,
+  emptyLedger,
+  addItem,
+  markItem,
+  openItems,
+  renderLedger,
+  ledgerGoalLine,
+  LEDGER_STATUSES,
+  type Ledger,
+  type LedgerItem,
+  type LedgerStore,
+} from "./ledger.js"
 export {
   buildTmBrowserTool,
   defaultBrowserExecutable,
@@ -124,6 +140,11 @@ export interface CreateTmToolsOptions {
    *  opens the domain allowlist, which is a personality decision, not a global
    *  one).  Anything the user actually set always wins. */
   env?: Record<string, string | undefined>
+  /** Where the lead's LEDGER lives.  v2 passes a `ctx.storage` adapter because
+   *  that host has no `todowrite` for the mandate to attach to; v1 passes nothing
+   *  and therefore registers no `tm_ledger` at all — its tool surface stays the
+   *  one the v1 personality was frozen with. */
+  ledgerStore?: import("./ledger.js").LedgerStore
 }
 
 /** Collision-free shard key for a workspace path.  It is a HASH rather than a
@@ -493,6 +514,9 @@ export async function createTmTools(
     // window.  One shared instance already owns the lease table, so this is a
     // read of a fact, not a second source of truth.
     browserLeases: () => browserTool.leases(),
+    // The goal tripwire prefers the HOST's todo list; when there is none (v2),
+    // the plugin's own LEDGER is the list that can actually be checked.
+    ledgerStore: opts.ledgerStore,
   })
   tools.tm_join = dispatch.tm_join
   // tm_pty — non-blocking command execution on the host's own terminal
@@ -519,6 +543,13 @@ export async function createTmTools(
     cfg: { boardMaxChars: cfg.boardMaxChars, boardMaxFiles: cfg.boardMaxFiles },
     args: await buildBoardArgsSchema(),
   })
+  // tm_ledger — registered ONLY when a store was handed in, which today means
+  // v2.  v1 has the host's own `todowrite` for the LEDGER mandate, and the v1
+  // personality is frozen: an extra tool in this record would be a v1 tool-
+  // surface change smuggled in through a v2 feature.
+  if (opts.ledgerStore) {
+    tools.tm_ledger = buildLedgerTool({ store: opts.ledgerStore, onlyAgent: "team" })
+  }
   return {
     runId,
     config: cfg,

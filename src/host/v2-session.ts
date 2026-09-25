@@ -64,14 +64,19 @@ export function toolsToRemove(permission: Record<string, unknown> | undefined | 
       // the exact surface the whitelist withholds.
       names.push(BROWSER_CATALOG)
     }
-    const action = TOOL_RENAMES[key] ?? key
-    if (V2_LADDER_ACTIONS.has(action)) continue
     // A `tm_*` key IS a tool name, so a DENY on one has to remove it too —
     // leaving the denied doors in the request would keep charging the model for
     // tools this role may not touch, which is the whole tax this layer exists
     // to stop.  The `tm_*` wildcard itself is an allow; if it ever read "deny",
     // deleting a tool literally named `tm_*` is a no-op.
+    const action = TOOL_RENAMES[key] ?? key
+    if (V2_LADDER_ACTIONS.has(action)) continue
     names.push(action)
+    // tm_ledger is v2-only and the frozen v1 matrix cannot name it, so the lead
+    // marker carries the denial: a role that may not `tm_join` is a role that does
+    // not own the list.  Leaving it offered would charge every specialist for a
+    // tool that refuses them at execute — the tax this layer exists to remove.
+    if (key === "tm_join") names.push("tm_ledger")
   }
   return [...new Set(names)]
 }

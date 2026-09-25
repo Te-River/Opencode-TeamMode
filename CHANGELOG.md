@@ -85,6 +85,26 @@ registry saw 1.5.0 as the install-script fix release).
 
 ### Added
 
+- **`tm_ledger` — the LEDGER rule finally has a place to live on v2** (#16).  The
+  lead's prompt mandates the list before the work (every new ask becomes an item,
+  an interruption is an insertion, `blocked` is a state and not an exit, a
+  compaction resumes by re-reading the list), and v2 gives a plugin no
+  `todowrite` to do that with — so the mandate was prose and `tm_join`'s goal
+  tripwire had nothing to check.  The list now lives in the host's own
+  `ctx.storage` (the domain the boot self-check proves by writing a marker and
+  reading it back), keyed per session, with `add` / `doing` / `done` / `blocked` /
+  `list`.  Four decisions worth naming: a repeat of the same ask is ONE item and
+  says so; an `id` that matches two items is refused with both candidates printed
+  rather than guessed; only the lead may use it (a specialist answers in STATUS —
+  and because the v2 request layer knows a non-lead may not `tm_join`, the tool is
+  not even offered to it); and a reply about the list says whether the write
+  REACHED storage — a store that throws is reported as a failure, never as
+  已记录, because goal #6 is exactly this class of lie.  `tm_join`'s goal tripwire
+  now reads the same store, so a settled round on v2 gets a real
+  `⚠ 目标未达成 …` naming the blocked item instead of `goal_unchecked reason=no_seam`;
+  an empty ledger is its own answer (`ledger_empty`), never a silent pass.  v1
+  registers nothing: the tool appears only when a host hands in a store, and the
+  v1 personality is frozen with its own `todowrite`.
 - **JIT context governance now covers the host's OWN tools.** The offload promise
   — an oversized tool result never reaches the context window; it lands in the run
   store and the model gets an ≤80-token preview plus a handle — held only inside

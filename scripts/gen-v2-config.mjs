@@ -177,6 +177,31 @@ const V2_TEXT = [
   ["file tool at all (architect and researcher have no write/edit/bash; reviewer\n  has only the read-only bash, which refuses redirection). Pass the `session`",
    "file tool at all (architect and researcher have no write / edit / shell, and\n  reviewer's shell is the host's own, classified per command). Pass the `session`"],
   ["- The host stops a bash command after 120 s unless you pass a larger", "- The host stops a shell command after 120 s unless you pass a larger"],
+  /*
+   * The LEDGER.  v2 gives a plugin no `todowrite` (V2_ONLY_ACTIONS names it as a
+   * key with no v2 counterpart), so the mandate's tool is the one this plugin
+   * registers instead — `tm_ledger`, stored in the host's own ctx.storage.  A v2
+   * lead told to "create a todo list" without a named tool either invents a
+   * MANIFEST.md (the prompt forbids that, correctly) or keeps the list in prose
+   * and loses it at the next compaction, which is the failure the rule exists to
+   * prevent.  The status words move with it: `in_progress`/`completed` are
+   * todowrite's enum, and tm_ledger's are open/doing/done/blocked.
+   */
+  ["## Hard rule — TodoList discipline (non-negotiable)\nBefore you touch anything on a medium-or-larger task you MUST create a todo\nlist.",
+   "## Hard rule — LEDGER discipline (`tm_ledger`, non-negotiable)\nBefore you touch anything on a medium-or-larger task you MUST put the list on\nrecord: `tm_ledger { action:\"add\", text:\"…\" }` per work package."],
+  ["- Keep it LIVE: an item is `in_progress` while you or a dispatched child is\n  actually working it, and `completed` only after its work is verified —",
+   "- Keep it LIVE: an item is `doing` while you or a dispatched child is\n  actually working it, and `done` only after its work is verified —"],
+  ["genuinely are in_progress at once; that is the intended shape, not a\n  violation of single-task focus (one worker, one in_progress).",
+   "genuinely are `doing` at once; that is the intended shape, not a\n  violation of single-task focus (one worker, one `doing`)."],
+  ["- The goal travels with the work: it goes in the todo list, into every dispatch",
+   "- The goal travels with the work: it goes in `tm_ledger`, into every dispatch"],
+  ["NO MANIFEST.md — your state memory is the todo list.", "NO MANIFEST.md — your state memory is `tm_ledger`."],
+  ["  todo list, dispatched to `implementer` with the exact finding text.",
+   "  ledger, dispatched to `implementer` with the exact finding text."],
+  ["  list, lay out the merge structure,", "  ledger (`tm_ledger { action:\"list\" }` marks what the round finished), lay out the merge structure,"],
+  ["Do NOT store task state or oversized content there — todo list and\nboard files own those.",
+   "Do NOT store task state or oversized content there — the lead's `tm_ledger`\nand board files own those."],
+  ["dropped: the list is the user's audit surface (pending / in_progress /\n  completed / blocked)", "dropped: the list is the user's audit surface (open / doing /\n  done / blocked — `tm_ledger` keeps the states, and `blocked` carries the note\n  naming what blocked it)"],
 ]
 
 function forkBody(text, hits) {

@@ -43,6 +43,7 @@ import { applyV2Probe, probeSummary } from "./v2-probe.js"
 import { applyV2NativeOffload } from "./v2-offload.js"
 import { v2CapabilityRows } from "./v2-capabilities.js"
 import { applyV2SessionLayer, removalPlan } from "./v2-session.js"
+import { createStorageLedgerStore } from "../tm/ledger.js"
 import { bindV2Tool, type V2ToolBinding } from "./v2-tool.js"
 import { mergeTriples, triplesFromAgentPermission, V1_ONLY_TOOLS } from "./v2-permissions.js"
 import type { V2AgentInfo, V2Context, V2Plugin, V2Registration, V2ToolInfo } from "./v2-types.js"
@@ -122,6 +123,12 @@ export const v2Personality: V2Plugin = {
         // before the observation would be exactly the "declared" lie this table
         // exists to avoid.
         capabilities: () => v2Matrix(),
+        // The LEDGER's home.  v2 has no `todowrite` and no `session.todo` to
+        // read, so the lead's list lives in the host's own storage domain and
+        // `tm_join`'s goal tripwire checks THAT — see src/tm/ledger.ts.  When the
+        // domain is missing the tool refuses with the reason rather than keeping
+        // the list in process memory and calling it recorded.
+        ledgerStore: createStorageLedgerStore((ctx as { storage?: unknown }).storage),
       },
     )
     let v2Matrix: () => ReturnType<typeof v2CapabilityRows> = () => []

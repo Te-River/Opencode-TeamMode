@@ -36,6 +36,7 @@ import { unwrapClientResult, type Unwrapped } from "./client-unwrap.js"
 import { detectContentType } from "./preview.js"
 import { shorten } from "./config.js"
 import type { TmPipelines } from "./pipelines.js"
+import { ledgerGoalLine, openItems, type LedgerStore } from "./ledger.js"
 
 /** The five dispatchable specialists — "team" is deliberately NOT in the
  *  list: a lead spawning a lead is the nesting T3 closed. */
@@ -77,6 +78,10 @@ export interface DispatchDeps {
   browserLeases?: () => { id: string; owner: string; agent: string; idleMs: number }[]
   /** Ceiling on how long tm_join will wait on a round of children. */
   maxWaitMs?: number
+  /** The plugin's own LEDGER (v2 has no host `session.todo` to read).  Present =
+   *  the goal tripwire has a second thing it can actually check; absent = the
+   *  tripwire says it could not check, which is a different answer from "clean". */
+  ledgerStore?: LedgerStore
 }
 
 interface SessionApi {
@@ -744,6 +749,7 @@ export function buildDispatchTools(deps: DispatchDeps): {
         if (settled) {
           const canCheck = typeof api?.todo === "function" && Boolean(parent)
           let checked = false
+          let ledgerEmpty = false
           if (canCheck) {
             try {
               const un = unwrapClientResult(await api!.todo!({ path: { id: parent }, ...(directory ? { query: { directory } } : {}) }))
@@ -769,13 +775,40 @@ export function buildDispatchTools(deps: DispatchDeps): {
               /* the todo endpoint is an extra, never a reason to fail a join */
             }
           }
+          if (!checked && deps.ledgerStore?.available?.() && parent) {
+            // v2 has no `session.todo` to read, so the list that CAN be checked is
+            // the one this plugin keeps (`tm_ledger`, in ctx.storage).  A non-empty
+            // open set is a fact worth refusing a wrap-up over; an EMPTY one is not
+            // evidence the goal was met — it usually means nothing was ever
+            // recorded, which is its own honest "cannot check".
+            try {
+              const led = await deps.ledgerStore.load(parent)
+              const rest = led ? openItems(led) : []
+              if (rest.length) {
+                const line = ledgerGoalLine(led)
+                if (line) header.push(line)
+                log({ step_id: "join", event: "goal_open", count: rest.length, source: "ledger" })
+                checked = true
+              } else if (led) {
+                ledgerEmpty = true
+              }
+            } catch {
+              /* the ledger is an extra too — a store that will not read never fails a join */
+            }
+          }
           if (!checked) {
             header.push(
               canCheck
                 ? "（目标核对没做成：宿主 todo 端点返回异常，这一轮我没有看到你的清单状态。）"
-                : "（目标核对没做成：这个宿主没给 session.todo 端点，我无法读取宿主清单——`所有子代理已结算` 不等于 `目标已达成`，这一轮请自己核对再收尾。）",
+                : ledgerEmpty
+                  ? "（目标核对没做成：这个宿主没给 session.todo 端点，而 tm_ledger 里一条都没有——没有可核对的目标状态。`所有子代理已结算` 不等于 `目标已达成`：要么先 tm_ledger { action:\"add\" } 把要求记下来，要么在回复里自己逐条核对再收尾。）"
+                  : "（目标核对没做成：这个宿主没给 session.todo 端点，我也读不到本插件的 tm_ledger——无法读取清单状态。`所有子代理已结算` 不等于 `目标已达成`，这一轮请自己核对再收尾。）",
             )
-            log({ step_id: "join", event: "goal_unchecked", reason: canCheck ? "endpoint_failed" : "no_seam" })
+            log({
+              step_id: "join",
+              event: "goal_unchecked",
+              reason: canCheck ? "endpoint_failed" : ledgerEmpty ? "ledger_empty" : "no_seam",
+            })
           }
         }
         // #80/#86/#87: THE LEASE TRIPWIRE — one computation (leaseLine above),

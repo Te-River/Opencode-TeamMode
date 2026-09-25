@@ -258,6 +258,7 @@ HMAC 句柄，agent 真需要 payload 时用 `tm_fetch` 分页取。
 | `tm_ptc_run` | 批量编排：一个程序、N 次受治理调用、零 LLM 回合；联网角色还能在程序里调 `tm.search` / `tm.webfetch` | 全部六个 agent |
 | `tm_search` | 多引擎网络搜索，返回提取、去重、RRF 融合后的命中列表 | Lead + Researcher |
 | `tm_webfetch` | 白名单页面的单次受治理 GET（搜索页自动提取）。重定向逐跳手动过检，被拒时会把**整条链**报出来（`跳转链: a → b（停在第 2 跳）`）——以前只会报最后一个主机，一个在白名单内的短链跳到站外时，读起来像"这个站点抓不到"，于是 agent 又回去重试它刚眼睁睁失败的入口 URL。429/503 若带 delta-seconds 的 `Retry-After` 会一并报出（HTTP-date 形式刻意不折算成倒计时），所以"待会儿再来"不会被当成"这里没东西"。读页面时还会优先要 Markdown（`Accept: text/markdown,…`）——实测 `learn.microsoft.com`：60 778 B 的 HTML 变成 11 449 B 的 Markdown，其余站点两种请求返回同一份文档，所以在不支待的地方这个偏好是零成本的 | Lead + Researcher |
+| `tm_ledger` | **领队的任务清单**（`add` / `doing` / `done` / `blocked` / `list`），存在宿主自己的 `ctx.storage` 里、按会话分开——OpenCode 2.x 不给插件 `todowrite`，LEDGER 规则从此有了落点。同一个要求重复提出只算一条；编号撞上两条会拒绝并把两条都列出来；`blocked` 带上卡住的原因；写不进存储就报失败，不会说成「已记录」。**仅 v2**——v1 继续用宿主的 `todowrite` | 仅领队 |
 | `tm_join` | **子代理回收**——插件侧的派发器已经没有了（`tm_dispatch` 被移除：插件创建的子会话，用户既打不开也停不掉）。派活统一走宿主自己的 `task` / `task { background: true }`，`tm_join` 是它的读端：不带参数=状态快照，`waitMs`=有界等待，`cancel:true` 取消跑飞的子任务，`tm_join { ids: ["ses_…"] }` 则把某个子代理的**整篇**回复经卸载管线取回（句柄 + ≤80 token 预览），而不是几千 token 直接压进上下文。插件重启后它还会从宿主会话树重建登记，遗留的子代理被"接管"而不是丢失 | 仅 Lead |
 | `tm_pty` | 在宿主自己的终端会话上**非阻塞执行命令**（`start`/`status`/`list`/`kill`）：独立的构建与测试各自一个会话并行跑，不再串成一条 120 秒的 bash 调用。它不抓输出（命令自己 tee 日志，用 `tm_read` 读），且每次启动都先过 R6 分类器、R2 危险面 glob，再走官方确认窗，才真的建进程 | 仅 Lead |
 | `tm_stats` | **插件把自己的 trajectory 读回来**：卸载挡在上下文之外的 token（扣掉确实回来的预览）、派发重叠省下的秒数（串行代价减去子代理实际占用的墙钟）、PTC 内部量、治理计数（被拦子资源、`tm_pty` 拒绝、bash 超时夹顶、缓存命中、脱敏次数）——外加**宿主能力矩阵**（每个宿主接口标 `已验证/存在未用/待观察/缺失/需人眼`）。只读本插件自己写的文件；OpenCode 升级后第一个跑它。`{ recent: 20 }` 追加一份逐条调用清单——每次卸载结果的句柄和落盘路径都在里面，这就是"看看刚才那个工具到底返回了什么"的办法（宿主不给插件工具卡片留展开位） | 全角色 |
@@ -268,7 +269,8 @@ HMAC 句柄，agent 真需要 payload 时用 `tm_fetch` 分页取。
 > 接管，`tm_ptc_run` 由宿主的 `execute`（Code Mode）接管——同一件工作，少给模型一个
 > 要挑的工具。治理没有跟着消失：超大的原生结果照样被 `tool.execute.after` 卸载
 > （实测：`shell` 的 12,902 token 变成 78 token 的预览），地址红线和 R6 的按命令分类
-> 都跑在宿主的 `permission.evaluate` 上。安装器写出的六个角色提示词是 v2 变体，
+> 都跑在宿主的 `permission.evaluate` 上。> `tm_ledger` 是唯一一个只存在于 v2 的工具（在 `todowrite` 不存在的地方，领队的清单需要一个家）。
+> 安装器写出的六个角色提示词是 v2 变体，
 > 里面点名的是 `read` / `grep` / `shell` 而不是这些别名。
 > 上面这张表描述的是 v1（1.18.x）的工具面，那一份仍然十三个都在。
 
