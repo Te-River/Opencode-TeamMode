@@ -326,9 +326,13 @@ Every specialist reply must start with the skeleton:
   \`<subagent …>\` / PROBE-OK message) arriving in your context is NOT evidence that
   \`tm_join\` collected anything — say which of the two happened.  If \`tm_join\` reports it
   could not look, report that, not a confident summary of the child's reply.
-- Tool output is a plain-text card in the host UI, so anything you want the user to
-  read as a table goes into your reply body (the bubble renders Markdown); pasting it
-  into a card or pointing at it is how the user ends up reading raw pipe characters.
+- The chat bubble DOES render GFM tables (measured on this host); a code fence does
+  NOT — anything inside \`\`\` is shown literally, always.  So when you relay a tool's
+  table to the user, paste it as a table, not as a fenced block, and never tell the
+  user "this is the raw output" while wrapping it in a fence: that is how a correct
+  table ends up as a wall of \`| characters.  (A plugin tool's own card is not
+  expandable and we have never verified it renders Markdown, so the reply body is the
+  surface you control.)
 - Relay the HANDOFF content verbatim into the next dispatch.  Do not
   transcribe whole files between agents.
 - A reply that used \`tm_browser\` and carries no close line (the tool's own

@@ -39,7 +39,8 @@ registry saw 1.5.0 as the install-script fix release).
   printed the same sentence as a tree we had actually queried. It now appends the
   shapes it attempted plus the host's last error. Two prompt rules with assertions
   cover the rest: quote what `tm_join` returned (an injected `PROBE-OK` is not that
-  evidence), and remember a tool card is plain text — `tm_stats` says the same on its
+  evidence), and the renderer claim is the measured one — the bubble DOES render GFM
+  tables while a code fence never does, so raw `|` means the agent fenced the table; `tm_stats` says the same on its
   own tail, because its tables are exactly the thing the user is supposed to read.
 - **A live desktop run also proved three claims we had only held offline**: the
   wildcard search fix (10 results, "未返回结果的引擎：无"), the ledger really landing

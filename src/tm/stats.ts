@@ -647,12 +647,12 @@ export function buildStatsTool(deps: StatsDeps): ToolDefinition {
           }
           lines += "\n" + renderRecent(recentCalls(events, recentLimit, rows, deps.store.stepsRoot())).join("\n")
         }
-        // The host shows a plugin tool's output as a PLAIN-TEXT card — the markdown
-        // renderer is the chat bubble, not the card, and this table is the thing the
-        // user came here to read. Saying so is the difference between "the tool
-        // rendered badly" and "the agent did not relay it".
-        lines += `\n（这张表在宿主的工具卡片里是纯文本，markdown 不会被渲染；`
-          + `要给用户看，就把对应的表原样放进你的回复正文里——气泡才会渲染它。）`
+        // Measured on this host: the chat bubble renders GFM tables, but a code fence
+        // shows literally and a plugin tool's card is not expandable. So the table is
+        // only useful to the user once the agent relays it into its reply UNFENCED.
+        // Saying nothing here is how "the renderer is broken" gets blamed on the tool.
+        lines += `\n（要把这张表给用户看：写进回复正文，别包进 \`\`\` 围栏——围栏里的表格必然显示原文；`
+          + `工具卡片本身不可展开，Markdown 是否渲染我们没测过，所以正文才是你该控制的那一块。）`
         // Deliberately NOT offloaded: the point of this tool is the table the
         // user (or the lead) reads whole; it is bounded by construction (one
         // row per tool, per degraded seam, per capability).

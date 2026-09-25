@@ -676,7 +676,8 @@ console.log("7. TTL-only reclamation + session-partitioned boards: OK")
   // so any table the user should read has to be relayed into the reply body.
   assert.match(lead, /answers for itself/, "the lead must quote what tm_join actually returned")
   assert.match(lead, /NOT evidence that/, "and must not pass the host's injection off as collection")
-  assert.match(lead, /plain-text card in the host UI/, "the lead knows tool cards do not render markdown")
+  assert.match(lead, /The chat bubble DOES render GFM tables/, "the lead knows the bubble renders tables (measured, not guessed)")
+  assert.match(lead, /a code fence does/, "and knows a fence is what makes a table show as raw pipes")
   for (const [id, cfg] of specialists) {
     assert.match(cfg.prompt, /Editing documentation is a WRITE, not a shell job/, `${id} carries the doc-write rule`)
     assert.match(cfg.prompt, /never by generating a throwaway script/, `${id} is told not to script the edit`)
