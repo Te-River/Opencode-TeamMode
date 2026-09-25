@@ -41,6 +41,7 @@ import type { PluginInput, ToolDefinition } from "../types.js"
 import { blackboardNote } from "./note.js"
 import { applyV2BackgroundForce, applyV2PermissionGuards, needsCoarseShellAsk } from "./v2-guard.js"
 import { applyV2EventFeed } from "./v2-events.js"
+import { createV2SessionReader } from "./v2-session-client.js"
 import { applyV2Probe, probeSummary } from "./v2-probe.js"
 import { applyV2NativeOffload } from "./v2-offload.js"
 import { applyV2BrowserGate, browserGateSummary } from "./v2-browser-gate.js"
@@ -143,15 +144,20 @@ export const v2Personality: V2Plugin = {
     // our governance text never reaches the model at all.
     const v2CodeModeDirect = !/^(0|false|no|off)$/i.test(String(v2Env.TM_V2_CODEMODE ?? "").trim())
 
-    // No SDK client.  v1's `client` carried `file.read`, `find.text`, `session.*`
-    // and `pty.*`; the v2 plugin ctx has no such object, and the fs shim that used
-    // to stand in for the first two went away with `tm_read`/`tm_grep` (the native
-    // tools, governed at `execute.after`, are the file ladder now).  What is left
-    // off is reported where it is used rather than papered over: `tm_join` answers
-    // `goal_unchecked reason=no_seam` instead of claiming it looked at the todo
-    // list, and bridging `ctx.session` into the collect path is its own task (#8).
+    // No SDK client in the v1 sense.  v1's `client` carried `file.read`, `find.text`,
+    // `session.*` and `pty.*`; the v2 plugin ctx has no such object, and the fs shim
+    // that used to stand in for the first two went away with `tm_read`/`tm_grep` (the
+    // native tools, governed at `execute.after`, are the file ladder now).
+    // What IS bridged is the one thing the collect path cannot be honest without:
+    // `tm_join` must be able to check whether a named session id is really the
+    // caller's child, and a live 2.0.16 run proved that without it the tool reports
+    // "no pending dispatch matched" about a child that already finished. v2 has
+    // `ctx.session.get`, so `v2-session-client.ts` wraps it in the shape the existing
+    // code reads. `session.children` has no counterpart, so adoption from the host's
+    // tree keeps reporting `no_seam` rather than implying we looked.
+    const sessionReader = createV2SessionReader(ctx)
     const tmRuntime = await createTmTools(
-      { directory, project: "", client: undefined, $: undefined } as unknown as PluginInput,
+      { directory, project: "", client: sessionReader.client, $: undefined } as unknown as PluginInput,
       {
         mode: envProtectMode,
         extra: envProtectExtra,
