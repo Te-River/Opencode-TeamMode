@@ -128,6 +128,21 @@ assert.match(
 )
 console.log(`   OK (${registered.length} tools, parameter surfaces translated)`)
 
+console.log("1b. Team owns the default slot")
+assert.equal(
+  fake.agents.__default,
+  "team",
+  "editor.default('team') runs on every boot — v2 has no getter, so 'only if the user left it alone' is not expressible and the standing instruction wins",
+)
+const optedOut = makeFakeCtx({ directory: ws, agents: sixAgents, options: { defaultAgent: false } })
+const oo = await withCapturedConsole(() => plugin.setup(optedOut.ctx))
+assert.equal(
+  optedOut.agents.__default,
+  undefined,
+  "defaultAgent:false opts out of the promotion, the same knob v1 documents",
+)
+await oo.value?.()
+
 console.log("2. the v2 result shape")
 const readRes = await byName.tm_read.execute({ path: path.join(ws, "sample.txt") }, CTX)
 assert.ok(!("output" in readRes), "no bare `output` key — the host rejects it without an output schema")
@@ -229,6 +244,15 @@ assert.ok(
 assert.ok(
   second.warns.some((w) => Object.keys(agents).every((id) => w.includes(id))),
   "the log names all six roles the installer must provide",
+)
+assert.equal(
+  bare.agents.__default,
+  undefined,
+  "the promotion is gated on the role existing — default('team') on a missing agent would leave the host falling back to build with no trace",
+)
+assert.ok(
+  second.warns.some((w) => /没有成为默认/.test(w)),
+  `and a refused promotion is reported, not assumed: ${second.warns.join(" | ")}`,
 )
 console.log("   OK (a v2 plugin cannot create agents, so it says which are missing)")
 await second.value?.()

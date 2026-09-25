@@ -9,6 +9,19 @@ registry saw 1.5.0 as the install-script fix release).
 
 ### Added
 
+- **Team is now the default agent on v2 as well.** v1 filled `default_agent`
+  only when it was empty or `build`, because overwriting a choice the user made
+  is not ours to make. v2 cannot express that condition: `AgentEditor` exposes
+  `default(id)` with no getter, so the only two options are never promoting and
+  promoting every boot. The user's standing instruction is that Team is always
+  the default, so v2 now calls `editor.default("team")` on every boot — gated on
+  the role actually existing, because promoting an agent the host cannot find
+  just makes it fall back to `build` with no trace; the refusal is reported as
+  `Team 没有成为默认`, the boot trajectory records `agents_default`, and
+  `defaultAgent: false` opts out exactly as on v1. One boundary config cannot
+  cross, stated rather than discovered later: `default_agent` does not change the
+  agent already stored on an existing session, so an old conversation still
+  opens as Build.
 - **`scripts/gen-v2-agents.mjs` projects the six roles into v2 agent files.** A
   v2 plugin cannot create an agent — `AgentEditor` exposes only
   `list/get/default/update/remove` — so the roles have to reach the host the same

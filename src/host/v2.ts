@@ -13,15 +13,22 @@
  * session hooks / compaction / description appends (#93), or the browser
  * (#95). Those need this seam proven live first.
  *
- * Two v1 behaviors are intentionally absent, and both absences are stated
- * rather than discovered later:
- *  - promoting Team to `default_agent`: v1 read `cfg.default_agent` and only
- *    filled it when empty or "build".  The v2 AgentEditor exposes `default(id)`
- *    with NO getter, so calling it would override a user's chosen default on
- *    every boot.  The installer owns that key instead (#96).
- *  - the official confirmation dialog: probed on the live host, a plugin has no
- *    way to raise one.  `askFnOf` therefore finds no bridge and every governed
- *    call fails closed with the v2-worded refusal set below.
+ * Two v1 behaviors do not carry over, and both absences are stated rather than
+ * discovered later:
+ *  - creating agents: `AgentEditor` has no `add`, so the six roles must come
+ *    from the user's config (the installer writes `agents/*.md`).
+ *  - the conservative default-agent promotion: v1 read `cfg.default_agent` and
+ *    only filled it when empty or "build".  v2 exposes `default(id)` with NO
+ *    getter, so "only if the user did not choose" is not expressible — the
+ *    choice is between never promoting and promoting every boot.  The user's
+ *    standing instruction (2026-09-25) is that Team is ALWAYS the default, so
+ *    this promotes unconditionally; `defaultAgent: false` in the plugin options
+ *    opts out, exactly as on v1.
+ *
+ * The official confirmation dialog is absent as well, and for a different
+ * reason: probed on the live host, a plugin has no way to raise one.
+ * `askFnOf` therefore finds no bridge and every governed call fails closed with
+ * the v2-worded refusal set below.
  */
 
 import { agents } from "../agents.js"
@@ -129,6 +136,13 @@ export const v2Personality: V2Plugin = {
     // the host evaluates DOES open one — coarser than v1's per-pattern
     // escalation, and refined by #94's evaluate hook.
     const escalateShellAsk = envProtectMode !== "off"
+    // Team is ALWAYS the default (the user's standing instruction — see the
+    // header for why this cannot be the conservative v1 form).  `default()` on
+    // an agent that does not exist would just make the host fall back to build
+    // silently, so it is gated on the role actually being present, and the
+    // refusal to promote is reported rather than hidden.
+    const promoteTeamDefault = options.defaultAgent !== false
+    let defaultPromoted: boolean | null = null
     if (typeof ctx.agent?.transform === "function") {
       registrations.push(
         await ctx.agent.transform((editor) => {
@@ -146,10 +160,18 @@ export const v2Personality: V2Plugin = {
             const merged = mergeTriples((existing as V2AgentInfo).permissions, triples)
             if (merged.changed) editor.update(id, (a) => { a.permissions = merged.triples })
           }
+          if (promoteTeamDefault) {
+            const ok = !missingAgents.includes("team")
+            if (ok) editor.default("team")
+            defaultPromoted = ok
+          }
         }),
       )
     } else {
       notes.push("ctx.agent.transform 不存在，角色权限矩阵未规范化")
+    }
+    if (defaultPromoted === false) {
+      notes.push("Team 没有成为默认：配置里缺 team 角色，宿主会静默回落到 build（先跑安装器写 agents/*.md）")
     }
     if (unmappedActions.size) {
       notes.push(`白名单里这些键在 v2 没有对应动作，已如实丢弃：${[...unmappedActions].join(",")}`)
@@ -169,6 +191,7 @@ export const v2Personality: V2Plugin = {
         tools_total: bindings.length,
         tools_missing: missing.join(","),
         agents_missing: missingAgents.join(","),
+        agents_default: defaultPromoted === null ? "n/a" : defaultPromoted ? "team" : "not-promoted",
         env_protect: envProtectMode,
         note: notes.join(" · "),
       })
