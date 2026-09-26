@@ -153,282 +153,58 @@ REFUSES past the cap rather than silently dropping; three-tier memories as Markd
 dedup-by-Jaccard and dry-run compaction. `dist/` is never committed; scratch files go to the
 OS temp dir and are deleted.
 
-## The v2 delta (2026-09-25, in force)
+## The v2 delta — the rules (2026-09-25, in force)
 
-The goals above were written against OpenCode 1.18.x. These are the places where
-the 2.x port changes the business claim rather than the implementation — read
-this before treating any sentence above as platform-neutral.
+The goals above were written against OpenCode 1.18.x. These are the places where the 2.x port
+changes the business claim rather than the implementation. **Evidence, history and the
+falsified claims live in [`docs/v2-port-notes.md`](./docs/v2-port-notes.md)** — read it before
+re-deriving any of this, and append findings there (dated, with an evidence tag), not here.
 
-- **Everything the plugin changes is Team-scoped (user requirement, 2026-09-25).**
-  Every v2 hook fires for EVERY session on the host, so `src/host/v2-scope.ts` is the
-  one answer each layer asks before it writes: the per-role tool trim, `temperature`
-  0.2, the board note, the compaction survival list, the native-result offload, the
-  R6/egress permission strictening, and the forced `background: true` all no-op for
-  `build`, `plan`, or any agent that is not one of our six — those modes must look
-  exactly like a freshly installed OpenCode. A session also becomes "ours" when one of
-  our own tools serves it (`bindV2Tool`'s `onCall` → `learn`), because the host does not
-  promise `agent` on every event. The third verdict, `unknown`, is deliberately NOT
-  treated as ours: isolation outranks coverage, so an unresolved call is left completely
-  alone — and it is COUNTED (`scope_unknown`) and printed by `tm_stats` with the sentence
-  "没资格治理", because a governance layer that silently stopped applying after a host
-  upgrade is the overstated claim this product exists to refuse. The consequence is said
-  out loud in the boot notes rather than hidden: outside Team the red lines we inject
-  (metadata/private addresses, R6 classification) do NOT apply either — that floor is the
-  host's or the user's own config's job. (v1 cannot be scoped this way: its `config` hook
-  and bash escalation sit in the FROZEN personality.)
-- **Goal 1's injection is gone on v2.** `AgentEditor` has no `add`, and
-  `ctx.command.transform.add` was measured NOT to reach the UI, so the six roles
-  and the six `/team-*` commands are config files —
-  `~/.config/opencode/agents/*.md` and `commands/*.md`, written by the installer
-  and projected from `dist/` by `scripts/gen-v2-config.mjs` — never hand-copied,
-  or the prompts drift. The
-  plugin still owns the permission matrix (it merges its triples onto whatever
-  the config declares) and still ATTEMPTS the Team-default promotion on every boot
-  -- but `editor.default("team")` is measurably a no-op against a live host (see
-  the v2-default-agent gap below), so the requirement is satisfied by the
-  INSTALLER writing `default_agent: "team"`, not by this call.
-- **Goal 5's "ask the user" does not exist on v2.** A plugin cannot raise the
-  host's official dialog (live-probed: declaring `options.permission` on our own
-  tool triggered no evaluation and no prompt). Governed calls therefore **fail
-  closed** with a v2-worded refusal instead of asking, and the only dialog left
-  is one the host raises on its own (`effect:"ask"` from a permission rule or
-  `permission.hook("evaluate")`). Anything that reads the v1 ask path as a model
-  for v2 is wrong.
-- **Goal 4 is now the hard floor, and it has to cover the host's own tools.**
-  `tool.hook("execute.after")` takes a mutable `result` (docs example reassigns
-  it; a live probe confirmed the write lands), so offload + ≤80-token preview +
-  HMAC handle must extend to native `read`/`grep`/`shell`/`webfetch`. A promise
-  that only holds while the model happens to pick `tm_*` is not a promise.
-  **Both halves are now in:** `src/host/v2-session.ts` removes every tool a role
-  is denied from the assembled request (and the whole `browser_*` catalog where
-  `tm_browser` is denied), restores the 0.2 temperature, carries the resolved
-  board root to the lead, and starts the blackboard sweeper v2 silently lacked;
-  `src/host/v2-offload.ts` governs the NATIVE results through
-  `tool.hook("execute.after")` — measured on a live host: native `shell` 12 902
-  tokens arriving as a 78-token preview, `execute` 15 000 as 58.
-  **The governed name list is now every tool a Team role can call** (user
-  requirement #2: coverage may not depend on which tool the model picked):
-  `read grep glob shell bash webfetch websearch execute edit write patch question
-  subagent` plus the whole `browser_*` namespace matched BY PREFIX, because the host
-  has 45 of them and a 45-name list goes stale on the 46th without notice. Safety did
-  not move with the names — the decision to rewrite is per payload (an unrecognised
-  shape is left byte-exact), which is what the closed name list was really protecting.
-  And coverage is now a NUMBER: the report separates `ours` (every call resolved to a
-  Team session), `seen` (on the governed surface), `unmatched` (ours, but a tool we do
-  not touch) and `offloaded`; `tm_stats` prints them, so "most calls are JIT-governed"
-  can be checked and can also admit what it missed.
-- **Done (1.7.0 line): `tm_read` / `tm_grep` / `tm_bash` retired on v2 only.**
-  The ordering AGENTS.md demanded held: governance moved down FIRST
-  (`permission.hook("evaluate")` for the address + R6 red lines,
-  `execute.after` for the offload), and only then did the aliases go.  Where the
-  third piece of v1's P2 went: the host has its own `external_directory`
-  permission action, observed live answering `effect:"ask"` with a real
-  `permission.asked` behind it — so the native ladder is scoped by a dialog
-  rather than by our hard throw, which is stricter, not looser.  The retirement
-  has TWO halves and both are pinned by `test-v2-adapter` group 3: the trio is
-  not registered and gets no permission triples (`V1_ONLY_TOOLS`, now also the
-  `mergeTriples` reclaim set, so a stale `tm_read` rule from an earlier boot is
-  collected), AND v1's matrix denies native `read`/grep/glob for every role —
-  projecting those denies would have left a v2 role with NO file access at all,
-  which is why `V2_LADDER_ACTIONS` exempts them in both the triple translation
-  and `toolsToRemove()`.  v1 keeps all three because it cannot rewrite a tool
-  result at all.  The two personalities now ship different tool surfaces, and
-  the prompt fork is real: `V2_TEXT` in `gen-v2-config.mjs` rewrites every
-  sentence that named the trio or called the shell `bash` (a key that stops
-  matching throws the build), which is why the v2 config files say `read` /
-  `grep` / `shell`.
-- **The bloat number, and what it is NOT.** Summing the thirteen `tm_*`
-  definitions through our own `estimateTokens` gives **9 528 tokens**
-  (descriptions 6 639 + schemas 2 889) — that is the size of OUR definition set,
-  measured offline against `dist/`. **It is not a per-request cost, and a live
-  2.0.16 session says so:** the `team` agent's assembled request carried
-  **6 tools** (`edit`/`question`/`shell`/`subagent`/`write`/`execute`) and
-  **zero `tm_*`**, while the model's 61 calls in that session went to
-  `shell`(42)/`execute`(14)/`edit`(4)/`write`(1). So either plugin tools are
-  delivered only through the Code Mode catalog (the way `browser_*` is) or the v2
-  **RESOLVED (2026-09-25, read out of the 2.0.16 binary): the catalog explanation is
-  the right one, and it is our own doing.** Visibility is decided by
-  `options.codemode` — a tool whose value is not `false` is offered ONLY inside the
-  Code Mode catalog, where the host keeps `≤120 chars` of the description's FIRST
-  line under a ~2 000-token budget. `bindV2Tool` never sent `options`, so every
-  `tm_*` we register was catalog-only from the start: the tools WERE live (callable
-  from inside `execute`), and almost none of the governance text written for them
-  ever reached the model. `TM_V2_CODEMODE=direct` now sends the flag, and the cost is
-  MEASURED per role through our own `estimateTokens` (definitions + schemas, after
-  the request-layer trim): architect / implementer / reviewer **2 660** tokens,
-  tester **5 448**, researcher **7 113**, team **8 515** — i.e. direct delivery is
-  affordable for the three build-class roles and expensive for the two network roles
-  plus the lead, where `tm_browser` alone contributes 2 788. **DECIDED (user,
-  2026-09-25): slim first, then default to direct.** `tm_browser`'s description went
-  from a narrative of every lesson to what the model cannot recover from a result —
-  729 tokens (its parameter table is the other 1 337, and those descriptors are
-  per-parameter truth, not prose), and with `tm_pty` retired too the measured cost is
-  now **2 660 for architect/implementer/reviewer, 4 726 tester, 6 391 researcher,
-  7 366 lead**, which is what `direct` was supposed to buy per request. **FALSIFIED
-  2026-09-26 by the user's own desktop session**: with `options.codemode:false` sent for
-  all ten tools, 2.0.16 still delivered every `tm_*` inside the host's Code Mode catalog
-  ("They cannot be called directly…"), and the model's own callable list was the nine
-  native tools. So the flag changes what WE send and nothing else, the default now sends
-  nothing (`TM_V2_CODEMODE=direct` is an opt-in experiment for a build that honours it),
-  and the outcome is an OBSERVATION — `tools_in_request`, derived from whether a `tm_*`
-  name ever appears in an assembled request's own tool map — printed by `tm_stats` beside
-  the sent flag. The token figures above stand as measurements of OUR definition set;
-  what turned out to be fiction was the claim that the model receives them.
-  The history did not disappear — it stayed in AGENTS.md and CHANGELOG.md
-  where it costs nothing per request, which is the rule this repo applies to prompts
-  generally (see the subtraction philosophy).
-  What the live session DID confirm: the per-role trim works (the native
-  read/grep/glob/list/webfetch/websearch/skill/patch the matrix denies were
-  gone from the request).
-- **Goal 4 gains a third outcome besides "in context" and "offloaded": CAPPED.** A
-  live session caught the generic offload eating a report: a `tm_stats` answer called
-  through Code Mode arrived as the `execute` result at 2 917 tokens and came back as an
-  80-token preview, so the lead spent the round paging a table back in and the user got
-  prose about numbers. Two payloads are structurally unreadable once previewed — a
-  browser snapshot (its `[ref=…]` lines ARE the next click's arguments) and a report
-  (a table with a row missing is not a smaller table, it is a broken one) — so
-  `capKeepingAddressing()` and `capKeepingTables()` keep the structural lines and drop
-  the prose instead, up to `budget × 4`, and say how much did not fit. `reportCapped` /
-  `capped` / `offloaded` are three separate counters in `tm_stats`, because they answer
-  three different questions about what entered the context.
-- **The two personalities now ship different tool surfaces, and the prompt fork
-  has a home.** `V1_ONLY_TOOLS` (in `v2-permissions.ts`) is the single source for
-  what v2 does not register; `v2.ts` skips those when registering and
-  `gen-v2-config.mjs` drops their permission triples, because an `allow` for an
-  action the host never heard of claims a capability that does not exist. The
-  sentences that name them are rewritten by the `V2_TEXT` table in the same
-  generator -- exact strings, and **it throws if a key stops matching**, so
-  editing a prompt without updating the table fails the build instead of
-  silently shipping a v2 model a rule about a tool it cannot call. The lead's delegation
-  section is the SECOND instance of that bug class and is forked the same way: on v2
-  the host's tool is `subagent` (measured -- `execute.before {tool:"subagent"}` and
-  `permission.evaluate {action:"subagent"}`), background needs no operator flag
-  because the plugin forces it, so both the "pick a synchronous `task`" rule and the
-  `OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS=true` sentence are v1 text that would
-  have a v2 lead checking a switch that does not exist.  This is the
-  mechanism the `tm_read`/`tm_grep`/`tm_bash` retirement (done, 1.7.0 line) and
-  the v2-only `tm_ledger` (also done — the generator throws on a key that stops
-  matching, which is what keeps a v2 prompt from naming a tool v2 does not have).
-- **`tm_browser` is probe-gated, not decided.** The host ships 45 `browser_*`
-  tools and a `browser` deny rule with `resource:"*"` removes the whole catalog,
-  so the shape worth testing is "thin door over the host's own panel" via
-  `ctx.rpc("experimental.browser")` — whether a plugin can drive that
-  user-visible panel has never been verified live. If it cannot, playwright-core
-  stays and the tax is real. What is already known as lost either way: no
-  subresource policy on the native side, no headless ("screenshots require a
-  focused visible tab"), and no per-target consent.
-- **`tm_search` survives because native `websearch` needs a key.** All four
-  providers (Exa / Firecrawl / Parallel / Tavily) require an API key or
-  `/connect`, while the governed front's whole premise is zero-key and
-  CN-reachable. **The hole this section recorded is now closed:** native
-  `webfetch` had no egress red line, so a Build-class agent could fetch
-  `169.254.169.254` past `checkWebUrl` -- `src/host/v2-guard.ts` now asks the
-  address question at `permission.hook("evaluate")` regardless of R6 (metadata /
-  link-local / reserved = deny with no consent path, IPv4-mapped and DNS64
-  carriers unwrapped first, private = the host's own ask, env-file URL = deny),
-  and it only ever gets STRICTER than whatever the host or a user rule already
-  chose. The same hook carries R6's per-command classification, and it is now IN
-  CHARGE: a live `--standalone` run recorded `{action:"shell", resourceCount:1}`
-  reaching `permission.evaluate` for a real `git status --short`, which is the
-  proof the coarse config-level `shell -> ask` was being kept for. So the blanket
-  escalation is the FALLBACK, reached either by `TM_R6_FINE_ASK=off` or by the host
-  not exposing `permission.hook` at all — and the boot note names WHICH of the two
-  applies, because two causes sharing one message is how a fallback gets mistaken
-  for a setting. The hook keeps counting what it sees (`shellMatched`) so the
-  classifier's own hit rate stays measurable rather than assumed.
-- **What the Team agent is actually OFFERED on v2 (measured, not documented).**
-  Six tools in the request: `edit execute question shell subagent write`. That list
-  is the ground truth for three otherwise-guessed things. ① `read`, `grep`, `glob`,
-  `webfetch`, `websearch`, `skill`, `patch` are absent **because our own matrix
-  denies them and the request layer deletes denied tools** — the host has those
-  actions (it names them in `permission.evaluate` and in our triples), so retiring
-  `tm_read`/`tm_grep` is a permission flip plus governance, not a search for a
-  missing tool; and inside `execute` (Code Mode) the native names genuinely do not
-  exist — `tools.read`/`tools.shell`/`tools.webfetch` return `Unknown tool` while
-  `typeof` reports `"function"` for all three, so a probe that trusts `typeof` gets
-  a false positive. ② `todowrite` is gone, and the LEDGER rule now has a home anyway:
-  `tm_ledger` keeps the lead's list in the host's own `ctx.storage`, and
-  `tm_join`'s goal tripwire reads it (an empty list answers `ledger_empty`, never a
-  silent pass).
-  Measured facts about that domain (live 2.0.16 probe, `docs/research/agent-data-exchange.md`): it is shared across sessions, agents AND projects — the only namespace is the plugin id — which is why the session id is part of the key and a call without one is refused; and it has no TTL and no quota, which is why `LEDGER_MAX_ITEMS` (default 200, `TM_LEDGER_MAX_ITEMS`) REFUSES rather than truncating — silently dropping the oldest asks would be the same overstated claim wearing a new uniform. ③ `execute.after` sees a native `shell` result with keys
-  `content / metadata / output`, which is the precondition for putting JIT offload
-  over the native tools (#5) — without that observation the retirement of
-  `tm_bash` would have been an assumption.
-- **Goal 5 is REPLACED on v2: no domain gate at all, address red line only.** The
-  user's instruction (2026-09-25) is that nothing on the network may be blocked
-  except sensitive and internal addresses. On v1 the 22-host seed list was livable
-  because the plugin could raise the host's official per-request dialog; on v2 it
-  cannot raise one, so an allowlist became a set of pages nobody can approve -- a
-  gate with no door. v2 therefore resolves its tool config from a COPY of the env
-  with `TM_WEBFETCH_ALLOWED_DOMAINS` defaulting to `"*"` (an explicit user value
-  always wins; `createTmTools` gained an `env` option precisely so v1 keeps its
-  shipped default in the same process). What still holds, hardest: `checkWebUrl`'s
-  address policy -- link-local/metadata/reserved ranges are a deny no config can
-  open, and private space (loopback, RFC1918, CGNAT, `.localhost`) stays refused
-  through our tools, which have no dialog to ask with. Verified against the built
-  runtime: `https://example.com` (in no seed) returns the page, while
-  `169.254.169.254`, `192.168.1.1` and `localhost:3000` are refused before any
-  request. The refusal wording is pinned too: a v2 refusal may not promise "只能逐次
-  经用户批准" without also saying the host cannot open that dialog.
-  **What this does NOT buy: per-target visibility inside the native browser.** The
-  Team's direct surface is six tools (`edit execute question shell subagent write`),
-  so `tools.browser.*` output reaches context ONLY as the aggregate return of one
-  Code Mode program -- which is why `execute` is on the governed-tool list:
-  measured live, a 15,000-token program return arrived as `offloaded:true /
-  preview_tokens:58` + a `tm_fetch` handle. Governing the native browser means
-  governing that door.
-- **Goal 6 gains one more instance.** `inputSchemaFor` now reports `source`,
-  because a table *derived by regex from a descriptor string* and a table
-  *translated by zod* are both `exact` but are not the same claim — the boot log
-  names which tools got which.
-- **The "all agents 0.2" invariant cannot live in agent config on v2**
-  (`temperature` is a documented legacy field and the runner "preserves these
-  values but does not yet send them with model requests"); it must go through
-  `session.hook("context").options`. Background subagents, by contrast, are
-  native on v2 (`subagent {background:true}`, default nesting depth one = T3's
-  "only the lead dispatches" for free), so the
-  `OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS` env hack in the installers is
-  v1-only and must fork rather than delete.
-- **The installer's v2 job is TWO things, and the plugin half of it is one config
-  key.** Reverse-engineered from the host binary and confirmed on live 2.0.16/2.0.18
-  (`docs/research/plugin-loader-contract.md` is the evidence page): the key is
-  **`plugins` (plural)** — a 2.x host never reads the 1.18.x singular `plugin` key, which
-  is why an install that wrote there looked complete and did nothing; an entry is
-  **installed by the host itself at startup** (`Bun.add` inside `PluginModule.load`, then
-  `msg="loading plugin" id=… entrypoint=file:///…/.cache/opencode/npm/<pkg>@latest/<ts>/
-  node_modules/<pkg>/dist/index.js`), so `opencode plugin add` is a convenience that
-  writes the same key and v1's cache-purge / npm-re-resolve machinery is obsolete; a
-  **directory** target resolves only as `<dir>/index` (hence the root `index.js` this
-  package ships) and an unresolvable one is dropped with **no message at all**, so the
-  only proof of an install is that log line or our own `v2-boot` row; and
-  `plugin add` **refuses a path** ("Plugin target must be an npm registry package or Git
-  package specifier"), which is why local mode is a config edit. The second measured fact
-  is the one that bites: `opencode.json` and `opencode.jsonc` are **both parsed and
-  merged** while the host's dedupe matches only an identical string, so the same plugin
-  under two spellings or in both files **loads twice** (two personalities, the same hooks
-  bound twice) — which is exactly what the old 1.18.x "migrate `.json` forward to `.jsonc`"
-  rule produced, so that migration is gone and the installers now write one entry into
-  the `.jsonc` (user requirement: keep the file previous installs used) and RECLAIM their
-  own entry from the legacy `.json`. Both front-ends call one
-  `scripts/lib/config-surgery.cjs` so they cannot drift, and it matches Team entries
-  case- and hyphen-insensitively because a working tree is `Opencode-TeamMode`. What
-  nothing else can do remains: write `agents/*.md`, `commands/*.md`, and `default_agent`
-  (which must come last — a default naming a missing agent makes the host fall back to
-  `build` silently).
-- **The host's own background children are collectable (`babfcb8`).** On v2 every
-  dispatch IS the host's `subagent` tool, and `tm_join` had no record of them, so it
-  answered 没有待收集的派发 about work the user could watch on screen and a bounded wait
-  could never end. `src/host/v2-subagent.ts` pairs the two seams the user's own exported
-  session shows (`docs/research/host-subagent-injection.md`): `execute.before` carries
-  `{agent, background, description}` and `execute.after` carries
-  `result.metadata.sessionID` + `status:"running"`, with the ack sentence as a second
-  source since no field shape survives an upgrade unchanged. Two honesty rules come with
-  it: the child's BODY is the host's injected message, which v2 never hands a plugin
-  before persisting, so a host child with nothing readable says where the text actually
-  arrives instead of printing a reply we never read; and settle provenance is printed —
-  the child's own `session.idle` is `event`, while "its parent went idle so the host has
-  collected it" is labelled 推定 (the timestamps prove the ordering, once). A synchronous
-  child has no id and registers nothing, which is the correct answer, not a failure.
+- **Everything the plugin changes is Team-scoped.** `src/host/v2-scope.ts` is the one question
+  every writing layer asks first; `build`/`plan`/any foreign agent must look like a freshly
+  installed OpenCode. `unknown` is NOT treated as ours — it is left alone and COUNTED
+  (`scope_unknown`, printed with "没资格治理"). v1 cannot be scoped this way.
+- **A 2.x plugin cannot create an agent or a command.** The six roles and six `/team-*`
+  commands are config files generated FROM `dist/` by `scripts/gen-v2-config.mjs` — never
+  hand-copied, or the two personalities' prompts drift. `editor.default("team")` is
+  measurably a no-op, so the Team default is the installer writing `default_agent` LAST.
+- **A plugin cannot raise the host's dialog on v2.** Governed calls that would have asked
+  **fail closed** with a v2-worded refusal; the only dialogs are the host's own.
+- **No domain gate on v2** (`TM_WEBFETCH_ALLOWED_DOMAINS` defaults to `"*"`), because a gate
+  with no door is not a gate. The address red lines are unchanged and never consentable:
+  metadata/link-local/reserved refused outright, private space refused through our tools.
+- **JIT governance covers the host's tools**, through `tool.hook("execute.after")` with the
+  SAME pipeline; coverage is a reported number (`ours/seen/unmatched/offloaded/capped`), so
+  the layer can also admit what it missed. Three outcomes, not two: offload, cap-keeping-
+  addressing (snapshot `[ref=…]` lines), cap-keeping-tables (report tables intact).
+- **Retired on v2 only:** `tm_read`, `tm_grep`, `tm_bash`, `tm_ptc_run`, `tm_pty` — declared
+  once in `V1_ONLY_TOOLS`, which `v2.ts`, `v2-permissions.ts` and the generator all derive
+  from, with `V2_TEXT` rewriting every prompt sentence that named them (**a key that stops
+  matching throws at build time**). v1 keeps all five; `src/host/v1.ts` is frozen.
+- **Tool delivery is an observation, not a flag we send.** `options.codemode:false` changed
+  what we send and nothing else on 2.0.16/2.0.18 — the tools stayed in the Code Mode catalog.
+  `tools_in_request` (derived from an assembled request) is the only evidence of delivery.
+- **The host's own background children are collectable:** `v2-subagent.ts` registers them
+  from the ack's `metadata.sessionID`, and `tm_join` prints their settle provenance
+  (`event` vs 推定). Their BODY is the host's injected message, which v2 never hands a plugin
+  before persisting — so we report where it arrives and never rewrite outgoing messages.
+- **`temperature` 0.2 lives in the request layer** (`session.hook("context")`), never in agent
+  config, and never overwrites a temperature already there. Background sub-agents are native,
+  so the plugin forces `background:true` and the v1 env flag is v1-only.
+- **The installer's v2 job is two things:** write ONE entry under the `plugins` (plural) key in
+  the `.jsonc` and reclaim ours from `opencode.json` — the two files MERGE and the host
+  dedupes only on an identical string, so two entries load the plugin twice — then generate
+  the roles/commands and set `default_agent` last. The host installs the package itself at
+  startup; `plugin add` is a convenience and refuses a path; a directory target resolves only
+  as `<dir>/index.js` and is skipped silently otherwise.
+  Evidence: `docs/research/plugin-loader-contract.md`.
+- **`tm_browser` is probe-gated, not decided** (whether a plugin can drive the desktop's own
+  browser panel has never been verified live), and the host's `browser_*` catalog sits behind
+  `v2-browser-gate.ts` because `permission.evaluate` was measured NOT firing for it.
+- **What a Team agent is actually offered on v2** (measured): `edit execute question shell
+  subagent write` — everything else is absent because OUR matrix denies it and the request
+  layer deletes denied tools. Inside `execute` the native names do not exist, and `typeof`
+  reports `"function"` for them anyway: a probe that trusts `typeof` gets a false positive.
 
 ## Commands
 | Action | Command |
@@ -517,7 +293,7 @@ a fenced one, which is why a raw `|` in a reply means the agent fenced the table
 | `docs/installation.md` | Agent-consumable install/update/uninstall guide for **1.18.x** (bilingual; README "let your agent install it" path points here — config locations, plugin entry, restart, verification checks, three-path update recipe (re-run installer / agent prompt / manual cache purge), troubleshooting; opens by sending 2.x users to the other page) |
 | `docs/installation-v2.md` | The **OpenCode 2.x** install guide (bilingual, decision #4): why the flow is different (a v2 plugin cannot create an agent → `plugin add`, then `gen-v2-config.mjs` into `~/.config/opencode`, then `default_agent` LAST because a default naming a missing agent falls back to `build` silently), the v1↔v2 difference table (retired tools, `tm_ledger`, no plugin dialog, no domain gate, native background), 4 verification checks incl. "is JIT actually governing a native result", update/uninstall/troubleshooting, and the v2-only env knobs. It states plainly that `install.sh`/`install.ps1` have no 2.x branch yet — this page IS the working v2 path |
 | `scripts/lib/config-surgery.cjs` | The ONE config-editing helper both installers call (so `install.sh` and `install.ps1` cannot drift into two definitions of "installed"): JSONC comments masked to identical offsets (a commented-out key must not read as live), `plugins` array surgery that keeps exactly one Team entry — replacing our own previous spelling rather than adding a second, leaving foreign entries and comments alone, never leaving a dangling comma (the host tolerates one with `allowTrailingComma`, the next hand editor may not) — then a READ-BACK from disk, plus a reclaim pass over the other global file, and `default_agent` write + read-back. Written as `.cjs` on purpose: a bare `mktemp` name has no extension and inherits whatever module format a `package.json` in an ancestor directory declares, so on this machine Node threw `ERR_UNKNOWN_FILE_EXTENSION` and the install died before writing anything |
-| `src/host/v2-subagent.ts` | Claiming the host's background children for `tm_join` (see the v2 delta bullet): `execute.before` stashes `{agent, label}` per caller (bounded FIFO, `PENDING_PER_CALLER` 8 — past the cap the label is generic rather than a guess), `execute.after` reads `result.metadata.sessionID` (ack sentence as fallback) and calls `tmRuntime.registerHostChild`. Team-scoped through the same `scope.decide/count/learn` gate as every other layer, never throws into a hook, and the report (`seen / registered / unpaired / noChildId`) rides both the throttled `v2-surface` line and `v2-shutdown`, because "we were deaf" and "nothing was dispatched" must not print the same |
+| `src/host/v2-subagent.ts` | Claiming the host's background children for `tm_join` (the v2 delta rules above; evidence in `docs/v2-port-notes.md`): `execute.before` stashes `{agent, label}` per caller (bounded FIFO, `PENDING_PER_CALLER` 8 — past the cap the label is generic rather than a guess), `execute.after` reads `result.metadata.sessionID` (ack sentence as fallback) and calls `tmRuntime.registerHostChild`. Team-scoped through the same `scope.decide/count/learn` gate as every other layer, never throws into a hook, and the report (`seen / registered / unpaired / noChildId`) rides both the throttled `v2-surface` line and `v2-shutdown`, because "we were deaf" and "nothing was dispatched" must not print the same |
 | `scripts/install.sh` + `scripts/install.ps1` | Idempotent installers, now with a **host-major-version branch**. On 1.18.x: patching the config AND purging the stale plugin cache AND re-resolving npm-installed copies, so RE-RUNNING the installer IS the update. On **2.x** (`install_v2` / `Install-V2`): no `plugin add` probe and no cache machinery — it calls `scripts/lib/config-surgery.cjs` to keep exactly one `plugins` entry in `opencode.jsonc` and reclaim ours from `opencode.json` (the two files MERGE, so writing both is the double-load bug), then the generator run **from the package tree** (candidates: the `TEAMMODE_LOCAL_DIR` vendor copy, the config `node_modules`, the measured `~/.cache/opencode/npm/<pkg>@latest/<ts>/node_modules/<pkg>` layout the host installs into, and the two v1 cache layouts), a per-file check of 6 roles + 6 commands, and `default_agent: "team"` written LAST and read back from disk (a missing role refuses the default). `TEAMMODE_LOCAL_DIR=<dir>` is the development mode: it verifies the tree has `index.js` + `dist/index.js` + `scripts/gen-v2-config.mjs` (a directory the host cannot resolve is skipped SILENTLY), copies it to `<cfg>/vendor/team-mode` and writes `"./vendor/team-mode"`. Version detection asks `opencode` on PATH **and the desktop app** (`resources/opencode-cli.version`, then `opencode-cli.exe --version`) because the desktop install puts nothing on PATH — verified on a machine running 2.0.16 where `command -v opencode` fails. The v2 path states that the background-subagent env flag is not needed and prints its undo; the v1 path keeps setting it. **EXERCISED end to end on a live 2.0.18 host with `HOME`/`USERPROFILE` redirected** (both front-ends): one `loading plugin` line for Team, zero load failures, `v2-boot tools_registered:9`, a foreign plugin entry left intact in each file, and the legacy `.json` still strict-parseable afterwards. Two defects were found by running rather than reading and are fixed: `ours()` did not recognise a working-tree path spelling (so the next run would ADD a second entry — the double load the function exists to prevent) and PowerShell's `Copy-Item <src>\* <dst>` with a not-yet-existing destination threw mid-copy, leaving a half-copied package | Both then enable the host's VISIBLE sub-agent: `OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS=true` via `setx` (User scope, survives reboot) / `launchctl setenv` / `systemctl --user set-environment`, falling back to printing the `export` line — a plugin cannot set a host-process flag, and the host rejects `task {background:true}` without it. Opt out with `-NoBackgroundSubagents` or `TEAMMODE_SKIP_BACKGROUND_SUBAGENTS=1`; each path prints its revert command and reads the value back instead of trusting the tool's exit code. CACHE LAYOUT NOTE: `packages/@te-river/<name>@latest/` is a WRAPPER whose executed code is the NESTED `node_modules/@te-river/<name>/dist` — overwriting the wrapper root or `~/.config/opencode/node_modules` does nothing |
 | `src/tm/dispatch.ts` | `tm_join` ONLY — the COLLECT side of sub-agent work. **It now also receives children it did not create:** `register(child)` (exported through `tmRuntime.registerHostChild`, called by `src/host/v2-subagent.ts`) opens a row for a child the HOST's `subagent` tool dispatched, built by the pure `hostChildRecord()` — ids trimmed and refused when equal, agent lower-cased, label bounded to 40, `via:"host-injection"` set — and it is idempotent because a plugin reload replays hooks. A `via` row never claims to hold the body: with no readable reply it prints where the text arrives (the host's `<subagent sessionID=…>` injection) instead of the v1 sentence that told the lead to go look in the session panel. Settle provenance is separated too and printed: `settleSource:"event"` (the child's own `session.idle`, a measurement) vs `"parent-idle"` (the inference from the parent going idle, labelled 推定 in the row) — see `docs/research/host-subagent-injection.md` for the ordering that licenses it. `tm_dispatch` is REMOVED (v1.5.16, user decision): a child a plugin creates is a session the user can neither open from a card nor stop from the interface, and "the lead can `cancel:true` it" is no substitute.** Delegation therefore goes through the host's own `task` / `task { background: true }` (visible card, host-managed permission set, host kill switch — see `src/task-offload.ts` for the context-budget half and the installers for `OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS`). `tm_dispatch` is not registered at all (`src/tm/index.ts`), and `permission["tm_dispatch"] = "deny"` for all six agents INCLUDING the lead — the key stays in the matrix so the `tm_*` wildcard can never hand a dispatcher back, and the runtime `ctx.agent !== "team"` check remains as the second lock on what is left. **WHAT tm_join DOES:** keeps an in-process registry of children this plugin process has seen; when it has nothing for the caller it falls back to `client.session.children({path:{id:parent}})` and adopts ONLY titles that `parseDispatchTitle` recognises — `<label> (@<agent> subagent ·tm)` (our old dispatched shape) or the pre-1.5.15 `tm:<agent>:<label>`; the ` ·tm` marker is LOAD-BEARING because it is what keeps a host `task` child out of speculative adoption, and legacy titles still parse so an upgrade never orphans a live child. `claimNamedChild` is the ONE place an explicitly named id may be a host `task` child, and only after `session.get` verifies `parentID === the caller` (a foreign session stays a miss — never claim what is not yours). Settle via the `event` hook's `session.idle`/`session.error`/`session.status` with `session.status` polling behind it, plus `AssistantMessage.time.completed` for adopted rows ("finished while nobody was listening"); `session.abort` implements `cancel: true`; collected text rides `pipelines.govern`, so a fat child reply arrives as an offload handle + ≤80-token preview. **CALL ACCOUNTING:** tm_join writes `{tool:"tm_join",event:"call"}` at entry (after the lead lock, so a refused call is never counted) — the token table reads calls off that line, and without it tm_join showed "0 调用 / 2 结果", which looks like a broken counter rather than a tool that ran. The join/wait/adopt/cancel events keep the historical `tool:"tm_dispatch"` label so a 1.5.15 run and this one stay comparable. **WAIT DISCIPLINE (from a session that parked 19 minutes):** `joinBudget(waitMs, maxWaitMs, prev)` is a pure function — a first bounded wait clamped to `TM_JOIN_MAX_WAIT_MS` (default 60 000, was 300 000), a wait FOLLOWING a wait that settled nothing cut to `REPEAT_WAIT_MS` (10 000) with a `别再等` directive naming the three real options, a snapshot (waitMs 0) neither extends nor resets the streak; every wait logs `{event:"wait", asked_ms, budget_ms, waited_ms, still_running, repeat}` so tm_stats can show the lead's blocked time. An unsettled round answers with the `（未等到全部结算 · 本次已等 Xs）` header and a "这一轮不是交付" line rather than a table that reads like a delivery. **GOAL TRIPWIRE has THREE outcomes:** `GET /session/{id}/todo` is READ-ONLY in the plugin surface (writing stays `todowrite`'s job), so a settled round with open host todos appends `⚠ 目标未达成 …` plus the escape hatch ("若这些项其实已完成——先用 todowrite 更新状态，再收尾"). **LEASE TRIPWIRE (#80):** the same shape applied to a fact -- `deps.browserLeases()` (wired in `tm/index.ts` to `browserTool.leases()`, the ONE lease table) filtered to children that already settled OR the CALLER itself (#86 -- the live recheck opened a browser as the lead, kept it, and tm_join said nothing, because `owner in settled children` could never name the lead's own window; `leaseTripwire(held, callerSessionID)` now splits two groups: a settled child's window is a violation to bounce, the caller's own is a reminder to close or explain, never an accusation since keeping one across rounds is legitimate), rendered by the pure `leaseTripwire(held, caller?)`, appended as `⚠ N 个浏览器还开着（子代理已结算，但它没 close）` with id + owning role + idle seconds, and logged as `event:"lease_held"`; a throwing lease read is swallowed because the warning is an extra, never a reason to fail a join. **#87: the tripwire is computed ONCE (`leaseLine()`, which also does the logging) BEFORE any early return, so the "没有待收集的派发" answer carries it too** -- the live re-check of #86 used a SYNCHRONOUS host `task`, which the host collects inline and this registry therefore never sees, and the lease check sitting in the settled-round header assembly never ran. That empty-round line also stopped diagnosing a failure it had not measured ("那说明派发生本身没成功" named a dispatch that had completed fine) and now states the real reason: only `task {background:true}` (or an explicit `ids`) needs tm_join. **ADOPTION IS REPORTED, NOT ASSUMED: `adoptFromHost` returns `{adopted, looked, why}`** because three outcomes used to collapse into one sentence — no session API (v2's client shim has only `file.read`/`find.text`), a failed query, and "we looked, the tree was empty". The empty-round answer asserted the third in all three cases (`宿主会话树里也没有可认领的子会话`), i.e. it stated a fact about the host's session tree that nobody had measured; a lead believing it stops waiting for a report that exists, which is the silent loss the adoption path exists to prevent. So an unqueried tree says so and names the missing SEAM (not "v2" — the same absence occurs on a v1 client without `session.messages`), a failed query carries the host's own error text, and only a real empty tree keeps the confirmed wording. Also `describeHostError` (a nested `session.error` must never render as `[object Object]` — that destroyed the only diagnostic in a real session) and `parseIdList` (models send `ids` as a JSON-array STRING; `Array.isArray` alone silently degraded tm_join to "report every child"). **CALLING RULE (live-host, cost a release):** every SDK endpoint MUST be a property-access call (`api.create({...})`); capturing the reference (`const f = api.create` then `f({...})`) drops the receiver and threw `Cannot read properties of undefined (reading 'client')` on the desktop — the same class `approval-gate.ts:replyCapableFn` documents and `pty.ts` avoids; the §10 test fake asserts `this.__sdkNamespace` on every method so it cannot come back. **VISIBILITY FORENSICS (still true, and the reason the removal is not a regression):** the desktop's renderer registry holds only its ~14 built-in tool names and `GenericTool` never reads `props.output`, so a plugin tool call is a one-line, non-expandable row, and its subtitle comes from `state.input`'s `description|query|url|filePath|path|pattern|name` — which is why the details live on disk (`tm_stats { recent: N }`) and why the host's `task` card is the only sub-agent the user can watch. `hostBackgroundSubagentsEnabled()` reads the SAME env the host reads (`OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS`, falling back to the `OPENCODE_EXPERIMENTAL` umbrella, a specific value wins either way) — that is what decides which `task` hint text `applyToolDefinition` lands |
 | `src/capabilities.ts` | Host-capability probe — the "fail loud, not silent" seam. The plugin's features each lean on a host surface with no stability promise (`ctx.ask`, `permission.asked`, `session.create/promptAsync/children/status/abort`, `client.pty`, `permission.reply`, `tui.showToast`, `input.$`, the hook set, `ToolResult.attachments`); every row is classified `ok` (observed live: a hook fired, an event arrived, an ask bridge was handed to a tool) / `declared` (exists, unused) / `not-seen` (registered, host hasn't called it — NOT a break) / `missing` (gone — the named feature is off) / `unverified` (we emit the contract, only a human sees the result — attachments). `createCapabilityProbe` writes ONE trajectory line at boot and raises exactly ONE toast when a REQUIRED seam is missing; `renderCapabilityMatrix` is the markdown table `tm_stats` shows. `setAskBridgeObserver` (in `tm/perm-ask.ts`) is how `askFnOf` reports what each real tool ctx actually carried. Nothing throws, nothing probes the network |
@@ -531,7 +307,7 @@ a fenced one, which is why a raw `|` in a reply means the agent fenced the table
 | `src/task-offload.ts` | Plan B — the host's own background sub-agent, kept inside our budget. `task {background:true}` is the ONLY sub-agent the desktop can show (its card links to the child session; a plugin cannot register a renderer), and on completion the host injects the child's FULL reply into the parent via `ops.prompt({parts:[{synthetic:true, text:<task …>}]})`. We take the other half: `chat.message` hands plugins the parts array BEFORE the host persists it, so `createTaskOffload` swaps an oversized body for a preview + `tm_join {ids:[…]}` to pull the whole reply. THREE LOCKS, all required, else the part is left byte-exact: `part.synthetic === true` (a typed message never is), the text must match the host's own `<task id="…" state="completed">` envelope exactly, and the body must exceed the text-tier offload threshold — verified live 2026-09-20 (the injection IS a user-role message whose part carries exactly that envelope, and a one-sentence child reply stays under the threshold by design). EVERY recognised envelope logs `{event:"envelope", action:"offloaded"|"passthrough"}` — a counter that moved only on a rewrite could not tell "alive, nothing big" from "the host stopped routing through chat.message" — a false negative costs a big message, a false positive silently deletes user content. NO DISK COPY (the text already lives in the child session; copying it would put the user's most private payload on disk for nothing), `TM_TASK_OFFLOAD=off` restores the host's verbatim injection, and every rewrite logs a `task_offload/injected` trajectory line — tm_stats prints the count and says out loud when it is 0, because a host that stops routing through `chat.message` must not look like "nothing needed offloading". Paired with `tm_join`'s `claimNamedChild`: an EXPLICITLY named id may be a host `task` child (verified `parentID === caller`, never assumed) — tree-walk adoption still requires our ` ·tm` marker. **v2 IS A DIFFERENT ENVELOPE, MEASURED FROM THE HOST BINARY READ-ONLY (never modified): 2.0.16 wraps a child reply as `<subagent sessionID="…" state="completed">`, adding a `description="…"` attribute and a dynamic `state` on the BACKGROUND completion, and the v1 string `<task id=` occurs ZERO times there** — so the v1 matcher is structurally dead on v2, and `task_envelopes: 0` meant "wrong matcher", not "nothing was big enough" (the fail-loud rule applied to our own telemetry; this is how the gap was once argued as closed). `parseHostEnvelope` recognises both spellings; `src/host/v2-offload.ts` governs the envelope on `execute.after` for the `subagent` tool (measured `{content,metadata,output}`) and `renderOffloadedSubagent` reproduces the wrapper replacing only the body, because the sessionID inside it is the pointer the lead fetches the reply back with and the host/UI key on that element. `state="error"` children are never rewritten — hiding why a child failed to save tokens is the wrong trade. `native_envelopes` (recognised) is reported beside `native_offloaded` (rewritten) so the two can never be conflated again. NOTE the sync tool result of a FORCED-background dispatch is only an ack (measured 98 tokens), so the big body still arrives via the background injection whose plugin-visible seam is #8's remaining unknown: the real v2 message shape is `{info, parts[]}` and the probe now records it. |
 | `src/host-hooks.ts` | Host-hook leverage beyond the tool surface, all additive + individually switchable + never throwing: `applyToolDefinition` (TM_TOOL_HINTS, default on) APPENDS our call-site discipline to the built-in bash/task descriptions via `tool.definition` (idempotent marker check, host text never replaced — the timeout rule lands where the model decides, not thousands of tokens earlier); takes an `overrides` table so the `task` footer changes with the host's background-subagent flag (`TASK_HINT_BACKGROUND`); `applyChatParams` (TM_AGENT_TEMPERATURE, default **off** so the "all agents 0.2" invariant stands unless the user opts in, or passes its own `reviewer=0.05;team=0.4` table) touches ONLY `temperature`; `applySessionCompacting` (TM_COMPACTION_CONTEXT, on) pushes the must-survive list (reply skeleton / offload handles / OPEN sub-agent session ids from the host task tool / provenance / board paths) into `output.context` and NEVER sets `output.prompt`; `applyCompactionAutoContinue` (default on = hands-off; `off` pauses instead of silently resuming); `applyShellEnv` (TM_SHELL_NO_COLOR on + TM_SHELL_ENV allowlisted `K=V;K2=V2` passthrough) injects NO_COLOR/TERM=dumb and never overwrites what the host already set, so it cannot become a parent-env side channel. `experimental.chat.messages.transform` deliberately NOT implemented: rewriting outgoing messages means guessing the live shape of tool results at that layer, and a wrong guess deletes EVIDENCE silently. |
 | `src/tm/pty.ts` | `tm_pty` — non-blocking command execution on the host’s OWN terminal sessions (`client.pty.create/get/list/remove`; `Pty={id,title,command,args,cwd,status:"running"|"exited",pid}`), which is how a three-suite serial `npm test` stops costing minutes of blocked air. Actions start|status|list|kill. NO output capture: the REST surface has no stdin/transcript endpoint (terminal I/O is the `connect` websocket this plugin does not speak), so the command must tee its own log and the agent reads that file with tm_read — stated in the tool description and in every start reply. GOVERNANCE IS THE POINT: a start passes (1) the R6 classifier + the R2 danger-face globs (`classifyBashCommand` + `matchesAskGlob` over `R2_DANGER_BASH_ASK_PATTERNS` — rm/del, git push/commit, npm install/publish, kill are refused, not asked), then (2) the OFFICIAL dialog via `ctx.ask` with `permission:"tm_pty"` and the EXACT command line as the pattern, and only then (3) `pty.create` with command+argv (never a reinterpreted shell string). No ask bridge => refused; rejected => refused; the plugin never self-allows. `tm_pty` is {`*`:`ask`} for the lead and DENIED for the five specialists; `TM_PTY_MAX` (4) caps concurrency and the refusal happens BEFORE the dialog; an id we did not start is never ours to kill. |
-| `src/tm/ptc.ts` | `tm_ptc_run` M1-M3 (shipped in the published dist since v1.5.2) -- **v1-only from 1.7.0 on: v2 does not register it** (`V1_ONLY_TOOLS`), because the host's native `execute` (Code Mode) covers "one program, N governed calls, zero round-trips" and the v2 prompts are forked to name `execute` instead (see the v2 delta). Everything below still describes the v1 path, which is frozen but live -- args schema (program/label/tighten-only budgets clamped to `TM_PTC_*`), three engines behind the frozen `PtcEngine` seam: `WorkerEngine` (primary, `worker_threads` + MessagePort RPC + `env:{}` + `terminate()`, bootstrap as build-time string), `InlineVmEngine` (fallback, `node:vm` runInNewContext -- script timeout kills PRE-await sync busy-loops; a POST-await busy loop blocks the host event loop irrecoverably, documented -- prefer worker/auto), `InlineSequentialEngine` (M1 legacy, test-only); `TM_PTC_ENGINE=auto|worker|inline` selection with auto-degrade (worker→inline, marks `degraded-engine`); `staticPscan` wired as first gate (banned tokens → reject before engine runs); T6 web bridge: `tm.search`/`tm.webfetch` facades on the six-member BRIDGE_ALLOW (`TM_PTC_WEB_BRIDGE=on|off`), GET idempotency -> retryable phases, per-call ctx rebind at execute() so the host evaluates bridge calls against the CALLING agent's ruleset (non-web roles auto-denied -- no new gating mechanism); pscan now STRIPS template/string/comment literals before scanning (a grep string naming require/process no longer kills the whole program); worker sandbox object is null-prototype (constructor->outer Function leak closed); StepGate error/call/time budgets + ≤1 retry on idempotent phases, composite step ids `sXXXX.kNN`, five-state status, char-pinned aggregation summary, trajectory shapes; `buildPtcRunTool` uses `nextStepId()` for fresh parent step IDs per call; role access: all six agents = `allow` (v1.5.4 revision, overrides the `tm_*` wildcard); governance reused via the pipelines -- PTC is not a bypass layer |
+| `src/tm/ptc.ts` | `tm_ptc_run` M1-M3 (shipped in the published dist since v1.5.2) -- **v1-only from 1.7.0 on: v2 does not register it** (`V1_ONLY_TOOLS`), because the host's native `execute` (Code Mode) covers "one program, N governed calls, zero round-trips" and the v2 prompts are forked to name `execute` instead (the v2 delta rules above; evidence in `docs/v2-port-notes.md`). Everything below still describes the v1 path, which is frozen but live -- args schema (program/label/tighten-only budgets clamped to `TM_PTC_*`), three engines behind the frozen `PtcEngine` seam: `WorkerEngine` (primary, `worker_threads` + MessagePort RPC + `env:{}` + `terminate()`, bootstrap as build-time string), `InlineVmEngine` (fallback, `node:vm` runInNewContext -- script timeout kills PRE-await sync busy-loops; a POST-await busy loop blocks the host event loop irrecoverably, documented -- prefer worker/auto), `InlineSequentialEngine` (M1 legacy, test-only); `TM_PTC_ENGINE=auto|worker|inline` selection with auto-degrade (worker→inline, marks `degraded-engine`); `staticPscan` wired as first gate (banned tokens → reject before engine runs); T6 web bridge: `tm.search`/`tm.webfetch` facades on the six-member BRIDGE_ALLOW (`TM_PTC_WEB_BRIDGE=on|off`), GET idempotency -> retryable phases, per-call ctx rebind at execute() so the host evaluates bridge calls against the CALLING agent's ruleset (non-web roles auto-denied -- no new gating mechanism); pscan now STRIPS template/string/comment literals before scanning (a grep string naming require/process no longer kills the whole program); worker sandbox object is null-prototype (constructor->outer Function leak closed); StepGate error/call/time budgets + ≤1 retry on idempotent phases, composite step ids `sXXXX.kNN`, five-state status, char-pinned aggregation summary, trajectory shapes; `buildPtcRunTool` uses `nextStepId()` for fresh parent step IDs per call; role access: all six agents = `allow` (v1.5.4 revision, overrides the `tm_*` wildcard); governance reused via the pipelines -- PTC is not a bypass layer |
 | `src/index.ts` + `src/host/v1.ts` + `src/host/note.ts` | **`index.ts` is the dual-personality BARREL** (the v2 port, 1.7.0 line): its default export is `{id:"team-mode", server}`, and `server` is `createV1Personality` **moved verbatim** into `src/host/v1.ts` (331 body lines, de-indented diff = empty, proven in the M1 commit — a v1 host must not observe ONE behavioural difference, and test-*.mjs is the oracle). `blackboardNote` went to `src/host/note.ts` because both personalities need it. The v2 half lands in `src/host/v2.ts` as `setup(ctx)` — `Plugin.define` in `@opencode/plugin@2.0.16` is literally `plugin => plugin`, so the plain object IS the definition and the v2 SDK is **not a dependency at all** — it appears in neither `dependencies` nor `devDependencies` (verified against `package.json` on 2026-09-25; an earlier revision of this file claimed it was a devDependency for a separate typecheck, and no such typecheck exists). A live `npm pack` of that version is how `v2-types.ts` gets re-checked; the one field that had been invented there (`Tool.Info.options.codemode`) is gone, because the SDK has no such word. The v1 loader ignores `setup`; the v2 host ignores `server`; "V1 plugin implementations do not run in V2" is why both must ship in one package. ── v1 entry: `server()` + `config` hook (injects agents/commands + escalates execution-role bash to the `ask` pattern object, tracks injected exec agents) + ONE composed `tool.execute.before` hook (the host gives each plugin a single slot: bash-timeout clamp runs FIRST, then R6 env protection wired to the gate's session-scoped `deferToApproval(sessionID)`) + `event` hook (feeds `session.idle`/`session.error`/`session.status` to the async dispatcher, routes `message.updated` user prompts into the gate's session registry -- exec-role agents register, any other agent revokes -- and permission events to the timer) + `chat.message` (secondary registration + symmetric revoke) + ASYNC `dispose` (awaits the tm_browser close; a fire-and-forget teardown left a window on screen) + FIVE more host hooks wired in `src/host-hooks.ts` (`tool.definition`, `chat.params`, `experimental.session.compacting`, `experimental.compaction.autocontinue`, `shell.env`) + the `src/capabilities.ts` probe built after the tm runtime (declared BEFORE it so `capabilities: () => capabilityProbe.snapshot()` breaks the cycle, `setAskBridgeObserver` fed from `perm-ask`, `observeEvent` on every event, `observeHook` inside each hook body, `report()` once at boot = one trajectory line + one toast only if a REQUIRED seam is gone) + `tool` segment (tm_* registration incl. tm_ptc_run M3 + tm_join/tm_pty/tm_stats — tm_dispatch is deliberately NOT registered), id `"team-mode"` |
 | `src/host/v2.ts` + `v2-tool.ts` + `v2-permissions.ts` + `v2-session.ts` + `v2-guard.ts` + `v2-offload.ts` + `v2-events.ts` + `v2-browser-gate.ts` + `v2-scope.ts` + `v2-probe.ts` + `v2-capabilities.ts` + `v2-types.ts` | The v2 personality (M2). **`v2-guard.ts` also forces EVERY `subagent` call into the background** (`applyV2BackgroundForce`, on the mutable `execute.before` input): the user's standing instruction 2026-09-25, because a foreground child blocks the lead for its whole run and v2 needs no env flag for background. It overrides an explicit `background:false` and the `"True"` string form alike, and leaves a non-object input alone rather than inventing one. `setup(ctx)` builds the SAME tm runtime with **no SDK client at all** (the v2 plugin ctx exposes no `file`/`find`/`session` domain; the fs-backed shim that used to stand in for the first two was deleted together with `tm_read`/`tm_grep`, and what is now unreachable is REPORTED rather than assumed -- `tm_join` says so in words (`goal_unchecked reason=no_seam|ledger_empty`) instead of implying it read a list, and its second source of truth is the plugin's OWN ledger (`tm_ledger` under `ctx.storage`, keyed by the lead's sessionID); and its settle detection now has a feed: v1 was handed a host `event` hook and v2 subscribed to nothing, so a child that finished two seconds after its dispatch stayed "running" for the whole `waitMs` budget and `tm_join` reported a state it never observed -- goal #6's failure shape, and a bug rather than a limitation. `v2-events.ts` opens `ctx.event.subscribe()` (a zero-dependency async iterable, measured on 2.0.16, NOT the Effect-runtime surface this repo once wrote down as a limitation) and forwards only WHITELISTED type names, because event spellings changed wholesale between host generations: an unrecognised type is counted by NAME and never forwarded on a guess, and its payload never reaches the trajectory (the R6 privacy rule covers the feed as much as the guard). `stop()` closes the SAME iterator the pull loop holds; the capability row reads off those counters, so subscribed-but-nothing-arrived is `not-seen` rather than green, and a host that will not stream logs 事件流没接通（原因）at boot instead of leaving a `tm_join` that looks healthy) registers the governed tools through `ctx.tool.transform` -- **nine on v2, not thirteen** (eight survivors of v1's roster plus `tm_ledger`, which v1 does NOT register because the store is only handed in by this personality): `V1_ONLY_TOOLS` (in `v2-permissions.ts`, the single source) names `tm_ptc_run`, `tm_read`, `tm_grep`, `tm_bash` and `tm_pty` (the last because `client.pty` has no counterpart on the v2 plugin ctx, so the tool could only ever answer that its own seam is missing -- revisit with #28), which v2 does not register because the host's own `execute` (Code Mode) already runs one program over N governed calls with zero round-trips (and a live session proved our governed results still come back offloaded through it) while native read/grep/shell + `execute.after` govern the file ladder. v1 keeps the tool; the module stays in the tree for the frozen v1 personality. It also normalizes the whitelist onto the agents the CONFIG declares. **`v2-session.ts` is the request layer** -- three things v1 could only approximate: ① `toolsToRemove()`/`removalPlan()` turn the whitelist into `delete event.tools.<name>` inside `session.hook("context")`, so a DENIED tool's description and schema stop riding every request at all (v1's permission deny blocked the CALL but charged the model for the tool anyway; a `tm_browser` deny removes our door AND the host's whole `browser_*` catalog via the `BROWSER_CATALOG` sentinel, and only a literal `"deny"` removes -- an `{"*":"ask"}` object means "callable, gated" and must stay offered); ② `temperature` 0.2 rides the request (it is a legacy agent field on v2 and the runner does not send it, so this is the ONLY place the invariant can live -- and it never overwrites a temperature already on the request, so a user's model variant outranks us); ③ the resolved blackboard root goes into `event.system` for the lead only (a v2 agent is a config FILE and cannot carry a per-workspace path), plus `session.hook("compaction")` pushes the same `COMPACTION_CONTEXT` survival list v1 appends -- idempotently, because the host reloads plugins in-process and the hook fires before EVERY request. **This also starts the blackboard TTL sweeper that v2 silently lacked** (`startBlackboardMaintenance`), because the note it publishes promises a sweep and shipping the promise without the mechanism is the overstated claim this product exists to refuse. `v2-tool.ts` holds the two translations a live host measured: the RESULT (returning v1's bare `{output}` makes the v2 host answer "Tool result declared output without an output schema" → v2 returns `{content:[{type:"text"},{type:"file",uri,mime,name}]}`, which finally gives tm_browser's screenshot attachment a verifiable contract) and the CTX (v2's ToolContext carries no `directory` and **no `ask`**; leaving `ask` absent is deliberate — `askFnOf` reports unavailable and every governed call FAILS CLOSED with a v2-worded refusal set through the new `setAskUnavailableNote`). `v2-permissions.ts` turns the flat v1 map into `{action,resource,effect}` triples with the measured name map `bash→shell / task→subagent / apply_patch→patch`, DROPS keys with no v2 counterpart (`list/todowrite/lsp`) and reports them, lets our matrix override a user rule for an action we name (the whitelist IS the product promise) while leaving actions we never mention (a user's MCP tool) untouched, and escalates `shell` to `ask` only when R6 is on — the closest thing v2 gives a plugin to a confirmation dialog. `v2-types.ts` is hand-written structural typing so **`@opencode/plugin` never becomes a runtime dependency** (dist JS contains zero imports of it; `Plugin.define` is literally `plugin => plugin`, so the plain `{id, setup}` IS the definition). Two v1 behaviors do not carry over, and both are LOGGED rather than faked: creating agents (`AgentEditor` has no `add`, so the six roles must come from `agents/*.md` -- the installer's job), and v1's CONSERVATIVE default-agent promotion. v2 exposes `default(id)` with no getter, so "only fill it when the user left it alone" is not expressible -- the choice is never promote vs promote every boot. The user's standing instruction (2026-09-25) is that **Team is always the default**, so v2 calls `editor.default("team")` on every boot, gated on the role actually existing (promoting a missing agent would make the host fall back to `build` silently), with the refusal reported as `Team 没有成为默认` and `defaultAgent: false` as the opt-out (the same knob v1 documents). Note the boundary that config cannot cross: `default_agent` does not change the agent already stored on an existing session. v1 lives in `src/host/v1.ts` and is FROZEN |
   **MEASURED 2026-09-25: it does not land.** With `default_agent` set to `build`, a
