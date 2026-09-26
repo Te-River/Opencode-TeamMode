@@ -221,6 +221,16 @@ re-deriving any of this, and append findings there (dated, with an evidence tag)
   startup; `plugin add` is a convenience and refuses a path; a directory target resolves only
   as `<dir>/index.js` and is skipped silently otherwise.
   Evidence: `docs/research/plugin-loader-contract.md`.
+- **A published version can be shadowed by the user's HOME, and only the log says so.** For a
+  package spec the host resolves the entrypoint through the nearest `node_modules` walk starting at
+  HOME — measured: `entrypoint=…/C:/Users/<user>/node_modules/@te-river/opencode-team-mode/dist/index.js`,
+  not `~/.config/opencode/node_modules`, not `~/.cache/opencode/npm/…`. A stray `~/package.json`
+  holding `devDependencies: {"@te-river/opencode-team-mode":"^1.4.9"}` therefore pins a **v1-only**
+  copy there, and the desktop reports the generic `Plugin must export a default definition with an
+  id and an effect or setup function` — which reads like a broken publish, and was not. Clearing the
+  npm cache does NOT fix it (the host's own re-install then fails with `NpmInstallFailedError:
+  Package is not installed` and leaves an empty wrapper dir). The diagnostic is the boot probe's
+  `entrypoint=` line, not a guess about cache layers.
 - **`tm_browser` is probe-gated, not decided** (whether a plugin can drive the desktop's own
   browser panel has never been verified live), and the host's `browser_*` catalog sits behind
   `v2-browser-gate.ts` because `permission.evaluate` was measured NOT firing for it.
