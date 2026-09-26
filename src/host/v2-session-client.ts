@@ -30,11 +30,14 @@
  *    carry a child's reply, so it is tried, and its outcome — including the NAMES of the
  *    keys it returned — is recorded. Key names are safe; a message body is not written to
  *    the trajectory by this file.
- *  · the HTTP API does expose `GET /api/session/{id}/message` (and 127 routes were
- *    enumerated from the binary, none of them a todo list), but reaching it needs the
- *    server's basic-auth password from `~/.config/opencode/service.json`. A plugin reading
- *    the user's credential file to call back into the host is a new trust boundary, so it
- *    is NOT done here; it is recorded as the option with its cost attached.
+ *  · the HTTP API does expose `GET /api/session/{id}/message` (136 distinct routes were
+ *    enumerated from a scanned window of the binary, and none of them is a todo list —
+ *    which settles the `tm_ledger` question: there is no host todo resource to read), but
+ *    reaching it needs the basic-auth password from
+ *    `~/.config/opencode/service.json`. A plugin reading the user's credential file to
+ *    call back into the host is a new trust boundary, so it is NOT done here; it is
+ *    recorded as the option with its cost attached. See
+ *    `docs/research/host-http-api.md`.
  */
 
 export interface V2SessionReaderReport {
