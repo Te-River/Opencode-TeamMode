@@ -63,19 +63,72 @@ runtime; Node 20+ additionally enables the Playwright browser engine).
 
 ### Step 1 — Install the plugin
 
-`opencode plugin add` installs the package **and** writes it into the global config:
-
-```bash
-opencode plugin add @te-river/opencode-team-mode@latest
-opencode plugin list          # it should be there
-```
-
-Manual equivalent — in `~/.config/opencode/opencode.jsonc` (this file wins over a
-legacy `opencode.json` when both exist):
+The key is **`plugins`** (plural), and one line in it is the whole plugin install: the
+host resolves the entry and **installs the package itself at startup**. There is nothing
+to `npm install` first, no plugin cache to purge, and `opencode plugin add` is not a
+prerequisite — it is a convenience that writes this same key (into `opencode.json`, which
+is why you may see the entry appear there).
 
 ```jsonc
-{ "plugin": ["@te-river/opencode-team-mode"] }
+// ~/.config/opencode/opencode.jsonc
+{ "plugins": ["@te-river/opencode-team-mode@latest"] }
 ```
+
+Two facts about that file, both measured on 2.0.16 / 2.0.18 and both easy to get wrong
+from 1.18.x habits (`docs/research/plugin-loader-contract.md` has the host's own code):
+
+- `opencode.json` and `opencode.jsonc` are **both parsed and merged**. The 1.18.x rule
+  "jsonc overrides json" is false on 2.x, and acting on it — copying the old file forward
+  — puts the same plugin in both, which **loads it twice** (two personalities, the same
+  tools and hooks bound twice) with no warning.
+- The host's dedupe matches only an **identical string**. `@te-river/…@latest` in one file
+  and `./vendor/team-mode` in the other is two entries, not one plugin.
+
+A **local directory** is the other legal spelling, and the one a development tree needs:
+
+```jsonc
+{ "plugins": ["./vendor/team-mode"] }        // relative to this file, or an absolute dir
+```
+
+The directory **must contain a root `index.js`**. The host resolves a directory as
+`<dir>/index` and nothing else — a `package.json#exports` map is honoured for an installed
+package but not for a path — and a directory whose entrypoint does not resolve is skipped
+**silently**: no error, no log line, no plugin. This package ships that `index.js` for
+exactly that reason.
+
+`opencode plugin add` cannot do this: it refuses a path with "Plugin target must be an npm
+registry package or Git package specifier".
+
+#### Doing this as an agent, on someone's machine
+
+The installers (`scripts/install.sh`, `scripts/install.ps1`) encode the same procedure; if
+you are an agent working for a user who prefers not to run them, follow these steps and do
+not skip the last one. Never claim an install without the arrival check — a config write
+returning cleanly is not evidence the plugin loaded.
+
+1. Read both `~/.config/opencode/opencode.jsonc` and `opencode.json`. Count how many
+   entries anywhere in them name this package (`opencode-team-mode`, case and hyphens
+   vary). More than one → the plugin is loading twice; fix that before anything else.
+2. Write **one** entry, into the file that already holds the user's other keys (prefer the
+   `.jsonc`, since that is where previous installers wrote). Keep every entry that is not
+   ours, keep the comments, and leave no comma dangling before `]` — the host tolerates it,
+   the next hand edit may not.
+3. Generate the roles and commands (Step 2). A plugin cannot create an agent on 2.x, so
+   without these twelve files Team does not exist however well the plugin loaded.
+4. Set `default_agent: "team"` **last** (Step 3) — a default naming agents that are not on
+   disk makes the host fall back to `build` silently.
+5. Verify, in this order, and report what you actually saw:
+   - `opencode-cli … run --standalone --print-logs` (or restart the desktop and read the
+     log) → exactly **one** line `msg="loading plugin" id=<our entry>
+     entrypoint=file:///…/index.js`, and **no** `failed to load plugin` naming us.
+   - a new Team session → `tm_stats`, section `启动与人格`: `tools_registered: 9`, and the
+     `作用域` line. A row that says `agents_missing` named roles means Step 3 has not run.
+   - If the log shows nothing at all about our id, the entry is under a key the host does
+     not read (`plugin`, singular) or the directory has no root `index.js`. Both failures
+     are silent by design; the absence of an error is not a success signal.
+6. Say which of the two spellings you left installed, and whether the package came from
+   npm or from a local path — the Extensions panel cannot tell them apart (a loader file
+   named `team-mode.js` and a directory whose plugin id is `team-mode` print identically).
 
 ### Step 2 — Generate the six roles and the six commands
 
@@ -174,7 +227,9 @@ a new release may have changed them. Re-running is cheap — unchanged files are
 | `tm_webfetch` on an odd site says it refused **without asking anyone** | Expected on 2.x: a plugin cannot raise a dialog. Use a source that works, or let the host's own permission rule allow it; the address red line (metadata / private) has no consent path at all, on either generation |
 | `task`/`subagent` seems to block the lead | On 2.x the plugin forces `background: true`; if you also set the old `OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS`, unset it — it is a v1 flag and only confuses the picture |
 | A tool's output arrives un-offloaded | `TM_NATIVE_OFFLOAD=off` (or a missing `tool.execute.after` seam on an older 2.x build) — `tm_stats` names which |
-| A background sub-agent's reply is huge and un-governed | A stated gap, not a breakage: v2 never hands a plugin the injected message before it is persisted, and we do not rewrite outgoing messages (a wrong guess at that layer's shape deletes evidence silently). The compensation is in the contract instead: the oversized deliverable goes to the blackboard file, its path rides the reply, and the lead pulls the whole thing with `tm_join` |
+| The plugin behaves oddly — two dialogs, doubled hooks, tools registered twice | It is loaded twice. `opencode.json` and `opencode.jsonc` are merged, and the host's dedupe matches only an identical string, so the same package under two spellings (or in both files) is two personalities. Count the Team entries across BOTH files; `msg="loading plugin"` appearing twice for one id is the proof |
+| You wrote the entry and the host says nothing at all about it | Two silent causes, both by design: the key is singular `plugin` (2.x reads `plugins`), or a directory entry without a root `index.js`. The loader resolves a directory as `<dir>/index` only and drops it with no message when that fails — absence of an error is not a success signal here |
+| A background sub-agent's reply is huge | The child is now registered and collectable (`tm_join` lists it, marked 宿主 subagent 派发), but its BODY still arrives as the host's injected message, which v2 never hands a plugin before persisting — and we do not rewrite outgoing messages, because a wrong guess at that layer's shape deletes evidence silently. So the oversized deliverable goes to the blackboard file, its path rides the reply, and the lead reads the file |
 | You want OUR browser visible in the side panel | Not possible — the panel attaches to the server's own browser service (`docs/research/browser-pane.md`). What IS reachable is a still frame: hand the screenshot to the host's `browser_preview { path }`, which renders a server-local png/html/md/pdf into that panel. Not yet confirmed in a real GUI session |
 | You need to know what the host actually exposes | `TM_V2_PROBE=<path>.jsonl` records tool and action **names and counts only** — never a command, path, URL or value — and `tm_stats` renders the capability matrix |
 
@@ -215,19 +270,63 @@ Node 20+ 还会额外启用 Playwright 浏览器引擎）。
 
 ### 第 1 步 — 安装插件
 
-`opencode plugin add` 会同时安装包并写入全局配置：
-
-```bash
-opencode plugin add @te-river/opencode-team-mode@latest
-opencode plugin list          # 应该能看到它
-```
-
-手写配置的等价做法（`~/.config/opencode/opencode.jsonc`；它与旧的 `opencode.json` 同时存在
-时以 `.jsonc` 为准）：
+键名是 **`plugins`（复数）**，而且里面一行就是完整的插件安装：宿主会在**启动时自己解析并安装**
+这个条目指向的包。不需要先 `npm install`，没有缓存要清，`opencode plugin add` 也不是前置条件
+——它只是顺手帮你写了这同一个键（写进 `opencode.json`，所以你会看到条目出现在那儿）。
 
 ```jsonc
-{ "plugin": ["@te-river/opencode-team-mode"] }
+// ~/.config/opencode/opencode.jsonc
+{ "plugins": ["@te-river/opencode-team-mode@latest"] }
 ```
+
+关于这个文件有两件事是实测出来的（2.0.16 / 2.0.18），而且用 1.18.x 的直觉一定会搞错，
+宿主的原始代码见 `docs/research/plugin-loader-contract.md`：
+
+- `opencode.json` 与 `opencode.jsonc` 是**两份都读、合并生效**。1.18.x 那句"`.jsonc` 覆盖
+  `.json`"在 2.x 上不成立；照它做（把旧文件向前复制一份）就等于把同一个插件写进两个文件，
+  于是**加载两次**（两套人格、同样的工具和钩子绑两遍），而且没有任何警告。
+- 宿主自己的去重只认**完全相同的字符串**。一个文件里写 `@te-river/…@latest`、另一个里写
+  `./vendor/team-mode`，是两个条目，不是一个插件。
+
+**本地目录**是另一种合法写法，开发时必须要用它：
+
+```jsonc
+{ "plugins": ["./vendor/team-mode"] }        // 相对本文件，或者绝对路径的目录
+```
+
+这个目录**必须有根 `index.js`**。宿主解析目录只试 `<dir>/index`，别的不试 ——
+`package.json#exports` 只对已安装的包生效，对路径不生效 —— 而解析不出入口的目录会被
+**静默跳过**：没有报错、没有日志、也没有插件。本包发布时带上那个 `index.js` 就是为了这件事。
+
+`opencode plugin add` 干不了这件事：给它路径会被拒绝
+（"Plugin target must be an npm registry package or Git package specifier"）。
+
+#### 由 Agent 代用户在机器上执行
+
+两个安装脚本（`scripts/install.sh`、`scripts/install.ps1`）走的就是下面这套；如果你是被派来
+装机器的 Agent 而用户不想跑脚本，就按顺序做完，**尤其不要跳过最后一步**——配置写成功了不等于
+插件加载了，没有到达性检查就没有资格说"装好了"。
+
+1. 同时读 `~/.config/opencode/opencode.jsonc` 和 `opencode.json`，数一下两个文件里指向本包的
+   条目一共有几条（`opencode-team-mode`，大小写和连字符都可能不一样）。多于一条 → 插件正在
+   被加载两次，先修这件事再谈其他。
+2. 只写**一条**条目，写进已经装着用户其他配置的那个文件（优先 `.jsonc`，因为以前的安装器
+   就写在那里）。别人家的条目一条都不许动，注释保留，`)`/`]` 前不要留悬挂逗号——宿主容忍它，
+   下一个手工编辑的人未必容忍。
+3. 生成角色与命令（第 2 步）。2.x 上插件不能创建 agent，所以这十二个文件不在，Team 就不存在，
+   插件加载得再好也没用。
+4. 最后一步才写 `default_agent: "team"`（第 3 步）——默认值指向不存在的 agent 会让宿主
+   静默退回 `build`。
+5. 验证，按顺序，并且把你真正看到的说出来：
+   - `opencode-cli … run --standalone --print-logs`（或重启桌面端后读日志）→
+     **恰好一条** `msg="loading plugin" id=<我们的条目> entrypoint=file:///…/index.js`，
+     并且**没有**指名我们的 `failed to load plugin`。
+   - 新建一个 Team 会话 → `tm_stats` 的 `启动与人格`：`tools_registered: 9`，以及 `作用域`
+     那一行。如果 `agents_missing` 列出了角色名，说明第 3 步没做。
+   - 日志里关于我们的 id 一个字都没有 → 条目写在了宿主不读的键下（单数 `plugin`），或者那个
+     目录没有根 `index.js`。这两种失败都是设计上静默的，所以"没报错"不是成功信号。
+6. 明确说清你留下的是哪种写法、包来自 npm 还是本地路径 —— 扩展面板分不出来：一个叫
+   `team-mode.js` 的 loader 文件，和一个插件 id 恰好是 `team-mode` 的目录条目，显示出来一模一样。
 
 ### 第 2 步 — 生成六个角色和六条命令
 
@@ -319,7 +418,9 @@ opencode reload
 | `tm_webfetch` 说它"没问任何人就直接拒绝" | v2 的预期行为：插件弹不出对话框。换一个不需要这次访问的源，或让宿主自己的权限规则放行；地址红线（元数据 / 私网）在两代宿主上都没有授权路径 |
 | `subagent` 好像把领队挡住了 | v2 上插件会强制 `background: true`；如果你顺手设了老的 `OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS`，请取消它——那是 v1 的开关，在这里只会误导判断 |
 | 某个工具的输出没被卸载 | `TM_NATIVE_OFFLOAD=off`（或者那个 2.x 构建没有 `tool.execute.after` 缝）——`tm_stats` 会告诉你是哪一种 |
-| 后台子代理的回复太长，没被治理 | 这是**明说的缺口**，不是坏了：v2 不会在落盘前把注入的消息交给插件，而我们不改写发出的消息（猜错那一层的形状等于静默删证据）。补偿写在提示词里：超限交付进黑板文件、回复带路径，领队用 `tm_join` 取全文 |
+| 插件行为怪：两次弹窗、钩子重复、工具像注册了两遍 | 它被加载了两次。`opencode.json` 与 `opencode.jsonc` 是合并读取的，而宿主去重只认完全相同的字符串，所以同一个包换两种写法（或者同时躺在两个文件里）就是两套人格。把两个文件里指向 Team 的条目一起数一遍；`msg="loading plugin"` 对同一个 id 出现两条就是证据 |
+| 写了条目，但宿主日志里关于它一个字都没有 | 两个"设计上静默"的原因：键名写成了单数 `plugin`（2.x 读 `plugins`），或者目录条目缺根 `index.js`。宿主解析目录只试 `<dir>/index`，试不出来就直接丢掉、不留任何消息 —— 在这里"没报错"不是成功信号 |
+| 后台子代理的回复太长 | 子会话现在会被登记、可被收集（`tm_join` 会列出它，行上标着「宿主 subagent 派发」），但它的**正文**仍然是宿主的注入消息，v2 不会在落盘前把这条消息交给插件；我们也不改写发出的消息（猜错那一层的形状等于静默删证据）。所以超限交付走黑板文件：正文进文件、回复里带路径，领队读那个文件 |
 | `tm_join` 说"没有匹配的派发"，可孩子明明跑完了 | 活体在 2.0.16 上复现过：领队用的是**宿主的** `subagent{background:true}`，插件不创建子会话所以登记里没有它，而收养/按 id 认领原本走 `client.session.children` / `client.session.get`——v2 的插件上下文里根本没有 client。所以回复是通过宿主自己的完成注入到达领队的，不是通过我们的收集通道。这条待补的桥是 `ctx.session.get` 做父子校验（事件流已经能给出候选 sessionID） |
 | 想在侧边栏看到我们 `tm_browser` 的页面 | 做不到（面板挂的是服务端自己的浏览器服务；见 `docs/research/browser-pane.md`）。能看到的是**静帧**：让 agent 把截图交给宿主的 `browser_preview { path }`，它会把服务端本地文件（png/html/md/pdf/mermaid）渲染进面板——这条尚未在你的 GUI 里验证过 |
 | 想知道宿主到底给了什么 | `TM_V2_PROBE=<路径>.jsonl` 只记工具名与权限动作名**以及计数**，绝不记命令行、路径、URL 或环境变量值；`tm_stats` 会把能力矩阵渲染出来 |

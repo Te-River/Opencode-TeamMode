@@ -127,6 +127,12 @@ irm https://ghproxy.net/https://raw.githubusercontent.com/Te-River/Opencode-Team
 
 OpenCode 下次启动时装好。
 
+> **OpenCode 2.x 上键名是 `plugins`（复数）**——2.x 宿主完全不读单数的 `plugin`，而且它会
+> 在启动时按这个条目自己装包。2.x 的装法见
+> [docs/installation-v2.md](./docs/installation-v2.md)（那里插件不能创建 agent，六个角色和
+> 六条命令是生成的配置文件）；宿主装载器的原始代码在
+> `docs/research/plugin-loader-contract.md`。
+
 ### ⚠️ 现在读一遍，以后省一小时
 
 - **改完配置要重启。** 碰了 `opencode.json` 之后，完全退出再启动 OpenCode（桌面版从托盘退出，不是只关窗口）。
@@ -262,7 +268,7 @@ HMAC 句柄，agent 真需要 payload 时用 `tm_fetch` 分页取。
 | `tm_search` | 多引擎网络搜索，返回提取、去重、RRF 融合后的命中列表 | Lead + Researcher |
 | `tm_webfetch` | 白名单页面的单次受治理 GET（搜索页自动提取）。重定向逐跳手动过检，被拒时会把**整条链**报出来（`跳转链: a → b（停在第 2 跳）`）——以前只会报最后一个主机，一个在白名单内的短链跳到站外时，读起来像"这个站点抓不到"，于是 agent 又回去重试它刚眼睁睁失败的入口 URL。429/503 若带 delta-seconds 的 `Retry-After` 会一并报出（HTTP-date 形式刻意不折算成倒计时），所以"待会儿再来"不会被当成"这里没东西"。读页面时还会优先要 Markdown（`Accept: text/markdown,…`）——实测 `learn.microsoft.com`：60 778 B 的 HTML 变成 11 449 B 的 Markdown，其余站点两种请求返回同一份文档，所以在不支待的地方这个偏好是零成本的 | Lead + Researcher |
 | `tm_ledger` | **领队的任务清单**（`add` / `doing` / `done` / `blocked` / `list`），存在宿主自己的 `ctx.storage` 里、按会话分开——OpenCode 2.x 不给插件 `todowrite`，LEDGER 规则从此有了落点。同一个要求重复提出只算一条；编号撞上两条会拒绝并把两条都列出来；`blocked` 带上卡住的原因；写不进存储就报失败，不会说成「已记录」。**仅 v2**——v1 继续用宿主的 `todowrite` | 仅领队 |
-| `tm_join` | **子代理回收**——插件侧的派发器已经没有了（`tm_dispatch` 被移除：插件创建的子会话，用户既打不开也停不掉）。派活统一走宿主自己的 `task` / `task { background: true }`，`tm_join` 是它的读端：不带参数=状态快照，`waitMs`=有界等待，`cancel:true` 取消跑飞的子任务，`tm_join { ids: ["ses_…"] }` 则把某个子代理的**整篇**回复经卸载管线取回（句柄 + ≤80 token 预览），而不是几千 token 直接压进上下文。插件重启后它还会从宿主会话树重建登记，遗留的子代理被"接管"而不是丢失 | 仅 Lead |
+| `tm_join` | **子代理回收**——插件侧的派发器已经没有了（`tm_dispatch` 被移除：插件创建的子会话，用户既打不开也停不掉）。派活统一走宿主自己的 `task` / `task { background: true }`，`tm_join` 是它的读端：不带参数=状态快照，`waitMs`=有界等待，`cancel:true` 取消跑飞的子任务，`tm_join { ids: ["ses_…"] }` 则把某个子代理的**整篇**回复经卸载管线取回（句柄 + ≤80 token 预览），而不是几千 token 直接压进上下文。插件重启后它还会从宿主会话树重建登记，遗留的子代理被"接管"而不是丢失。**2.x 上它还会登记宿主自己的 `subagent` 工具派出去的子会话**（凭据就是那句确认里的 `metadata.sessionID`），所以用户明明在屏幕上看着子代理跑、`tm_join` 却说"没有待收集的派发"这种事不会再发生；这类行同时说清自己的正文是从哪儿到的（宿主的注入消息），以及它是靠事件结算的还是靠推断结算的 | 仅 Lead |
 | `tm_pty`（**仅 v1**——v2 不注册：插件上下文没有 pty 域）| 在宿主自己的终端会话上**非阻塞执行命令**（`start`/`status`/`list`/`kill`）：独立的构建与测试各自一个会话并行跑，不再串成一条 120 秒的 bash 调用。它不抓输出（命令自己 tee 日志，用 `tm_read` 读），且每次启动都先过 R6 分类器、R2 危险面 glob，再走官方确认窗，才真的建进程 | 仅 Lead |
 | `tm_stats` | **插件把自己的 trajectory 读回来**：卸载挡在上下文之外的 token（扣掉确实回来的预览）、派发重叠省下的秒数（串行代价减去子代理实际占用的墙钟）、PTC 内部量、治理计数（被拦子资源、`tm_pty` 拒绝、bash 超时夹顶、缓存命中、脱敏次数）——外加**宿主能力矩阵**（每个宿主接口标 `已验证/存在未用/待观察/缺失/需人眼`）。只读本插件自己写的文件；OpenCode 升级后第一个跑它。`{ recent: 20 }` 追加一份逐条调用清单——每次卸载结果的句柄和落盘路径都在里面，这就是"看看刚才那个工具到底返回了什么"的办法（宿主不给插件工具卡片留展开位） | 全角色 |
 | `tm_browser` | 交互式浏览器会话（**驱动你的默认浏览器**）：18 个 Playwright 动词（快照优先：`take_snapshot` → 按 uid 寻址的 `click`/`fill`/`drag`…，**并新增多标签页 `new_page` / `close_page`**，可同时持有两个页面）+ 5 个旧版兼容动词（open/navigate/read/screenshot/close）；Playwright 引擎需 Node ≥ 20，不满足或导入失败时自动降级到旧版 CDP 引擎。它开的是**你自己的默认浏览器渠道**（默认装 Edge Beta 就开 Beta），除操作者设 `TM_BROWSER_HEADLESS` 外保持有头；页面自家图片/CSS/JS 靠 `same-site` 子资源策略正常加载；`take_screenshot { image:true }` 会附一张 JPEG，让模型真能看见画面。**一个 agent 一个浏览器**：`open` 返回一个 id（`b1`），之后每条回复都带着它——那个窗口、它的 uid 编号、它经对话框批准过的主机，都属于**你的**会话；用别人的 id 会被拒绝并点名属主（id 是名字，不是钥匙），`close { id:"all" }` 只关你自己的。`click` 报的是**页面做了什么**，而不只是"我发出了鼠标事件"：它点击前后各读一次目标的可观测状态（`aria-expanded`、URL、DOM 节点数），回答形如 `已点击 … · aria-expanded: false → true`；页面还没加载完时会有界重试一次——这正是实测中"点击落在没有 handler 的节点上"的成因；仍然没有变化就说"页面没有任何可观测变化"，而不是暗示成功。`close` 在浏览器的操作系统进程真正退出之前不会说“已确认关闭”——它等 pid、必要时补一次终止，两种结果都会把 pid 写在回复里，因为连接断开不等于浏览器关了；万一拿不到 pid，它会说“进程未核验”，而不是借用那句已确认。本进程启动过却没能收掉的浏览器会记进按工作区隔离的账本（pid、属主 pid、可执行文件），由下一次启动回收——只回收属主进程已死**且**该 pid 现在仍是那个可执行文件的条目，并按整棵进程树终止（Windows 上 `taskkill /T`），绝不动另一个窗口的活标签。**空白页现在会自己解释原因**：`same-site` 无从知道一个站点把自己的脚本包放在与品牌无关的 CDN 上（百度把脚本发在 `bdimg.com`），所以当一页返回 `0 个可寻址节点` 而同时有脚本域名被拦时，回复会直接说明这片空白是**我们的门禁**造成的、点名该域名，并给出 `allow_host { host }`——一个域名一次官方确认窗，只对你的浏览器、只在本次会话，不写任何配置文件（批准后要重新导航，门禁在请求时判定）。而真的需要人工验证的页面（百度安全验证 / Cloudflare / access denied）会被说成一道验证墙，因为对它的正确动作是换来源，不是再试一次 | Lead + Researcher + Tester（仅 UI 验证） |
@@ -691,7 +697,10 @@ OpenCode 按 spec 字符串缓存插件，从不重新解析 `@latest`（上游�
 
 ## 🗑️ 卸载
 
-1. 从配置文件的 `"plugin"` 数组里移除该条目。
+1. 从配置文件的 `"plugin"` 数组里移除该条目——**OpenCode 2.x 上是 `"plugins"`（复数）**，2.x
+   的安装器也写在那里；如果你是在 2.x 上装的，还要删掉生成的
+   `~/.config/opencode/agents/*.md` 与 `commands/team-*.md`，以及你不再需要的
+   `default_agent: "team"`。
 2. 想回收磁盘就删缓存目录（见[安装](#-现在读一遍以后省一小时)里的表格）。
 3. 重启 OpenCode。agent、命令、工具全部消失；`<repo>/.git/opencode-team/`
    下的存储（全局记忆在 `~/.opencode-team/`）都是普通文件，随时可删。
