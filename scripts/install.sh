@@ -115,7 +115,7 @@ install_v2() {
   local cfg_dir="${HOME}/.config/opencode"
   local cfg="${cfg_dir}/opencode.jsonc"
   local legacy="${cfg_dir}/opencode.json"
-  local node_js role cmd
+  local node_js role cmd PLUGIN_ENTRY="" pkg_dir=""
 
   echo ""
   echo "── OpenCode ${OPENCODE_VERSION:-?} detected: the 2.x path ──────────────────────"
@@ -125,183 +125,123 @@ install_v2() {
   echo "     - the npm re-resolve in ${cfg_dir} — it would fight the host's install."
   echo ""
 
-  # ── 1. the plugin package ─────────────────────────────────────────────────
-  # The probe is a text grep, so either answer is survivable: a false positive
-  # runs `plugin add`, whose failure falls through to the config edit below; a
-  # false negative does the config edit, which is what v1 has always done.
-  local have_add=0 via_add=0 plugin_help=""
-  if command -v opencode >/dev/null 2>&1; then
-    plugin_help="$(opencode plugin --help 2>&1 | head -c 4000 || true)"
-  fi
-  if grep -qE '(^|[[:space:]])add([[:space:]<]|$)' <<<"$plugin_help"; then
-    have_add=1
-  fi
-
-  if [ "$have_add" = 1 ]; then
-    echo "↻  opencode plugin add ${PKG} ..."
-    if opencode plugin add "$PKG"; then
-      via_add=1
-      echo "✔  Installed via 'opencode plugin add' (the host wrote the global config entry)"
-    else
-      echo "!  'opencode plugin add' failed — the host's own message is above."
-      echo "   Falling back to editing the config entry by hand."
+  # ── 1. the plugins entry (this IS the plugin install) ─────────────────────
+  # Measured live on 2.0.16, in the order the claims below depend on:
+  #   * `plugins` is PLURAL. The host's loader reads `config.plugins`; a 2.x host
+  #     never reads the singular `plugin` key the 1.18.x config used — which is why
+  #     an install that wrote there looked complete and did nothing.
+  #   * an entry is INSTALLED BY THE HOST at startup:
+  #       msg="loading plugin" id=@te-river/opencode-team-mode@latest
+  #       entrypoint=file:///…/.cache/opencode/npm/@te-river/opencode-team-mode@latest/
+  #                       <ts>/node_modules/@te-river/opencode-team-mode/dist/index.js
+  #     so there is no cache for us to purge and nothing to pre-install.
+  #   * `opencode plugin add <spec>` does exactly that write, into
+  #     `~/.config/opencode/opencode.json`, and prints the file it touched.
+  #   * opencode.json and opencode.jsonc are BOTH read and MERGED — measured with the
+  #     spec in one file, then in the other, then in both. In the third case the host
+  #     logged "loading plugin" TWICE for the same id: no dedupe. So the 1.18.x rule
+  #     "jsonc overrides json, migrate the old file forward" is not merely unnecessary
+  #     here, it is the double-registration bug: two personalities registering the
+  #     same tools and the same hooks. Everything below writes ONE file, and the
+  #     read-back counts Team entries across BOTH.
+  #
+  # TEAMMODE_LOCAL_DIR=<dir> is the development spelling: the tree is copied to
+  # <cfg_dir>/vendor/team-mode and referenced as "./vendor/team-mode" (a relative path
+  # the host resolves against the config file's own directory). A root `index.js` is
+  # mandatory — for a directory whose entrypoint the host cannot resolve it skips the
+  # plugin with NO message at all. It is also the only path that works today: 1.6.1 is
+  # not published, and the published 1.6.0 exports no `setup`, so npm mode loads and
+  # fails with "Plugin must export a default definition with an id and an effect or
+  # setup function" (loudly, unlike the silent directory skip).
+  local src_dir="${TEAMMODE_LOCAL_DIR:-}"
+  PLUGIN_ENTRY="${PKG}"
+  if [ -n "$src_dir" ]; then
+    if [ ! -f "${src_dir}/index.js" ] || [ ! -f "${src_dir}/dist/index.js" ] ||
+       [ ! -f "${src_dir}/scripts/gen-v2-config.mjs" ]; then
+      echo "!  TEAMMODE_LOCAL_DIR=${src_dir} is missing index.js, dist/index.js or"
+      echo "   scripts/gen-v2-config.mjs. A directory the host cannot resolve an"
+      echo "   entrypoint for is skipped SILENTLY, so writing it into plugins would"
+      echo "   report an install that is nothing. Build the tree first"
+      echo "   (npm run build), or unset the variable to install from npm."
+      exit 1
     fi
-  else
-    echo "ℹ  No 'opencode plugin add' subcommand found — editing the config entry instead."
+    mkdir -p "${cfg_dir}/vendor"
+    rm -rf "${cfg_dir}/vendor/team-mode"
+    cp -R "${src_dir%/}/." "${cfg_dir}/vendor/team-mode/" 2>/dev/null || {
+      echo "!  Could not copy ${src_dir} to ${cfg_dir}/vendor/team-mode"; exit 1; }
+    rm -rf "${cfg_dir}/vendor/team-mode/node_modules"
+    PLUGIN_ENTRY="./vendor/team-mode"
+    pkg_dir="${cfg_dir}/vendor/team-mode"
+    echo "✔  Copied the package to ${cfg_dir}/vendor/team-mode (root index.js verified)"
   fi
 
-  # The config FILE is where default_agent goes, so it must be the one that
-  # wins: .jsonc takes precedence over a legacy .json, hence the same migration
-  # rule the v1 path uses (and never writing into the .json, which would be
-  # shadowed). Runs even on the plugin-add path: if the host wrote only a
-  # .json, this copy is what keeps our later .jsonc from shadowing it.
   mkdir -p "$cfg_dir"
-  if [ ! -f "$cfg" ] && [ -f "$legacy" ]; then
-    cp "$legacy" "$cfg"
-    echo "ℹ  Migrated opencode.json → opencode.jsonc (jsonc takes precedence; the original .json is left untouched)"
-  fi
-  if [ ! -f "$cfg" ]; then
-    cat > "$cfg" <<EOF
-{
-  "\$schema": "https://opencode.ai/config.json",
-  "plugin": [
-    "${PKG}"
-  ]
-}
-EOF
+  # ONE mechanism for both modes, and the file written is opencode.jsonc — the file
+  # every previous version of this installer used, so an upgrade edits the config the
+  # user's entries already live in instead of splitting them over two. Why that matters
+  # is measured, not assumed: opencode.json and opencode.jsonc are BOTH parsed and
+  # MERGED, and the host's own dedupe in writePluginConfig only recognises the
+  # identical string (element equals the spec, or an object whose package equals it) —
+  # so one plugin written under two spellings in two files is LOADED TWICE (two
+  # "loading plugin" lines for one id, no warning). Hence: ensure in the .jsonc, then
+  # reclaim a Team entry of ours from the legacy .json if one is sitting there.
+  #
+  # `opencode plugin add` is deliberately NOT called. It cannot do either job: it
+  # refuses a path ("Plugin target must be an npm registry package or Git package
+  # specifier"), and in npm mode the host installs the package itself at startup
+  # because of the entry we just wrote.
+  local cfg="${cfg_dir}/opencode.jsonc"
+  local other="$legacy"
+  mkdir -p "$cfg_dir"
+  if [ ! -s "$cfg" ]; then
+    printf '{\n  "$schema": "https://opencode.ai/config.json"\n}\n' > "$cfg"
     echo "✔  Created ${cfg}"
   fi
 
-  node_js="$(mktemp)"
-  trap "rm -f ${node_js}" EXIT
-  cat > "${node_js}" <<'NODEJS2'
-// 2.x config surgery: adds the plugin entry and/or sets default_agent, then
-// READS THE VALUE BACK from disk before reporting success. Comments are masked
-// to spaces at identical offsets, so a commented-out key can never be mistaken
-// for a live one (the read-back would pass while the config said nothing).
-// usage: node this.js <file> <plugin|default-agent> <value>
-const fs = require("fs");
-const [file, mode, value] = process.argv.slice(2);
-if (!file || !mode || !value) {
-  console.error("ERR usage: node this.js <file> <plugin|default-agent> <value>");
-  process.exit(1);
-}
+  # The surgery lives in ONE file shared with install.ps1 (scripts/lib/config-surgery.cjs)
+  # so the two installers cannot drift into two different definitions of "installed", and
+  # so a `.cjs` name is under our control — a bare mktemp name has no extension, and Node
+  # decides the module format by walking up for a package.json, so a Temp/package.json
+  # with "type":"module" (present on this machine) makes it throw
+  # ERR_UNKNOWN_FILE_EXTENSION and the install dies before it writes anything.
+  local self_dir="" surgery=""
+  case "${BASH_SOURCE[0]:-}" in
+    */*|*\\*) self_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd || true)" ;;
+  esac
+  [ -n "$self_dir" ] && surgery="${self_dir}/lib/config-surgery.cjs"
+  if [ ! -f "$surgery" ]; then
+    echo "!  Cannot find ${surgery:-scripts/lib/config-surgery.cjs}."
+    echo "   The 2.x installer is not a standalone file: it edits the config through that"
+    echo "   script, and a copy fetched without it (curl | bash) cannot do the job. Run it"
+    echo "   from a clone or from the installed package:"
+    echo "     node <package>/scripts/gen-v2-config.mjs   and   bash <package>/scripts/install.sh"
+    exit 1
+  fi
+  local node_js="$surgery"
 
-const mask = (s) => {
-  let out = "", i = 0, inStr = false, esc = false;
-  while (i < s.length) {
-    const c = s[i];
-    if (inStr) {
-      out += c;
-      if (esc) esc = false; else if (c === "\\") esc = true; else if (c === '"') inStr = false;
-      i++; continue;
-    }
-    if (c === '"') { inStr = true; out += c; i++; continue; }
-    if (c === "/" && s[i + 1] === "/") { while (i < s.length && s[i] !== "\n") { out += " "; i++; } continue; }
-    if (c === "/" && s[i + 1] === "*") {
-      while (i < s.length && !(s[i] === "*" && s[i + 1] === "/")) { out += s[i] === "\n" ? "\n" : " "; i++; }
-      out += "  "; i += 2; continue;
-    }
-    out += c; i++;
-  }
-  return out;
-};
 
-const lineOf = (s, idx) => s.slice(0, idx).split("\n").length;
-let src = fs.readFileSync(file, "utf8");
-const open = mask(src).indexOf("{");
-if (open < 0) { console.error("ERR no top-level object in " + file); process.exit(1); }
-const nextNonWs = (s, i) => { while (i < s.length && /\s/.test(s[i])) i++; return i; };
-/** insert one member right after the object's opening brace (top level by
- *  definition: in a JSONC config the first '{' IS the document's own). */
-const insertMember = (s, member) => {
-  const after = nextNonWs(s, open + 1);
-  const comma = s[after] === "}" ? "" : ",";   // an empty object takes none
-  return s.slice(0, open + 1) + "\n  " + member + comma + s.slice(open + 1);
-};
-const lineNo = (s, idx) => " (line " + lineOf(s, idx) + " of " + file + ")";
-
-if (mode === "plugin") {
-  if (src.includes('"' + value + '"')) {
-    console.log("OK  plugin entry already present");
-  } else {
-    const m = /"plugin"\s*:\s*\[/.exec(mask(src));
-    let out;
-    if (!m) {
-      out = insertMember(src, '"plugin": [\n    "' + value + '"\n  ]');
-    } else {
-      // walk to the array's own closing bracket; strings are masked, so the
-      // scan sees structure only.
-      const masked = mask(src);
-      let i = m.index + m[0].length, depth = 1, lastValEnd = -1;
-      while (i < masked.length) {
-        const c = masked[i];
-        if (c === '"') {
-          const j = masked.indexOf('"', i + 1);
-          if (j < 0) break;
-          i = j + 1;
-          if (depth === 1) lastValEnd = i;
-          continue;
-        }
-        if (c === "[" || c === "{") depth++;
-        else if (c === "]" || c === "}") {
-          depth--;
-          if (depth === 0) break;
-          if (depth === 1) lastValEnd = i + 1;
-        }
-        i++;
-      }
-      if (depth !== 0) { console.error("ERR unbalanced plugin array in " + file); process.exit(1); }
-      const at = lastValEnd >= 0 ? lastValEnd : m.index + m[0].length;
-      const head = lastValEnd >= 0 ? ",\n    \"" : "\n    \"";
-      out = src.slice(0, at) + head + value + "\"" + src.slice(at);
-    }
-    fs.writeFileSync(file, out);
-    console.log("OK  plugin entry added");
-  }
-} else if (mode === "default-agent") {
-  const lit = JSON.stringify(value);
-  const re = /"default_agent"(\s*:\s*)("(?:[^"\\]|\\.)*"|[^,}\s][^,}\n]*)/;
-  const m = re.exec(mask(src));
-  if (m) {
-    const vStart = m.index + m[0].length - m[2].length;
-    if (m[2].trim() === lit) {
-      console.log("OK  default_agent already " + lit + lineNo(src, m.index));
-    } else {
-      fs.writeFileSync(file, src.slice(0, vStart) + lit + src.slice(vStart + m[2].length));
-      console.log("OK  default_agent rewritten (was " + m[2].trim() + ")");
-    }
-  } else {
-    fs.writeFileSync(file, insertMember(src, '"default_agent": ' + lit));
-    console.log("OK  default_agent added");
-  }
-  // Read it back — a fresh read of the file from disk, comments masked again.
-  src = fs.readFileSync(file, "utf8");
-  const chk = re.exec(mask(src));
-  const got = chk ? chk[2].trim() : null;
-  if (got !== lit) {
-    console.error("ERR default_agent read back as " + (got === null ? "(key absent)" : got) + ", not " + lit);
-    console.error("    Add it by hand at the top level of " + file + ":  \"default_agent\": " + lit);
-    process.exit(1);
-  }
-  console.log("OK  read back: " + lit + lineNo(src, chk.index));
-} else {
-  console.error("ERR unknown mode '" + mode + "'");
-  process.exit(1);
-}
-NODEJS2
-
-  if [ "$via_add" = 0 ]; then
-    node "${node_js}" "${cfg}" plugin "${PKG}"
+  # Always run: in npm mode WE are the ones installing (the host auto-installs the
+  # package because of this entry), so there is no "the host already wrote it" case
+  # to skip. The script refuses to report success unless the value reads back.
+  if ! node "${node_js}" "${cfg}" plugins "${PLUGIN_ENTRY}" "${other}"; then
+    echo "!  The plugins entry is not in ${cfg}. Nothing further is attempted — without"
+    echo "   the entry the host never loads the plugin, so a default agent naming our"
+    echo "   roles would fall back to 'build' silently. Add it by hand:"
+    echo "     \"plugins\": [\"${PLUGIN_ENTRY}\"]"
+    exit 1
   fi
 
   # ── 2. the six roles and six commands, from the INSTALLED package ────────
-  # Candidates only, no recursive search: the documented one plus the v1 cache
-  # layouts (whose executed code is the NESTED node_modules copy), each checked
-  # for BOTH halves the generator imports.
-  local gen="" pkg_dir="" candidate
+  # Candidates only, no recursive search. The npm cache layout is the one the host
+  # installed into in the live probe above (a timestamped wrapper whose EXECUTED code
+  # is the nested node_modules copy), the v1 cache layouts stay as a fallback for a
+  # machine that ran the 1.18.x installer, and the vendor copy is first because
+  # TEAMMODE_LOCAL_DIR already put it there.
+  local gen="" candidate
   for candidate in \
+    "${pkg_dir}" \
     "${cfg_dir}/node_modules/${PKG_NAME}" \
+    "${HOME}/.cache/opencode/npm/${PKG_NAME}@latest"/*/node_modules/${PKG_NAME} \
     "${HOME}/.cache/opencode/packages/${PKG_NAME}@latest/node_modules/${PKG_NAME}" \
     "${HOME}/.cache/opencode/packages/@te_river+opencode-team-mode@latest/node_modules/${PKG_NAME}"
   do
@@ -311,20 +251,22 @@ NODEJS2
   done
 
   if [ -z "$gen" ]; then
-    echo "!  Could not find the installed package, so the roles/commands cannot be generated."
+    echo "!  Could not find a package tree, so the roles/commands cannot be generated."
     echo "   Looked for scripts/gen-v2-config.mjs + dist/agents.js under:"
     for candidate in \
+      "${cfg_dir}/vendor/team-mode" \
       "${cfg_dir}/node_modules/${PKG_NAME}" \
+      "${HOME}/.cache/opencode/npm/${PKG_NAME}@latest/*/node_modules/${PKG_NAME}" \
       "${HOME}/.cache/opencode/packages/${PKG_NAME}@latest/node_modules/${PKG_NAME}" \
       "${HOME}/.cache/opencode/packages/@te_river+opencode-team-mode@latest/node_modules/${PKG_NAME}"
     do
       echo "     - ${candidate}"
+
     done
     echo "   Next step: install the package where the host reads it, then re-run this script:"
     echo "     opencode plugin add ${PKG}"
     echo "   (or: cd ${cfg_dir} && npm install ${PKG} --no-fund --no-audit)"
     echo "   Nothing was set as the default agent — a default is only safe once the roles exist."
-    rm -f "${node_js}"
     exit 1
   fi
   echo "↻  Generating agents/ + commands/ from ${pkg_dir} ..."
@@ -333,7 +275,6 @@ NODEJS2
     echo "   prompts and its gen-v2-config.mjs are from different versions — the fork table"
     echo "   throws rather than shipping a v2 model a rule about a tool it cannot call."
     echo "   Nothing was set as the default agent."
-    rm -f "${node_js}"
     exit 1
   fi
 
@@ -366,7 +307,6 @@ NODEJS2
     echo "   A default naming an agent the host cannot find makes it fall back to 'build'"
     echo "   with no explanation on screen. Re-run this installer once the six role files"
     echo "   exist under ${cfg_dir}/agents/."
-    rm -f "${node_js}"
     exit 1
   fi
 
@@ -375,11 +315,8 @@ NODEJS2
   if ! node "${node_js}" "${cfg}" default-agent team; then
     echo "!  Could not set default_agent. Add it by hand at the top level of ${cfg}:"
     echo "     \"default_agent\": \"team\""
-    rm -f "${node_js}"
     exit 1
   fi
-  rm -f "${node_js}"
-  trap - EXIT
 
   # ── 5. the 2.x checklist ──────────────────────────────────────────────────
   local cmd_count
@@ -444,7 +381,10 @@ if [ ! -f "$CFG" ]; then
 EOF
   echo "✔  Created ${CFG}"
 else
-  NODE_SCRIPT=$(mktemp)
+  # Same .cjs reason as the 2.x path above: a bare mktemp name inherits whatever module
+  # format a package.json in an ancestor directory declares, and CommonJS then throws
+  # ERR_UNKNOWN_FILE_EXTENSION.
+  NODE_SCRIPT="$(mktemp -d "${TMPDIR:-/tmp}/tm-surgery-XXXXXX")/surgery.cjs"
   cat > "${NODE_SCRIPT}" <<'NODEJS'
 const fs = require('fs');
 const file = process.argv[2];

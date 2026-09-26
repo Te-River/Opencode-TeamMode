@@ -145,171 +145,76 @@ function Install-V2 {
     Write-Host "     - the npm re-resolve in $cfgDir — it would fight the host's install." -ForegroundColor DarkGray
     Write-Host ""
 
-    # ── 1. the plugin package ───────────────────────────────────────────────
-    # The probe is a text grep, so either answer is survivable: a false positive
-    # runs `plugin add`, whose failure falls through to the config edit below; a
-    # false negative does the config edit, which is what v1 has always done.
-    $help = Get-OpenCodeOut @("plugin", "--help")
-    $haveAdd = "$help" -match "(?m)(^|\s)add(\s|<)"
-    $viaAdd = $false
-    if ($haveAdd) {
-        Write-Host "↻  opencode plugin add $PKG ..." -ForegroundColor Yellow
-        $prev = $ErrorActionPreference
-        $ErrorActionPreference = "Continue"
-        try { & opencode plugin add "$PKG"; $code = $LASTEXITCODE } finally { $ErrorActionPreference = $prev }
-        if ($code -eq 0) {
-            $viaAdd = $true
-            Write-Host "✔  Installed via 'opencode plugin add' (the host wrote the global config entry)" -ForegroundColor Green
-        } else {
-            Write-Host "!  'opencode plugin add' failed (exit $code) — editing the config entry instead." -ForegroundColor Yellow
-        }
-    } else {
-        Write-Host "ℹ  No 'opencode plugin add' subcommand found — editing the config entry instead." -ForegroundColor Yellow
-    }
-
-    # The config FILE is where default_agent goes, so it must be the one that
-    # wins: .jsonc takes precedence over a legacy .json, hence the same migration
-    # rule the v1 path uses (and never writing into the .json, which would be
-    # shadowed). Runs on the plugin-add path too: if the host wrote only a
-    # .json, this copy is what keeps our later .jsonc from shadowing it.
+    # ── 1. the plugins entry (this IS the plugin install) ───────────────────
+    # Measured on 2.0.18 with a redirected HOME, and mirrored one-for-one by
+    # scripts/install.sh, which is why both front-ends call the SAME helper
+    # (scripts\lib\config-surgery.cjs) instead of two hand-kept copies:
+    #   * the key is PLURAL `plugins`; a 2.x host never reads the 1.18.x singular
+    #     `plugin` key, which is how an install used to look complete and do nothing;
+    #   * the host INSTALLS the package itself at startup from the entry
+    #     (msg="loading plugin" … .cache/opencode/npm/<pkg>@latest/<ts>/node_modules/…),
+    #     so `opencode plugin add` is not a prerequisite and there is no cache to purge;
+    #     `plugin add` cannot help a local directory anyway ("Plugin target must be an
+    #     npm registry package or Git package specifier");
+    #   * opencode.json and opencode.jsonc are BOTH parsed and MERGED, and the host's
+    #     dedupe matches only an identical string, so the same plugin written into both
+    #     files is LOADED TWICE (two "loading plugin" lines for one id, no warning).
+    #     Hence: write the .jsonc (the file every previous installer used) and reclaim
+    #     our own entry from the legacy .json. No migration copy, ever.
     if (-not (Test-Path $cfgDir)) {
         New-Item -ItemType Directory -Path $cfgDir -Force | Out-Null
     }
-    if ((-not (Test-Path $cfgFile)) -and (Test-Path $legacy)) {
-        Copy-Item $legacy $cfgFile
-        Write-Host "ℹ  Migrated opencode.json → opencode.jsonc (jsonc takes precedence; the original .json is left untouched)" -ForegroundColor Yellow
+    $surgery = Join-Path $PSScriptRoot "lib\config-surgery.cjs"
+    if (-not (Test-Path $surgery)) {
+        Write-Host "!  Cannot find $surgery" -ForegroundColor Yellow
+        Write-Host "   The 2.x installer is not a standalone file: it edits the config through that" -ForegroundColor Yellow
+        Write-Host "   helper, and a copy fetched without it (iwr | iex) cannot do the job. Run it from" -ForegroundColor Yellow
+        Write-Host "   a clone or from the installed package." -ForegroundColor Yellow
+        exit 1
     }
-    if (-not (Test-Path $cfgFile)) {
-        $newCfg = @"
-{
-  "`$schema": "https://opencode.ai/config.json",
-  "plugin": [
-    "$PKG"
-  ]
-}
-"@
-        [IO.File]::WriteAllText($cfgFile, $newCfg, (New-Object System.Text.UTF8Encoding($false)))
+    if (-not (Test-Path $cfgFile) -or ((Get-Item $cfgFile).Length -eq 0)) {
+        [IO.File]::WriteAllText($cfgFile, "{`n  ""`$schema"": ""https://opencode.ai/config.json""`n}`n", (New-Object System.Text.UTF8Encoding($false)))
         Write-Host "✔  Created $cfgFile" -ForegroundColor Green
     }
 
-    $nodeJs = @'
-// 2.x config surgery: adds the plugin entry and/or sets default_agent, then
-// READS THE VALUE BACK from disk before reporting success. Comments are masked
-// to spaces at identical offsets, so a commented-out key can never be mistaken
-// for a live one (the read-back would pass while the config said nothing).
-// usage: node this.js <file> <plugin|default-agent> <value>
-const fs = require("fs");
-const [file, mode, value] = process.argv.slice(2);
-if (!file || !mode || !value) {
-  console.error("ERR usage: node this.js <file> <plugin|default-agent> <value>");
-  process.exit(1);
-}
-
-const mask = (s) => {
-  let out = "", i = 0, inStr = false, esc = false;
-  while (i < s.length) {
-    const c = s[i];
-    if (inStr) {
-      out += c;
-      if (esc) esc = false; else if (c === "\\") esc = true; else if (c === '"') inStr = false;
-      i++; continue;
-    }
-    if (c === '"') { inStr = true; out += c; i++; continue; }
-    if (c === "/" && s[i + 1] === "/") { while (i < s.length && s[i] !== "\n") { out += " "; i++; } continue; }
-    if (c === "/" && s[i + 1] === "*") {
-      while (i < s.length && !(s[i] === "*" && s[i + 1] === "/")) { out += s[i] === "\n" ? "\n" : " "; i++; }
-      out += "  "; i += 2; continue;
-    }
-    out += c; i++;
-  }
-  return out;
-};
-
-const lineOf = (s, idx) => s.slice(0, idx).split("\n").length;
-let src = fs.readFileSync(file, "utf8");
-const open = mask(src).indexOf("{");
-if (open < 0) { console.error("ERR no top-level object in " + file); process.exit(1); }
-const nextNonWs = (s, i) => { while (i < s.length && /\s/.test(s[i])) i++; return i; };
-/** insert one member right after the object's opening brace (top level by
- *  definition: in a JSONC config the first '{' IS the document's own). */
-const insertMember = (s, member) => {
-  const after = nextNonWs(s, open + 1);
-  const comma = s[after] === "}" ? "" : ",";   // an empty object takes none
-  return s.slice(0, open + 1) + "\n  " + member + comma + s.slice(open + 1);
-};
-const lineNo = (s, idx) => " (line " + lineOf(s, idx) + " of " + file + ")";
-
-if (mode === "plugin") {
-  if (src.includes('"' + value + '"')) {
-    console.log("OK  plugin entry already present");
-  } else {
-    const m = /"plugin"\s*:\s*\[/.exec(mask(src));
-    let out;
-    if (!m) {
-      out = insertMember(src, '"plugin": [\n    "' + value + '"\n  ]');
-    } else {
-      // walk to the array's own closing bracket; strings are masked, so the
-      // scan sees structure only.
-      const masked = mask(src);
-      let i = m.index + m[0].length, depth = 1, lastValEnd = -1;
-      while (i < masked.length) {
-        const c = masked[i];
-        if (c === '"') {
-          const j = masked.indexOf('"', i + 1);
-          if (j < 0) break;
-          i = j + 1;
-          if (depth === 1) lastValEnd = i;
-          continue;
+    # TEAMMODE_LOCAL_DIR is the development spelling, and the only one that works until
+    # 1.6.1 is published: the published 1.6.0 has no `setup` export, so a 2.x host loads
+    # it and fails with "Plugin must export a default definition with an id and an effect
+    # or setup function". The tree is copied to <cfgDir>\vendor\team-mode and referenced
+    # as "./vendor/team-mode" — and a ROOT index.js is mandatory, because the host's
+    # directory entrypoint resolution tries `<dir>/index` only, and a directory it cannot
+    # resolve is SKIPPED WITH NO MESSAGE AT ALL.
+    $PluginEntry = $PKG
+    $localDir = $env:TEAMMODE_LOCAL_DIR
+    $vendorPkg = $null
+    if ($localDir) {
+        foreach ($need in @("index.js", "dist\index.js", "scripts\gen-v2-config.mjs")) {
+            if (-not (Test-Path (Join-Path $localDir $need))) {
+                Write-Host "!  TEAMMODE_LOCAL_DIR=$localDir is missing $need." -ForegroundColor Yellow
+                Write-Host "   A directory the host cannot resolve an entrypoint for is skipped" -ForegroundColor Yellow
+                Write-Host "   SILENTLY, so writing it into plugins would report an install that is" -ForegroundColor Yellow
+                Write-Host "   nothing. Build the tree first (npm run build), or unset the variable." -ForegroundColor Yellow
+                exit 1
+            }
         }
-        if (c === "[" || c === "{") depth++;
-        else if (c === "]" || c === "}") {
-          depth--;
-          if (depth === 0) break;
-          if (depth === 1) lastValEnd = i + 1;
+        $vendorRoot = Join-Path $cfgDir "vendor"
+        $vendorPkg = Join-Path $vendorRoot "team-mode"
+        New-Item -ItemType Directory -Path $vendorRoot -Force | Out-Null
+        if (Test-Path $vendorPkg) { Remove-Item -Recurse -Force $vendorPkg }
+        # Create the destination first, then copy each child: `Copy-Item <src>\* <dst>`
+        # with a destination that does not exist yet makes PowerShell 5.1 bind the last
+        # item to a file name and throw an argument-transformation error mid-copy, which
+        # leaves a half-copied package that the host then loads (or fails to) at random.
+        New-Item -ItemType Directory -Path $vendorPkg -Force | Out-Null
+        Get-ChildItem -Path $localDir -Force | ForEach-Object {
+            Copy-Item -LiteralPath $_.FullName -Destination $vendorPkg -Recurse -Force
         }
-        i++;
-      }
-      if (depth !== 0) { console.error("ERR unbalanced plugin array in " + file); process.exit(1); }
-      const at = lastValEnd >= 0 ? lastValEnd : m.index + m[0].length;
-      const head = lastValEnd >= 0 ? ",\n    \"" : "\n    \"";
-      out = src.slice(0, at) + head + value + "\"" + src.slice(at);
+        $nm = Join-Path $vendorPkg "node_modules"
+        if (Test-Path $nm) { Remove-Item -Recurse -Force $nm }
+        $PluginEntry = "./vendor/team-mode"
+        Write-Host "✔  Copied the package to $vendorPkg (root index.js verified)" -ForegroundColor Green
     }
-    fs.writeFileSync(file, out);
-    console.log("OK  plugin entry added");
-  }
-} else if (mode === "default-agent") {
-  const lit = JSON.stringify(value);
-  const re = /"default_agent"(\s*:\s*)("(?:[^"\\]|\\.)*"|[^,}\s][^,}\n]*)/;
-  const m = re.exec(mask(src));
-  if (m) {
-    const vStart = m.index + m[0].length - m[2].length;
-    if (m[2].trim() === lit) {
-      console.log("OK  default_agent already " + lit + lineNo(src, m.index));
-    } else {
-      fs.writeFileSync(file, src.slice(0, vStart) + lit + src.slice(vStart + m[2].length));
-      console.log("OK  default_agent rewritten (was " + m[2].trim() + ")");
-    }
-  } else {
-    fs.writeFileSync(file, insertMember(src, '"default_agent": ' + lit));
-    console.log("OK  default_agent added");
-  }
-  // Read it back — a fresh read of the file from disk, comments masked again.
-  src = fs.readFileSync(file, "utf8");
-  const chk = re.exec(mask(src));
-  const got = chk ? chk[2].trim() : null;
-  if (got !== lit) {
-    console.error("ERR default_agent read back as " + (got === null ? "(key absent)" : got) + ", not " + lit);
-    console.error("    Add it by hand at the top level of " + file + ":  \"default_agent\": " + lit);
-    process.exit(1);
-  }
-  console.log("OK  read back: " + lit + lineNo(src, chk.index));
-} else {
-  console.error("ERR unknown mode '" + mode + "'");
-  process.exit(1);
-}
-'@
-    $nodePath = "$env:TEMP\install-teammode-v2.js"
-    [IO.File]::WriteAllText($nodePath, $nodeJs, (New-Object System.Text.UTF8Encoding($false)))
+
 
     # Runs the node helper with the preference dropped, so a host-side message on
     # stderr cannot abort the install halfway and leave the default unset. The
@@ -322,44 +227,53 @@ if (mode === "plugin") {
         try { & node @NodeArgs | Out-Host } finally { $ErrorActionPreference = $prev }
     }
 
-    try {
-        if (-not $viaAdd) {
-            Invoke-NodeHelper @($nodePath, $cfgFile, "plugin", $PKG)
-            if ($LASTEXITCODE -ne 0) {
-                Write-Host "!  Could not add the plugin entry. Add it by hand to $cfgFile :" -ForegroundColor Yellow
-                Write-Host ('     "plugin": ["' + $PKG + '"]') -ForegroundColor Yellow
-                exit 1
-            }
+        # "plugins" (plural) with the legacy .json passed as the file to scrub — the same
+        # helper install.sh calls, so the two front-ends cannot disagree about what an
+        # installed plugin looks like. The helper refuses to report success unless the
+        # value reads back off the disk.
+        Invoke-NodeHelper @($surgery, $cfgFile, "plugins", $PluginEntry, $legacy)
+        if ($LASTEXITCODE -ne 0) {
+            Write-Host "!  The plugins entry is not in $cfgFile - nothing further is attempted." -ForegroundColor Yellow
+            Write-Host "   Without it the host never loads the plugin, and a default agent naming" -ForegroundColor Yellow
+            Write-Host "   our roles would fall back to 'build' silently. Add it by hand:" -ForegroundColor Yellow
+            Write-Host ('     "plugins": ["' + $PluginEntry + '"]') -ForegroundColor Yellow
+            exit 1
         }
 
         # ── 2. the six roles and six commands, from the INSTALLED package ────
-        # Candidates only, no recursive search: the documented config-dir copy,
-        # plus the cache layouts (whose EXECUTED code is the NESTED
-        # node_modules\@te-river\ copy — the outer wrapper is never what runs).
-        # Each is checked for BOTH halves the generator imports.
+        # Candidates only, no recursive search. The npm cache layout is the one the host
+        # installs into at startup (a timestamped wrapper whose EXECUTED code is the
+        # nested node_modules\@te-river\ copy), the v1 `packages` layouts stay for a
+        # machine that ran the 1.18.x installer, and the vendor copy is first because
+        # TEAMMODE_LOCAL_DIR just put it there.
         $cacheRoots = @(
             (Join-Path $env:USERPROFILE ".cache\opencode\packages"),
+            (Join-Path $env:USERPROFILE ".cache\opencode\npm"),
             (Join-Path $env:LOCALAPPDATA "opencode\cache\packages")
         )
-        $candidates = @( (Join-Path $cfgDir "node_modules\$PKG_NAME") )
+        $candidates = @()
+        if ($vendorPkg) { $candidates += $vendorPkg }
+        $candidates += (Join-Path $cfgDir "node_modules\$PKG_NAME")
         foreach ($root in $cacheRoots) {
+            $candidates += (Get-ChildItem -Path (Join-Path $root "@te-river") -Filter "opencode-team-mode@latest" -Directory -ErrorAction SilentlyContinue |
+                ForEach-Object { Get-ChildItem -Path $_.FullName -Directory -ErrorAction SilentlyContinue |
+                    ForEach-Object { Join-Path $_.FullName "node_modules\@te-river\opencode-team-mode" } })
             $candidates += (Join-Path $root "@te-river\opencode-team-mode@latest\node_modules\@te-river\opencode-team-mode")
             $candidates += (Join-Path $root "@te_river+opencode-team-mode@latest\node_modules\@te-river\opencode-team-mode")
         }
         $pkgDir = $null
         $gen = $null
         foreach ($c in $candidates) {
-            if ((Test-Path (Join-Path $c "scripts\gen-v2-config.mjs")) -and (Test-Path (Join-Path $c "dist\agents.js"))) {
+            if ($c -and (Test-Path (Join-Path $c "scripts\gen-v2-config.mjs")) -and (Test-Path (Join-Path $c "dist\agents.js"))) {
                 $pkgDir = $c; $gen = Join-Path $c "scripts\gen-v2-config.mjs"; break
             }
         }
         if (-not $gen) {
-            Write-Host "!  Could not find the installed package, so the roles/commands cannot be generated." -ForegroundColor Yellow
+            Write-Host "!  Could not find a package tree, so the roles/commands cannot be generated." -ForegroundColor Yellow
             Write-Host "   Looked for scripts\gen-v2-config.mjs + dist\agents.js under:" -ForegroundColor Yellow
             foreach ($c in $candidates) { Write-Host "     - $c" -ForegroundColor Yellow }
-            Write-Host "   Next step: install the package where the host reads it, then re-run this script:" -ForegroundColor Yellow
-            Write-Host "     opencode plugin add $PKG" -ForegroundColor Yellow
-            Write-Host "   (or: cd $cfgDir ; npm install $PKG --no-fund --no-audit)" -ForegroundColor Yellow
+            Write-Host "   The entry is written, so a host STARTUP will install the package; then re-run" -ForegroundColor Yellow
+            Write-Host "   this script (or: cd $cfgDir ; npm install $PKG --no-fund --no-audit)." -ForegroundColor Yellow
             Write-Host "   Nothing was set as the default agent - a default is only safe once the roles exist." -ForegroundColor Yellow
             exit 1
         }
@@ -407,17 +321,15 @@ if (mode === "plugin") {
 
         # ── 4. default_agent, LAST, and read back ───────────────────────────
         Write-Host "↻  Setting default_agent = team (last, because the roles are on disk now) ..." -ForegroundColor Yellow
-        Invoke-NodeHelper @($nodePath, $cfgFile, "default-agent", "team")
+        Invoke-NodeHelper @($surgery, $cfgFile, "default-agent", "team")
         if ($LASTEXITCODE -ne 0) {
             Write-Host "!  Could not set default_agent. Add it by hand at the top level of $cfgFile :" -ForegroundColor Yellow
             Write-Host '     "default_agent": "team"' -ForegroundColor Yellow
             exit 1
         }
-    } finally {
-        # The temp helper is scratch: it is the only copy of that logic outside
-        # this file, and it holds nothing the user needs.
-        Remove-Item $nodePath -ErrorAction SilentlyContinue
-    }
+    # No scratch file to clean: the surgery is the shipped scripts\lib\config-surgery.cjs,
+    # shared with install.sh. Deleting a temp copy of it used to be the point of a finally
+    # block; deleting the shipped helper would not be.
 
     # ── 5. the 2.x checklist ────────────────────────────────────────────────
     $cmdCount = @(Get-ChildItem (Join-Path $cfgDir "commands") -Filter "team-*.md" -ErrorAction SilentlyContinue).Count
