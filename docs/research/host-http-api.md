@@ -73,10 +73,36 @@ await e.message.list({ sessionID: n, limit: 200, cursor: r })
 
 `ctx.session.get` therefore takes a **single flat object `{sessionID}`** — not v1's
 `{path:{id}}`, and not an array. `src/host/v2-session-client.ts` had both wrong, which is why
-every lookup failed silently for a release cycle. `ctx.session` has no message domain, so
-`context({sessionID})` is the in-process candidate for a child's reply, and its result key
-NAMES are recorded (never a body) so the next round answers the shape question from the
-trajectory.
+every lookup failed silently for a release cycle.
+
+`[L]` **The full ctx domain set, measured 2026-09-26 with zero model tokens** (a plugin that
+only inspects its own context, booted under `--standalone --model nope/nope`; every method
+called with `{}` so the host's own decode error names the required key):
+
+| domain | what the host gives a plugin |
+|---|---|
+| `session` | `hook create get switchAgent switchModel prompt generate command synthetic interrupt update move wait context` |
+| `permission` | `hook list get reply` — all of `list/get/reply` decode as `{sessionID}` |
+| `experimental` | `terminal.read` (decodes as `{sessionID}`; a terminal-id spelling has not been found) |
+| `storage` | `get set remove scan` |
+| `agent` / `model` / `command` / `mcp` / `worktree` | `list/get/transform/reload` families |
+| `event` | `subscribe` (an async iterable, already used by `v2-events.ts`) |
+| `rpc` | a single function of arity 1 — its calling convention has NOT been read out |
+
+`[L]` **`ctx.session.context({sessionID})` answers with an ARRAY of flat items**, measured
+against a real background child from a live round:
+
+```
+array(5) < { id: string, time: { created: number }, text: string, type: string }  // type "user" …
+```
+
+That is NOT v1's `[{info:{role},parts:[…]}]`, and it is the reason a child's report was lost for
+a release: `v2-session-client.ts` already called `context`, then handed the array to
+`lastAssistantMessage`, which tolerates an unknown shape by returning no text. The seam
+ANSWERED and the body was discarded, while `tm_join` told the lead 正文不经本工具 — our decode
+miss reported as the host's limit. The flat shape is now normalised at the seam
+(`normaliseContextMessages`), and no `time.completed` is invented there, because that field *is*
+the settle verdict.
 
 ## 5. Deliberate non-goals
 
@@ -86,3 +112,21 @@ the credential read is a trust boundary the user has not been asked about; a plu
 /api/experimental/fs/write` bypasses the very `session.hook("context")` trim that keeps a
 denied role from being offered a tool. If any of these is ever pursued, it goes through the
 same gate as everything else here: Team-scoped, counted, and visible in `tm_stats`.
+
+## 6. The #32 decision, and what closed it
+
+The user authorised the HTTP API on one condition — 保证不会被泄露. That condition is the reason
+§4's probe happened first, and the probe made the condition moot:
+
+- **子会话正文**: `ctx.session.context` in process (§4). No credential exists to leak.
+- **权限队列**: `ctx.permission.list({sessionID})` answers in process — verified as a seam,
+  NOT yet used. Reading it to tell the user "N dialogs are waiting" is legitimate; calling
+  `reply` is not, because that is self-allowing, and `reply` stays uncalled.
+- **pty 捕获**: `ctx.experimental.terminal.read({sessionID})` exists but its second argument
+  has not been found, so `tm_pty`'s retirement decision (§21) is unchanged for now — the
+  reason is updated from "the host has no such thing" to "the plugin seam is unread".
+
+What the scan still settles on its own: there is **no todo/plan/task resource anywhere**, so
+`tm_ledger` is not a compromise. And `~/.config/opencode/service.json` has never been opened by
+this plugin, which `test-v2-adapter.mjs` group 12 asserts against the shipped source.
+

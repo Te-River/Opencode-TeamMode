@@ -293,3 +293,23 @@ this before treating any sentence above as platform-neutral.
   collected it" is labelled 推定 (the timestamps prove the ordering, once). A synchronous
   child has no id and registers nothing, which is the correct answer, not a failure.
 
+
+### 2026-09-26 (later the same day) — that BODY sentence was our decode miss `[L]`
+
+The paragraph above says the child's body is something v2 never hands a plugin. It is true of
+the INJECTION (there is still no v2 equivalent of `chat.message`, so the message cannot be
+rewritten before it persists) and false of the BODY, which is readable: `ctx.session.context
+({sessionID})` answers with an array of flat `{id, time:{created}, text, type}` items, measured
+against a real background child (`array(5)`, first item `type:"user"`). The bridge had been
+calling that seam all along and handing the array to `lastAssistantMessage`, which returns no
+text for a shape it does not recognise — so the call SUCCEEDED, the report was discarded, and the
+user-visible sentence blamed the host. Flat items are normalised at the seam now
+(`normaliseContextMessages`, no invented `time.completed`), the reply credits
+`正文来源=ctx.session.context`, and the trajectory writes `child_body` / `child_body_missing`
+with the seam name only.
+
+Two adjacent findings from the same zero-token probe (`--standalone --model nope/nope`, a plugin
+that only inspects its own ctx): the plugin ctx carries `permission.list/get/reply` and
+`experimental.terminal.read`, all decoding `{sessionID}`; and `ctx.rpc` is a function of arity 1
+whose convention has NOT been read. `permission.reply` remains uncalled by design — answering a
+dialog for the user is self-allowing. Recorded in `docs/research/host-http-api.md` §4/§6.

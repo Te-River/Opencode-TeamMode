@@ -69,6 +69,45 @@ registry saw 1.5.0 as the install-script fix release).
   covers, name-level forensics, how to window a 206 MB binary, the runner's buffering
   gotchas, and the standing rule that a rendering claim needs human eyes.
 
+### Fixed
+
+- **A child's report was reachable the whole time, and we were throwing it away.** Decision 4's
+  last gap read as a host limit (`tm_join` can claim a host `subagent` child but cannot read
+  its body — 正文不经本工具). Before paying the HTTP API's price (the Basic-auth password in
+  `service.json`), the plugin ctx was probed with **zero model tokens** (`--standalone
+  --model nope/nope`): the ctx carries a full `session` domain (`hook create get switchAgent
+  switchModel prompt generate command synthetic interrupt update move wait context`), plus
+  `permission.list/get/reply` and `experimental.terminal.read`, all taking a flat
+  `{sessionID}`. `ctx.session.context({sessionID})` answers with an ARRAY of flat
+  `{id, time:{created}, text, type}` items (measured against a real background child). The
+  bridge was already calling it and handing the array to `lastAssistantMessage`, which
+  tolerates an unknown shape by returning no text — so the seam ANSWERED, the body was
+  dropped, and the refusal blamed the host. Flat items are now normalised at the seam (a
+  `time.completed` is never invented, because that field *is* the settle verdict), the reply
+  credits `正文来源=ctx.session.context`, and `child_body` / `child_body_missing` ride the
+  trajectory with the seam name and nothing else. `service.json` is not opened by this plugin.
+- **The native-browser Code Mode leg was unreachable.** `v2-browser-gate.ts`'s two hooks opened
+  with `if (!tool.startsWith("browser_")) return`, so the `execute` branch beneath it — the one
+  that refuses a metadata address inside a Code Mode program, replaces a leaked result with the
+  refusal, and sends the native reading note — could never execute. The user's own desktop task
+  log shows why that mattered: the whole task drove the browser as `tools.browser.tabs.open` /
+  `browser.snapshot` / `browser.evaluate` **inside `execute`**, so no `browser_*` tool name
+  existed to match. Both hooks now test `execute` OR `browser_*` OR `browser.*` first.
+- **Two groups of assertions had not run since they were written.** An unclosed `catch {` in the
+  temp-dir sweep of `test-v2-adapter.mjs` swallowed everything after it — the report-cap group
+  and the Code Mode gate group became the catch BODY, which never executes because
+  `rmSync(force:true)` does not throw. The suite stayed green across the commits that claimed
+  those pins, and reviving the region produced two real defects: the report cap's
+  “saves >50% tokens” assertion is arithmetically impossible on a 1 600-token budget
+  (replaced with the bound it actually promises), and the note matched only the underscore
+  spelling. Every revived block now announces itself with a header and an OK line — an
+  assertion that cannot be seen running is an assertion that is not running.
+- **The completion-watch docs named the seams that FAILED.** `AGENTS.md` and
+  `docs/research/host-subagent-injection.md` still described `session.prompt` /
+  `session.model.request` as the design, from the round-6 hypothesis; the measured answer is
+  `session.hook("context")` (`session.prompt` fired 0, `model.request` fired 6 carrying no
+  message list), verified by `completion_settled=1` beside `idle_injection … ms=53102`.
+
 ### Changed
 
 - **The 2.x installers now write the key the host actually reads.** Both branches were
