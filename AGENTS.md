@@ -184,10 +184,21 @@ re-deriving any of this, and append findings there (dated, with an evidence tag)
 - **Tool delivery is an observation, not a flag we send.** `options.codemode:false` changed
   what we send and nothing else on 2.0.16/2.0.18 — the tools stayed in the Code Mode catalog.
   `tools_in_request` (derived from an assembled request) is the only evidence of delivery.
-- **The host's own background children are collectable:** `v2-subagent.ts` registers them
-  from the ack's `metadata.sessionID`, and `tm_join` prints their settle provenance
-  (`event` vs 推定). Their BODY is the host's injected message, which v2 never hands a plugin
-  before persisting — so we report where it arrives and never rewrite outgoing messages.
+- **The host's own background children are collectable, and settling them needs the
+  injection, not an event.** `v2-subagent.ts` registers them from the ack's
+  `result.metadata.sessionID` (the ack sentence is the fallback, since no field shape
+  survives an upgrade unchanged), and `applyV2CompletionWatch` settles them from the host's
+  own `<subagent … state="completed">` envelope read out of the parent's assembled history at
+  `session.hook("context")`. Why a third source was needed: measured on 2.0.18 that a child's
+  own `session.idle` never reaches a plugin subscriber, and the parent-idle presumption cannot
+  fire mid-turn — so a child whose report had already been injected stayed 运行中, which is
+  goal #6's overstated claim wearing the opposite face. The first two seams tried were the
+  wrong ones and the counters say so (`session.prompt` fired 0, `session.model.request` fired
+  6 carrying no message list); the verified round shows `completion_settled=1` beside an
+  `idle_injection … ms=53102` audit line. Provenance is printed (`event` / `injection` / 推定),
+  both seams are counted even when silent so "the host does not route it" is distinguishable
+  from "nothing was dispatched", and the BODY is never rewritten: we see the message only
+  AFTER the host persists it, which is enough to state a state and not enough to edit a reply.
 - **`temperature` 0.2 lives in the request layer** (`session.hook("context")`), never in agent
   config, and never overwrites a temperature already there. Background sub-agents are native,
   so the plugin forces `background:true` and the v1 env flag is v1-only.

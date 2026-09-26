@@ -99,10 +99,15 @@ spelling for both is the bug class this page exists to record — `parseHostEnve
 wrapper for exactly this reason, and rewrites only the body, because the session id inside
 the envelope is the pointer the lead uses to fetch the reply back.
 
-What the plugin does NOT get on v2: a hook that sees this message. v1 was handed
-`chat.message`; the v2 plugin surface has no equivalent, so the body reaches the model and
-not us. `tm_join` therefore reports the child's state and provenance and says where the
-text is, rather than printing a reply it never read.
+What the plugin does NOT get on v2: a hook that hands us this message BEFORE the host
+persists it. v1 was given `chat.message` at exactly that moment; the v2 plugin surface has no
+equivalent. What we DO get is the message one step later, inside the parent's assembled
+history at `session.hook("context")` — measured, because `applyV2CompletionWatch` settles the
+child from it (§7). The distinction is the whole difference between the two claims we can
+make: we can OBSERVE that the host wrote a completion (so `tm_join` may say 已完成 and name
+where it read that), and we cannot REWRITE the body the model is about to receive. `tm_join`
+therefore reports the child's state and provenance and says where the text is, rather than
+printing a reply it never read.
 
 ## 4. Ordering, measured, and the one inference it licenses
 
@@ -118,8 +123,9 @@ So the injection precedes the parent's idle by construction — the parent canno
 with an undelivered notification. That single ordering fact is what licenses the fallback
 in `src/tm/dispatch.ts`: a host-dispatched child still marked running when ITS PARENT goes
 idle is settled as `settleSource: "parent-idle"` and printed as 推定已结算, with the reason
-in the same line. The child's own `session.idle` on the event feed remains the measured
-path (`settleSource: "event"`); the two are never printed the same way, because one is an
+in the same line. The child's own `session.idle` on the event feed is the measured path for a
+child THIS process dispatched (`settleSource: "event"`) — for a host `subagent` child it does
+not arrive at all, which §7 records; the two are never printed the same way, because one is an
 observation and the other is an inference from a host ordering we happened to see once.
 
 ## 6. Live verification, 2026-09-26 (host 2.0.18, `lxns-uni/zai-org/GLM-5.3#max`)
@@ -147,12 +153,33 @@ counters — a bare 0 in a multi-process host is otherwise readable as "nothing 
 dispatched", which is exactly the silence this feature removes.
 
 
-## 7. What is still unmeasured
+## 7. What is settled, and what is still open
 
-`[U]` Whether the host emits `session.idle` for the CHILD session to a plugin subscriber —
-the live round above settled its child by leaving the row `运行中` (the parent had not gone
-idle either), so neither the event nor the presumption path has been observed for a host
-child yet. `tm_stats` and the `idle_presumed` audit line are where that shows up.
+`[L]` **The host does NOT forward a child session's `session.idle` to a plugin subscriber.**
+Measured on 2.0.18 (round 5, 2026-09-26): a background child finished, its
+`<subagent … state="completed">` injection reached the parent with the full report, and the
+plugin feed produced neither an `idle` nor an `idle_presumed` line for that child — `tm_join`
+kept showing it 运行中. So neither of the two paths this module originally offered works for a
+host child mid-turn: the event never arrives, and the parent-idle presumption cannot fire
+while the parent is still working. That is what `applyV2CompletionWatch` exists to fix: the
+envelope the host itself writes, read out of the parent's assembled message history.
+
+`[L]` **The seam that carries it is `session.hook("context")`, and settle-by-injection is
+live-verified.** Getting there took two wrong answers, and both are counted so a wrong seam is
+visible rather than silent:
+
+| round | what was watched | what the host did |
+|---|---|---|
+| 6 | `session.prompt` + `session.model.request` | `prompt` fired **0** times; `model.request` fired **6** and carried no message list at all (the history is assembled separately from that payload) |
+| 8 | `session.context` (+ `prompt` kept, counted, still 0) | fired 6, `completion_settled=1`, audit line `{"event":"idle_injection","child":"ses_f23386a7…","agent":"researcher","ms":53102}` |
+
+The line is the third source of truth in `src/tm/dispatch.ts` (`settleSource: "injection"`,
+printed as 已完成 with its provenance), and the `ms` is the child's own elapsed time, not our
+wait. `completion_skipped` grows on every later round (4, then 5) because the scan is skipped
+while nothing is open — which is the point of counting the skip: "did not look" and "looked and
+saw nothing" stay distinguishable, and a hook that exists but is the WRONG one is exactly the
+failure round 6 nearly hid.
+
 `[U]` The full `status` vocabulary: 2.0.18's own code applies the `<subagent …>` wrapper only
 when `G.status === "completed"`, so anything else is treated as open by
 `hostChildIsOpen()` — whether `error` reaches a plugin-visible ack has not been seen.
