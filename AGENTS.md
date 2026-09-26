@@ -3,6 +3,32 @@
 ## What this is
 OpenCode Desktop plugin that ships a multi-agent team (6 agents, 6 commands). On OpenCode 1.18.x the plugin injects those agents and commands into the config itself; on OpenCode 2.x a plugin **cannot create an agent at all**, so the same six roles reach the host as config files the installer writes. Published as `@te-river/opencode-team-mode` on npm.
 
+## Glossary (repo shorthand)
+
+Words this file and the source use in a fixed, project-specific sense. They are load-bearing:
+a change that renames one of them in prose but not in code makes the two disagree.
+
+| term | means here |
+|---|---|
+| **round** | one LLM turn-trip: the model calls a tool, waits, reads the result. The unit everything is priced in (效率至上), because tokens are cheap and rounds are not |
+| **JIT governance** | deciding, at the moment a tool result arrives, whether it belongs in the context window — one pipeline (`src/tm/pipelines.ts`), serving our tools AND the host's |
+| **offload / cap / handle / preview** | the three outcomes: **offload** = payload to the run store, ≤80-token content-aware preview + HMAC **handle** back (`tm_fetch` pages it); **cap** = keep the structurally load-bearing lines in context and drop the prose (addressing lines for a snapshot, table lines for a report) — capped output is never a handle, because the kept lines ARE the next call's arguments |
+| **run store / trajectory** | the payload directory and the append-only `steps.jsonl` per plugin process. The trajectory is the ONLY self-observability we have: `tm_stats` reads it back, which is what makes a claim in a tool reply falsifiable |
+| **board root / blackboard** | the shared file area (`<repo>/.git/opencode-team/…`), where a >~50-line deliverable goes as `NN-<role>-<topic>[-rN].md` instead of riding in a reply |
+| **ledger** | the lead's task list. On v1 that is the host's `todowrite`; on v2 there is no `todowrite`, so it is **`tm_ledger`** in the host's `ctx.storage`, keyed by session id |
+| **lease** | a live browser instance owned by ONE caller (`tm_browser`'s `b1`/`b2`), with its own idle reaper and its own dialog consent — because three agents sharing one window means one agent's snapshot invalidates another's click targets |
+| **tripwire** | a check appended to an answer when the tool can see a contradiction: `tm_join` reporting open todos (goal tripwire) or a still-open browser window (lease tripwire) after a round settled. Its shape is "state the fact + the escape hatch", never a silent pass |
+| **arrival vs write** | a config write returning 0 is not evidence the host loaded anything. Only the symptom counts: the host's own log line, our `v2-boot` row, or a human seeing the rendered result |
+| **symptom layer** | where the user's complaint actually appears (the rendered bubble, the desktop panel, the tool reply). A fix claimed at the code layer without a symptom-layer check is a hypothesis |
+| **fail closed** | refuse with a v2-worded reason rather than proceeding ungoverned. v2 gives a plugin no dialog to raise, so governed calls that would have asked on v1 fail closed |
+| **gate vs red line** | a gate has an exit the user can walk through (`TM_PRIVATE_SPACE=allow`, `allow_host`, the dialog on v1); a red line has none by design (metadata/link-local/reserved ranges, R6 env-file reads) and must not be given a consent path |
+| **personality** | one of the two exports of this package: `server` (1.18.x, FROZEN) or `setup` (2.x). Same tm runtime, different surface, different consent model |
+| **direct vs catalog** | two ways the 2.x host can deliver a tool: as a provider tool definition (**direct**) or listed in the Code Mode **catalog** inside `execute` only. Which one happened is an OBSERVATION (`tools_in_request` in `tm_stats`), not something we control by sending a flag |
+| **ours / foreign / unknown** | the scope verdicts (`v2-scope.ts`) every writing layer asks before touching a session. `unknown` is NOT treated as ours — it is left completely alone and COUNTED, because a governance layer that silently stopped applying is goal #6's failure |
+| **R6 / R2 / P2 / P3** | the guard faces: R6 = env protection (reading the environment or an env file), R2 = the danger face (rm / git push / npm publish / process kill), P2 = path scope (outside the project), P3 = the read-only allowlist for governed shell |
+| **T1 / T3 / T4 / T5 / T6** | numbered task tiers from the plan that still name their feature in code and tests: T1 memory dedup+compaction, T3 only-the-lead-dispatches, T4 offload threshold tiering, T5 the browser engine split, T6 the PTC web bridge |
+| **`#NN`** | an issue number from a real exported desktop session (e.g. #80 the forgotten browser window, #86 the lead's own lease, #87 the tripwire that ran on only one of two return paths). Citing one means the rule was paid for by an observed failure, not invented |
+
 ## Design goals (business context)
 1. **A complete "Team" mode** — one lead + five specialists orchestrated by a deterministic routing table, a count-based approval gate, and structured STATUS/CHANGES/FINDINGS/EVIDENCE/HANDOFF handoffs.
 2. **Parallel efficiency in medium/large projects** — independent dispatches batch into the same round; parallel implementers interoperate through verbatim data contracts; adaptive review escalates to 3 parallel dimensions only for high-risk changes.
@@ -413,6 +439,70 @@ this before treating any sentence above as platform-neutral.
 | Dev watch | `npm run dev` |
 
 All test suites must pass before committing.
+
+## Live verification recipes
+
+The rule these serve: **a write is not an arrival** — verify at the symptom layer (a host log
+line, a trajectory row, something a human can see) before claiming anything works, and never
+use a publish as a test vehicle. Everything below was run this way, and the sandbox set is
+what keeps the user's real machine untouched.
+
+**The host CLI on this machine** (the desktop app puts nothing on PATH, so version detection
+and every probe go through it):
+`C:\Users\34296\AppData\Local\Programs\@opencode-aidesktop\resources\opencode-cli.exe`, with
+`opencode-cli.version` beside it as the cheap version read.
+
+**The free boot probe** — costs zero tokens, and is the check for "did the plugin load at
+all", "which personality ran", "did the config parse":
+
+```bash
+"$CLI" run --standalone --model nope/nope --print-logs "x"
+# grep for:  msg="loading plugin" id=… entrypoint=file:///…
+#            failed to load plugin …        (a LOUD failure, unlike the silent directory skip)
+#            Model unavailable: nope/nope   (the expected tail — the probe is about the boot)
+```
+
+**A real model turn** (only when behaviour, not loading, is the question):
+`"$CLI" run --standalone --agent team --model "lxns-uni/zai-org/GLM-5.3#max" --auto "<task>"`.
+
+**Sandbox set — use all four, they cover different code paths:**
+
+| var | why |
+|---|---|
+| `HOME` **and** `USERPROFILE` (Windows-style values) | the global config dir and `~/.cache/opencode/npm` are derived from them; setting only `HOME` leaves a PowerShell/Node path reading the real profile |
+| `TMP` **and** `TEMP` | Node's `os.tmpdir()` on Windows reads these, **not** `TMPDIR` — set `TMPDIR` alone and the store shards land in the developer's real Temp |
+| `OPENCODE_CONFIG_DIR` | config-only redirect (for a probe that should not touch the profile at all) |
+| `TM_STORE_RECLAIM=off` | always: the suites boot real runtimes in temp dirs, and before this knob existed one test run swept the developer's actual Temp bucket mid-suite |
+
+**Testing the installers** means running them for real, against a redirected `HOME` — parse
+checks and reading the code are not verification. Then confirm with the boot probe above and
+by re-parsing the written config strictly (`JSON.parse`), which is how a dangling comma and a
+half-copied vendor tree get caught. Two defects in the current installers were found exactly
+this way and by nothing else.
+
+**Name-level forensics on a live host**: `TM_V2_PROBE=<file>.jsonl` adds a JSONL dump of the
+tool/action/agent NAMES each request carries; without it the same sets still ride the
+trajectory as a throttled `v2-surface` row. The probe never records a value, path, command or
+URL — the R6 rule binds a diagnostic too, and a test asserts the dump does not contain the
+secret the probe fired on.
+
+**Reading the host binary** (read-only, always — the plugin must survive upgrades, not
+modify the host): the embedded JS is NOT in the file's tail; the plugin machinery sits around
+`140–155 MB` of the ~206 MB executable. Window it with `fs.openSync` + `readSync` +
+`toString("latin1")` and plain `indexOf` (a regex scan of the whole file is minutes; a window
+plus `indexOf` is seconds). Save extracts with a `.cjs` extension — a `.js` in a temp dir
+under a `package.json` that says `"type":"module"` will not even run.
+
+**Test runner gotchas**: output is buffered per suite, so piping `npm test` through `head`
+kills the writer mid-suite and looks like a hang that belongs to no product code (read a file
+instead); the two real-browser suites are serialized by an IN-PROCESS boolean
+(`browserBusy`), not a lock file; `npm test -- stats v2` filters; `npm run test:one <filter>`
+skips the tsc step.
+
+**Rendering claims need eyes.** The model cannot see how its output is rendered, so no
+"X renders / X does not render" statement may come from the tool side — the measured list is
+in project memory (`host-markdown-renderer`) and the chat bubble renders GFM tables but never
+a fenced one, which is why a raw `|` in a reply means the agent fenced the table.
 
 ## Project structure
 | File | Role |
