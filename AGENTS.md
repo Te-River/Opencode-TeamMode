@@ -206,6 +206,20 @@ re-deriving any of this, and append findings there (dated, with an evidence tag)
   layer deletes denied tools. Inside `execute` the native names do not exist, and `typeof`
   reports `"function"` for them anyway: a probe that trusts `typeof` gets a false positive.
 
+- **Three "the host cannot" claims are really "the plugin ctx has no seam".** The host's own
+  HTTP API (`docs/research/host-http-api.md`, 136 routes read out of the binary, none of them
+  ever called) carries pty snapshot/read, a permission queue with a saved-rules store, and
+  `GET /api/session/{id}/message`. Using any of them costs a trust boundary — the basic-auth
+  password lives in `~/.config/opencode/service.json` — so nothing in this plugin touches the
+  API today, and answering a permission request for the user would be self-allowing, which is
+  never done. What the scan DID settle: there is no todo/plan/task resource anywhere, so
+  `tm_ledger` is not a compromise, it is the only ledger (task #32 holds the open decisions).
+- **`ctx.session.get` takes a flat `{sessionID}`, as a single object.** The bridge had v1's
+  `{path:{id}}` AND an array wrapper, so it never resolved once; a schema-decode failure looks
+  identical to "the host has no such method". The seam's outcome (attempts, the shape that
+  worked, what `context` returned) is printed by `tm_stats` — because "(none) after a real
+  attempt" is our bug, not the host's limit.
+
 ## Commands
 | Action | Command |
 |---|---|
