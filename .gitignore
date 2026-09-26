@@ -15,3 +15,4 @@ Thumbs.db
 # local editor/mcp config (never commit)
 .opencode/
 .mcp.json
+.qoder-credits/
