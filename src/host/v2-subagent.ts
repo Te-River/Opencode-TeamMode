@@ -128,6 +128,112 @@ export interface V2SubagentRegistry {
   active: boolean
 }
 
+/** The host's own completion envelope, in either generation's spelling. Returns the child
+ *  id and the state the host asserted, or null when the text is not an injection.
+ *  `[B]` 2.0.18 builds the wrapper as `<subagent sessionID="…" state="completed" …>`; v1
+ *  used `<task id="…" state="completed">`. Both are matched because a plugin reload can
+ *  serve a session whose history contains either. */
+export function completionFromText(text: string): { sessionID: string; state: string } | null {
+  const m = /<(?:subagent|task)\s[^>]*?(?:sessionID|id)="(ses_[A-Za-z0-9]+)"[^>]*?state="([a-zA-Z_]+)"/.exec(text)
+  return m ? { sessionID: m[1], state: m[2].toLowerCase() } : null
+}
+
+/** Pull the candidate text out of whatever a hook payload carries. Names only are ever
+ *  reported; the text itself is read to find an envelope and is not stored. */
+function textsOf(payload: unknown): string[] {
+  const p = payload as Record<string, unknown> | null | undefined
+  if (!p || typeof p !== "object") return []
+  const out: string[] = []
+  const push = (v: unknown) => { if (typeof v === "string" && v) out.push(v) }
+  push(p.text)
+  for (const key of ["parts", "messages"]) {
+    const arr = p[key]
+    if (!Array.isArray(arr)) continue
+    for (const item of arr) {
+      const rec = item as Record<string, unknown>
+      push(rec?.text)
+      // A v2 message is `{info, parts[]}` and a provider message is `{role, content[]}`;
+      // the envelope can ride either, and reading only one of them is how this watcher
+      // fired on every hook and settled nothing (caught by the suite, not by the host).
+      for (const listKey of ["parts", "content"]) {
+        const list = rec?.[listKey]
+        if (!Array.isArray(list)) continue
+        for (const c of list) push((c as { text?: unknown })?.text)
+      }
+    }
+  }
+  return out
+}
+
+export interface CompletionWatchReport {
+  /** times each candidate seam fired on a Team session — which one answers is a fact about
+   *  the host, not something to be decided by reading a doc */
+  promptFired: number
+  requestFired: number
+  /** envelopes recognised */
+  seen: number
+  /** children actually settled through this path */
+  settled: number
+}
+
+/**
+ * The settle path for a child the plugin never created (#31, 2026-09-26).
+ *
+ * A live 2.0.18 round proved the other two do not work: the host does NOT forward a child
+ * session's `session.idle` to a plugin subscriber (no `idle` event arrived), and the
+ * parent-idle presumption cannot fire mid-turn because the parent is by definition busy
+ * while it is working. So a background child whose full report had ALREADY been injected
+ * into the parent stayed 运行中 in `tm_join` — an overstated claim in the opposite
+ * direction, which is the same defect this product refuses either way.
+ *
+ * What the host does have is the injection itself, arriving as a prompt: `[B]` the trigger
+ * list includes `session.prompt` and `session.model.request` (whose payload carries the
+ * assembled `messages`). Watching for the host's own `<subagent … state="completed">`
+ * envelope there is an OBSERVATION of the host asserting the child finished — not an
+ * inference from ordering, and no credentials involved.
+ *
+ * Both seams are registered and both are COUNTED, because which one a given host build
+ * actually fires is exactly the kind of thing this repo has been wrong about by assuming.
+ */
+export function applyV2CompletionWatch(
+  ctx: unknown,
+  deps: {
+    /** Settle the named child if this process knows it. Returns false when the id is not
+     *  registered (somebody else's session, or already settled) — never an error. */
+    settle: (sessionID: string, state: string) => boolean
+    scope?: TeamScope
+  },
+): { registrations: Promise<V2Registration>[]; report: CompletionWatchReport; active: boolean } {
+  const report: CompletionWatchReport = { promptFired: 0, requestFired: 0, seen: 0, settled: 0 }
+  const session = (ctx as { session?: { hook?: unknown } } | null | undefined)?.session
+  const hook = session?.hook
+  if (typeof hook !== "function") return { registrations: [], report, active: false }
+  const reg = hook as (n: string, cb: (e: unknown) => void) => Promise<V2Registration>
+
+  const handle = (which: "prompt" | "request") => (raw: unknown) => {
+    try {
+      const event = raw as { sessionID?: unknown; agent?: unknown }
+      if (deps.scope && deps.scope.count(deps.scope.decide(event)) !== "ours") return
+      if (which === "prompt") report.promptFired++
+      else report.requestFired++
+      for (const text of textsOf(raw)) {
+        const c = completionFromText(text)
+        if (!c) continue
+        report.seen++
+        if (deps.settle(c.sessionID, c.state)) report.settled++
+      }
+    } catch {
+      /* a diagnostic may never block a request */
+    }
+  }
+
+  return {
+    registrations: [reg("prompt", handle("prompt")), reg("model.request", handle("request"))],
+    report,
+    active: true,
+  }
+}
+
 export function applyV2SubagentRegistry(
   ctx: unknown,
   deps: {

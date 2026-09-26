@@ -70,7 +70,7 @@ export interface ChildRecord {
    *  v2 plugin ctx gives no way to read a child's state directly, and a row that stayed
    *  运行中 forever would be the same overstated claim in the opposite direction.  A
    *  presumption is printed as one. */
-  settleSource?: "event" | "parent-idle"
+  settleSource?: "event" | "parent-idle" | "injection"
 }
 
 /** A child seen being dispatched by the host's own tool, turned into a registry row.
@@ -435,6 +435,8 @@ export function buildDispatchTools(deps: DispatchDeps): {
   children: () => ChildRecord[]
   /** v2 seam: open a row for a child the host's own `subagent` tool created. */
   register: (child: { sessionID: string; parentSessionID: string; agent: string; label: string }) => boolean
+  /** v2 seam: settle a known child from the host's completion envelope. */
+  settle: (sessionID: string, state: string) => boolean
 } {
   const leadAgent = deps.leadAgent ?? "team"
   const targets = deps.targets ?? DISPATCH_TARGETS
@@ -977,10 +979,33 @@ export function buildDispatchTools(deps: DispatchDeps): {
     return true
   }
 
+  /** Settle a child from the host's OWN completion envelope (see
+   *  `applyV2CompletionWatch`).  Returns false when this process does not know the id, so
+   *  an unrelated session's injection never touches our registry.  This is the third
+   *  settle source and the only one that works mid-turn on v2: the child's own
+   *  `session.idle` is not forwarded to a plugin subscriber (measured 2026-09-26), and a
+   *  parent-idle presumption cannot fire while the parent is still working — which left a
+   *  child whose report had already been injected showing 运行中. */
+  function settle(sessionID: string, state: string): boolean {
+    const rec = children.get(String(sessionID ?? "").trim())
+    if (!rec || rec.state !== "running") return false
+    rec.finishedAt = now()
+    if (state === "error" || state === "failed" || state === "aborted") {
+      rec.state = "error"
+      rec.error = `宿主报告子会话 ${state}（其正文随注入消息送达）`
+    } else {
+      rec.state = "idle"
+    }
+    rec.settleSource = "injection"
+    log({ step_id: "events", event: "idle_injection", child: rec.sessionID, agent: rec.agent, ms: rec.finishedAt - rec.startedAt })
+    return true
+  }
+
   return {
     tm_join: join,
     observeEvent,
     register,
+    settle,
     children: () => [...children.values()],
   }
 }

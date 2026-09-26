@@ -44,7 +44,7 @@ import { applyV2EventFeed } from "./v2-events.js"
 import { createV2SessionReader } from "./v2-session-client.js"
 import { applyV2Probe, probeSummary } from "./v2-probe.js"
 import { applyV2NativeOffload } from "./v2-offload.js"
-import { applyV2SubagentRegistry } from "./v2-subagent.js"
+import { applyV2SubagentRegistry, applyV2CompletionWatch } from "./v2-subagent.js"
 import { applyV2BrowserGate, browserGateSummary } from "./v2-browser-gate.js"
 import { seedWebfetchDomains } from "../tm/webfetch.js"
 import { v2CapabilityRows } from "./v2-capabilities.js"
@@ -299,6 +299,18 @@ export const v2Personality: V2Plugin = {
     if (!hostChildren.active) {
       notes.push("宿主 subagent 的认领没装上（ctx.tool.hook 不可用）：后台子代理会回到 tm_join 看不见的状态")
     }
+    // The settle path. Measured on 2.0.18: a child's own `session.idle` never reaches a
+    // plugin subscriber, and the parent-idle presumption cannot fire mid-turn, so a child
+    // whose report had already been injected stayed 运行中. The host's completion envelope
+    // IS the observation, so watch the two session seams that can carry it and count both.
+    const completion = applyV2CompletionWatch(ctx, {
+      settle: tmRuntime.settleHostChild,
+      scope,
+    })
+    registrations.push(...(await Promise.all(completion.registrations)))
+    if (!completion.active) {
+      notes.push("子代理完成注入的监听没装上（ctx.session.hook 不可用）：tm_join 会把已完成的后台子代理报成运行中")
+    }
     // BEFORE the session layer registers its own context hook, so the probe sees
     // the host's full surface rather than the set we trimmed — that difference is
     // exactly what it is there to record.
@@ -336,6 +348,17 @@ export const v2Personality: V2Plugin = {
             host_subagent_seen: hostChildren.report.seen,
             host_children_registered: hostChildren.report.registered,
             host_children_unpaired: hostChildren.report.unpaired,
+            // The session seam rides the throttled snapshot too, not only teardown: a run
+            // that is interrupted never reaches dispose, and "did ctx.session.context
+            // answer" is exactly the fact an interrupted round is there to establish.
+            session_get_attempts: sessionReader.report.attempted,
+            session_get_shape: sessionReader.report.usedShape ?? "(none)",
+            session_get_resolved: sessionReader.report.resolved,
+            session_context_ok: sessionReader.report.contextOk,
+            session_context_keys: sessionReader.report.contextKeys.join(","),
+            completion_prompt_fired: completion.report.promptFired,
+            completion_request_fired: completion.report.requestFired,
+            completion_settled: completion.report.settled,
             ...summary,
           })
         } catch {
@@ -682,6 +705,10 @@ export const v2Personality: V2Plugin = {
           session_context_ok: sessionReader.report.contextOk,
           session_context_keys: sessionReader.report.contextKeys.join(","),
           session_get_error: sessionReader.report.lastError ?? sessionReader.report.contextError ?? "",
+          completion_prompt_fired: completion.report.promptFired,
+          completion_request_fired: completion.report.requestFired,
+          completion_envelopes: completion.report.seen,
+          completion_settled: completion.report.settled,
           ...probeSummary(probe.report),
         })
       } catch {

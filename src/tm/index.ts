@@ -116,6 +116,9 @@ export interface TmRuntime {
   /** v2: open a tm_join row for a child the HOST's own `subagent` tool created, so a
    *  background dispatch is collectable instead of invisible. */
   registerHostChild: (child: { sessionID: string; parentSessionID: string; agent: string; label: string }) => boolean
+  /** Settle a registered child from the host's own completion envelope; false when this
+   *  process does not know the id. See `applyV2CompletionWatch`. */
+  settleHostChild: (sessionID: string, state: string) => boolean
   /** Open async dispatches this plugin started (tests + observability). */
   dispatches: () => Array<{ sessionID: string; agent: string; label: string; state: string }>
 }
@@ -566,6 +569,7 @@ export async function createTmTools(
     dispose: () => browserTool.dispose(),
     observeDispatchEvent: dispatch.observeEvent,
     registerHostChild: dispatch.register,
+    settleHostChild: dispatch.settle,
     dispatches: () => dispatch.children().map((c) => ({ sessionID: c.sessionID, agent: c.agent, label: c.label, state: c.state })),
   }
 }

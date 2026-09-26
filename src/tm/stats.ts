@@ -401,6 +401,15 @@ export function renderStats(
         // sub-agents clearly ran says the opposite.
         line.native_envelopes !== undefined ? `认出的子代理信封 ${line.native_envelopes} 个` : "",
         line.native_tokens_saved !== undefined && Number(line.native_tokens_saved) > 0 ? `省 ${line.native_tokens_saved} token` : "",
+        // Which session seam actually fired, and did the host's completion envelope
+        // settle anything. Both counters print even when zero: "the host never fired it"
+        // and "we never looked" have to stay distinguishable.
+        line.completion_prompt_fired !== undefined
+          ? `完成注入监听：session.prompt 触发 ${line.completion_prompt_fired} 次 · model.request 触发 ${line.completion_request_fired ?? 0} 次 · 认出信封 ${line.completion_envelopes ?? 0} 个 → 结算 ${line.completion_settled ?? 0} 个` +
+            (!Number(line.completion_prompt_fired) && !Number(line.completion_request_fired)
+              ? "（两条缝这轮都没响：宿主没把注入经过插件，或这一轮根本没有子代理）"
+              : "")
+          : "",
       ].filter(Boolean)
       if (s === "v2-agents") {
         out.push(

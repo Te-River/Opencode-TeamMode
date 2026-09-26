@@ -1438,6 +1438,32 @@ console.log("12. the host's own sub-agents are collectable (decision 4, 2026-09-
   fire("execute.after", { tool: "subagent", sessionID: "ses_build1", agent: "build", result: { metadata: { sessionID: "ses_buildkid", status: "running" } } })
   const again = textOf(await byName.tm_join.execute({}, CTX))
   assert.ok(!again.includes("ses_buildkid"), "a non-Team session's child is not entered into our registry")
+  // (c1) the settle path the live round proved was missing: no child `session.idle`
+  //      reaches a plugin, and the parent is busy, so the host's own completion envelope
+  //      is the only observation available mid-turn.
+  const { completionFromText } = await import("./dist/host/v2-subagent.js")
+  assert.deepEqual(
+    completionFromText('<subagent sessionID="ses_hostkid1" state="completed" description="取证">\nPROBE-OK\n</subagent>'),
+    { sessionID: "ses_hostkid1", state: "completed" },
+    "the v2 envelope is recognised, with the attributes in the order 2.0.18 writes them",
+  )
+  assert.deepEqual(
+    completionFromText('<task id="ses_old" state="completed">x</task>'),
+    { sessionID: "ses_old", state: "completed" },
+    "and v1's spelling too, because a reloaded plugin can serve a session with either history",
+  )
+  assert.equal(completionFromText("the word subagent appears in this prose, no envelope"), null, "prose mentioning the tool is not a completion")
+  fake.hook("session.model.request").handlers.forEach((h) =>
+    h({
+      sessionID: CTX.sessionID,
+      agent: "team",
+      messages: [{ role: "user", parts: [{ type: "text", text: '<subagent sessionID="ses_hostkid1" state="completed">PROBE-OK</subagent>' }] }],
+    }),
+  )
+  const settledRow = textOf(await byName.tm_join.execute({}, CTX))
+  assert.match(settledRow, /ses_hostkid1/, "the child is still listed after settling")
+  assert.ok(!/ses_hostkid1[^\n]*运行中/.test(settledRow), "and it is no longer 运行中 — the injection settled it (the live round left it running forever)")
+  assert.match(settledRow, /已完成/, "with the completed tag, from the host's own assertion")
   // (c) settle provenance: an event we measured is not the same claim as an inference,
   //     and the row must not be able to say the first while holding the second.
   assert.match(joinLine({ ...row, state: "idle", via: "host-injection", settleSource: "parent-idle" }, 5000), /推定已结算/, "a presumption is printed as one")
