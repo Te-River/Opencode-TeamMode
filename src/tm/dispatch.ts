@@ -489,14 +489,23 @@ export function buildDispatchTools(deps: DispatchDeps): {
     }
   }
 
-  function fetchReply(sid: string, directory: string | undefined): Promise<{ text: string; completedAt?: number; error?: string }> {
+  function fetchReply(sid: string, directory: string | undefined): Promise<{ text: string; completedAt?: number; error?: string; via?: string; items?: number; pickedType?: string }> {
     return (async () => {
-      if (typeof api?.messages !== "function") return { text: "" }
+      if (typeof api?.messages !== "function") {
+        return { text: "", error: "这个宿主客户端没有给出读取子会话正文的缝（v2 上它是 ctx.session.context 的兼容层）" }
+      }
       try {
-        const un = unwrapClientResult(await api.messages({ path: { id: sid }, ...(directory ? { query: { directory } } : {}) }))
-        return un.ok ? lastAssistantMessage(un.data) : { text: "" }
-      } catch {
-        return { text: "" }
+        const raw = await api.messages({ path: { id: sid }, ...(directory ? { query: { directory } } : {}) })
+        const un = unwrapClientResult(raw)
+        const got = un.ok ? lastAssistantMessage(un.data) : { text: "", error: un.message }
+        // The seam that ANSWERED, named by the seam itself. On v1 that is the host's
+        // `session.messages`; on v2 the same call is served by `ctx.session.context`, and
+        // printing "session.messages" there would credit an endpoint this host does not
+        // have — the class of claim this product exists to refuse.
+        const via = String((raw as { via?: unknown } | null)?.via ?? "session.messages")
+        return got.text ? { ...got, via } : { text: "", error: got.error, via }
+      } catch (err) {
+        return { text: "", error: describeHostError((err as { message?: unknown })?.message ?? err, 140) }
       }
     })()
   }
@@ -885,12 +894,18 @@ export function buildDispatchTools(deps: DispatchDeps): {
           for (const r of collectible) {
             const reply = await fetchReply(r.sessionID, directory)
             const text = reply.text
+            const src = text && reply.via ? ` ·正文来源=${reply.via}` : ""
+            // Which seam answered, per child — an id and a seam name, never a body (R6 binds
+            // a diagnostic too). This is the line that makes "正文来源=…" checkable later.
+            log({ step_id: "join", event: text ? "child_body" : "child_body_missing", child: r.sessionID, via: reply.via ?? "none" })
             blocks.push(
-              `--- ${r.agent} "${r.label}" (${r.sessionID}) ---\n${
+              `--- ${r.agent} "${r.label}" (${r.sessionID})${src} ---\n${
                 text.trim() ||
                 (r.via === "host-injection"
-                  ? `（这个子会话由宿主的 subagent 工具派发，正文不经本工具：完成时宿主会把 \`<subagent sessionID=\"${r.sessionID}\" …>\` 直接注入本会话，我已经把它登记在案、状态如上。` +
-                    `要全文就在注入到达后读那一条消息，或让子代理把交付写进黑板；不要为了拿正文反复 join。）`
+                  ? `（这个子会话由宿主的 subagent 工具派发，而这一次我没有读到它的正文${
+                      reply.error ? `：${reply.error}` : "：这个宿主没给可读正文的缝"
+                    }。完成时宿主仍会把 \`<subagent sessionID=\"${r.sessionID}\" …>\` 注入本会话，我已经把它登记在案、状态如上。` +
+                    `要全文就在那条注入到达后读它，或让子代理把交付写进黑板；不要为了拿正文反复 join。）`
                   : `（该子会话没有可读的助手回复${r.error ? `；宿主错误：${r.error}` : reply.error ? `；宿主错误：${reply.error}` : ""}）` +
                     `——子会话不是文件，tm_read 读不到它：在宿主的会话面板里看这条子会话，或改用内置 task 工具重做这一步。`)
               }`,

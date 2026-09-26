@@ -19,6 +19,7 @@ export function makeFakeCtx({
   options = {},
   agents: seedAgents = [],
   tools: seedTools = [],
+  sessionData = null,
 } = {}) {
   const registrations = []
   const hooks = new Map()
@@ -83,7 +84,23 @@ export function makeFakeCtx({
         list: async () => [...agentMap.values()],
       },
       permission: { hook: mkHook("permission"), list: async () => [], get: async () => ({}), reply: async () => ({}) },
-      session: { hook: mkHook("session") },
+      // `session.get` / `session.context` exist ONLY when a test seeds them, because a fake
+      // that always answers would let a plugin pass while the real host refuses — and the
+      // shapes below are the ones measured on 2.0.18 (`get` → {id,parentID,…}, `context` →
+      // an array of {id,time,text,type}), not a guess.  See src/host/v2-transcript.ts.
+      session: sessionData
+        ? {
+            hook: mkHook("session"),
+            async get({ sessionID } = {}) {
+              const s = sessionData.sessions?.[sessionID]
+              if (!s) throw new Error(`Session not found: ${sessionID}`)
+              return { id: sessionID, ...s }
+            },
+            async context({ sessionID } = {}) {
+              return sessionData.messages?.[sessionID] ?? []
+            },
+          }
+        : { hook: mkHook("session") },
       shell: { hook: mkHook("shell") },
       storage: {
         _map: new Map(),

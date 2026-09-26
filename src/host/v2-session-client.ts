@@ -94,8 +94,32 @@ function unwrap(value: unknown): Record<string, unknown> | undefined {
   return rec
 }
 
-export function createV2SessionReader(ctx: unknown): V2SessionReader {
-  const report: V2SessionReaderReport = {
+/** Turn the host's flat context items into the `{info,parts}` shape the collect path
+ *  already understands. Only the ROLE is inferred here, and only from the item's own `type`
+ *  field (measured values: "user" for the brief, something else for the answer); a
+ *  `time.completed` is NEVER invented, because that field is the settle verdict and a
+ *  fabricated one would let tm_join claim a child finished at a time nobody observed.
+ *  Anything already shaped like v1 passes through untouched, so a host that changes back
+ *  does not need this code to change. */
+export function normaliseContextMessages(list: unknown): unknown {
+  if (!Array.isArray(list)) return list
+  return list.map((item) => {
+    if (!item || typeof item !== "object") return item
+    const rec = item as Record<string, unknown>
+    if (rec.info || Array.isArray(rec.parts) || Array.isArray(rec.content)) return item
+    const text = rec.text
+    if (typeof text !== "string" || !text.trim()) return item
+    const type = String(rec.type ?? "")
+    const role = /^user$/i.test(type) ? "user" : "assistant"
+    const created = (rec.time as { created?: unknown } | undefined)?.created
+    return {
+      info: { role, ...(typeof created === "number" ? { time: { created } } : {}) },
+      parts: [{ type: "text", text }],
+    }
+  })
+}
+
+export function createV2SessionReader(ctx: unknown): V2SessionReader {  const report: V2SessionReaderReport = {
     attempted: 0, resolved: 0, failedShapes: [], contextTried: 0, contextOk: 0, contextKeys: [],
   }
   const domain = (ctx as { session?: SessionDomain } | null | undefined)?.session
@@ -136,12 +160,16 @@ export function createV2SessionReader(ctx: unknown): V2SessionReader {
         return { data: undefined }
       },
 
-      /** The reply path: `ctx.session.context({sessionID})` is the only in-process
-       *  candidate for a child's messages. Whether its result is shaped like v1's
-       *  `message.list` is not known yet, so the call records what came back (key NAMES)
-       *  and hands the value to `lastAssistantMessage`, which tolerates unknown shapes by
-       *  returning no text — the caller then says it could not read the reply instead of
-       *  printing an empty one as if it were empty. */
+      /** The reply path: `ctx.session.context({sessionID})` is the in-process seam that
+       *  answers for a child's messages — measured on 2.0.18, where it returns an ARRAY of
+       *  `{id, time:{created}, text, type}`. That is NOT v1's `[{info:{role},parts:[…]}]`,
+       *  and this is the reason `tm_join` kept saying it could not read a reply that was
+       *  sitting right there: `lastAssistantMessage` tolerates an unknown shape by returning
+       *  no text, so the call succeeded and the body was silently dropped. The flat shape is
+       *  therefore NORMALISED here, at the seam that knows it, so the collect path stays
+       *  single-shaped — and the result says WHICH seam answered, because a reply that
+       *  credits "session.messages" (a v1 endpoint this host does not have) is a claim about
+       *  the host that nobody measured. */
       messages: async (opts: unknown) => {
         const id = idOf(opts)
         if (!id || typeof domain?.context !== "function") return { data: undefined }
@@ -151,8 +179,9 @@ export function createV2SessionReader(ctx: unknown): V2SessionReader {
           const rec = unwrap(raw)
           if (!rec) return { data: undefined }
           report.contextOk++
-          report.contextKeys = Object.keys(rec).slice(0, 24)
-          return { data: rec.messages ?? rec.data ?? rec }
+          report.contextKeys = Array.isArray(rec) ? ["array"] : Object.keys(rec).slice(0, 24)
+          const list = Array.isArray(rec) ? rec : (rec.messages ?? rec.data ?? rec)
+          return { data: normaliseContextMessages(list), via: "ctx.session.context" }
         } catch (err) {
           report.contextError = String((err as { message?: unknown })?.message ?? err).slice(0, 160)
           return { data: undefined }

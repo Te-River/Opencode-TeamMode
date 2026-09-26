@@ -1435,7 +1435,75 @@ console.log("9b. the report cap, the Code Mode gate leg, and the native reading 
   }
   console.log("   OK (report keeps its table; a Code Mode navigate is refused at the door; the reading note reaches the model)")
 }
-console.log("12. the host's own sub-agents are collectable (decision 4, 2026-09-26)")
+console.log("12. a child's own report is readable in process — no credential (#32, 2026-09-26)")
+{
+  const { normaliseContextMessages } = await import("./dist/host/v2-session-client.js")
+  // (a) the shape measured on a live 2.0.18: ctx.session.context answers with an ARRAY of
+  //     flat {id, time:{created}, text, type} items — which is NOT v1's [{info,parts[]}].
+  //     lastAssistantMessage tolerates an unknown shape by returning no text, so the call
+  //     SUCCEEDED and the body was dropped: that is why tm_join said 正文不经本工具 for a
+  //     report that was sitting right there.
+  const flat = [
+    { id: "m1", time: { created: 1 }, type: "user", text: "简报：SECRET-BRIEF" },
+    { id: "m2", time: { created: 2 }, type: "text", text: "STATUS: 交付完成" },
+  ]
+  const norm = normaliseContextMessages(flat)
+  assert.equal(norm[0].info.role, "user", "the brief stays the user turn")
+  assert.equal(norm[1].info.role, "assistant", "a non-user item is the answer")
+  assert.deepEqual(norm[1].parts, [{ type: "text", text: "STATUS: 交付完成" }], "the flat text becomes a text part")
+  assert.equal(norm[1].info.time.completed, undefined, "and no completion time is invented — that field IS the settle verdict")
+  const v1 = [{ info: { role: "assistant" }, parts: [{ type: "text", text: "already shaped" }] }]
+  assert.equal(normaliseContextMessages(v1)[0], v1[0], "a host that answers in the v1 shape has its items passed through, unwrapped")
+  assert.equal(
+    normaliseContextMessages([{ id: "m", type: "text", parts: [{ type: "text", text: "PARTS-OK" }] }])[0].parts[0].text,
+    "PARTS-OK",
+    "an item that already carries parts is not rewritten",
+  )
+  assert.equal(normaliseContextMessages("not-an-array"), "not-an-array", "an unexpected envelope is left alone, not interpreted")
+
+  // (b) end to end through a booted personality whose ctx really answers get/context, so the
+  //     wiring (bridge → tm_join) is tested, not just the pure function.
+  const fakeT = makeFakeCtx({
+    directory: workspace("transcript-e2e"),
+    agents: sixAgents,
+    sessionData: {
+      sessions: { ses_kidT: { parentID: "ses_leadT", agent: "researcher" } },
+      messages: { ses_kidT: flat },
+    },
+  })
+  const bootT = await withCapturedConsole(() => plugin.setup(fakeT.ctx))
+  const byT = Object.fromEntries(fakeT.tools.list().map((t) => [t.id ?? t.name, t]))
+  const CTXT = { sessionID: "ses_leadT", agent: "team", messageID: "msg_t", id: "call_t" }
+  const fireT = (name, input) => fakeT.hook(`tool.${name}`).handlers.forEach((h) => h(input))
+  fireT("execute.before", {
+    tool: "subagent", sessionID: "ses_leadT", agent: "team",
+    input: { agent: "researcher", background: true, description: "正文复验", prompt: "只回一句" },
+  })
+  fireT("execute.after", {
+    tool: "subagent", sessionID: "ses_leadT", agent: "team",
+    result: {
+      content: [{ type: "text", text: "The subagent is working in the background (sessionID: ses_kidT)." }],
+      metadata: { sessionID: "ses_kidT", status: "running", truncated: false },
+      output: "",
+    },
+  })
+  fakeT.hook("session.context").handlers.forEach((h) =>
+    h({
+      sessionID: "ses_leadT", agent: "team",
+      messages: [{ role: "user", parts: [{ type: "text", synthetic: true, text: '<subagent sessionID="ses_kidT" state="completed" description="正文复验">T-INJECTED</subagent>' }] }],
+    }),
+  )
+  const joinT = textOf(await byT.tm_join.execute({ ids: ["ses_kidT"] }, CTXT))
+  assert.ok(joinT.includes("STATUS: 交付完成"), "tm_join delivers the child's own report: " + joinT.replace(/\n/g, " | ").slice(0, 300))
+  assert.match(joinT, /正文来源=ctx\.session\.context/, "and credits the seam that answered, not the v1 endpoint this host lacks")
+  assert.ok(!joinT.includes("简报：SECRET-BRIEF"), "the child's brief is not dragged into the parent's context")
+  assert.ok(!joinT.includes("正文不经本工具"), "the old sentence — a claim about the host nobody had measured — is gone")
+  await bootT.value()
+  console.log("   OK (flat context items normalise; the report reaches tm_join; the seam is named honestly)")
+}
+
+
+console.log("13. the host's own sub-agents are collectable (decision 4, 2026-09-26)")
 {
   const { hostChildIdOf, pendingDispatchOf, hostChildIsOpen } = await import("./dist/host/v2-subagent.js")
   const { hostChildRecord, renderChildLine: joinLine } = await import("./dist/tm/dispatch.js")
@@ -1547,7 +1615,11 @@ console.log("12. the host's own sub-agents are collectable (decision 4, 2026-09-
   assert.match(joinLine({ ...row, state: "idle", via: "host-injection", settleSource: "parent-idle" }, 5000), /推定已结算/, "a presumption is printed as one")
   assert.ok(!/推定/.test(joinLine({ ...row, state: "idle", settleSource: "event" }, 5000)), "a child that reported its own idle is not labelled a guess")
   const dsrc = fs.readFileSync(fileURLToPath(new URL("./dist/tm/dispatch.js", import.meta.url)), "utf8")
-  assert.match(dsrc, /正文不经本工具/, "and a host child with no readable reply says where the body actually arrives")
+  // The old line read 正文不经本工具 — a claim about the host that turned out to be false
+  // (group 12). What the tool may say now is narrower: which seam answered, and which one
+  // failed when none did.
+  assert.match(dsrc, /正文来源=/, "a delivered body credits the seam that answered")
+  assert.match(dsrc, /没有读到它的正文/, "and a missing one says it could not read it, without claiming the host cannot")
   const audit = /log\(\{ step_id: "join", event: "host_subagent"[^)]*\)/.exec(dsrc)?.[0] ?? ""
   assert.ok(audit.length > 0, "the host-child registration writes its audit line")
   assert.ok(!audit.includes("label"), "the audit line carries ids and role only — the description is model-authored text (R6)")
