@@ -284,7 +284,7 @@ all", "which personality ran", "did the config parse":
 |---|---|
 | `HOME` **and** `USERPROFILE` (Windows-style values) | the global config dir and `~/.cache/opencode/npm` are derived from them; setting only `HOME` leaves a PowerShell/Node path reading the real profile |
 | `TMP` **and** `TEMP` | Node's `os.tmpdir()` on Windows reads these, **not** `TMPDIR` — set `TMPDIR` alone and the store shards land in the developer's real Temp |
-| `OPENCODE_CONFIG_DIR` | config-only redirect (for a probe that should not touch the profile at all) |
+| `OPENCODE_CONFIG_DIR` | config-only redirect (for a probe that should not touch the profile at all). **A path that does not exist is accepted in silence** — no agents, no providers load, and it surfaces as two unrelated-looking errors (`Agent not found: "team"`, then `Model unavailable:` for a provider that IS in that file) with no word about the variable. Git Bash `/tmp` is `C:\Users\<user>\AppData\Local\Temp`, NOT `C:\tmp`: pass `$(cygpath -w …)`. To tell "config didn't load" from "model is down", run `--agent team --model nope/nope`: if the agent resolves, the config loaded. |
 | `TM_STORE_RECLAIM=off` | always: the suites boot real runtimes in temp dirs, and before this knob existed one test run swept the developer's actual Temp bucket mid-suite |
 
 **Testing the installers** means running them for real, against a redirected `HOME` — parse
