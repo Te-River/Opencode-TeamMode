@@ -7,26 +7,29 @@ registry saw 1.5.0 as the install-script fix release).
 
 ## [1.6.1] - 2026-09-26
 
-> **What this release does and does not claim about OpenCode 2.x.** Verified live on a
-> real `opencode v2.0.16` (sandboxed config dir, plugin loaded from a probe file, the
-> user's global config untouched): the v2 personality boots with all nine governed
-> tools registered, `ctx.storage` round-trips, the request/guard/browser-gate hooks and
-> the event feed all arm, and a model turn actually called `tm_search` and got real
-> npm results back — plus a private-space refusal that reached the model verbatim with
-> both operator exits named. NOT verified live: anything that needs the DESKTOP
-> (the `browser_*` catalog and its side panel do not exist in `--standalone`), and
-> whether `/team-*` runs as the role it selects.
-> **Corrected 2026-09-26, same day:** this note also claimed the installer's v2 branch
-> could not be tested before a release, because `opencode plugin add` installs only a
-> PUBLISHED package. That was wrong — the host reads the `plugins` key and loads a local
-> DIRECTORY (`<dir>/index.js`), so the whole v2 install path was exercised end to end on a
-> live 2.0.18 against a redirected `HOME`/`USERPROFILE`/`TMP`, with no publish and nothing
-> written to the user's real config. Two installer defects came out of running it (see
-> Fixed). What still needs a real desktop round is the background-child claim (§Added) —
-> the mechanism is unit-tested against the shapes the user's own exported session shows,
-> and the sandbox has no provider credentials, so a live `subagent` round has to run where
-> the keys are.
-> Those are the items that turn "v2-capable" into "v2-adapted", and they belong to 1.7.0.
+> **What this release does and does not claim about OpenCode 2.x.** Verified live on real
+> 2.0.16/2.0.18 hosts (sandboxed config dir, the user's own credentials supplying the provider,
+> nothing written to their real config): the v2 personality boots with all nine governed tools,
+> `ctx.storage` round-trips, the request/guard/browser-gate hooks and the event feed arm, and
+> model turns actually called `tm_search`/`tm_ledger`/`tm_stats` and got real results back, with
+> a private-space refusal reaching the model verbatim and naming both operator exits.
+> Verified live on 2026-09-26, in rounds against 2.0.18 with a real model: the whole
+> background-child chain — the host's `subagent` ack is paired to the dispatch (`unpaired:0`,
+> the role kept), the child is listed as `（宿主 subagent 派发）`, and it settles from the host's
+> own completion envelope (`idle_injection … ms=53102`, `completion_settled=1`). Also verified
+> from the user's own exported desktop session: the native browser works through `execute`
+> (`tools.browser.tabs.open` puts a real tab in the Review pane), and its result shape differs
+> from `tm_browser` in five recorded ways.
+> NOT verified live, and therefore not claimed: that a settled child's report reaches `tm_join`
+> through `ctx.session.context` on a real host (the seam, its item shape and the normalisation
+> are measured — the end-to-end round was still in flight when this shipped); the desktop side
+> panel's rendering of the `browser_*` catalog; whether `/team-*` runs as the role it selects.
+> Those three are the items that turn "v2-capable" into "v2-adapted", and they belong to 1.7.0.
+> **One claim this section used to make was wrong and is retracted:** it said the installer's v2
+> branch could not be tested before a release, because `opencode plugin add` installs only a
+> PUBLISHED package. The host reads the `plugins` key and loads a local DIRECTORY
+> (`<dir>/index.js`), so the install path was exercised end to end with no publish. Two
+> installer defects came out of running it (see Fixed).
 
 ### Added
 
