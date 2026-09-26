@@ -125,9 +125,137 @@ root [`index.js`](../../index.js) `[R]` re-exporting `./dist/index.js`, and why 
   directory is loaded twice, and the second registration is the one that wins the hooks.
   `PluginModule.watch` keeps a per-path set, so two *different* paths are two watchers.
 
-## 4. What this page does NOT establish
+## 5. The entrypoint resolver, in full (`U0`)
 
-`[U]` Whether `options` on an object entry can carry anything beyond `install:false`
-(nothing in the scanned window reads more of it). `[U]` Whether `U0`'s entrypoint
-resolution will keep preferring a bare `index.js` in a future host — the shipped
-`exports` map stays, so an `index.js` at the root is the belt, not the whole harness.
+`[B]` Everything above funnels into one small function, and it is the reason a local
+install has exactly one legal shape. Reformatted for reading; identifiers untouched:
+
+```js
+function U0(r){
+  let n = (t) => {
+    for (let o of t) {
+      let i = r.name ? [r.name, o].filter(Boolean).join("/") : s.resolve(r.directory, o || "index")
+      try { return R0(i, r.directory) }              // resolve as a module specifier
+      catch (e) { if (!["ENOENT","ENOTDIR","MODULE_NOT_FOUND","ERR_MODULE_NOT_FOUND",
+                       "ERR_PACKAGE_PATH_NOT_EXPORTED","ERR_UNSUPPORTED_DIR_IMPORT"]
+                     .includes(String(e.code))) throw e }
+    }
+    return                                            // nothing resolved → undefined
+  }
+  return { server: n(["server",""]), tui: n(["tui"]), rpc: n(["rpc"]) }
+}
+```
+
+Read it as a decision table:
+
+| target | what `U0` is called with | what resolves |
+|---|---|---|
+| an installed package | `{name:"@te-river/opencode-team-mode", directory:<cache>}` | the specifier `@te-river/opencode-team-mode/server`, then the package root — i.e. `package.json#exports`, so `dist/index.js` arrives |
+| a directory path | `{directory:<path>}` (no `name`) | `resolve(dir, "index")` → **`<dir>/index.js`** and nothing else |
+
+So the asymmetry is not a documentation gap, it is the code: a package may declare its
+entrypoint, a directory may not. A directory that resolves nothing returns
+`{server: undefined}`, and `ConfigPluginSource.scan` then drops the entry with
+`return []` — the silent skip in §1. `[L]` Measured both ways on 2.0.18: with a root
+`index.js` the host logs `entrypoint=file:///…/vendor/team-mode/index.js`; without it,
+the boot is clean and the plugin is simply absent.
+
+`features.tui` / `features.rpc` in the load result come from the same call, which is why
+a TUI-only plugin is recorded somewhere else — see §6.
+
+## 6. What `opencode plugin add` actually does
+
+`[B]` The subcommand (`cli.plugin.add`) is four steps, and each one closes an option the
+installer might otherwise reach for:
+
+```js
+if (!(yield* ne(()=>pP(e.package))))
+  return h(Error("Plugin target must be an npm registry package or Git package specifier"))
+let r = yield* (yield* ga).add(e.package)          // install
+let l = U0(r), o = k(l.server, l.tui)              // configurationTarget: "server" | "tui"
+if (!o) return h(Error(`Plugin package has no server or TUI entrypoint: ${e.package}`))
+```
+
+- **A local directory is refused**, by name. Vendoring a tree is therefore a config edit,
+  never a `plugin add`.
+- A **server** plugin is written by `writePluginConfig` into the global config the Config
+  service names (`i.config`). `[L]` Measured with a redirected `HOME`: it created and
+  edited `~/.config/opencode/opencode.json` — not the `.jsonc` — and printed the file it
+  touched.
+- Its dedupe is `d(t, n)`: `r === n || (typeof r === "object" && r.package === n)`, i.e.
+  **the identical string only**. Two spellings of one plugin are two entries.
+- It parses with `allowTrailingComma`, edits the AST (`Ru(doc, ["plugins"], [...t, n])`,
+  tab size 2) and swaps the file through `<file>.tmp` + rename, mode `0o600`. So a
+  trailing comma in a user's array is legal to the host — and the reason our own writer
+  must not leave one dangling is that the NEXT hand edit may not be a lenient parser.
+- A **TUI-only** plugin goes to a different service (`Il`) with its own `plugins` array.
+  Our package has a `server` entrypoint, so it always takes the first branch.
+
+## 7. Why two entries really do load twice
+
+`[B]` `PluginSupervisor.resolve` iterates the operations and, before loading, asks only
+whether the target matches an already-known plugin **id**:
+
+```js
+let l = (N,O) => N === "*" || (N.endsWith(".*") ? O.startsWith(N.slice(0,-1)) : N === O)
+let O = S().filter((ee) => l(N.target, ee.id))
+if (O.length > 0 || N.target === "*" || …) { O.forEach(ee => g.add(ee.id)); continue }
+let Q = yield* e.load(N, { install: s })          // otherwise: load it
+```
+
+`N.target` is the config string (`@te-river/opencode-team-mode@latest`, or a path) and
+`ee.id` is the plugin's own exported id (`team-mode`). They are never equal, so that
+guard is a no-op for package entries, and a second operation for the same package
+reaches `e.load` again. `[L]` Confirmed: the same spec present in `opencode.json` and
+`opencode.jsonc` produced two `msg="loading plugin"` lines for one id, with no warning —
+two personalities, the same tools and hooks bound twice.
+
+A load failure is loud, unlike the directory skip: `failed to load plugin` carries
+`target`, a `ref`, and the cause, and `PluginModule.LoadError` is what `@opencode-aide`
+1.6.0 produces on a 2.x host —
+
+```
+Plugin must export a default definition with an id and an effect or setup function.
+(cause: SchemaError(Missing key at ["default"]["effect"] / ["default"]["setup"]))
+```
+
+because the accepted shape is a union, `bB = U([ {id, effect:fn}, {id, setup:fn} ])`, and
+a v1-only `{id, server}` default satisfies neither. That is the whole reason this package
+ships one barrel exporting both personalities.
+
+## 8. What the Extensions panel's row name tells you (and what it does not)
+
+`[L]` Observed on the user's desktop, before and after a config change: a plugin loaded
+from `~/.config/opencode/plugins/team-mode.js` (the directory-scan path the docs
+describe) is listed as `team-mode`, which is that FILE's basename, while an npm entry is
+listed verbatim as `@te-river/opencode-team-mode@latest`. A `plugins` entry pointing at a
+local directory also listed itself as `team-mode` — the loaded plugin's own id.
+
+The mechanism is inferred, the consequence is not: **the row name cannot tell you which
+spelling is installed**, because a file named `team-mode.js` and a package whose id is
+`team-mode` print identically. Two rows that look like one plugin may be two loads, and
+one row may be either a loader file or a directory entry. The only channel that
+distinguishes them is `msg="loading plugin" id=<target> entrypoint=<url>`, which names
+the config string and the resolved file, and our own `v2-boot` trajectory line.
+
+**How the installers use this:** `scripts/lib/config-surgery.cjs` keeps exactly one Team
+entry across `opencode.jsonc` and `opencode.json`, matching our own entries by
+`/opencode[-_]?team[-_]?mode|vendor[/\\]team-mode/i` — case- and hyphen-tolerant, because
+a working tree is `D:/Github/Opencode-TeamMode` and an entry it fails to recognise is one
+it would add beside the existing one.
+
+
+## 9. What this page does NOT establish
+
+`[U]` Whether an object entry's `options` carries anything beyond `install:false` — the
+scanned code reads only that field, which is not a claim that nothing else exists.
+`[U]` Whether the `<dir>/index` resolution survives a future host: it is read off 2.0.16
+and 2.0.18, and the shipped `package.json#exports` stays as the belt while the root
+`index.js` is the part this contract requires. `[U]` Which file the Config service names
+as `i.config` when both `opencode.json` and `opencode.jsonc` exist — measured only in the
+case where the `.jsonc` was absent, so the installers do not depend on it: they write the
+`.jsonc` and reclaim their own entry from the `.json`. `[U]` Whether the host prunes the
+timestamped `~/.cache/opencode/npm/<pkg>@latest/<ts>/` directories: one existed after
+several installs on this machine, which is an observation, not a garbage-collection
+guarantee.
+
