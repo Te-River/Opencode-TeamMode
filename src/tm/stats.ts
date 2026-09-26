@@ -458,6 +458,14 @@ export function renderStats(
               ? " —— 看到了却一个都没登记：认领没生效，不要读成「这一轮没有后台子代理」"
               : "")
           : "",
+        // Did the session-read seam answer? `sessionID` is the shape the host's own code
+        // uses; `(none)` after a real lookup attempt means the bridge is wrong again, not
+        // that the host lacks the method.
+        line.session_get_attempts !== undefined
+          ? `会话读取缝：查 ${line.session_get_attempts} 次 → 成功 ${line.session_get_resolved} 次（生效形状 ${line.session_get_shape ?? "(none)"}）` +
+            (Number(line.session_context_ok) > 0 ? ` · context 返回 ${line.session_context_ok} 次，键=${line.session_context_keys}` : " · context 未成功") +
+            (line.session_get_error ? ` · 最后一次错误：${String(line.session_get_error).slice(0, 90)}` : "")
+          : "",
       ].filter(Boolean)
       out.push(`- \`${s}\` · ${bits.join(" · ")}`)
       if (line.scope_unknown !== undefined && Number(line.scope_unknown) > 0) {

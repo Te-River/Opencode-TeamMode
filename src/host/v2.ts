@@ -673,6 +673,15 @@ export const v2Personality: V2Plugin = {
           host_children_unpaired: hostChildren.report.unpaired,
           host_children_no_id: hostChildren.report.noChildId,
           host_children_settled_at_once: hostChildren.report.settledAtOnce,
+          // The session-read seam, recorded rather than assumed: this bridge failed for a
+          // whole release cycle because the argument shape was guessed, and a guess that
+          // fails looks identical to a host that has no such method.
+          session_get_attempts: sessionReader.report.attempted,
+          session_get_shape: sessionReader.report.usedShape ?? "(none)",
+          session_get_resolved: sessionReader.report.resolved,
+          session_context_ok: sessionReader.report.contextOk,
+          session_context_keys: sessionReader.report.contextKeys.join(","),
+          session_get_error: sessionReader.report.lastError ?? sessionReader.report.contextError ?? "",
           ...probeSummary(probe.report),
         })
       } catch {

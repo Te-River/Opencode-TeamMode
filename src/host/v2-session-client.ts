@@ -2,28 +2,39 @@
  * The v2 session read seam, shaped like the v1 client the collect path expects (#8).
  *
  * `tm_join` collects a child in two ways: it looks the child up in its own registry
- * (only children THIS plugin process created), and otherwise it asks the host. The ask
- * was written against v1's SDK client — `client.session.get({path:{id}})` — and the v2
- * plugin context has no client at all, which is why a live 2.0.16 session answered
- * "no pending dispatch matched" about a child that had already finished: the lead used
- * the HOST's `subagent {background:true}`, so our registry never saw the dispatch, and
- * the parentage check had nothing to call.
+ * (children THIS plugin process created — and since `babfcb8` also the host's `subagent`
+ * children), and otherwise it asks the host. That ask was written against v1's SDK client
+ * (`client.session.get({path:{id}})`), and on a live host it never once resolved.
  *
- * v2 does have `ctx.session` (measured method set: `hook create get switchAgent
- * switchModel prompt generate command synthetic interrupt update move wait context`),
- * so the fix is one adapter rather than a new capability: hand the existing code a
- * client-shaped object whose `session` domain rides `ctx.session`.
+ * Why it failed, read out of 2.0.18 rather than guessed (both quotes are from the embedded
+ * JS): the plugin-facing wrapper is a schema decode plus a single-object call —
  *
- * Two honest limits, both visible in what the tools say:
- *  · There is no `children` method on `ctx.session`, so adoption from the host's
- *    session tree stays impossible on v2 and `tm_join` keeps naming that reason. Only
- *    an explicitly named id can be claimed here — which is exactly what the lead's
- *    prompt already tells it to do (`tm_join { ids: [...] }`).
- *  · The argument shape of `ctx.session.get` has not been read out of a live host. So
- *    every candidate shape is tried in order and the one that worked is RECORDED
- *    (`usedShape`), while a total failure reports which shapes were tried instead of
- *    pretending the host has no such method. Guessing one shape and silently returning
- *    nothing is the failure mode this file exists to avoid.
+ *   te = (schema, fn) => (input) => decode(schema, input ?? {}) → fn(decoded)
+ *   get: te(N["session.get"], a.session.get)
+ *
+ * and the host's own call sites are flat:
+ *
+ *   await e.session.get({ sessionID: n })
+ *   await e.message.list({ sessionID: n, limit: 200, cursor: r })
+ *
+ * So our adapter had TWO bugs: the key (`path.id` / `id` instead of `sessionID`) and the
+ * arity (every shape was passed as a one-element ARRAY, which no `te`-wrapped method
+ * accepts). A decode failure looks exactly like "the host has no such method", which is
+ * how this stayed wrong for a whole release cycle.
+ *
+ * What this surface does NOT give, stated rather than discovered later:
+ *  · no `children` method, so adoption from the host's session tree is still impossible on
+ *    v2 — only an explicitly named id can be claimed, which is what the lead's prompt says.
+ *  · no `message`/`messages` domain on the plugin ctx (the host's internal `message.list`
+ *    is the SDK client, not this surface). `context` is the only candidate that could
+ *    carry a child's reply, so it is tried, and its outcome — including the NAMES of the
+ *    keys it returned — is recorded. Key names are safe; a message body is not written to
+ *    the trajectory by this file.
+ *  · the HTTP API does expose `GET /api/session/{id}/message` (and 127 routes were
+ *    enumerated from the binary, none of them a todo list), but reaching it needs the
+ *    server's basic-auth password from `~/.config/opencode/service.json`. A plugin reading
+ *    the user's credential file to call back into the host is a new trust boundary, so it
+ *    is NOT done here; it is recorded as the option with its cost attached.
  */
 
 export interface V2SessionReaderReport {
@@ -31,79 +42,86 @@ export interface V2SessionReaderReport {
   attempted: number
   /** calls that produced an object with a parent id */
   resolved: number
-  /** `path` | `flat` | `positional` — which argument shape the host answered */
+  /** which argument shape the host answered — `sessionID` is the measured one */
   usedShape?: string
   /** last error text, unwrapped from the host's own error envelope */
   lastError?: string
   /** shapes tried and failed on the last call */
   failedShapes: string[]
+  /** `ctx.session.context` was reached at all */
+  contextTried: number
+  contextOk: number
+  contextError?: string
+  /** the KEY NAMES the context call returned (names only, never values) */
+  contextKeys: string[]
 }
 
 export interface V2SessionReader {
-  /** a `{session:{get}}` object safe to hand to code written for the v1 client */
+  /** a `{session:{get,messages}}` object safe to hand to code written for the v1 client */
   client: unknown
   report: V2SessionReaderReport
 }
 
-type SessionDomain = { get?: unknown }
+type SessionDomain = { get?: unknown; context?: unknown }
 
+/** Measured first, then the v1 spellings kept as fallbacks for an older 2.x build. Each
+ *  builder returns the ARGUMENT OBJECT — `te`-wrapped methods take one object, not an
+ *  array, and that alone is why every previous shape failed. */
 const SHAPES: Array<[string, (id: string) => unknown]> = [
-  ["path", (id) => [{ path: { id } }] as unknown],
-  ["flat", (id) => [{ id }] as unknown],
-  ["positional", (id) => [id] as unknown],
+  ["sessionID", (id) => ({ sessionID: id })],
+  ["path", (id) => ({ path: { id } })],
+  ["flat", (id) => ({ id })],
 ]
 
-function parentIDOf(value: unknown): string | undefined {
+function idOf(opts: unknown): string {
+  const o = (opts ?? {}) as { path?: { id?: unknown }; query?: { id?: unknown }; sessionID?: unknown; id?: unknown }
+  return String(o.path?.id ?? o.query?.id ?? o.sessionID ?? o.id ?? "")
+}
+
+function unwrap(value: unknown): Record<string, unknown> | undefined {
   if (!value || typeof value !== "object") return undefined
   const rec = value as Record<string, unknown>
-  // Unwrap the host's own envelope first: `{data: …}` and `{result: …}` both appear on
-  // this surface, and reading `parentID` off the wrapper yields undefined — which then
-  // reads as "not my child" and refuses a child that is.
+  // `{data}` and `{result}` are both envelopes on this surface; reading a field off the
+  // wrapper yields undefined, which then reads as "not my child" and refuses a child that is.
   for (const cand of [rec, rec.data, rec.result, rec.session]) {
-    if (!cand || typeof cand !== "object") continue
-    const p = (cand as Record<string, unknown>).parentID ?? (cand as Record<string, unknown>).parent_id
-    if (typeof p === "string" && p) return p
+    if (cand && typeof cand === "object" && (("parentID" in cand) || ("parent_id" in cand) || ("id" in cand))) {
+      return cand as Record<string, unknown>
+    }
   }
-  return undefined
+  return rec
 }
 
 export function createV2SessionReader(ctx: unknown): V2SessionReader {
-  const report: V2SessionReaderReport = { attempted: 0, resolved: 0, failedShapes: [] }
+  const report: V2SessionReaderReport = {
+    attempted: 0, resolved: 0, failedShapes: [], contextTried: 0, contextOk: 0, contextKeys: [],
+  }
   const domain = (ctx as { session?: SessionDomain } | null | undefined)?.session
 
-  const get = async (arg: unknown): Promise<unknown> => {
-    const fn = domain?.get
+  const call = async (method: "get" | "context", arg: unknown): Promise<unknown> => {
+    const fn = domain?.[method]
     if (typeof fn !== "function") return undefined
-    // Property access, never a captured reference: a detached `get` loses its
-    // receiver and the host's client throws (the dispatch.ts §10 rule).
+    // Property access on the domain, never a captured reference: a detached `get` loses
+    // its receiver and the host's client throws (the dispatch.ts §10 rule).
     return await (fn as (a?: unknown) => unknown).call(domain, arg)
   }
 
   const client = {
     session: {
       get: async (opts: unknown) => {
-        const id = String((opts as { path?: { id?: unknown }; query?: { id?: unknown } } | null)?.path?.id
-          ?? (opts as { query?: { id?: unknown } } | null)?.query?.id
-          ?? "")
+        const id = idOf(opts)
         report.attempted++
         if (!id || !id.startsWith("ses")) return { data: undefined }
         const tried: string[] = []
         for (const [shape, build] of SHAPES) {
           try {
-            const raw = await get(build(id))
-            const parent = parentIDOf(raw)
-            if (parent) {
+            const raw = await call("get", build(id))
+            const rec = unwrap(raw)
+            if (rec) {
               report.resolved++
               report.usedShape = shape
               report.failedShapes = []
-              return { data: { id, parentID: parent, raw } }
-            }
-            // A response with no parent id is still an answer — the caller decides
-            // whether an ownerless session is its child. It is not, so we report the
-            // shape as usable but empty rather than trying the next one blind.
-            if (raw && typeof raw === "object") {
-              report.usedShape = shape
-              return { data: { id, parentID: undefined, raw } }
+              const parent = rec.parentID ?? rec.parent_id
+              return { data: { id, parentID: typeof parent === "string" ? parent : undefined, raw: rec } }
             }
             tried.push(shape)
           } catch (err) {
@@ -113,6 +131,29 @@ export function createV2SessionReader(ctx: unknown): V2SessionReader {
         }
         report.failedShapes = tried
         return { data: undefined }
+      },
+
+      /** The reply path: `ctx.session.context({sessionID})` is the only in-process
+       *  candidate for a child's messages. Whether its result is shaped like v1's
+       *  `message.list` is not known yet, so the call records what came back (key NAMES)
+       *  and hands the value to `lastAssistantMessage`, which tolerates unknown shapes by
+       *  returning no text — the caller then says it could not read the reply instead of
+       *  printing an empty one as if it were empty. */
+      messages: async (opts: unknown) => {
+        const id = idOf(opts)
+        if (!id || typeof domain?.context !== "function") return { data: undefined }
+        report.contextTried++
+        try {
+          const raw = await call("context", { sessionID: id })
+          const rec = unwrap(raw)
+          if (!rec) return { data: undefined }
+          report.contextOk++
+          report.contextKeys = Object.keys(rec).slice(0, 24)
+          return { data: rec.messages ?? rec.data ?? rec }
+        } catch (err) {
+          report.contextError = String((err as { message?: unknown })?.message ?? err).slice(0, 160)
+          return { data: undefined }
+        }
       },
     },
   }
