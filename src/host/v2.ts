@@ -305,6 +305,7 @@ export const v2Personality: V2Plugin = {
     // IS the observation, so watch the two session seams that can carry it and count both.
     const completion = applyV2CompletionWatch(ctx, {
       settle: tmRuntime.settleHostChild,
+      hasOpen: tmRuntime.hasOpenHostChild,
       scope,
     })
     registrations.push(...(await Promise.all(completion.registrations)))
@@ -356,8 +357,8 @@ export const v2Personality: V2Plugin = {
             session_get_resolved: sessionReader.report.resolved,
             session_context_ok: sessionReader.report.contextOk,
             session_context_keys: sessionReader.report.contextKeys.join(","),
-            completion_prompt_fired: completion.report.promptFired,
-            completion_request_fired: completion.report.requestFired,
+            completion_context_fired: completion.report.contextFired,
+            completion_skipped: completion.report.skipped,
             completion_settled: completion.report.settled,
             ...summary,
           })
@@ -705,8 +706,9 @@ export const v2Personality: V2Plugin = {
           session_context_ok: sessionReader.report.contextOk,
           session_context_keys: sessionReader.report.contextKeys.join(","),
           session_get_error: sessionReader.report.lastError ?? sessionReader.report.contextError ?? "",
+          completion_context_fired: completion.report.contextFired,
           completion_prompt_fired: completion.report.promptFired,
-          completion_request_fired: completion.report.requestFired,
+          completion_skipped: completion.report.skipped,
           completion_envelopes: completion.report.seen,
           completion_settled: completion.report.settled,
           ...probeSummary(probe.report),

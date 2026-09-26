@@ -1453,10 +1453,18 @@ console.log("12. the host's own sub-agents are collectable (decision 4, 2026-09-
     "and v1's spelling too, because a reloaded plugin can serve a session with either history",
   )
   assert.equal(completionFromText("the word subagent appears in this prose, no envelope"), null, "prose mentioning the tool is not a completion")
-  fake.hook("session.model.request").handlers.forEach((h) =>
+  // Round 6 measured that `session.prompt` fires 0 times and `session.model.request`
+  // carries no messages, so the scan had to move to `session.context` — the seam whose
+  // `messages` the probe counts. The payload also has to satisfy the request layer, which
+  // registers on the same hook, so the other fields are present and empty.
+  fake.hook("session.context").handlers.forEach((h) =>
     h({
       sessionID: CTX.sessionID,
       agent: "team",
+      tools: {},
+      system: [],
+      options: {},
+      model: { providerID: "p", modelID: "m" },
       messages: [{ role: "user", parts: [{ type: "text", text: '<subagent sessionID="ses_hostkid1" state="completed">PROBE-OK</subagent>' }] }],
     }),
   )
@@ -1477,6 +1485,19 @@ console.log("12. the host's own sub-agents are collectable (decision 4, 2026-09-
   const ssrc = fs.readFileSync(fileURLToPath(new URL("./dist/tm/stats.js", import.meta.url)), "utf8")
   assert.match(ssrc, /host_children_registered/, "tm_stats renders the registration count")
   assert.match(ssrc, /这一轮没有后台子代理/, "and it says out loud that seen>0 with registered=0 is the gap, not an empty round")
+  // (d) the two snapshot-cap defects the user's real-task log exposed: the host writes
+  //     refs as `@e8 [link]`, which the old pattern did not recognise at all, and a
+  //     single-line JSON snapshot used to be capped down to NOTHING.
+  const { capKeepingAddressing } = await import("./dist/tm/preview.js")
+  const hostSnapshot = Array.from({ length: 300 }, (_, i) =>
+    i % 7 ? `  [generic] "static text ${i}"` : ` @e${i} [link] "clickable ${i}"`).join(String.fromCharCode(10))
+  const keptRefs = capKeepingAddressing(hostSnapshot, 400)
+  assert.match(keptRefs.text, /@e\d+ \[link\]/, "the host's @eN refs survive the cap — they are the next click's arguments")
+  assert.ok(keptRefs.kept < keptRefs.total, "and the static text is what paid for them")
+  const oneLine = JSON.stringify({ tab: { id: "tab_x" }, content: "很长的静态文本 ".repeat(3000), truncated: true })
+  const fell = capKeepingAddressing(oneLine, 1200)
+  assert.ok(fell.text.length > 0 && fell.fellBack, "a one-line payload is never capped to an empty string — that is a blank page the model reports as 该网站没有内容")
+  assert.ok(/截断/.test(fell.text), "and the head cut says so inside the text")
   console.log("   OK (measured ack shape → registry row → tm_join, Team-scoped, provenance-labelled)")
 }
 }

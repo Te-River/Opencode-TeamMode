@@ -166,34 +166,39 @@ function textsOf(payload: unknown): string[] {
 }
 
 export interface CompletionWatchReport {
-  /** times each candidate seam fired on a Team session — which one answers is a fact about
-   *  the host, not something to be decided by reading a doc */
+  /** times the seam fired on a Team session */
+  contextFired: number
   promptFired: number
-  requestFired: number
   /** envelopes recognised */
   seen: number
   /** children actually settled through this path */
   settled: number
+  /** scans skipped because nothing was open (the cheap path) */
+  skipped: number
 }
 
 /**
  * The settle path for a child the plugin never created (#31, 2026-09-26).
  *
- * A live 2.0.18 round proved the other two do not work: the host does NOT forward a child
- * session's `session.idle` to a plugin subscriber (no `idle` event arrived), and the
- * parent-idle presumption cannot fire mid-turn because the parent is by definition busy
- * while it is working. So a background child whose full report had ALREADY been injected
- * into the parent stayed 运行中 in `tm_join` — an overstated claim in the opposite
- * direction, which is the same defect this product refuses either way.
+ * A live 2.0.18 round proved the two obvious paths do not work: the host does NOT forward a
+ * child session's `session.idle` to a plugin subscriber, and the parent-idle presumption
+ * cannot fire mid-turn because the parent is by definition busy while it works. So a
+ * background child whose full report had ALREADY been injected stayed 运行中 — goal #6's
+ * overstated claim wearing the opposite face.
  *
- * What the host does have is the injection itself, arriving as a prompt: `[B]` the trigger
- * list includes `session.prompt` and `session.model.request` (whose payload carries the
- * assembled `messages`). Watching for the host's own `<subagent … state="completed">`
- * envelope there is an OBSERVATION of the host asserting the child finished — not an
- * inference from ordering, and no credentials involved.
+ * A second round then proved a hook can exist and still be the wrong one: `session.prompt`
+ * fired 0 times and `session.model.request` fired 6 but carried no messages at all (the
+ * message list is assembled separately from that payload). The seam that DOES carry the
+ * parent's history is `session.hook("context")` — the same one the request trim and the
+ * probe read, and the one whose `messages` the probe counted at 8 in that round.
  *
- * Both seams are registered and both are COUNTED, because which one a given host build
- * actually fires is exactly the kind of thing this repo has been wrong about by assuming.
+ * So: watch `context`, and only when something is actually open. The scan is O(messages)
+ * per request, which is a real cost on a long-lived lead session, so an idle registry skips
+ * it entirely and the skip is counted — "we did not look because there was nothing to look
+ * for" stays distinguishable from "we looked and saw nothing".
+ *
+ * `session.prompt` is kept registered and counted as well: it costs nothing, and if a future
+ * host routes the injection through it, the counter is where we would learn that.
  */
 export function applyV2CompletionWatch(
   ctx: unknown,
@@ -201,21 +206,27 @@ export function applyV2CompletionWatch(
     /** Settle the named child if this process knows it. Returns false when the id is not
      *  registered (somebody else's session, or already settled) — never an error. */
     settle: (sessionID: string, state: string) => boolean
+    /** Anything still open? When this says no, the scan is skipped. */
+    hasOpen?: () => boolean
     scope?: TeamScope
   },
 ): { registrations: Promise<V2Registration>[]; report: CompletionWatchReport; active: boolean } {
-  const report: CompletionWatchReport = { promptFired: 0, requestFired: 0, seen: 0, settled: 0 }
+  const report: CompletionWatchReport = { contextFired: 0, promptFired: 0, seen: 0, settled: 0, skipped: 0 }
   const session = (ctx as { session?: { hook?: unknown } } | null | undefined)?.session
   const hook = session?.hook
   if (typeof hook !== "function") return { registrations: [], report, active: false }
   const reg = hook as (n: string, cb: (e: unknown) => void) => Promise<V2Registration>
 
-  const handle = (which: "prompt" | "request") => (raw: unknown) => {
+  const scan = (which: "context" | "prompt") => (raw: unknown) => {
     try {
       const event = raw as { sessionID?: unknown; agent?: unknown }
       if (deps.scope && deps.scope.count(deps.scope.decide(event)) !== "ours") return
-      if (which === "prompt") report.promptFired++
-      else report.requestFired++
+      if (which === "context") report.contextFired++
+      else report.promptFired++
+      if (deps.hasOpen && !deps.hasOpen()) {
+        report.skipped++
+        return
+      }
       for (const text of textsOf(raw)) {
         const c = completionFromText(text)
         if (!c) continue
@@ -228,7 +239,7 @@ export function applyV2CompletionWatch(
   }
 
   return {
-    registrations: [reg("prompt", handle("prompt")), reg("model.request", handle("request"))],
+    registrations: [reg("context", scan("context")), reg("prompt", scan("prompt"))],
     report,
     active: true,
   }

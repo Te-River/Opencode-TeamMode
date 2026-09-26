@@ -119,6 +119,8 @@ export interface TmRuntime {
   /** Settle a registered child from the host's own completion envelope; false when this
    *  process does not know the id. See `applyV2CompletionWatch`. */
   settleHostChild: (sessionID: string, state: string) => boolean
+  /** Any child still running? Gates the per-request completion scan. */
+  hasOpenHostChild: () => boolean
   /** Open async dispatches this plugin started (tests + observability). */
   dispatches: () => Array<{ sessionID: string; agent: string; label: string; state: string }>
 }
@@ -570,6 +572,7 @@ export async function createTmTools(
     observeDispatchEvent: dispatch.observeEvent,
     registerHostChild: dispatch.register,
     settleHostChild: dispatch.settle,
+    hasOpenHostChild: dispatch.hasOpen,
     dispatches: () => dispatch.children().map((c) => ({ sessionID: c.sessionID, agent: c.agent, label: c.label, state: c.state })),
   }
 }

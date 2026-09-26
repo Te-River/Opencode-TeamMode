@@ -307,9 +307,15 @@ export function applyV2NativeOffload(
       // and count the tokens that DID enter.
       const budget = snapshotTokenBudget(deps.env)
       const cut = capKeepingAddressing(found.text, budget)
-      const capped = cut.addressesDropped > 0 ? `${cut.text}
+      const capped = `${cut.text}${
+        cut.fellBack
+          ? `\n\n（这个结果是一整行没有换行的 JSON，按行保留寻址行的做法装不下任何内容，所以退成了从头截断 —— 内容不完整，别把它当成页面是空的；要精确字段就用 tm_fetch mode:"lines" 或改拍一次范围更小的快照。）`
+          : cut.addressesDropped > 0
+            ? `
 
-（预算 ${budget} token 之内只装下了部分寻址行：另有 ${cut.addressesDropped} 行带 ref 的内容被截掉了，要点对它们先用 tm_fetch mode:"lines" 取回，或缩小范围重新拍一次快照——不要凭猜去点。）` : cut.text
+（预算 ${budget} token 之内只装下了部分寻址行：另有 ${cut.addressesDropped} 行带 ref 的内容被截掉了，要点对它们先用 tm_fetch mode:"lines" 取回，或缩小范围重新拍一次快照——不要凭猜去点。）`
+            : ""
+      }`
       const rendered = renderAddressingCap(tool, capped, g)
       parts[found.index] = { type: "text", text: rendered }
       for (let i = found.index + 1; i < parts.length; i++) {

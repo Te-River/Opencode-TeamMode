@@ -437,6 +437,8 @@ export function buildDispatchTools(deps: DispatchDeps): {
   register: (child: { sessionID: string; parentSessionID: string; agent: string; label: string }) => boolean
   /** v2 seam: settle a known child from the host's completion envelope. */
   settle: (sessionID: string, state: string) => boolean
+  /** v2 seam: is any child still open? Gates the per-request completion scan. */
+  hasOpen: () => boolean
 } {
   const leadAgent = deps.leadAgent ?? "team"
   const targets = deps.targets ?? DISPATCH_TARGETS
@@ -1006,6 +1008,9 @@ export function buildDispatchTools(deps: DispatchDeps): {
     observeEvent,
     register,
     settle,
+    /** Anything still running? The completion scan is O(messages) per request, so it
+     *  asks this first and skips the read when the answer is no. */
+    hasOpen: () => { for (const c of children.values()) if (c.state === "running") return true; return false },
     children: () => [...children.values()],
   }
 }

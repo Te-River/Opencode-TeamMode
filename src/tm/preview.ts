@@ -127,8 +127,12 @@ export const ADDRESSING_OVERTAKE_FACTOR = 4
 export function capKeepingAddressing(
   text: string,
   maxTokens: number,
-): { text: string; kept: number; dropped: number; total: number; addressesDropped: number } {
-  const ADDRESSIVE = /\b\w*(?:ref|uid)\w*\s*=/i
+): { text: string; kept: number; dropped: number; total: number; addressesDropped: number; fellBack: boolean } {
+  // Two syntaxes, both observed: our own tm_browser mints `[uid=e12]` / `ref=…`, while the
+  // HOST's ariaSnapshot writes `@e8 [link] "…"` (measured in the user's desktop export).
+  // Matching only ours meant every native snapshot line read as static text — and then the
+  // budget arithmetic below could not tell the model which lines it had lost.
+  const ADDRESSIVE = /\b\w*(?:ref|uid)\w*\s*=|(?:^|[\s[,@])@?e\d{1,5}(?=[\s\]:"',]|$)/i
   const lines = text.split(String.fromCharCode(10))
   const cost = lines.map((l) => estimateTokens(l) + 1)
   // +1 token per join for the newline itself, so the budget is never exceeded by the
@@ -139,7 +143,7 @@ export function capKeepingAddressing(
     if (ADDRESSIVE.test(l)) addrIdx.push(i)
   })
   if (totalCost <= maxTokens) {
-    return { text, kept: lines.length, dropped: 0, total: lines.length, addressesDropped: 0 }
+    return { text, kept: lines.length, dropped: 0, total: lines.length, addressesDropped: 0, fellBack: false }
   }
   const addrSet = new Set(addrIdx)
   const addrCost = addrIdx.reduce((s, i) => s + cost[i], 0)
@@ -183,12 +187,28 @@ export function capKeepingAddressing(
     }
   }
   const out = lines.filter((_, i) => picked.has(i))
+  if (out.length === 0) {
+    // The line-based keep can produce NOTHING on a payload that is one long line — a
+    // JSON.stringify'd snapshot is exactly that shape, and a native `browser_snapshot`
+    // returns one. An empty result is not a smaller snapshot, it is a blank page the
+    // model then reports as "该网站没有内容", which is the failure this product was
+    // called out for live. So fall back to a plain head cut and SAY it fell back.
+    return {
+      text: capTokens(text, maxTokens),
+      kept: 1,
+      dropped: lines.length - 1,
+      total: lines.length,
+      addressesDropped,
+      fellBack: true,
+    }
+  }
   return {
     text: out.join(String.fromCharCode(10)),
     kept: out.length,
     dropped: lines.length - out.length,
     total: lines.length,
     addressesDropped,
+    fellBack: false,
   }
 }
 
