@@ -39,8 +39,11 @@ registry saw 1.5.0 as the install-script fix release).
   (`docs/research/host-subagent-injection.md`): `execute.before` carries
   `{agent, background, description}`, and the ack in `execute.after` carries
   `result.metadata.sessionID` + `status:"running"` — with the ack sentence as a second
-  source, since no field shape survives a host upgrade unchanged. A synchronous child has no
-  id and registers nothing, which is the correct answer rather than a failure. Two honesty
+  source, since no field shape survives a host upgrade unchanged. A synchronous child is not
+  registered either — but not for the reason first written down here: 2.0.18's own code shows
+  `metadata:{sessionID,status}` is ALWAYS set, so what makes it un-collectable is
+  `status:"completed"` (the result is the reply), and that is now a separate counter rather
+  than a conflation with "no id". Two honesty
   rules ship with it: the child's BODY is the host's injected message, which v2 never hands a
   plugin before persisting, so such a row says where the text actually arrives instead of
   printing a reply nobody read; and settle provenance is printed — the child's own

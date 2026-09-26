@@ -672,6 +672,7 @@ export const v2Personality: V2Plugin = {
           host_children_registered: hostChildren.report.registered,
           host_children_unpaired: hostChildren.report.unpaired,
           host_children_no_id: hostChildren.report.noChildId,
+          host_children_settled_at_once: hostChildren.report.settledAtOnce,
           ...probeSummary(probe.report),
         })
       } catch {

@@ -14,12 +14,16 @@ impossible: the ack is small and the answer is not a tool result at all.
 
 ## 1. The dispatch, as the plugin sees it
 
-`[L]` `execute.before` carries the model's own arguments:
+`[L]`+`[B]` `execute.before` carries the model's own arguments under **`input`** — the host's
+trigger is `{tool, sessionID, agent, messageID, id, input}`, where `sessionID`/`agent` are the
+CALLER's and `input` is the argument object:
 
 ```
 { tool: "subagent",
-  args: { agent: "architect", background: true,
-          description: "注入形状取证", prompt: "…" } }
+  sessionID: "ses_…",                       // the lead's own session
+  agent: "team",
+  input: { agent: "architect", background: true,
+           description: "注入形状取证", prompt: "…" } }
 ```
 
 `description` is a task name, `prompt` is the work. Only `description` is worth keeping
@@ -45,9 +49,31 @@ Two consequences that changed the design:
    no `session.children`, no guessing: the host hands it over. Our `ctx.session.get`
    bridge never resolved a shape on a live host, so a tree walk was not an option, and
    this made the question moot.
-2. **`status:"running"` is the host telling us the work is open.** A synchronous child
-   has no `metadata.sessionID` at all — its result IS the reply — so "no child id" is the
-   correct answer for that call, not a failed lookup.
+2. **`status:"running"` is the host telling us the work is open.** A synchronous child is
+   NOT distinguished by a missing id — read out of 2.0.18, the `subagent` result always
+   carries `metadata:{sessionID,status}`, and the completed case wraps the body itself:
+
+   ```js
+   content: G.status==="completed"
+     ? `<subagent sessionID="${G.sessionID}" state="completed">.${G.output}.</subagent>`
+     : G.output,
+   metadata:{ sessionID: G.sessionID, status: G.status }
+   ```
+
+   So what makes a synchronous child un-collectable is `status:"completed"` (the reply is
+   already in hand), not an absent id. Counting it as `settledAtOnce` rather than
+   `noChildId` is what keeps the two cases from being conflated in `tm_stats`.
+3. **The `execute.before` field is `input`, not `args`.** Also from the host's own trigger:
+
+   ```js
+   e.trigger("tool","execute.before",{tool,sessionID,agent,messageID,id,input:m})
+   ```
+
+   Reading `event.args` was the first live round's failure: the stash stayed empty, every
+   ack arrived unpaired, and each child was registered under a generic label instead of the
+   role and task it was dispatched for — `tm_stats` said "登记 1 个（1 个没配到派发行）" and
+   the unit test that now pins the paired label would have been red. A fake ctx that mirrors
+   the guessed shape passes a bug like this; the host's code does not.
 
 The id is read from `metadata` first and from the ack sentence second, because a field
 shape is exactly what a host upgrade changes.
@@ -96,12 +122,39 @@ in the same line. The child's own `session.idle` on the event feed remains the m
 path (`settleSource: "event"`); the two are never printed the same way, because one is an
 observation and the other is an inference from a host ordering we happened to see once.
 
-## 5. What is still unmeasured
+## 6. Live verification, 2026-09-26 (host 2.0.18, `lxns-uni/zai-org/GLM-5.3#max`)
+
+Run against a sandbox config dir (`OPENCODE_CONFIG_DIR`, plugin loaded from
+`vendor/team-mode`) with the user's real profile supplying credentials, so nothing was
+written to the live global config. Same three-step prompt twice, before and after the
+`input` fix:
+
+| | acks seen | registered | unpaired | audit line's `agent` | the row `tm_join` printed |
+|---|---|---|---|---|---|
+| before | 1 | 1 | **1** | `subagent` (generic) | child id + （宿主 subagent 派发）, role lost |
+| after | 1 | 1 | **0** | `architect` | `ses_f237aec68ffe… · architect · "认领复验2" · 运行中 22s ·（宿主 subagent 派发）` |
+
+So the claiming and the pairing are both observed on a live host, and the settle path was
+observed in its honest state: the child was still `运行中` when the snapshot ran (its own
+`session.idle` had not arrived and the parent had not gone idle yet), which is the row
+saying what it knows rather than guessing.
+
+**One observability caveat, measured in the same runs:** a single CLI invocation boots more
+than one server process, each writing its own `v2-surface` row with ITS OWN counters. The
+model pasted `确认 0 次 → 登记 0 个` from the sibling process while the process that
+registered the child reported `1 → 1`. `tm_stats` therefore prints the run id beside those
+counters — a bare 0 in a multi-process host is otherwise readable as "nothing was
+dispatched", which is exactly the silence this feature removes.
+
+
+## 7. What is still unmeasured
 
 `[U]` Whether the host emits `session.idle` for the CHILD session to a plugin subscriber —
-the feed forwards it if it arrives, and `tm_stats` shows the counts, so this is answerable
-from the next real round rather than from this page. `[U]` Whether `state` can be anything
-else besides `completed` in the injection (v1's envelope carried `error` too, and an error
-child is never rewritten to save tokens). `[U]` Whether a child of a child is ever
-dispatched: the config gives nesting depth one, and the T3 rule says only the lead
-dispatches, so this page describes one level.
+the live round above settled its child by leaving the row `运行中` (the parent had not gone
+idle either), so neither the event nor the presumption path has been observed for a host
+child yet. `tm_stats` and the `idle_presumed` audit line are where that shows up.
+`[U]` The full `status` vocabulary: 2.0.18's own code applies the `<subagent …>` wrapper only
+when `G.status === "completed"`, so anything else is treated as open by
+`hostChildIsOpen()` — whether `error` reaches a plugin-visible ack has not been seen.
+`[U]` Whether a child of a child is ever dispatched: the config gives nesting depth one, and
+the T3 rule says only the lead dispatches, so this page describes one level.

@@ -59,12 +59,12 @@ export interface HostChildInput {
  *  generic label rather than a possibly-wrong one. */
 export const PENDING_PER_CALLER = 8
 
-/** Read the dispatch out of the tool input.  Returns null for anything that is not a
+/** Read the dispatch out of the tool input (the host's `execute.before` field is
+ *  `input`, and it IS the argument object).  Returns null for anything that is not a
  *  recognisable `subagent` call — a non-object input is left alone, never invented. */
 export function pendingDispatchOf(raw: unknown, at: number = Date.now()): PendingDispatch | null {
-  const args = (raw as { args?: unknown } | null | undefined)?.args ?? raw
-  if (!args || typeof args !== "object") return null
-  const a = args as Record<string, unknown>
+  if (!raw || typeof raw !== "object") return null
+  const a = raw as Record<string, unknown>
   const agent = typeof a.agent === "string" ? a.agent.trim().toLowerCase() : ""
   if (!agent) return null
   const desc = typeof a.description === "string" ? a.description.trim() : ""
@@ -72,7 +72,9 @@ export function pendingDispatchOf(raw: unknown, at: number = Date.now()): Pendin
 }
 
 /** The child's session id, from the two places the host puts it (measured).  A
- *  synchronous child has neither — its result IS the reply, so there is nothing to
+ *  synchronous child DOES have a `metadata.sessionID` — the host always sets
+ *  `{sessionID, status}` — but its `status` is already `completed` and its content IS the
+ *  reply, so there is nothing to
  *  collect and null is the correct answer, not a failure. */
 export function hostChildIdOf(result: unknown): string | null {
   const r = result as Record<string, unknown> | null | undefined
@@ -92,11 +94,14 @@ export function hostChildIdOf(result: unknown): string | null {
   return flat ? flat[1] : null
 }
 
-/** True when the ack says the child is still running — i.e. worth registering.  A
- *  `status` we do not recognise registers anyway, because a missed child costs the lead
- *  a whole round while a spurious row only costs a line in a table. */
+/** True when the ack says the child is still open — i.e. worth registering.  Read from
+ *  the host's own code (2.0.18): the `subagent` result always carries
+ *  `metadata:{sessionID, status}`, and a SYNCHRONOUS child arrives with
+ *  `status:"completed"` and the body itself, so there is nothing left to collect.  A
+ *  `status` we do not recognise registers anyway, because a missed child costs the lead a
+ *  whole round while a spurious row only costs a line in a table. */
 export function hostChildIsOpen(result: unknown): boolean {
-  const meta = (result as { metadata?: { status?: unknown} } | null)?.metadata
+  const meta = (result as { metadata?: { status?: unknown } } | null)?.metadata
   return String(meta?.status ?? "running").toLowerCase() !== "completed"
 }
 
@@ -105,8 +110,11 @@ export interface SubagentRegistryReport {
   seen: number
   /** children actually opened in tm_join's registry */
   registered: number
-  /** acks that carried no child id (a synchronous child) */
+  /** acks that carried no child id at all */
   noChildId: number
+  /** acks that arrived with the child ALREADY completed — a synchronous `subagent` call,
+   *  whose result is the body itself, so there is nothing for tm_join to collect */
+  settledAtOnce: number
   /** acks that arrived with nothing pending to pair them with */
   unpaired: number
   /** children registered with a generic label because the caller had >PENDING_PER_CALLER
@@ -130,7 +138,7 @@ export function applyV2SubagentRegistry(
     now?: () => number
   },
 ): V2SubagentRegistry {
-  const report: SubagentRegistryReport = { seen: 0, registered: 0, noChildId: 0, unpaired: 0, labelGuessed: 0 }
+  const report: SubagentRegistryReport = { seen: 0, registered: 0, noChildId: 0, settledAtOnce: 0, unpaired: 0, labelGuessed: 0 }
   const hook = (ctx as { tool?: { hook?: unknown } } | null | undefined)?.tool?.hook
   if (typeof hook !== "function") return { registrations: [], report, active: false }
   const now = deps.now ?? (() => Date.now())
@@ -145,11 +153,16 @@ export function applyV2SubagentRegistry(
   }
 
   const before = reg("execute.before", (raw) => {
-    const event = raw as { tool?: string; sessionID?: unknown; args?: unknown }
+    // The host's own field name is `input` — read out of 2.0.18:
+    //   e.trigger("tool","execute.before",{tool,sessionID,agent,messageID,id,input:m})
+    // Reading `args` here was the live-round failure: the stash silently stayed empty,
+    // so every ack arrived unpaired and the child was registered under a generic label
+    // instead of the role and task it was dispatched for.
+    const event = raw as { tool?: string; sessionID?: unknown; input?: unknown }
     try {
       if (String(event?.tool ?? "") !== "subagent") return
       if (!ours(event)) return
-      const p = pendingDispatchOf(event?.args, now())
+      const p = pendingDispatchOf(event?.input, now())
       if (!p) return
       const caller = String(event.sessionID ?? "").trim()
       if (!caller) return
@@ -177,7 +190,10 @@ export function applyV2SubagentRegistry(
       }
       const caller = String(event.sessionID ?? "").trim()
       if (!caller || caller === child) return
-      if (!hostChildIsOpen(event?.result)) return
+      if (!hostChildIsOpen(event?.result)) {
+        report.settledAtOnce++   // a synchronous child: its result IS the reply
+        return
+      }
       const list = pending.get(caller) ?? []
       const p = list.shift()
       if (list.length >= PENDING_PER_CALLER) report.labelGuessed++

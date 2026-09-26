@@ -448,8 +448,12 @@ export function renderStats(
         // process" — that is the exact silence this feature exists to remove.
         line.host_subagent_seen !== undefined
           ? `宿主 subagent 确认 ${line.host_subagent_seen} 次 → tm_join 登记 ${line.host_children_registered ?? 0} 个` +
+            // The run id is part of the sentence, not decoration: one CLI invocation boots
+            // more than one server process, each with its own counters, and a 0 from the
+            // sibling reads as "nothing was dispatched" unless the row says whose it is.
+            `（run ${String(line.run_id ?? "?").replace(/^r-/, "").slice(0, 15)}）` +
             (Number(line.host_children_unpaired) > 0 ? `（${line.host_children_unpaired} 个没配到派发行）` : "") +
-            (Number(line.host_children_no_id) > 0 ? `；${line.host_children_no_id} 次是同步子代理（没有子会话可登记）` : "") +
+            (Number(line.host_children_settled_at_once) > 0 ? `；${line.host_children_settled_at_once} 次是同步子代理（结果本身就是正文，无需登记）` : "") +
             (Number(line.host_subagent_seen) > 0 && !Number(line.host_children_registered)
               ? " —— 看到了却一个都没登记：认领没生效，不要读成「这一轮没有后台子代理」"
               : "")

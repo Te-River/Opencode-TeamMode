@@ -1367,7 +1367,7 @@ for (const dir of made) {
 }
 console.log("12. the host's own sub-agents are collectable (decision 4, 2026-09-26)")
 {
-  const { hostChildIdOf, pendingDispatchOf } = await import("./dist/host/v2-subagent.js")
+  const { hostChildIdOf, pendingDispatchOf, hostChildIsOpen } = await import("./dist/host/v2-subagent.js")
   const { hostChildRecord, renderChildLine: joinLine } = await import("./dist/tm/dispatch.js")
   // (a) the two readers, against the shapes the user's own desktop session exported
   //     (e-f.json: `subagent` ack + `<subagent …>` injection).
@@ -1381,15 +1381,19 @@ console.log("12. the host's own sub-agents are collectable (decision 4, 2026-09-
     "ses_child2",
     "the ack sentence is a second source, because no field shape is promised across host versions",
   )
-  assert.equal(hostChildIdOf({ content: [{ type: "text", text: "PROBE-OK" }], metadata: {} }), null, "a synchronous child has no id to claim, and that is the correct answer, not a failure")
-  const pend = pendingDispatchOf({
-    args: { agent: "Architect", background: true, description: "注入形状取证", prompt: "只回一句 SECRET-PROMPT" },
-  })
+  assert.equal(
+    hostChildIdOf({ content: [{ type: "text", text: "PROBE-OK" }], metadata: { sessionID: "ses_sync", status: "completed" } }),
+    "ses_sync",
+    "a synchronous child DOES carry an id (the host always sets {sessionID,status}) — what makes it un-collectable is status, not a missing id",
+  )
+  assert.equal(hostChildIsOpen({ metadata: { sessionID: "ses_sync", status: "completed" } }), false, "and `completed` is what stops it being registered")
+  assert.equal(hostChildIsOpen({ metadata: { sessionID: "ses_open", status: "running" } }), true, "`running` is the open case")
+  const pend = pendingDispatchOf({ agent: "Architect", background: true, description: "注入形状取证", prompt: "只回一句 SECRET-PROMPT" })
   assert.equal(pend.agent, "architect", "the dispatched role is lower-cased onto the row, as the registry keys it")
   assert.equal(pend.label, "注入形状取证", "the description is the task name the lead will read")
   assert.ok(!JSON.stringify(pend).includes("SECRET-PROMPT"), "the prompt is never carried — R6 binds a diagnostic as much as a guard")
-  assert.equal(pendingDispatchOf({ args: { prompt: "no agent named" } }), null, "an input without a role is not a dispatch we can attribute")
-  assert.equal(pendingDispatchOf({ args: "not-an-object" }), null, "and a non-object input is left alone, never interpreted")
+  assert.equal(pendingDispatchOf({ prompt: "no agent named" }), null, "an input without a role is not a dispatch we can attribute")
+  assert.equal(pendingDispatchOf("not-an-object"), null, "and a non-object input is left alone, never interpreted")
   assert.equal(
     hostChildRecord({ sessionID: "ses_a", parentSessionID: "ses_a", agent: "team", label: "x" }),
     null,
@@ -1406,7 +1410,7 @@ console.log("12. the host's own sub-agents are collectable (decision 4, 2026-09-
     tool: "subagent",
     sessionID: CTX.sessionID,
     agent: "team",
-    args: { agent: "architect", background: true, description: "取证", prompt: "只回一句 PROBE-OK" },
+    input: { agent: "architect", background: true, description: "取证", prompt: "只回一句 PROBE-OK" },
   })
   fire("execute.after", {
     tool: "subagent",
@@ -1421,6 +1425,13 @@ console.log("12. the host's own sub-agents are collectable (decision 4, 2026-09-
   const snapshot = textOf(await byName.tm_join.execute({}, CTX))
   assert.match(snapshot, /ses_hostkid1/, "tm_join now SEES the host's background child — before this it answered 没有待收集的派发 about work the user could watch on screen")
   assert.match(snapshot, /architect/, "and names the role it was dispatched for")
+  assert.match(
+    snapshot,
+    /"取证"/,
+    "the ack PAIRED with its dispatch: the label came from execute.before's `input`, not " +
+      "from the generic fallback — a live 2.0.18 round caught this reading `args`, which the " +
+      "host does not send, and registering every child unpaired",
+  )
   assert.match(snapshot, /宿主 subagent 派发/, "the row says where the child came from, so the lead knows the body arrives another way")
   // A foreign session's dispatch is nobody's to register (#22).
   fire("execute.before", { tool: "subagent", sessionID: "ses_build1", agent: "build", args: { agent: "general", background: true, description: "别人的" } })
