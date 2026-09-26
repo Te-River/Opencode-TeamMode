@@ -113,6 +113,9 @@ export interface TmRuntime {
   /** Host event bus slice the async dispatcher needs (session.idle /
    *  .error / .status settle the lead's children). */
   observeDispatchEvent: (event: HostEvent) => void
+  /** v2: open a tm_join row for a child the HOST's own `subagent` tool created, so a
+   *  background dispatch is collectable instead of invisible. */
+  registerHostChild: (child: { sessionID: string; parentSessionID: string; agent: string; label: string }) => boolean
   /** Open async dispatches this plugin started (tests + observability). */
   dispatches: () => Array<{ sessionID: string; agent: string; label: string; state: string }>
 }
@@ -562,6 +565,7 @@ export async function createTmTools(
     tools,
     dispose: () => browserTool.dispose(),
     observeDispatchEvent: dispatch.observeEvent,
+    registerHostChild: dispatch.register,
     dispatches: () => dispatch.children().map((c) => ({ sessionID: c.sessionID, agent: c.agent, label: c.label, state: c.state })),
   }
 }

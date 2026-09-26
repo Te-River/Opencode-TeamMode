@@ -59,6 +59,40 @@ export interface ChildRecord {
    *  wall-clock elapsed and the settle verdict come from the host, so the
    *  lead must know this row was rebuilt. */
   adopted?: boolean
+  /** This child was dispatched by the HOST's own `subagent` tool, which we observed
+   *  being called (v2).  Its reply reaches the parent as an injected message, not
+   *  through this tool — so the row reports state and the settle moment and must never
+   *  be rendered as if we held the text. */
+  via?: "host-injection"
+  /** How this row reached its settled state.  `event` is the host naming the child
+   *  session in a `session.idle`; `parent-idle` is the inference that a still-running
+   *  host child of a session that just went idle has been collected by the host — the
+   *  v2 plugin ctx gives no way to read a child's state directly, and a row that stayed
+   *  运行中 forever would be the same overstated claim in the opposite direction.  A
+   *  presumption is printed as one. */
+  settleSource?: "event" | "parent-idle"
+}
+
+/** A child seen being dispatched by the host's own tool, turned into a registry row.
+ *  Null when the ids are unusable: a child whose id equals the caller's would make
+ *  tm_join wait on the session it is running in, and an anonymous child cannot be
+ *  settled by an event we match on session id. */
+export function hostChildRecord(
+  child: { sessionID: string; parentSessionID: string; agent: string; label: string },
+  now: () => number = () => Date.now(),
+): ChildRecord | null {
+  const sessionID = String(child?.sessionID ?? "").trim()
+  const parentSessionID = String(child?.parentSessionID ?? "").trim()
+  if (!sessionID || !parentSessionID || sessionID === parentSessionID) return null
+  return {
+    sessionID,
+    agent: String(child.agent ?? "").trim().toLowerCase() || "subagent",
+    label: String(child.label ?? "").trim().slice(0, 40) || "宿主子代理",
+    parentSessionID,
+    startedAt: now(),
+    state: "running",
+    via: "host-injection",
+  }
 }
 
 export interface DispatchDeps {
@@ -337,7 +371,13 @@ export function renderChildLine(c: ChildRecord, elapsedMs: number): string {
   const secs = Math.round(elapsedMs / 1000)
   const tag =
     c.state === "running" ? `运行中 ${secs}s` : c.state === "error" ? `失败：${shorten(c.error ?? "", 80)}` : `已完成 ${secs}s`
-  return `${c.sessionID} · ${c.agent} · "${c.label}" · ${tag}${c.adopted ? " ·（本进程重启后由宿主会话树接管）" : ""}`
+  return `${c.sessionID} · ${c.agent} · "${c.label}" · ${tag}${c.adopted ? " ·（本进程重启后由宿主会话树接管）" : ""}${
+    c.via === "host-injection" && c.settleSource === "parent-idle"
+      ? " ·（宿主子代理：随父会话空闲推定已结算，宿主没给过这个子会话的 idle 事件）"
+      : c.via === "host-injection"
+        ? " ·（宿主 subagent 派发）"
+        : ""
+  }`
 }
 
 /** Verdicts tm_join can actually observe (issue #7's "leader keeps control"). */
@@ -393,6 +433,8 @@ export function buildDispatchTools(deps: DispatchDeps): {
   observeEvent: (event: HostEvent) => void
   /** Test/observability seam. */
   children: () => ChildRecord[]
+  /** v2 seam: open a row for a child the host's own `subagent` tool created. */
+  register: (child: { sessionID: string; parentSessionID: string; agent: string; label: string }) => boolean
 } {
   const leadAgent = deps.leadAgent ?? "team"
   const targets = deps.targets ?? DISPATCH_TARGETS
@@ -842,8 +884,11 @@ export function buildDispatchTools(deps: DispatchDeps): {
             blocks.push(
               `--- ${r.agent} "${r.label}" (${r.sessionID}) ---\n${
                 text.trim() ||
-                `（该子会话没有可读的助手回复${r.error ? `；宿主错误：${r.error}` : reply.error ? `；宿主错误：${reply.error}` : ""}）` +
-                  `——子会话不是文件，tm_read 读不到它：在宿主的会话面板里看这条子会话，或改用内置 task 工具重做这一步。`
+                (r.via === "host-injection"
+                  ? `（这个子会话由宿主的 subagent 工具派发，正文不经本工具：完成时宿主会把 \`<subagent sessionID=\"${r.sessionID}\" …>\` 直接注入本会话，我已经把它登记在案、状态如上。` +
+                    `要全文就在注入到达后读那一条消息，或让子代理把交付写进黑板；不要为了拿正文反复 join。）`
+                  : `（该子会话没有可读的助手回复${r.error ? `；宿主错误：${r.error}` : reply.error ? `；宿主错误：${reply.error}` : ""}）` +
+                    `——子会话不是文件，tm_read 读不到它：在宿主的会话面板里看这条子会话，或改用内置 task 工具重做这一步。`)
               }`,
             )
           }
@@ -870,11 +915,29 @@ export function buildDispatchTools(deps: DispatchDeps): {
     const sid = String(props?.sessionID ?? "").trim()
     if (!sid) return
     const rec = children.get(sid)
-    if (!rec) return
+    if (!rec) {
+      // The parent's own idle is the only completion signal v2 gives us for a host
+      // child: the background reply is injected into the parent before the parent's turn
+      // ends (measured: child injected …824730, parent idle …829038), and the plugin has
+      // no endpoint to read a child session's state.  So settle the still-running host
+      // children of THIS session — and say plainly that it is a presumption.
+      if (type === "session.idle") {
+        for (const child of children.values()) {
+          if (child.via !== "host-injection" || child.state !== "running") continue
+          if (child.parentSessionID !== sid) continue
+          child.state = "idle"
+          child.finishedAt = now()
+          child.settleSource = "parent-idle"
+          log({ step_id: "events", event: "idle_presumed", child: child.sessionID, agent: child.agent, ms: child.finishedAt - child.startedAt })
+        }
+      }
+      return
+    }
     if (type === "session.idle") {
       if (rec.state === "running") {
         rec.state = "idle"
         rec.finishedAt = now()
+        rec.settleSource = "event"
         log({ step_id: "events", event: "idle", child: sid, agent: rec.agent, ms: (rec.finishedAt ?? 0) - rec.startedAt })
       }
       return
@@ -899,9 +962,25 @@ export function buildDispatchTools(deps: DispatchDeps): {
     }
   }
 
+  /** Open a row for a child the HOST dispatched (v2's `subagent` tool) that this
+   *  registry never created.  Returns false when the ids are unusable or the child is
+   *  already known — a plugin reload replays hooks, and a second row for one session
+   *  would make tm_join count the same work twice. */
+  function register(child: { sessionID: string; parentSessionID: string; agent: string; label: string }): boolean {
+    const rec = hostChildRecord(child, now)
+    if (!rec || children.has(rec.sessionID)) return false
+    children.set(rec.sessionID, rec)
+    deps.onChildSession?.(rec.sessionID, rec.agent)
+    // The label is model-authored free text: it belongs in the lead's table, never in
+    // the audit trail (R6 binds a diagnostic as much as a guard).
+    log({ step_id: "join", event: "host_subagent", child: rec.sessionID, agent: rec.agent, parent: rec.parentSessionID })
+    return true
+  }
+
   return {
     tm_join: join,
     observeEvent,
+    register,
     children: () => [...children.values()],
   }
 }

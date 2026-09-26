@@ -1365,5 +1365,78 @@ for (const dir of made) {
     assert.ok(!String(cmRes.content[0].text).includes('METADATA-CREDENTIALS'), 'and if the host ran it anyway, the program result is taken back out')
   }
 }
+console.log("12. the host's own sub-agents are collectable (decision 4, 2026-09-26)")
+{
+  const { hostChildIdOf, pendingDispatchOf } = await import("./dist/host/v2-subagent.js")
+  const { hostChildRecord, renderChildLine: joinLine } = await import("./dist/tm/dispatch.js")
+  // (a) the two readers, against the shapes the user's own desktop session exported
+  //     (e-f.json: `subagent` ack + `<subagent …>` injection).
+  assert.equal(
+    hostChildIdOf({ metadata: { sessionID: "ses_child1", status: "running", truncated: false } }),
+    "ses_child1",
+    "the ack's metadata.sessionID is the child's id — measured, not guessed",
+  )
+  assert.equal(
+    hostChildIdOf({ content: [{ type: "text", text: "The subagent is working in the background (sessionID: ses_child2). You will be notified automatically when it finishes." }] }),
+    "ses_child2",
+    "the ack sentence is a second source, because no field shape is promised across host versions",
+  )
+  assert.equal(hostChildIdOf({ content: [{ type: "text", text: "PROBE-OK" }], metadata: {} }), null, "a synchronous child has no id to claim, and that is the correct answer, not a failure")
+  const pend = pendingDispatchOf({
+    args: { agent: "Architect", background: true, description: "注入形状取证", prompt: "只回一句 SECRET-PROMPT" },
+  })
+  assert.equal(pend.agent, "architect", "the dispatched role is lower-cased onto the row, as the registry keys it")
+  assert.equal(pend.label, "注入形状取证", "the description is the task name the lead will read")
+  assert.ok(!JSON.stringify(pend).includes("SECRET-PROMPT"), "the prompt is never carried — R6 binds a diagnostic as much as a guard")
+  assert.equal(pendingDispatchOf({ args: { prompt: "no agent named" } }), null, "an input without a role is not a dispatch we can attribute")
+  assert.equal(pendingDispatchOf({ args: "not-an-object" }), null, "and a non-object input is left alone, never interpreted")
+  assert.equal(
+    hostChildRecord({ sessionID: "ses_a", parentSessionID: "ses_a", agent: "team", label: "x" }),
+    null,
+    "a child whose id equals the caller's is refused — it would make tm_join wait on its own session",
+  )
+  const row = hostChildRecord({ sessionID: "ses_b", parentSessionID: "ses_a", agent: " RESEARCHER ", label: "长".repeat(60) })
+  assert.equal(row.agent, "researcher", "role normalised")
+  assert.equal(row.label.length, 40, "label bounded")
+  assert.equal(row.via, "host-injection", "the row carries WHERE it came from, so the reply contract can differ")
+  // (b) end to end through the booted personality: the hooks v2.ts registered are the
+  //     ones under test, so a wiring mistake cannot hide behind a passing unit check.
+  const fire = (name, input) => fake.hook(`tool.${name}`).handlers.forEach((h) => h(input))
+  fire("execute.before", {
+    tool: "subagent",
+    sessionID: CTX.sessionID,
+    agent: "team",
+    args: { agent: "architect", background: true, description: "取证", prompt: "只回一句 PROBE-OK" },
+  })
+  fire("execute.after", {
+    tool: "subagent",
+    sessionID: CTX.sessionID,
+    agent: "team",
+    result: {
+      content: [{ type: "text", text: "The subagent is working in the background (sessionID: ses_hostkid1)." }],
+      metadata: { sessionID: "ses_hostkid1", status: "running", truncated: false },
+      output: "",
+    },
+  })
+  const snapshot = textOf(await byName.tm_join.execute({}, CTX))
+  assert.match(snapshot, /ses_hostkid1/, "tm_join now SEES the host's background child — before this it answered 没有待收集的派发 about work the user could watch on screen")
+  assert.match(snapshot, /architect/, "and names the role it was dispatched for")
+  assert.match(snapshot, /宿主 subagent 派发/, "the row says where the child came from, so the lead knows the body arrives another way")
+  // A foreign session's dispatch is nobody's to register (#22).
+  fire("execute.before", { tool: "subagent", sessionID: "ses_build1", agent: "build", args: { agent: "general", background: true, description: "别人的" } })
+  fire("execute.after", { tool: "subagent", sessionID: "ses_build1", agent: "build", result: { metadata: { sessionID: "ses_buildkid", status: "running" } } })
+  const again = textOf(await byName.tm_join.execute({}, CTX))
+  assert.ok(!again.includes("ses_buildkid"), "a non-Team session's child is not entered into our registry")
+  // (c) settle provenance: an event we measured is not the same claim as an inference,
+  //     and the row must not be able to say the first while holding the second.
+  assert.match(joinLine({ ...row, state: "idle", via: "host-injection", settleSource: "parent-idle" }, 5000), /推定已结算/, "a presumption is printed as one")
+  assert.ok(!/推定/.test(joinLine({ ...row, state: "idle", settleSource: "event" }, 5000)), "a child that reported its own idle is not labelled a guess")
+  const dsrc = fs.readFileSync(fileURLToPath(new URL("./dist/tm/dispatch.js", import.meta.url)), "utf8")
+  assert.match(dsrc, /正文不经本工具/, "and a host child with no readable reply says where the body actually arrives")
+  const audit = /log\(\{ step_id: "join", event: "host_subagent"[^)]*\)/.exec(dsrc)?.[0] ?? ""
+  assert.ok(audit.length > 0, "the host-child registration writes its audit line")
+  assert.ok(!audit.includes("label"), "the audit line carries ids and role only — the description is model-authored text (R6)")
+  console.log("   OK (measured ack shape → registry row → tm_join, Team-scoped, provenance-labelled)")
 }
-console.log("\ntest-v2-adapter.mjs: ALL PASS (11 groups)")
+}
+console.log("\ntest-v2-adapter.mjs: ALL PASS (12 groups)")

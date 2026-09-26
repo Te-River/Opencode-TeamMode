@@ -44,6 +44,7 @@ import { applyV2EventFeed } from "./v2-events.js"
 import { createV2SessionReader } from "./v2-session-client.js"
 import { applyV2Probe, probeSummary } from "./v2-probe.js"
 import { applyV2NativeOffload } from "./v2-offload.js"
+import { applyV2SubagentRegistry } from "./v2-subagent.js"
 import { applyV2BrowserGate, browserGateSummary } from "./v2-browser-gate.js"
 import { seedWebfetchDomains } from "../tm/webfetch.js"
 import { v2CapabilityRows } from "./v2-capabilities.js"
@@ -285,6 +286,19 @@ export const v2Personality: V2Plugin = {
     // teardown is a counter that does not exist.
     const offload = await applyV2NativeOffload(ctx, { pipelines: tmRuntime.pipelines, scope })
     registrations.push(...(await Promise.all(offload.registrations)))
+    // The host's own sub-agents, entered into tm_join's registry (decision 4,
+    // 2026-09-26).  On v2 every dispatch IS the host's `subagent` tool, so without this
+    // the collect side had nothing to collect: tm_join answered 没有待收集的派发 about
+    // children the user could see on screen, and the settle events the feed forwards
+    // were dropped because the dispatcher ignores ids it has never heard of.
+    const hostChildren = applyV2SubagentRegistry(ctx, {
+      register: tmRuntime.registerHostChild,
+      scope,
+    })
+    registrations.push(...(await Promise.all(hostChildren.registrations)))
+    if (!hostChildren.active) {
+      notes.push("宿主 subagent 的认领没装上（ctx.tool.hook 不可用）：后台子代理会回到 tm_join 看不见的状态")
+    }
     // BEFORE the session layer registers its own context hook, so the probe sees
     // the host's full surface rather than the set we trimmed — that difference is
     // exactly what it is there to record.
@@ -319,6 +333,9 @@ export const v2Personality: V2Plugin = {
             native_envelopes: offload.report.envelopes,
             native_tokens_saved: offload.report.tokensSaved,
             native_offload_active: offload.active && offload.registrations.length > 0,
+            host_subagent_seen: hostChildren.report.seen,
+            host_children_registered: hostChildren.report.registered,
+            host_children_unpaired: hostChildren.report.unpaired,
             ...summary,
           })
         } catch {
@@ -648,6 +665,13 @@ export const v2Personality: V2Plugin = {
           tools_in_request: session.report.tmInRequestSurface ? "tm-in-request" : "catalog-only",
           native_capped: offload.report.capped,
           native_report_capped: offload.report.reportCapped,
+          // Did the collect side see the host's children at all?  A zero here with a
+          // non-zero `seen` is the tm_join gap still open, and that is the difference
+          // between "nothing was dispatched" and "we were deaf to it".
+          host_subagent_seen: hostChildren.report.seen,
+          host_children_registered: hostChildren.report.registered,
+          host_children_unpaired: hostChildren.report.unpaired,
+          host_children_no_id: hostChildren.report.noChildId,
           ...probeSummary(probe.report),
         })
       } catch {
