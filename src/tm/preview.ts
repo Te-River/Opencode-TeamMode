@@ -262,6 +262,23 @@ export function capKeepingTables(
     for (let k = i; k < j; k++) keep[k] = true
     i = j
   }
+  // A list item is structural too, and this is the case that bit live: `tm_stats` writes
+  // its facts as bullets (`- \`v2-surface\` · 完成注入监听：…`), so a cap that keeps the
+  // table and drops the prose deletes the very lines the user asked the tool to show —
+  // a report whose list is shorter is not a smaller report, it is a wrong one. Paragraph
+  // prose stays droppable.
+  const listItem = /^\s*(?:[-*+]|\d+[.)])\s/
+  for (let i = 0; i < lines.length; i++) {
+    if (!listItem.test(lines[i] ?? "")) continue
+    keep[i] = true
+    // and its heading, so the item is not orphaned from the section it belongs to
+    for (let h = i - 1; h >= 0; h--) {
+      const l = lines[h] ?? ""
+      if (!l.trim()) continue
+      if (heading.test(l)) keep[h] = true
+      break
+    }
+  }
 
   const tableIdx: number[] = []
   lines.forEach((_, i) => {

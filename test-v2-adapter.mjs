@@ -1498,6 +1498,19 @@ console.log("12. the host's own sub-agents are collectable (decision 4, 2026-09-
   const fell = capKeepingAddressing(oneLine, 1200)
   assert.ok(fell.text.length > 0 && fell.fellBack, "a one-line payload is never capped to an empty string — that is a blank page the model reports as 该网站没有内容")
   assert.ok(/截断/.test(fell.text), "and the head cut says so inside the text")
+  // (e) the report cap dropped prose BULLETS, which is where tm_stats writes its facts —
+  //     round 8 searched the rendered output for 「完成注入监听」 and found nothing, while
+  //     the trajectory row carrying it existed the whole time.
+  const { capKeepingTables } = await import("./dist/tm/preview.js")
+  const report = ["## 启动与人格",
+    "- `v2-surface` · 完成注入监听：session.context 触发 10 次 → 结算 1 个",
+    "",
+    ...Array.from({ length: 60 }, (_, i) => `段落散文 ${i}：这一大段解释性文字在预算紧张时可以丢掉，它不承载事实。`),
+    "### 指标", "| 项 | 值 |", "|---|---|", "| 调用 | 42 |"].join(String.fromCharCode(10))
+  const capped = capKeepingTables(report, 220)
+  assert.match(capped.text, /完成注入监听/, "a fact bullet survives the report cap")
+  assert.match(capped.text, /\| 调用 \| 42 \|/, "the table survives")
+  assert.ok(!/段落散文 5：/.test(capped.text), "and it is the paragraph prose that pays")
   console.log("   OK (measured ack shape → registry row → tm_join, Team-scoped, provenance-labelled)")
 }
 }
