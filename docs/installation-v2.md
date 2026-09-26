@@ -198,6 +198,7 @@ a new release may have changed them. Re-running is cheap — unchanged files are
 | 默认 agent | 只在用户没动过时补位 | **每次启动都把 Team 设成默认**（v2 没有读取接口），再加配置里的 `default_agent: "team"`（这一条才是你核对得动的）。退出方式：`"team-mode": { "defaultAgent": false }` |
 | 读文件 / 搜代码 / 跑命令 | `tm_read` / `tm_grep` / `tm_bash` | 宿主的 `read` / `grep` / `glob` / `shell`，**治理照旧**：超大结果照样在 `tool.execute.after` 被卸载成预览 + 句柄，跨出项目的路径走宿主自己的 `external_directory` 权限（v1 是硬拒，v2 是弹窗） |
 | 批量调用 | `tm_ptc_run` | 宿主自己的 `execute`（Code Mode） |
+| 入口文件（v2 主机的硬要求） | — | 宿主把插件**目录**解析成 `<目录>/index.js`；只写 `package.json#exports` 的目录会被**静默忽略**（连错误都没有）。本包根目录的 `index.js` 就是为这条存在的——`plugins: ["./vendor/team-mode"]` 这类官方写法能加载，靠的是它 |
 | 交互式浏览 | `tm_browser`（我们自己起的 playwright/CDP 浏览器） | **优先宿主的 `browser_*`**——只有它是桌面端侧边栏里那个浏览器（`docs/research/browser-pane.md`）。`tm_browser` 保留为"宿主没接桌面浏览器时"的退路（CLI / standalone）；原生目录由 `src/host/v2-browser-gate.ts` 管（`execute.before` 上判 URL / 地址红线 / 环境文件路径，并且有"漏过去就把页面换成拒绝语"的兜底）。快照是**截断**而不是卸载，所以下一次点击要的 `[ref=…]` 都留在上下文里 |
 | 子代理结算检测 | 宿主的 `event` 钩子 | `ctx.event.subscribe()`——零依赖的 async iterable，按事件类型名过滤（`src/host/v2-events.ts`）。没有它 `tm_join` 分不清「已结算」和「仍在跑」；`tm_stats` 会给出转发了多少、哪些类型名没认出来（只记名字，绝不记负载） |
 | 任务清单 | 宿主 `todowrite` | **`tm_ledger`**，存在宿主的 `ctx.storage` 里（v2 不给插件 `todowrite`） |

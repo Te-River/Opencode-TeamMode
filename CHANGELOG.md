@@ -21,6 +21,16 @@ registry saw 1.5.0 as the install-script fix release).
 
 ### Changed
 
+- **The package now ships a root `index.js`, because that is the entrypoint the v2 host
+  actually loads.** Measured on 2.0.16 with `--print-logs`: a plugin DIRECTORY is
+  resolved as `<dir>/index.js` (`msg="loading plugin" … entrypoint=file:///…/team-mode/index.js`),
+  and a directory declaring only `package.json#exports` is skipped **without any error
+  at all**. That is why the official `plugins` config field appeared not to work —
+  `plugins: ["./vendor/team-mode"]` against the packed tarball now boots the plugin and
+  registers its nine governed tools, while the same entry against the previous layout
+  loaded nothing and said nothing. So the answer to "why not just set the `plugins`
+  field?" was to fix the package rather than work around the host, and the installer's
+  local-install path can now use the documented form.
 - **A report no longer gets treated like a log.** Measured live: a `tm_stats` answer
   called from inside Code Mode came back as the `execute` result at 2 917 tokens and
   the generic offload turned it into an 80-token preview — so the lead spent its round
