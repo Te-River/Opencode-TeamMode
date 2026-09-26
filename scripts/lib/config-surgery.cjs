@@ -61,7 +61,12 @@ if (mode === "plugins") {
   // same tools and hooks. So a previous entry of OURS (npm specifier vs ./vendor path)
   // is REPLACED, never duplicated; entries naming anything else are untouched.
   const lit = JSON.stringify(value);
-  const ours = (t) => /opencode-team-mode|\/vendor\/team-mode/.test(t);
+  // Case-insensitive, hyphen-optional and slash-tolerant, because a local install is
+  // spelled with the working tree's own directory name (`D:/Github/Opencode-TeamMode`,
+  // no hyphen between team and mode) while the npm entry is `opencode-team-mode`. An
+  // entry we fail to recognise as ours is one we would ADD next to the existing one —
+  // and two entries is two loads, which is the defect this function exists to prevent.
+  const ours = (t) => /opencode[-_]?team[-_]?mode|vendor[/\\]team-mode/i.test(t);
   const findArray = (mk, key) => {
     const m = new RegExp('"' + key + '"\\s*:\\s*\\[').exec(mk);
     if (!m) return null;
