@@ -1436,6 +1436,10 @@ console.log("12. the host's own sub-agents are collectable (decision 4, 2026-09-
   const audit = /log\(\{ step_id: "join", event: "host_subagent"[^)]*\)/.exec(dsrc)?.[0] ?? ""
   assert.ok(audit.length > 0, "the host-child registration writes its audit line")
   assert.ok(!audit.includes("label"), "the audit line carries ids and role only — the description is model-authored text (R6)")
+  // And the counter has to be VISIBLE, or "we registered them" is unfalsifiable again.
+  const ssrc = fs.readFileSync(fileURLToPath(new URL("./dist/tm/stats.js", import.meta.url)), "utf8")
+  assert.match(ssrc, /host_children_registered/, "tm_stats renders the registration count")
+  assert.match(ssrc, /这一轮没有后台子代理/, "and it says out loud that seen>0 with registered=0 is the gap, not an empty round")
   console.log("   OK (measured ack shape → registry row → tm_join, Team-scoped, provenance-labelled)")
 }
 }

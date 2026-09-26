@@ -443,6 +443,17 @@ export function renderStats(
         line.browser_gate_note ? `  ${line.browser_gate_note}` : "",
         line.native_capped !== undefined ? `快照按寻址预算截断 ${line.native_capped} 次（不是卸载：ref 留在上下文里）` : "",
         line.native_report_capped !== undefined ? `报告型输出保留表格截断散文 ${line.native_report_capped} 次（表格整份留下，句柄装全文）` : "",
+        // The collect side's own coverage. `seen > 0` with `registered = 0` is the tm_join
+        // gap STILL OPEN, and it must not be readable as "no background child ran this
+        // process" — that is the exact silence this feature exists to remove.
+        line.host_subagent_seen !== undefined
+          ? `宿主 subagent 确认 ${line.host_subagent_seen} 次 → tm_join 登记 ${line.host_children_registered ?? 0} 个` +
+            (Number(line.host_children_unpaired) > 0 ? `（${line.host_children_unpaired} 个没配到派发行）` : "") +
+            (Number(line.host_children_no_id) > 0 ? `；${line.host_children_no_id} 次是同步子代理（没有子会话可登记）` : "") +
+            (Number(line.host_subagent_seen) > 0 && !Number(line.host_children_registered)
+              ? " —— 看到了却一个都没登记：认领没生效，不要读成「这一轮没有后台子代理」"
+              : "")
+          : "",
       ].filter(Boolean)
       out.push(`- \`${s}\` · ${bits.join(" · ")}`)
       if (line.scope_unknown !== undefined && Number(line.scope_unknown) > 0) {
