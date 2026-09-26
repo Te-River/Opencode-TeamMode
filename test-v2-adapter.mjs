@@ -1499,6 +1499,35 @@ console.log("12. a child's own report is readable in process — no credential (
   assert.ok(!joinT.includes("简报：SECRET-BRIEF"), "the child's brief is not dragged into the parent's context")
   assert.ok(!joinT.includes("正文不经本工具"), "the old sentence — a claim about the host nobody had measured — is gone")
   await bootT.value()
+  // (d) the boot section's ORDER, pinned against the direction its real caller feeds it:
+  //     tm_stats hands these rows NEWEST-first, and the selector sorted by array index —
+  //     so it printed the OLDEST five boots as if they were the running process, and the
+  //     row a user needs after a re-install was simply absent. A live session found it.
+  {
+    const { bootSnapshots } = await import("./dist/tm/stats.js")
+    const host = (run, ts, tools) => ({ tool: "host", step_id: "v2-boot", run_id: run, ts, tools_registered: tools })
+    const newestFirst = [
+      host("r-20260926-184150-a", "2026-09-26T18:41:50.000Z", 9),
+      host("r-20260926-120630-b", "2026-09-26T12:06:30.000Z", 9),
+      host("r-20260926-003448-c", "2026-09-26T00:34:48.000Z", 10),
+    ]
+    const picked = bootSnapshots(newestFirst)
+    assert.equal(picked[0].run_id, "r-20260926-184150-a", "the first row is the NEWEST boot by timestamp, not by position")
+    assert.equal(picked[picked.length - 1].run_id, "r-20260926-003448-c", "and the oldest stays at the end")
+    assert.deepEqual(
+      bootSnapshots([...newestFirst].reverse()).map((l) => l.run_id),
+      picked.map((l) => l.run_id),
+      "feeding it in the other order changes nothing — the timestamp decides, not the index",
+    )
+    // The other half of the same comparator: WITHIN one run the last write is the
+    // informative one (the surface snapshot is throttled and rewritten), so a timestamp
+    // tie must fall back to "later write wins", not to the feed's newest-first order.
+    const sameRun = [
+      { tool: "host", step_id: "v2-surface", run_id: "r-same", ts: "2026-09-26T10:00:00.000Z", tools_registered: 9, native_seen: 1 },
+      { tool: "host", step_id: "v2-surface", run_id: "r-same", ts: "2026-09-26T10:00:00.000Z", tools_registered: 9, native_seen: 7 },
+    ]
+    assert.equal(bootSnapshots(sameRun)[0].native_seen, 7, "a tie inside one run keeps the LAST write")
+  }
   console.log("   OK (flat context items normalise; the report reaches tm_join; the seam is named honestly)")
 }
 

@@ -316,7 +316,29 @@ export function bootSnapshots(
 ): Array<Record<string, unknown>> {
   const last = new Map<string, number>()
   lines.forEach((line, i) => last.set(`${String(line.run_id ?? "?")}|${String(line.step_id ?? "?")}`, i))
-  const idx = [...last.values()].sort((a, b) => b - a)
+  // NEWEST FIRST, by the event's own timestamp — NOT by array position. The window
+  // arrives newest-first (`listTrajectoryRuns` is newest-first), so an index sort here
+  // selected the OLDEST boots in the window and printed them as the current process,
+  // which is exactly the row a user reads after an upgrade or a re-install. A live
+  // session caught it: the process that had just restarted was absent from the section
+  // and the model invented a "配置 A（较新）" column to explain rows that were stale.
+  const timeOf = (i: number): number => {
+    const t = Date.parse(String(lines[i]?.ts ?? ""))
+    return Number.isFinite(t) ? t : -1
+  }
+  // Two questions the old code answered with one array sort, in the wrong direction for
+  // the second one:
+  //  · within one process's run, the LAST write is the informative one (the surface
+  //    snapshot is throttled and rewritten as the host surface changes);
+  //  · across processes, tm_stats feeds these NEWEST-run-first, so an index sort promoted
+  //    the OLDEST boots and the row a user reads after an upgrade was simply absent.
+  // So: order by the event's own timestamp when there is one, and keep "last write wins"
+  // only as the tie-break for rows that carry no timestamp at all.
+  const byNewest = (a: number, b: number): number => {
+    const dt = timeOf(b) - timeOf(a)
+    return dt !== 0 ? dt : b - a
+  }
+  const idx = [...last.values()].sort(byNewest)
   // The boot record is the line that answers "which personality ran, and what did
   // it find missing" — and it is also the only carrier of the Team-scope counts and
   // the native-browser gate line. A plain newest-N used to drop it: the probe writes
@@ -328,7 +350,7 @@ export function bootSnapshots(
     const s = String(lines[i]?.step_id ?? "")
     return s === "v2-shutdown" ? 1 : s === "v2-boot" || s === "boot" ? 0 : 2
   }
-  const ordered = [...idx].sort((a, b) => prio(a) - prio(b) || b - a)
+  const ordered = [...idx].sort((a, b) => prio(a) - prio(b) || byNewest(a, b))
   return ordered.slice(0, Math.max(1, limit)).map((i) => lines[i])
 }
 
@@ -476,7 +498,11 @@ export function renderStats(
             (line.session_get_error ? ` · 最后一次错误：${String(line.session_get_error).slice(0, 90)}` : "")
           : "",
       ].filter(Boolean)
-      out.push(`- \`${s}\` · ${bits.join(" · ")}`)
+      // Each row carries WHEN that process booted and which run it was, because without
+      // it a reader cannot tell the current build from an older one in the same window —
+      // and the model filling that gap invents an ordering (it did: "配置 A（较新）").
+      const stamp = `${String(line.ts ?? "?").slice(0, 16).replace("T", " ")} · run ${String(line.run_id ?? "?").replace(/^r-/, "").slice(0, 15)}`
+      out.push(`- \`${s}\` · ${stamp} · ${bits.join(" · ")}`)
       if (line.scope_unknown !== undefined && Number(line.scope_unknown) > 0) {
         out.push(
           `  - 未判定 ${line.scope_unknown} 次：宿主事件里没带 agent。这些调用我们一律没碰（隔离优先于覆盖率），` +
