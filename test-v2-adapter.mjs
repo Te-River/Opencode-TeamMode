@@ -937,7 +937,7 @@ console.log("7d2. the native snapshot stays ADDRESSABLE, and the browser gate ha
 
   // The gate: two layers, because the before-hook's power to abort is a host promise
   // nobody has made. Layer 2 is also the measurement.
-  const { applyV2BrowserGate, browserGateSummary } = await import("./dist/host/v2-browser-gate.js")
+  const { applyV2BrowserGate, browserGateSummary, NATIVE_BROWSER_NOTE } = await import("./dist/host/v2-browser-gate.js")
   const { createTeamScope } = await import("./dist/host/v2-scope.js")
   const scope = createTeamScope(["team"])
   const gf = makeFakeCtx({ directory: workspace("gate"), agents: [] })
@@ -1305,7 +1305,23 @@ for (const dir of made) {
     fs.rmSync(dir, { recursive: true, force: true })
   } catch {
     /* temp dir */
-    // A report is not a log: the generic offload would leave the lead describing a
+  }
+}
+
+// This region is a revival: an unclosed `catch {` in the temp-dir sweep above swallowed it
+// whole, so it parsed, never ran, and the suite stayed green for at least two commits that
+// claimed these exact pins. It now carries its OWN bindings (the ones it used to borrow from
+// the 7d2 block are long gone out of scope) and announces itself, because an assertion that
+// cannot be seen running is an assertion that is not running.
+console.log("9b. the report cap, the Code Mode gate leg, and the native reading note")
+{
+  const { estimateTokens } = await import("./dist/tm/config.js")
+  const { createTeamScope } = await import("./dist/host/v2-scope.js")
+  const { applyV2BrowserGate, NATIVE_BROWSER_NOTE } = await import("./dist/host/v2-browser-gate.js")
+  const scope = createTeamScope(["team"])
+  const g = applyV2BrowserGate(makeFakeCtx({ directory: workspace("gate-cm"), agents: [] }).ctx, { allowlist: ["*"], env: {}, scope })
+
+  // A report is not a log: the generic offload would leave the lead describing a
   // table it could not see (measured live — a 2 917-token tm_stats answer arriving
   // through Code Mode's `execute` and coming back as an 80-token preview).
   {
@@ -1327,7 +1343,13 @@ for (const dir of made) {
     assert.ok(!out.includes("口径说明第 40 段"), "the prose between tables is what paid for it")
     assert.match(out, /表格已整份留在上面/, "and the reply says which half is in front of the model")
     assert.ok(estimateTokens(report) > 1600, "the payload really was over the report budget")
-    assert.ok(estimateTokens(out) < estimateTokens(report) / 2, `and the saving is real (${estimateTokens(report)} -> ${estimateTokens(out)})`)
+    // What the cap PROMISES is a bound, not a ratio. The budget is 1 600 tokens and this
+    // payload is 2 377, so the arithmetic ceiling on saving is 33% — the previous line
+    // demanded ">50%" and stayed green for two commits only because this whole block sat
+    // inside an unclosed `catch {}` and never ran. What IS checkable: the output lands on
+    // the budget it was given, the structure arrives whole, and prose is what paid.
+    assert.ok(estimateTokens(out) <= 1600 + 120, `the kept report fits its budget (${estimateTokens(out)} <= 1600 plus the note)`)
+    assert.ok(estimateTokens(out) < estimateTokens(report), "and something was dropped to get there")
     // A non-report payload still takes the old path — this branch must not become a
     // reason to keep more prose in context than the threshold allows.
     const log = "line of log output " + "x".repeat(9000)
@@ -1364,6 +1386,54 @@ for (const dir of made) {
     g.fireAfter({ tool: 'execute', result: cmRes, agent: 'team', sessionID: 'ses_1' })
     assert.ok(!String(cmRes.content[0].text).includes('METADATA-CREDENTIALS'), 'and if the host ran it anyway, the program result is taken back out')
   }
+  // The reachability of that leg, pinned separately because it WAS dead: `fireBefore` opened
+  // with `if (!tool.startsWith("browser_")) return`, so the `execute` branch below it could
+  // never run — a navigate inside a Code Mode program was gated by nothing. Reading the
+  // compiled hook is what found it; a test that only asserted the refusal text passed anyway.
+  {
+    const gf2 = makeFakeCtx({ directory: workspace('gate2'), agents: [] })
+    const g2 = applyV2BrowserGate(gf2.ctx, { allowlist: ['*'], env: {}, scope })
+    let reach = ''
+    try {
+      g2.fireBefore({ tool: 'execute', input: { program: 'await tools.browser.navigate({ url: "http://169.254.169.254/" })' }, agent: 'team', sessionID: 'ses_9' })
+    } catch (err) {
+      reach = String(err?.message ?? err)
+    }
+    assert.match(reach, /169\.254\.169\.254/, 'the dotted Code Mode spelling reaches the gate at all')
+    assert.equal(g2.report.codeModeRefused, 1, 'and counts it as its own leg, not the direct one')
+    assert.equal(g2.report.seen, 1, 'the execute event is seen even though no browser_* name appears')
+    // A plain program must not be pulled into the browser accounting at all.
+    let plain = true
+    try {
+      g2.fireBefore({ tool: 'execute', input: { program: 'return 1 + 1' }, agent: 'team', sessionID: 'ses_9' })
+    } catch {
+      plain = false
+    }
+    assert.ok(plain, 'a program that never names the browser passes untouched')
+    assert.equal(g2.report.classified, 1, 'and it is not classified')
+  }
+  // The reading note: the user's desktop log drove the whole task through execute +
+  // `browser.snapshot`, so a note attached only to a direct `browser_*` result never reached
+  // the model. It now reads the host's own metadata.toolCalls to know a browser ran.
+  {
+    const gf3 = makeFakeCtx({ directory: workspace('gate3'), agents: [] })
+    const g3 = applyV2BrowserGate(gf3.ctx, { allowlist: ['*'], env: {}, scope })
+    const cm = { content: [{ type: 'text', text: 'PAGE-ONE' }], metadata: { toolCalls: [{ tool: 'browser.tabs.open', status: 'completed' }] } }
+    g3.fireAfter({ tool: 'execute', result: cm, agent: 'team', sessionID: 'ses_n' })
+    assert.ok(String(cm.content[0].text).includes(NATIVE_BROWSER_NOTE), 'the note rides an execute result whose inner calls drove the browser')
+    assert.equal(g3.report.annotated, 1, 'one note per session, counted')
+    const cm2 = { content: [{ type: 'text', text: 'PAGE-TWO' }], metadata: { toolCalls: [{ tool: 'browser.evaluate', status: 'completed' }] } }
+    g3.fireAfter({ tool: 'execute', result: cm2, agent: 'team', sessionID: 'ses_n' })
+    assert.equal(g3.report.annotated, 1, 'and not a second time for the same session')
+    assert.ok(!String(cm2.content[0].text).includes('宿主原生浏览器'), 'the second result stays the host’s own')
+    const noBrowser = { content: [{ type: 'text', text: 'JUST-CODE' }], metadata: { toolCalls: [{ tool: 'read', status: 'completed' }] } }
+    g3.fireAfter({ tool: 'execute', result: noBrowser, agent: 'team', sessionID: 'ses_other' })
+    assert.equal(noBrowser.content[0].text, 'JUST-CODE', 'an execute that did not browse is left byte-exact')
+    const direct = { content: [{ type: 'text', text: 'SNAP' }] }
+    g3.fireAfter({ tool: 'browser.snapshot', result: direct, agent: 'team', sessionID: 'ses_d' })
+    assert.ok(String(direct.content[0].text).includes(NATIVE_BROWSER_NOTE), 'the dotted direct spelling is a browser tool too')
+  }
+  console.log("   OK (report keeps its table; a Code Mode navigate is refused at the door; the reading note reaches the model)")
 }
 console.log("12. the host's own sub-agents are collectable (decision 4, 2026-09-26)")
 {
@@ -1512,6 +1582,5 @@ console.log("12. the host's own sub-agents are collectable (decision 4, 2026-09-
   assert.match(capped.text, /\| 调用 \| 42 \|/, "the table survives")
   assert.ok(!/段落散文 5：/.test(capped.text), "and it is the paragraph prose that pays")
   console.log("   OK (measured ack shape → registry row → tm_join, Team-scoped, provenance-labelled)")
-}
 }
 console.log("\ntest-v2-adapter.mjs: ALL PASS (12 groups)")

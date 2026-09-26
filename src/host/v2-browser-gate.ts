@@ -43,11 +43,13 @@ const LEAK_WINDOW_MS = 30_000
 /** The four host-vs-tm_browser differences that cost rounds in the user's real task log,
  *  said once per session at the result where each one bites. */
 export const NATIVE_BROWSER_NOTE =
-  "（宿主原生 browser_* 的读法，本会话只说一次：① snapshot/find 的结果是 {tab, content, truncated}，" +
+  "（宿主原生浏览器的读法，本会话只说一次：① snapshot/find 的结果是 {tab, content, truncated}，" +
   "可寻址记号写成 `@e8 [link]`，不是 tm_browser 的 `[ref=e12]`；② evaluate 的参数名是 `script`（不是 fn），" +
-  "而且返回值必须是可序列化标量 —— 返回对象只会拿到 {}，要结构就自己 JSON.stringify；" +
-  "③ screenshot 需要一个真正可见且聚焦的桌面标签页，宿主在后台窗口下必定失败，别为它反复 focus；" +
-  "④ SPA 首帧常是空 content：先 wait 再拍，或者直接用站方自己的搜索接口/搜索框，而不是猜 URL 路径。）" 
+  "而且它求值的是表达式：传 `() => …` 这种函数源文本不会被调用，结果同样是 {} —— 要么写成表达式，" +
+  "要么自己写成 `(()=>{…})()`，返回对象也要自己 JSON.stringify 成标量；③ screenshot 需要一个真正可见且聚焦的" +
+  "桌面标签页，宿主在后台窗口下必定失败，别为它反复 focus；④ wait 的 state 取值不是 playwright 那一套" +
+  "（实测 `load` 和 `text` 在 2.0.18 上直接 error，宿主不给原因），别拿它当渲染完成的判据；" +
+  "⑤ SPA 首帧常是空 content：先重拍再猜，或者直接用站方自己的搜索接口/搜索框，而不是猜 URL 路径。）"
 
 export interface BrowserGateReport {
   /** browser_* execute.before events we looked at (Team sessions only) */
@@ -89,6 +91,32 @@ function locatableText(result: unknown): { parts: unknown[]; index: number; text
   if (index < 0) return null
   const part = content[index] as V2ToolPart
   return { parts: content, index, text: String(part.text ?? "") }
+}
+
+/** The host spells its browser tools `browser_snapshot` on the direct surface and
+ *  `browser.snapshot` as a Code Mode catalog path — the user's own desktop log shows both,
+ *  and a matcher that knows only one of them silently governs nothing. */
+function isNativeBrowserTool(name: string): boolean {
+  return name.startsWith("browser_") || name.startsWith("browser.")
+}
+
+/** Did this `execute` program actually drive the browser? Read from the host's own
+ *  `result.metadata.toolCalls[]` (the exported desktop session carries it), because the
+ *  program TEXT only tells us what was written, not what ran. */
+function droveBrowser(result: unknown): boolean {
+  const calls = (result as { metadata?: { toolCalls?: unknown } } | null | undefined)?.metadata?.toolCalls
+  if (!Array.isArray(calls)) return false
+  return calls.some((c) => isNativeBrowserTool(String((c as { tool?: unknown })?.tool ?? "")))
+}
+
+/** The three verbs whose result shape a model gets wrong without being told (the snapshot's
+ *  `content` vs `text`, `find`'s empty answer, `evaluate`'s non-scalar return). Matched on the
+ *  suffix so BOTH host spellings count — `browser_snapshot` on the direct surface and
+ *  `browser.snapshot` as a catalog path — because a note that fires for the spelling nobody
+ *  uses is the same dead code as a gate that returns before its own branch. */
+const NOTE_VERBS = ["snapshot", "find", "evaluate"]
+function wantsReadingNote(tool: string): boolean {
+  return NOTE_VERBS.includes(tool.replace(/^browser[._]/, ""))
 }
 
 /** The addresses a browser call can carry. `url` on navigate / tabs.open, `path` on
@@ -156,7 +184,12 @@ export function applyV2BrowserGate(
   const fireBefore = (raw: unknown): void => {
     const event = raw as { tool?: unknown; name?: unknown; input?: unknown; agent?: unknown; sessionID?: unknown } | null
     const tool = String(event?.tool ?? event?.name ?? "")
-    if (!tool.startsWith("browser_")) return
+    // `execute` is checked in the same breath as the direct verbs, NOT after a
+    // `browser_*` early return: the code-mode leg used to sit BELOW that return, so the
+    // whole branch was unreachable and a navigate inside a program was gated by nothing
+    // but the model's own memory. Proven by reading the compiled hook, not by reasoning.
+    const isExecute = tool === "execute"
+    if (!isExecute && !isNativeBrowserTool(tool)) return
     if (opts.scope && opts.scope.count(opts.scope.decide(event as { agent?: unknown; sessionID?: unknown })) !== "ours") {
       report.foreignSkipped++
       return
@@ -168,7 +201,7 @@ export function applyV2BrowserGate(
     // reads `input.url` can be walked around by putting the navigate inside a program.
     // The address red line is the part worth defending there: a program is source text,
     // and the hosts it names are judgement-free metadata ranges.
-    if (tool === "execute") {
+    if (isExecute) {
       const program = (event?.input as { program?: unknown } | undefined)?.program
       if (typeof program === "string" && /browser[._]|browser_/.test(program)) {
         for (const host of hardUrlHosts(program)) {
@@ -203,53 +236,61 @@ export function applyV2BrowserGate(
   const fireAfter = (raw: unknown): void => {
     const event = raw as { tool?: unknown; name?: unknown; result?: unknown; agent?: unknown; sessionID?: unknown } | null
     const tool = String(event?.tool ?? event?.name ?? "")
-    if (!tool.startsWith("browser_")) return
+    const isExecute = tool === "execute"
+    if (!isExecute && !isNativeBrowserTool(tool)) return
     if (off) return
-    // Once per session, at the result where the confusion actually happened: the host's
-    // browser_* surface differs from tm_browser's in four ways that each cost a round in
-    // the user's real-task log (a guessed `snap.text`, an `fn` argument that is really
-    // `script`, an `evaluate` returning an object and reading as `{}`, a screenshot
-    // retried after `focus`, and a MediaWiki URL guessed instead of the site's own
-    // search). This is the cheapest place to say it — the tool description is the host's,
-    // and the prompt would charge every role for text only the browsing ones use.
-    const sid = String(event?.sessionID ?? "")
-    if (sid && !annotated.has(sid) && (tool === "browser_snapshot" || tool === "browser_find" || tool === "browser_evaluate")) {
-      const found = locatableText(event?.result)
-      if (found) {
-        annotated.add(sid)
-        report.annotated++
-        found.parts[found.index] = { type: "text", text: `${found.text}\n\n${NATIVE_BROWSER_NOTE}` }
-      }
-    }
     // No scope re-check here: the owner question was answered at the door, and a
     // foreign session never has a pending refusal for this lookup to match.
     const key = keyOf(tool, event?.sessionID)
     const owed = pending.get(key)
-    if (!owed) return
-    pending.delete(key)
-    const now = Date.now()
-    if (now - owed.at > LEAK_WINDOW_MS) {
-      report.held++
-      return
-    }
-    // Layer 2: the host produced an answer to a call we refused. Take the content out
-    // and put the refusal in its place — the model must never read a page our policy
-    // says it may not, and a silent pass would be the exact claim we cannot make.
-    report.leaked++
-    if (report.byTool[tool]) report.byTool[tool].leaked++
-    const found = locatableText(event?.result)
-    if (found) {
-      found.parts[found.index] = {
-        type: "text",
-        text: `${owed.message}
+    let stripped = false
+    if (owed) {
+      pending.delete(key)
+      const now = Date.now()
+      if (now - owed.at > LEAK_WINDOW_MS) {
+        report.held++
+      } else {
+        // Layer 2: the host produced an answer to a call we refused. Take the content out
+        // and put the refusal in its place — the model must never read a page our policy
+        // says it may not, and a silent pass would be the exact claim we cannot make.
+        report.leaked++
+        if (report.byTool[tool]) report.byTool[tool].leaked++
+        const found = locatableText(event?.result)
+        stripped = !!found
+        if (found) {
+          found.parts[found.index] = {
+            type: "text",
+            text: `${owed.message}
 
 （这道门禁本来是在请求前生效的：${tool} 的调用被宿主放过去了，所以我把它的返回换成了这段拒绝语。这个页面的内容没有进入上下文、run store 或轨迹；请求本身已经发生，这一条我没有能力撤回。）`,
-      }
-      for (let i = found.index + 1; i < found.parts.length; i++) {
-        const p = found.parts[i] as V2ToolPart | null
-        if (p && typeof p === "object" && p.type === "text" && typeof p.text === "string") found.parts[i] = { type: "text", text: "" }
+          }
+          for (let i = found.index + 1; i < found.parts.length; i++) {
+            const p = found.parts[i] as V2ToolPart | null
+            if (p && typeof p === "object" && p.type === "text" && typeof p.text === "string") found.parts[i] = { type: "text", text: "" }
+          }
+        }
       }
     }
+    // Once per session, at the result where the confusion actually happened: the host's
+    // browser surface differs from tm_browser's in ways that each cost a round in the
+    // user's real-task log (a guessed `snap.text`, an `fn` argument that is really
+    // `script`, a function source that reads as `{}`, a screenshot retried after `focus`,
+    // a `wait` state the host rejects, a MediaWiki URL guessed instead of the site's own
+    // search). This is the cheapest place to say it — the tool description is the host's,
+    // and the prompt would charge every role for text only the browsing ones use. The
+    // Code Mode shape is why `execute` is included: the model drives the browser through
+    // `tools.browser.*` there and never sees a `browser_*` tool call at all.
+    if (stripped) return
+    const sid = String(event?.sessionID ?? "")
+    const wantsNote = isExecute
+      ? droveBrowser(event?.result)
+      : wantsReadingNote(tool)
+    if (!sid || annotated.has(sid) || !wantsNote) return
+    const found = locatableText(event?.result)
+    if (!found) return
+    annotated.add(sid)
+    report.annotated++
+    found.parts[found.index] = { type: "text", text: `${found.text}\n\n${NATIVE_BROWSER_NOTE}` }
   }
 
   const toolDomain = (ctx as { tool?: { hook?: unknown } } | null | undefined)?.tool
