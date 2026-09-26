@@ -14,13 +14,75 @@ registry saw 1.5.0 as the install-script fix release).
 > the event feed all arm, and a model turn actually called `tm_search` and got real
 > npm results back — plus a private-space refusal that reached the model verbatim with
 > both operator exits named. NOT verified live: anything that needs the DESKTOP
-> (the `browser_*` catalog and its side panel do not exist in `--standalone`), the
-> installer's v2 branch (`opencode plugin add` can only install a PUBLISHED package, so
-> it is untestable before a release), and whether `/team-*` runs as the role it selects.
+> (the `browser_*` catalog and its side panel do not exist in `--standalone`), and
+> whether `/team-*` runs as the role it selects.
+> **Corrected 2026-09-26, same day:** this note also claimed the installer's v2 branch
+> could not be tested before a release, because `opencode plugin add` installs only a
+> PUBLISHED package. That was wrong — the host reads the `plugins` key and loads a local
+> DIRECTORY (`<dir>/index.js`), so the whole v2 install path was exercised end to end on a
+> live 2.0.18 against a redirected `HOME`/`USERPROFILE`/`TMP`, with no publish and nothing
+> written to the user's real config. Two installer defects came out of running it (see
+> Fixed). What still needs a real desktop round is the background-child claim (§Added) —
+> the mechanism is unit-tested against the shapes the user's own exported session shows,
+> and the sandbox has no provider credentials, so a live `subagent` round has to run where
+> the keys are.
 > Those are the items that turn "v2-capable" into "v2-adapted", and they belong to 1.7.0.
+
+### Added
+
+- **`tm_join` now sees the children the host's own `subagent` tool created (v2).** On 2.x
+  every dispatch goes through that tool, and nothing entered the collect side's registry, so
+  `tm_join` answered 没有待收集的派发 about work the user could watch running on screen, a
+  bounded `waitMs` could never end, and the settle events the 1.7.x event feed forwards were
+  dropped because the dispatcher ignores a session id it has never heard of.
+  `src/host/v2-subagent.ts` pairs the two seams the user's own exported session shows
+  (`docs/research/host-subagent-injection.md`): `execute.before` carries
+  `{agent, background, description}`, and the ack in `execute.after` carries
+  `result.metadata.sessionID` + `status:"running"` — with the ack sentence as a second
+  source, since no field shape survives a host upgrade unchanged. A synchronous child has no
+  id and registers nothing, which is the correct answer rather than a failure. Two honesty
+  rules ship with it: the child's BODY is the host's injected message, which v2 never hands a
+  plugin before persisting, so such a row says where the text actually arrives instead of
+  printing a reply nobody read; and settle provenance is printed — the child's own
+  `session.idle` is a measurement, "its parent went idle so the host has collected it" is
+  labelled 推定. `tm_stats` now prints acks-seen → children-registered and says out loud that
+  `seen > 0` with `registered = 0` is the gap still open. Scoped to Team sessions, never
+  throws into a hook, and the audit line records ids and role only (the description is
+  model-authored text, so R6 keeps it out of the trajectory).
+- **`docs/research/plugin-loader-contract.md`** — the host's plugin import path read out of
+  the binary: `config.plugins` (plural) is the only key anything reads, the host installs the
+  package itself at startup, a directory target resolves only as `<dir>/index.js` and is
+  skipped with no message otherwise, `opencode plugin add` refuses a path and dedupes only on
+  an identical string, and the two global config files are merged (so two entries load the
+  plugin twice).
+- **`docs/v2-port-notes.md`** — the v2 delta's evidence, history and falsified claims moved
+  out of AGENTS.md byte-exact (590 → 366 lines in the file every session pays for), leaving
+  the rule form of each finding in place with pointers here.
+- **AGENTS.md gained the two things a new session kept re-deriving**: a glossary of the
+  repo's own shorthand (round, offload vs cap vs handle, arrival vs write, symptom layer,
+  gate vs red line, lease, tripwire, direct vs catalog, the R/P/T prefixes with their
+  mappings checked against the source) and a **live verification recipes** section — the CLI
+  path, the zero-cost boot probe, the four-variable sandbox set and which code path each one
+  covers, name-level forensics, how to window a 206 MB binary, the runner's buffering
+  gotchas, and the standing rule that a rendering claim needs human eyes.
 
 ### Changed
 
+- **The 2.x installers now write the key the host actually reads.** Both branches were
+  rewritten against the contract above: one `plugins` entry in `opencode.jsonc` (the file
+  previous installs used, per the user's rule) plus a reclaim of our own entry from
+  `opencode.json`, no `.json → .jsonc` migration (that copy-forward IS the double-load), no
+  `plugin add` probe, no cache purge, no npm re-resolve. Both front-ends call one
+  `scripts/lib/config-surgery.cjs`, so `install.sh` and `install.ps1` can no longer hold two
+  different definitions of "installed", and `TEAMMODE_LOCAL_DIR=<dir>` is the documented
+  development mode (it verifies `index.js` + `dist/index.js` + the generator before writing a
+  path the host would otherwise skip silently). Verified end to end on a live 2.0.18 with
+  `HOME`/`USERPROFILE`/`TMP` redirected: exactly one `loading plugin` for Team, zero load
+  failures, `v2-boot tools_registered:9`, a foreign plugin entry left intact in each file, and
+  the legacy `.json` still strict-parseable afterwards. `docs/installation-v2.md` Step 1 is
+  rewritten from the same evidence in both languages, with a procedure for an agent doing the
+  install on someone's behalf — including the rule that no install may be reported without the
+  arrival check, because both of this host's failure modes are silent.
 - **The package now ships a root `index.js`, because that is the entrypoint the v2 host
   actually loads.** Measured on 2.0.16 with `--print-logs`: a plugin DIRECTORY is
   resolved as `<dir>/index.js` (`msg="loading plugin" … entrypoint=file:///…/team-mode/index.js`),
@@ -541,6 +603,19 @@ registry saw 1.5.0 as the install-script fix release).
 
 ### Fixed
 
+- **Three installer defects that only running them could find.** (a) `ours()` matched only
+  the npm spelling, so a directory entry named after the working tree
+  (`Opencode-TeamMode`, no hyphen between team and mode) read as somebody else's — and the
+  next run would have ADDED it beside the existing entry, producing the very double load the
+  function exists to prevent. Now case- and hyphen-tolerant, verified by re-running the
+  surgery over a live config and getting "already lists" with one Team entry. (b)
+  `Copy-Item <src>\* <dst>` with a destination that does not exist yet makes PowerShell 5.1
+  bind the last item to a file name and throw mid-copy, leaving a half-copied package; the
+  destination is created first and each child is copied. (c) The config-surgery helper was
+  written to a bare `mktemp` name, which has no extension — Node then decides the module
+  format from a `package.json` above it, and a `Temp/package.json` with `"type":"module"`
+  (present on this machine) made it throw `ERR_UNKNOWN_FILE_EXTENSION` and the install died
+  before writing anything. It is a shipped `.cjs` now.
 - **`ctx.storage` is global and immortal — the LEDGER now knows both.**
   A live probe disproved two things this module had assumed: the domain is shared
   across sessions, agents and projects (only the plugin id namespaces it), and nothing
