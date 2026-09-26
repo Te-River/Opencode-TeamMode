@@ -40,6 +40,15 @@ import { isEnvFilePath } from "../envprotect.js"
  *  host that queues the tool and then answers is the case we are measuring. */
 const LEAK_WINDOW_MS = 30_000
 
+/** The four host-vs-tm_browser differences that cost rounds in the user's real task log,
+ *  said once per session at the result where each one bites. */
+export const NATIVE_BROWSER_NOTE =
+  "（宿主原生 browser_* 的读法，本会话只说一次：① snapshot/find 的结果是 {tab, content, truncated}，" +
+  "可寻址记号写成 `@e8 [link]`，不是 tm_browser 的 `[ref=e12]`；② evaluate 的参数名是 `script`（不是 fn），" +
+  "而且返回值必须是可序列化标量 —— 返回对象只会拿到 {}，要结构就自己 JSON.stringify；" +
+  "③ screenshot 需要一个真正可见且聚焦的桌面标签页，宿主在后台窗口下必定失败，别为它反复 focus；" +
+  "④ SPA 首帧常是空 content：先 wait 再拍，或者直接用站方自己的搜索接口/搜索框，而不是猜 URL 路径。）" 
+
 export interface BrowserGateReport {
   /** browser_* execute.before events we looked at (Team sessions only) */
   seen: number
@@ -49,6 +58,8 @@ export interface BrowserGateReport {
   refused: number
   /** of those refusals, how many the host walked past anyway (layer 2 fired) */
   leaked: number
+  /** sessions that got the one-time native browser_* reading note */
+  annotated: number
   /** refusals that produced no following result within the window — the door held */
   held: number
   /** refusals raised against a Code Mode program (`execute`), which reaches the same
@@ -122,9 +133,10 @@ export function applyV2BrowserGate(
     env?: Record<string, string | undefined>
   },
 ): BrowserGate {
-  const report: BrowserGateReport = { seen: 0, classified: 0, refused: 0, codeModeRefused: 0, leaked: 0, held: 0, foreignSkipped: 0, byTool: {} }
+  const report: BrowserGateReport = { seen: 0, classified: 0, refused: 0, codeModeRefused: 0, leaked: 0, held: 0, annotated: 0, foreignSkipped: 0, byTool: {} }
   const registrations: V2Registration[] = []
   /** key = `${tool}\n${sessionID}` → the refusal we owe that call's answer */
+  const annotated = new Set<string>()
   const pending = new Map<string, { message: string; at: number }>()
   const off = /^(0|false|no|off)$/i.test(String(opts.env?.TM_V2_BROWSER_GATE ?? "").trim())
 
@@ -193,6 +205,22 @@ export function applyV2BrowserGate(
     const tool = String(event?.tool ?? event?.name ?? "")
     if (!tool.startsWith("browser_")) return
     if (off) return
+    // Once per session, at the result where the confusion actually happened: the host's
+    // browser_* surface differs from tm_browser's in four ways that each cost a round in
+    // the user's real-task log (a guessed `snap.text`, an `fn` argument that is really
+    // `script`, an `evaluate` returning an object and reading as `{}`, a screenshot
+    // retried after `focus`, and a MediaWiki URL guessed instead of the site's own
+    // search). This is the cheapest place to say it — the tool description is the host's,
+    // and the prompt would charge every role for text only the browsing ones use.
+    const sid = String(event?.sessionID ?? "")
+    if (sid && !annotated.has(sid) && (tool === "browser_snapshot" || tool === "browser_find" || tool === "browser_evaluate")) {
+      const found = locatableText(event?.result)
+      if (found) {
+        annotated.add(sid)
+        report.annotated++
+        found.parts[found.index] = { type: "text", text: `${found.text}\n\n${NATIVE_BROWSER_NOTE}` }
+      }
+    }
     // No scope re-check here: the owner question was answered at the door, and a
     // foreign session never has a pending refusal for this lookup to match.
     const key = keyOf(tool, event?.sessionID)
@@ -282,5 +310,5 @@ export function applyV2BrowserGate(
 export function browserGateSummary(r: BrowserGateReport): string {
   if (!r.seen) return "原生 browser_* 没被调用过（门禁在场，没数据）"
   const teeth = r.refused === 0 ? "没有拒绝发生过" : r.leaked === 0 ? `${r.refused} 次拒绝全部拦停在门口` : `${r.refused} 次拒绝中 ${r.leaked} 次被宿主放过去（已在返回处换成拒绝语）`
-  return `原生 browser_*/Code Mode：看过 ${r.seen} 次调用（其中 Code Mode 程序拒绝 ${r.codeModeRefused} 次） · 可判定目标 ${r.classified} 次 · 拒绝 ${r.refused} 次（${teeth}）· 拦下后无返回 ${r.held} 次 · 非 Team 跳过 ${r.foreignSkipped} 次`
+  return `原生 browser_*/Code Mode：看过 ${r.seen} 次调用（其中 Code Mode 程序拒绝 ${r.codeModeRefused} 次） · 可判定目标 ${r.classified} 次 · 拒绝 ${r.refused} 次（${teeth}）· 拦下后无返回 ${r.held} 次 · 非 Team 跳过 ${r.foreignSkipped} 次 · 原生读法提示发了 ${r.annotated} 个会话`
 }

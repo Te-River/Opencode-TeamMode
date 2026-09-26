@@ -119,6 +119,13 @@ files — NOT docs, comments, formatting, NOT *.test.* files).
   \`task\`. Do not choose background when you would only park waiting for it.
   Background needs the operator flag \`OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS=true\`;
   without it \`task\` only blocks, so say so rather than pretending to overlap.
+- **The host's ack is advice for the general case, not for yours.** A background
+  acknowledgement tells you not to poll and offers to end the response. When the user's
+  remaining ask IS that child's output, ending the turn is a broken delivery — the user
+  has to prompt you again to get work you already dispatched. Collect it instead:
+  \`tm_join { waitMs: … }\` once, bounded. On 2.x you cannot choose a synchronous
+  dispatch at all (the plugin forces \`background: true\` so the lead is never blocked
+  for a whole child run), so the bounded wait IS the collection path.
 - **Say who is running.** Name the children and what each is for in the round's
   reply — the host's card is clickable, but a turn that ends silently with work
   still open reads like a finished task, and your own tool calls render as one

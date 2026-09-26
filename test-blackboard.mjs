@@ -684,4 +684,18 @@ console.log("7. TTL-only reclamation + session-partitioned boards: OK")
   }
 }
 
+// The host's background ack tells the model "do not poll, or end your response". On v2
+// that advice and the GOAL directive collide — the plugin forces background, so a sync
+// dispatch is not available — and a lead that follows the ack ends the turn with the
+// user's deliverable still in flight (measured in a live round: it wrote 「任务尚未结束」
+// and stopped). The lead prompt must therefore own the collection rule explicitly.
+{
+  const { agents } = await import("./dist/agents.js")
+  const lead = agents.team.prompt
+  assert.match(lead, /The host's ack is advice for the general case, not for yours/,
+    "the lead is told the host's ack is not the rule for its own task")
+  assert.match(lead, /ending the turn is a broken delivery/, "and why: the user re-prompts for work already dispatched")
+  assert.match(lead, /tm_join \{ waitMs: … \}` once, bounded/, "with the concrete collection move, bounded")
+}
+
 console.log("\nALL BLACKBOARD TESTS PASSED ✅")
