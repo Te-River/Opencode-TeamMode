@@ -112,10 +112,24 @@ fi
 #     read back off the file afterwards, because a write is not an arrival;
 #   * OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS is NOT set (v1-only hack).
 install_v2() {
-  local cfg_dir="${HOME}/.config/opencode"
+  # The target directory honours OPENCODE_CONFIG_DIR. Ignoring it was a footgun with
+  # teeth: an agent that redirects the config dir (the documented way to test a plugin
+  # without touching the user's machine) and leaves HOME alone would otherwise write
+  # straight into the real global config — which is exactly what happened on 2026-09-26
+  # while testing this branch. The resolved path is printed before anything is written,
+  # because a silent install into the user's live config is indistinguishable from a
+  # sandboxed one until something is overwritten.
+  local cfg_dir="${OPENCODE_CONFIG_DIR:-${HOME}/.config/opencode}"
   local cfg="${cfg_dir}/opencode.jsonc"
   local legacy="${cfg_dir}/opencode.json"
   local node_js role cmd PLUGIN_ENTRY="" pkg_dir=""
+  echo "→  2.x config target: ${cfg_dir}"
+  if [ "$cfg_dir" = "${HOME}/.config/opencode" ]; then
+    echo "   (this is your LIVE global config; to try the installer without touching it,"
+    echo "    set OPENCODE_CONFIG_DIR=<dir> — the installer writes agents/, commands/ and"
+    echo "    vendor/ under whichever directory it names)"
+  fi
+
 
   echo ""
   echo "── OpenCode ${OPENCODE_VERSION:-?} detected: the 2.x path ──────────────────────"

@@ -132,7 +132,17 @@ if (-not $OpenCodeVersion) {
 # commands/ from — only gets more standard in later majors, and every step
 # fails loudly instead of quietly doing nothing.
 function Install-V2 {
-    $cfgDir = Join-Path $env:USERPROFILE ".config\opencode"
+    # Honour OPENCODE_CONFIG_DIR: an agent testing this branch redirects the config dir,
+    # not the profile, and writing the user's LIVE global config from a "sandbox" run is a
+    # real defect that fired on 2026-09-26. The resolved target is printed before anything
+    # is written so the difference between a trial and an install is visible.
+    $cfgDir = if ($env:OPENCODE_CONFIG_DIR) { $env:OPENCODE_CONFIG_DIR } else { Join-Path $env:USERPROFILE ".config\opencode" }
+    Write-Host "→  2.x config target: $cfgDir" -ForegroundColor DarkGray
+    if ($cfgDir -eq (Join-Path $env:USERPROFILE ".config\opencode")) {
+        Write-Host "   (this is your LIVE global config; to try the installer without touching" -ForegroundColor DarkGray
+        Write-Host "    it, set OPENCODE_CONFIG_DIR=<dir> — agents\, commands\ and vendor\ go" -ForegroundColor DarkGray
+        Write-Host "    under whichever directory it names)" -ForegroundColor DarkGray
+    }
     $cfgFile = Join-Path $cfgDir "opencode.jsonc"
     $legacy = Join-Path $cfgDir "opencode.json"
     $bgFlag = "OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS"
