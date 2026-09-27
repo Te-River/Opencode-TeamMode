@@ -57,6 +57,17 @@ export interface V2SessionReaderReport {
   contextError?: string
   /** the KEY NAMES the context call returned (names only, never values) */
   contextKeys: string[]
+  /** `ctx.session.interrupt` calls made by `tm_join { cancel: true }` (#33) */
+  interruptTried: number
+  /** the host confirmed an active execution was interrupted (`interrupted: true`) */
+  interruptConfirmed: number
+  /** the host answered `interrupted: false` — the documented idle no-op, i.e. NOT a stop */
+  interruptRefused: number
+  /** the call succeeded and carried no `interrupted` boolean at all */
+  interruptUnknown: number
+  interruptError?: string
+  /** the KEY NAMES the interrupt call returned (names only, never values) */
+  interruptKeys: string[]
 }
 
 export interface V2SessionReader {
@@ -65,7 +76,7 @@ export interface V2SessionReader {
   report: V2SessionReaderReport
 }
 
-type SessionDomain = { get?: unknown; context?: unknown }
+type SessionDomain = { get?: unknown; context?: unknown; interrupt?: unknown }
 
 /** Measured first, then the v1 spellings kept as fallbacks for an older 2.x build. Each
  *  builder returns the ARGUMENT OBJECT — `te`-wrapped methods take one object, not an
@@ -121,6 +132,7 @@ export function normaliseContextMessages(list: unknown): unknown {
 
 export function createV2SessionReader(ctx: unknown): V2SessionReader {  const report: V2SessionReaderReport = {
     attempted: 0, resolved: 0, failedShapes: [], contextTried: 0, contextOk: 0, contextKeys: [],
+    interruptTried: 0, interruptConfirmed: 0, interruptRefused: 0, interruptUnknown: 0, interruptKeys: [],
   }
   const domain = (ctx as { session?: SessionDomain } | null | undefined)?.session
 
@@ -185,6 +197,77 @@ export function createV2SessionReader(ctx: unknown): V2SessionReader {  const re
         } catch (err) {
           report.contextError = String((err as { message?: unknown })?.message ?? err).slice(0, 160)
           return { data: undefined }
+        }
+      },
+
+      /** #33 — the STOP path. `tm_join { cancel: true }` was written against v1's
+       *  `client.session.abort`, and this bridge never wrapped it, so on 2.x every
+       *  background child was un-stoppable by the lead (the host gives no dialog and
+       *  no card for a child the plugin observed rather than created).
+       *
+       *  What the host DOES give a plugin is `ctx.session.interrupt`, and its contract
+       *  is quoted from the v2 API page rather than inferred:
+       *
+       *    POST /api/session/{sessionID}/interrupt
+       *    "Returns interrupted=true when an active execution was interrupted and
+       *     false for the idle no-op."
+       *
+       *  That one sentence is why this seam must not collapse into a boolean: `false`
+       *  is a real answer meaning "nothing was running", not "the stop failed", and a
+       *  reply that called it 已停止 would be goal #6's overstated claim. Three
+       *  outcomes therefore survive to the caller, plus the two failure cases (no
+       *  seam, host threw):
+       *    stopped      — `interrupted === true`, the host stopped an active execution
+       *    idle         — `interrupted === false`, documented no-op
+       *    unknown      — the call answered but carried no `interrupted` boolean
+       *    no-seam      — this host's ctx has no `interrupt`
+       *    threw        — the host refused; its own message rides back
+       *
+       *  The shape is `session.interrupt({sessionID})` — the same flat object `get` and
+       *  `context` take (the rule AGENTS.md records for every `te`-wrapped method), and
+       *  the v1 `{path:{id}}` spellings are NOT retried here because a wrong key on THIS
+       *  method is not a decode failure but an interrupt of the wrong session.
+       *
+       *  `resume` is deliberately never sent: `resume=true` continues pending steering
+       *  input after the interrupt, which is the opposite of what a caller who asked to
+       *  cancel a runaway child wants.
+       *
+       *  Privacy: the key NAMES the host returned are recorded; the value text is not
+       *  (R6 binds a diagnostic). */
+      interrupt: async (opts: unknown) => {
+        const id = idOf(opts)
+        report.interruptTried++
+        if (!id || typeof domain?.interrupt !== "function") return { data: { outcome: "no-seam" } }
+        // Property access on the domain, never a captured reference (see `call`).
+        const fn = domain.interrupt as (a?: unknown) => unknown
+        try {
+          const raw = await fn.call(domain, { sessionID: id })
+          const rec = unwrap(raw)
+          report.interruptKeys = rec ? Object.keys(rec).slice(0, 16) : ["(non-object)"]
+          // `interrupted` can ride the returned object or one of the envelopes `unwrap`
+          // recognises (`{data}` / `{result}` / `{session}`) — reading only the outer one
+          // turns a real stop into `unknown`, and `unknown` reads as "we could not tell".
+          const carriers = [rec, (raw as { data?: unknown })?.data, (raw as { result?: unknown })?.result]
+          let flag: boolean | undefined
+          for (const cand of carriers) {
+            const v = (cand as { interrupted?: unknown } | null | undefined)?.interrupted
+            if (typeof v === "boolean") { flag = v; break }
+          }
+          if (flag === true) report.interruptConfirmed++
+          else if (flag === false) report.interruptRefused++
+          else report.interruptUnknown++
+          const note = carriers
+            .map((c) => (c as { message?: unknown } | null | undefined)?.message)
+            .find((m) => typeof m === "string") as string | undefined
+          return {
+            data: {
+              outcome: flag === true ? "stopped" : flag === false ? "idle" : "unknown",
+              ...(note ? { message: note } : {}),
+            },
+          }
+        } catch (err) {
+          report.interruptError = String((err as { message?: unknown })?.message ?? err).slice(0, 160)
+          return { data: { outcome: "threw", message: report.interruptError } }
         }
       },
     },

@@ -1684,4 +1684,147 @@ console.log("13. the host's own sub-agents are collectable (decision 4, 2026-09-
   assert.ok(!/段落散文 5：/.test(capped.text), "and it is the paragraph prose that pays")
   console.log("   OK (measured ack shape → registry row → tm_join, Team-scoped, provenance-labelled)")
 }
-console.log("\ntest-v2-adapter.mjs: ALL PASS (12 groups)")
+
+console.log("14. the lead can STOP a background child — five verdicts, not one success word (#33)")
+{
+  const { cancelOutcomeOf, cancelVerdictLine, cancelOutcomeParts, cancelOutcomeLabel } =
+    await import("./dist/tm/dispatch.js")
+
+  // (a) the pure reader: the host's own contract is "interrupted=true when an active
+  //     execution was interrupted and FALSE for the idle no-op", so `false` is a real
+  //     answer and NOT a failure. Five outcomes must stay five.
+  assert.equal(cancelOutcomeOf({ data: { outcome: "stopped" } }).outcome, "stopped", "stopped rides the adapter envelope")
+  assert.equal(cancelOutcomeOf({ data: { outcome: "idle" } }).outcome, "idle", "the idle no-op keeps its own verdict")
+  assert.equal(cancelOutcomeOf({ data: { outcome: "unknown" } }).outcome, "unknown", "no boolean = unconfirmed, not stopped")
+  assert.equal(cancelOutcomeOf({ data: { outcome: "no-seam" } }).outcome, "no-seam", "a host with no interrupt says so")
+  assert.equal(cancelOutcomeOf({ ok: false, message: "boom" }).outcome, "threw", "a host refusal is its own outcome")
+  assert.equal(cancelOutcomeOf({ data: { outcome: "weird" } }).outcome, "unknown", "an unrecognisable result is NOT read as a stop")
+  assert.equal(cancelOutcomeOf(null).outcome, "threw", "an empty client result is a failure, not a silence")
+  // Each verdict says something different, and none of them says 已停止 for a case nobody
+  // observed — the shape goal #6 refuses.
+  assert.match(cancelVerdictLine("idle"), /没有活动执行/, "idle names the host's no-op")
+  assert.match(cancelVerdictLine("unknown"), /我不知道/, "unconfirmed admits it")
+  assert.ok(!/已停止/.test(["stopped", "idle", "unknown", "no-seam", "threw"].map((o) => cancelVerdictLine(o)).join("|")), "no collapse into one success word")
+  assert.equal(cancelOutcomeParts({ idle: 2, stopped: 1 }).join(" "), `1 ${cancelOutcomeLabel("stopped")} 2 ${cancelOutcomeLabel("idle")}`, "counted per outcome, fixed order")
+  assert.deepEqual(cancelOutcomeParts({}), [], "an absent outcome prints nothing rather than 0")
+
+  // (b) the seam end to end on a booted personality: a registered host child, then
+  //     tm_join { cancel: true } reaches ctx.session.interrupt with THAT child's id.
+  //     This is the whole user complaint — before #33 the bridge wrapped `abort` for
+  //     nothing, so on 2.x cancel:true could not stop a child at all.
+  const bootStop = async (stop, name) => {
+    const fakeT = makeFakeCtx({
+      directory: workspace(name),
+      agents: sixAgents,
+      sessionData: {
+        sessions: { ses_kidS: { parentID: "ses_leadS", agent: "tester" } },
+        messages: { ses_kidS: [{ id: "m1", time: { created: 1 }, type: "text", text: "STATUS: 半成品" }] },
+        stop,
+      },
+    })
+    const boot = await withCapturedConsole(() => plugin.setup(fakeT.ctx))
+    const by = Object.fromEntries(fakeT.tools.list().map((t) => [t.id ?? t.name, t]))
+    const CTXT = { sessionID: "ses_leadS", agent: "team", messageID: "msg_s", id: "call_s" }
+    const fire = (which, input) => fakeT.hook(`tool.execute.${which}`).handlers.forEach((h) => h(input))
+    fire("before", { tool: "subagent", sessionID: "ses_leadS", agent: "team", input: { agent: "tester", background: true, description: "跑飞的用例", prompt: "P" } })
+    fire("after", {
+      tool: "subagent", sessionID: "ses_leadS", agent: "team",
+      result: { content: [{ type: "text", text: "The subagent is working in the background (sessionID: ses_kidS)." }], metadata: { sessionID: "ses_kidS", status: "running" }, output: "" },
+    })
+    return { by, CTXT, boot, fakeT }
+  }
+
+  {
+    const { by, CTXT, boot, fakeT } = await bootStop({ interrupted: true }, "stop-confirmed")
+    const out = textOf(await by.tm_join.execute({ cancel: true }, CTXT))
+    assert.deepEqual(fakeT.stopCalls, [{ sessionID: "ses_kidS" }], "the stop reached the host with the CHILD's id, not the lead's")
+    assert.match(out, /已由宿主中断/, "and the row carries the confirmed verdict")
+    assert.match(out, /1 已由宿主中断/, "counted in the summary")
+    assert.ok(!/宿主无 abort 接口/.test(out), "the old sentence — true for a whole release — is no longer the answer on a host that DOES give interrupt")
+    await boot.value()
+  }
+  {
+    // The idle no-op must not be reported as a stop, and must not be reported as a
+    // failure either. It means our registry row was stale.
+    const { by, CTXT, boot, fakeT } = await bootStop({ interrupted: false }, "stop-idle")
+    const out = textOf(await by.tm_join.execute({ cancel: true }, CTXT))
+    assert.equal(fakeT.stopCalls.length, 1, "one attempt")
+    assert.match(out, /没有活动执行/, "the host's no-op is said as a no-op")
+    assert.match(out, /1 空闲未中断/, "and counted as its own outcome")
+    assert.ok(!/aborted on request/.test(out), "a no-op is never laundered into v1's confirmed wording")
+    await boot.value()
+  }
+  {
+    const { by, CTXT, boot } = await bootStop({ status: "running" }, "stop-no-boolean")
+    const out = textOf(await by.tm_join.execute({ cancel: true }, CTXT))
+    assert.match(out, /没有给出 interrupted 布尔|未确认/, "a call that returned no boolean is UNCONFIRMED")
+    assert.match(out, /1 未确认/, "…and lands in its own tally")
+    await boot.value()
+  }
+  {
+    const { by, CTXT, boot } = await bootStop(new Error("SessionNotFoundError"), "stop-throws")
+    const out = textOf(await by.tm_join.execute({ cancel: true }, CTXT))
+    assert.match(out, /中断被宿主拒绝|被宿主拒绝/, "a host refusal is named as one")
+    assert.match(out, /SessionNotFoundError/, "…with the host's own reason, not a bare 失败")
+    await boot.value()
+  }
+  {
+    // A host whose ctx has no `interrupt` at all: the refusal must name the MISSING SEAM,
+    // which is the rule AGENTS.md records for the adoption path too.
+    const { by, CTXT, boot } = await bootStop(null, "stop-no-seam")
+    const out = textOf(await by.tm_join.execute({ cancel: true }, CTXT))
+    assert.match(out, /没给中断子会话的缝|无中断缝/, "no seam is said as no seam")
+    await boot.value()
+  }
+
+  // (c) v1's path is untouched. `src/host/v1.ts` is FROZEN and its shipped test pins the
+  //     exact wording, so a client that exposes `abort` must still be routed there — the
+  //     new `interrupt` branch is a FALLBACK, never a replacement. Order is the invariant.
+  {
+    const { createTmTools } = await import("./dist/tm/index.js")
+    const abortCalls = []
+    let interruptReached = 0
+    const rt = await createTmTools({
+      directory: workspace("stop-v1-frozen"),
+      project: "",
+      $: undefined,
+      client: {
+        session: {
+          messages: async () => ({ data: [] }),
+          status: async () => ({ data: { ses_old: { type: "busy" } } }),
+          abort: async function (o) { abortCalls.push(o); return { ok: true, data: {} } },
+          interrupt: async () => { interruptReached++; return { data: { outcome: "stopped" } } },
+        },
+      },
+    })
+    rt.registerHostChild({ sessionID: "ses_old", parentSessionID: "ses_v1", agent: "tester", label: "遗留" })
+    // Read the RAW v1 result shape here, not the v2 one: this leg deliberately bypasses
+    // `bindV2Tool`, because what it pins is the branch the tool itself takes, and wrapping
+    // it in the v2 translation would test the translation instead.
+    const raw = await rt.tools.tm_join.execute({ cancel: true }, { agent: "team", sessionID: "ses_v1" })
+    const out = String(raw?.output ?? "") + String(raw?.content ?? "")
+    assert.deepEqual(abortCalls, [{ path: { id: "ses_old" } }], "an abort-capable client still goes through client.session.abort")
+    assert.equal(interruptReached, 0, "and never reaches the v2 interrupt branch — the ORDER is the frozen-personality guard")
+    assert.match(out, /aborted on request/, "with its byte-exact shipped wording")
+    await rt.dispose()
+  }
+
+  // (d) the claim is falsifiable after the fact: the counters ride the trajectory, and the
+  //     capability matrix has a row for the stop seam. Without these, "v2 can cancel" would
+  //     be a sentence in a README rather than something tm_stats can be checked against.
+  const v2src = fs.readFileSync(fileURLToPath(new URL("./dist/host/v2.js", import.meta.url)), "utf8")
+  assert.match(v2src, /stop_confirmed/, "teardown records the confirmed count")
+  assert.match(v2src, /stop_refused/, "…and the idle no-op separately")
+  const capsrc = fs.readFileSync(fileURLToPath(new URL("./dist/host/v2-capabilities.js", import.meta.url)), "utf8")
+  assert.match(capsrc, /ctx\.session\.interrupt/, "the capability matrix carries the stop seam as a row")
+  assert.match(capsrc, /idle no-op/, "…and says what the host's false means")
+  // tm_stats must be able to ANSWER "can the lead kill a child?" after the fact. A claim
+  // with no readback path is the same defect as a lie (goal #6), and the zero case has to
+  // say "nobody tried" rather than read as a broken host.
+  const ssrc = fs.readFileSync(fileURLToPath(new URL("./dist/tm/stats.js", import.meta.url)), "utf8")
+  assert.match(ssrc, /stop_tried/, "tm_stats renders the stop attempt count")
+  assert.match(ssrc, /stop_refused/, "…with the idle no-op kept separate from a real stop")
+  assert.match(ssrc, /没人用过 cancel:true/, "…and an untested seam says so instead of implying a defect")
+  console.log("   OK (stop reaches the host; five verdicts stay distinct; v1 byte-exact; counters printed)")
+}
+console.log("\ntest-v2-adapter.mjs: ALL PASS (13 groups)")

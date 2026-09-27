@@ -497,6 +497,16 @@ export function renderStats(
             (Number(line.session_context_ok) > 0 ? ` · context 返回 ${line.session_context_ok} 次，键=${line.session_context_keys}` : " · context 未成功") +
             (line.session_get_error ? ` · 最后一次错误：${String(line.session_get_error).slice(0, 90)}` : "")
           : "",
+        // #33 — the STOP seam, printed separately from the read seam because the two fail
+        // for different reasons and the user's question ("can the lead kill it?") has only
+        // this row as an answer. `tried=0` is not evidence the host lacks it, so that case
+        // says nobody asked, rather than reading as a defect.
+        line.stop_tried !== undefined
+          ? `中断缝：试 ${line.stop_tried} 次 → 宿主确认停止 ${line.stop_confirmed ?? 0} · idle no-op ${line.stop_refused ?? 0} · 未回布尔 ${line.stop_unknown ?? 0}` +
+            (line.stop_keys ? ` · 键=${line.stop_keys}` : "") +
+            (line.stop_error ? ` · 最后一次错误：${String(line.stop_error).slice(0, 90)}` : "") +
+            (Number(line.stop_tried) === 0 ? "（本进程没人用过 cancel:true，这一行还证明不了宿主真能停）" : "")
+          : "",
       ].filter(Boolean)
       // Each row carries WHEN that process booted and which run it was, because without
       // it a reader cannot tell the current build from an older one in the same window —

@@ -357,6 +357,10 @@ export const v2Personality: V2Plugin = {
             session_get_resolved: sessionReader.report.resolved,
             session_context_ok: sessionReader.report.contextOk,
             session_context_keys: sessionReader.report.contextKeys.join(","),
+            // #33: the stop seam rides the throttled snapshot too, so an interrupted round
+            // still records whether cancel:true reached the host at all.
+            stop_tried: sessionReader.report.interruptTried,
+            stop_confirmed: sessionReader.report.interruptConfirmed,
             completion_context_fired: completion.report.contextFired,
             completion_skipped: completion.report.skipped,
             completion_settled: completion.report.settled,
@@ -577,6 +581,14 @@ export const v2Personality: V2Plugin = {
         // path the tool actually consumes.  Deriving it from ctx rather than
         // hard-coding `false` is what keeps that honest either way.
         eventFeed: feed.report,
+        // #33: the stop seam's counters, read off the bridge the tool actually calls.
+        stop: {
+          tried: sessionReader.report.interruptTried,
+          confirmed: sessionReader.report.interruptConfirmed,
+          refused: sessionReader.report.interruptRefused,
+          unknown: sessionReader.report.interruptUnknown,
+          error: sessionReader.report.interruptError,
+        },
         hasTodoSeam: typeof (ctx as { session?: { todo?: unknown } }).session?.todo === "function",
         hasAsk: typeof (ctx as { tool?: unknown }).tool === "function",
         storageState: storageProbe.state,
@@ -706,6 +718,16 @@ export const v2Personality: V2Plugin = {
           session_context_ok: sessionReader.report.contextOk,
           session_context_keys: sessionReader.report.contextKeys.join(","),
           session_get_error: sessionReader.report.lastError ?? sessionReader.report.contextError ?? "",
+          // #33 — the stop path, counted rather than assumed. `stop_refused` is the host's
+          // documented idle no-op (interrupted=false), which is a REAL answer and not a
+          // failure; `stop_unknown` is the case where the call worked and gave no boolean,
+          // and only a human or the next host build can tell which of the two we are in.
+          stop_tried: sessionReader.report.interruptTried,
+          stop_confirmed: sessionReader.report.interruptConfirmed,
+          stop_refused: sessionReader.report.interruptRefused,
+          stop_unknown: sessionReader.report.interruptUnknown,
+          stop_keys: sessionReader.report.interruptKeys.join(","),
+          stop_error: sessionReader.report.interruptError ?? "",
           completion_context_fired: completion.report.contextFired,
           completion_prompt_fired: completion.report.promptFired,
           completion_skipped: completion.report.skipped,

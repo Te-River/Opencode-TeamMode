@@ -45,6 +45,10 @@ interface Inputs {
   /** The `ctx.event.subscribe()` feed (#8).  `received` is the observation that
    *  makes this row `ok` rather than `declared`: an event that actually arrived. */
   eventFeed?: { active: boolean; received: number; forwarded: number; unknown: Record<string, number>; stopped?: string }
+  /** #33 — what `tm_join { cancel: true }` actually got from `ctx.session.interrupt`.
+   *  Absent means the bridge never wrapped the seam, which is itself the row's story:
+   *  for a whole release v2 had no stop path at all, and nothing printed that fact. */
+  stop?: { tried: number; confirmed: number; refused: number; unknown: number; error?: string }
 }
 
 const has = (list: readonly string[], want: (x: string) => boolean) => list.some(want)
@@ -175,6 +179,34 @@ export function v2CapabilityRows(i: Inputs): CapabilityRow[] {
             : ""),
     },
   ]
+  // #33 — can the lead STOP a background child at all? Before this the answer was "no",
+  // and no row said so: tm_join's cancel:true fell through to 宿主无 abort 接口 in a tool
+  // reply only the model sees, so a user asking "kill it" got silence from the panel and
+  // the plugin's own capability table claimed nothing about it.
+  rows.push({
+    seam: "ctx.session.interrupt",
+    feature: "tm_join { cancel: true } 停掉跑飞的后台子代理",
+    // `ok` requires the host to have confirmed a stop with interrupted=true. attempted-but-
+    // never-confirmed is `declared`: the seam is wired, nobody has exercised it. An absent
+    // interrupt domain is `missing`, which is the honest row for "this host gave no stop
+    // path" and the only way a future upgrade that drops it becomes a line rather than a
+    // rumour.
+    state: !i.stop
+      ? "declared"
+      : i.stop.confirmed > 0
+        ? "ok"
+        : i.stop.tried > 0
+          ? "declared"
+          : domains.includes("session")
+            ? "declared"
+            : "missing",
+    evidence: i.stop && i.stop.confirmed > 0 ? "runtime" : "static",
+    note:
+      i.stop && i.stop.tried
+        ? `已试 ${i.stop.tried} 次：宿主确认中断 ${i.stop.confirmed} · idle no-op ${i.stop.refused} · 未回布尔 ${i.stop.unknown}` +
+          (i.stop.error ? `（最后一次宿主错误：${i.stop.error}）` : "")
+        : "缝已接上（POST /api/session/{id}/interrupt 的契约是 interrupted=true / false=idle no-op），本进程还没被 cancel:true 用过",
+  })
   if (typeof i.temperature === "number") {
     rows.push({
       seam: "options.temperature",

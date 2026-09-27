@@ -71,6 +71,10 @@ export interface ChildRecord {
    *  运行中 forever would be the same overstated claim in the opposite direction.  A
    *  presumption is printed as one. */
   settleSource?: "event" | "parent-idle" | "injection"
+  /** #33: the verdict of a stop attempt on THIS row, in the tool's own words. Printed by
+   *  `renderChildLine` so a lead skimming the table cannot read five different outcomes as
+   *  one "已取消". Absent = no stop was attempted on this child. */
+  cancelNote?: string
 }
 
 /** A child seen being dispatched by the host's own tool, turned into a registry row.
@@ -126,6 +130,9 @@ interface SessionApi {
   get?: (opts: unknown) => Promise<unknown>
   status?: (opts: unknown) => Promise<unknown>
   abort?: (opts: unknown) => Promise<unknown>
+  /** #33 — v2's stop seam, wrapped by `v2-session-client.ts` around the host's own
+   *  `ctx.session.interrupt`. Present on this personality, absent on the v1 client. */
+  interrupt?: (opts: unknown) => Promise<unknown>
   /** GET /session/{id}/children -> Session[] — the host's own session tree,
    *  i.e. the recovery source when this process never saw the dispatch. */
   children?: (opts: unknown) => Promise<unknown>
@@ -371,7 +378,10 @@ export function renderChildLine(c: ChildRecord, elapsedMs: number): string {
   const secs = Math.round(elapsedMs / 1000)
   const tag =
     c.state === "running" ? `运行中 ${secs}s` : c.state === "error" ? `失败：${shorten(c.error ?? "", 80)}` : `已完成 ${secs}s`
-  return `${c.sessionID} · ${c.agent} · "${c.label}" · ${tag}${c.adopted ? " ·（本进程重启后由宿主会话树接管）" : ""}${
+  // #33: a row the host reported IDLE for a stop attempt is not a delivery — the lead
+  // needs to see that the child was never running, not a bare 已完成.
+  const stop = c.state === "idle" && c.cancelNote ? ` ·${c.cancelNote}` : ""
+  return `${c.sessionID} · ${c.agent} · "${c.label}" · ${tag}${stop}${c.adopted ? " ·（本进程重启后由宿主会话树接管）" : ""}${
     c.via === "host-injection" && c.settleSource === "parent-idle"
       ? " ·（宿主子代理：随父会话空闲推定已结算，宿主没给过这个子会话的 idle 事件）"
       : c.via === "host-injection"
@@ -424,6 +434,71 @@ export function parseIdList(raw: unknown): string[] | null {
     }
   }
   return s.split(",").map((x) => x.trim().replace(/^["']|["']$/g, "")).filter(Boolean)
+}
+
+/** #33 — the FIVE outcomes a stop attempt can produce, kept as data because the reply
+ *  must not collapse them into one success word. The host's own contract for
+ *  `POST /api/session/{id}/interrupt` is "interrupted=true when an active execution was
+ *  interrupted and FALSE for the idle no-op", so `idle` is a real answer meaning
+ *  "nothing was running" — calling it 已停止 is goal #6's overstated claim, and calling it
+ *  失败 is the same claim in the other direction. `unknown` is the honest third: the call
+ *  worked and the host gave no boolean. */
+export type CancelOutcome = "stopped" | "idle" | "unknown" | "no-seam" | "threw"
+
+/** Read the stop verdict out of the v2 adapter's `{data:{outcome,message}}`. Anything
+ *  unrecognisable is `unknown`, never `stopped` — a shape we cannot read is not evidence
+ *  a child died. */
+export function cancelOutcomeOf(res: unknown): { outcome: CancelOutcome; note?: string } {
+  const un = unwrapClientResult(res)
+  if (!un.ok) return { outcome: "threw", note: un.message }
+  const data = un.data as { outcome?: unknown; message?: unknown } | null | undefined
+  const o = String(data?.outcome ?? "")
+  const known: CancelOutcome[] = ["stopped", "idle", "unknown", "no-seam", "threw"]
+  if ((known as string[]).includes(o)) return { outcome: o as CancelOutcome, note: typeof data?.message === "string" ? data.message : undefined }
+  return { outcome: "unknown", note: o ? `宿主返回了没认出的结果（${shorten(o, 24)}）` : "宿主没有返回 interrupted 字段" }
+}
+
+/** The line the lead reads, per outcome. Terse and falsifiable: each names what was
+ *  OBSERVED, and the escape hatch for the cases where nothing was observed. */
+export function cancelVerdictLine(outcome: CancelOutcome, note?: string): string {
+  const why = note ? `：${shorten(note, 80)}` : ""
+  switch (outcome) {
+    case "stopped":
+      return "已由宿主中断（interrupted=true）"
+    case "idle":
+      return "宿主回 idle no-op——它当时没有活动执行，所以我没有停掉任何东西"
+    case "unknown":
+      return `中断调用成功，但宿主没给出 interrupted 布尔${why}——是否真的停了，我不知道`
+    case "no-seam":
+      return "这个宿主没给中断子会话的缝（session.interrupt / abort 都没有），未取消"
+    case "threw":
+      return `中断被宿主拒绝${why}`
+  }
+}
+
+/** Short name for one outcome, used in the count line. */
+export function cancelOutcomeLabel(o: CancelOutcome): string {
+  return o === "stopped"
+    ? "已由宿主中断"
+    : o === "idle"
+      ? "空闲未中断"
+      : o === "unknown"
+        ? "未确认"
+        : o === "no-seam"
+          ? "无中断缝"
+          : "被宿主拒绝"
+}
+
+/** The summary counts, spelled the way the lead has to quote them. Fixed order so a
+ *  rerun prints the same line, and an absent outcome prints nothing rather than "0". */
+export function cancelOutcomeParts(tally: Partial<Record<CancelOutcome, number>>): string[] {
+  const order: CancelOutcome[] = ["stopped", "idle", "unknown", "threw", "no-seam"]
+  const out: string[] = []
+  for (const o of order) {
+    const n = tally[o]
+    if (n) out.push(`${n} ${cancelOutcomeLabel(o)}`)
+  }
+  return out
 }
 
 export function buildDispatchTools(deps: DispatchDeps): {
@@ -772,24 +847,61 @@ export function buildDispatchTools(deps: DispatchDeps): {
           still_running: stillRunning.length,
           repeat: repeatWait,
         })
+        // #33 — the STOP path. Runs BEFORE the header is built, because the per-child
+        // verdict belongs in the child's own row, and the summary line below must be able
+        // to say which of the outcomes it is counting.
+        let cancelTally: Partial<Record<CancelOutcome, number>> | null = null
         if (args.cancel === true || args.cancel === "true") {
+          cancelTally = {}
           for (const r of stillRunning) {
+            let outcome: CancelOutcome
+            let note: string | undefined
             if (typeof api?.abort === "function") {
+              // v1's path, byte-exact and FIRST: the personality is frozen and a shipped
+              // test pins "aborted on request".
               const un = unwrapClientResult(await api.abort({ path: { id: r.sessionID } }))
+              outcome = un.ok ? "stopped" : "threw"
               r.error = un.ok ? "aborted on request" : `abort failed: ${shorten(un.message ?? "", 60)}`
+              r.state = "error"
+            } else if (typeof api?.interrupt === "function") {
+              const got = cancelOutcomeOf(await api.interrupt({ path: { id: r.sessionID } }))
+              outcome = got.outcome
+              note = got.note
+              // `idle` is the host saying there was no active execution: the registry row
+              // was stale, not a failed stop. Anything else closes as undelivered.
+              r.state = outcome === "idle" ? "idle" : "error"
+              r.cancelNote = cancelVerdictLine(outcome, note)
+              if (r.state === "error") r.error = r.cancelNote
             } else {
+              outcome = "no-seam"
               r.error = "宿主无 abort 接口，未取消"
+              r.state = "error"
             }
-            r.state = "error"
             r.finishedAt = now()
-            log({ step_id: "join", event: "cancel", child: r.sessionID, agent: r.agent, ok: r.error.startsWith("aborted") })
+            cancelTally[outcome] = (cancelTally[outcome] ?? 0) + 1
+            log({ step_id: "join", event: "cancel", child: r.sessionID, agent: r.agent, outcome, ok: outcome === "stopped" })
           }
+          log({
+            step_id: "join",
+            event: "cancel_summary",
+            count: stillRunning.length,
+            outcomes: cancelOutcomeParts(cancelTally).join(" / "),
+          })
         }
         const sums = summarizeStates(mine)
         const header = [
           `派发汇总：${sums.idle} 完成 / ${sums.running} 运行中 / ${sums.error} 失败${settled ? "（全部已结算）" : `（未等到全部结算 · 本次已等 ${Math.round((now() - waitStart) / 1000)}s）`}`,
           ...mine.map((r) => renderChildLine(r, (r.finishedAt ?? now()) - r.startedAt)),
         ]
+        if (cancelTally) {
+          const parts = cancelOutcomeParts(cancelTally)
+          header.push(
+            `取消尝试：${parts.join(" · ") || "没有运行中的子代理可停"} —— ` +
+              `只有「已由宿主中断」是宿主确认过的停止；「空闲未中断」说明它当时没在活动执行里` +
+              `（登记行过时了，不是失败）；「未确认」说明中断调用成功但宿主没回 interrupted 布尔。` +
+              `这三种结论不要混成一句"已取消"转述给用户。`,
+          )
+        }
         if (stillRunning.length && !settled) {
           header.push(
             `⏱ 还有 ${stillRunning.length} 个子代理在跑 —— 先告诉用户你在等谁、在等什么、这一轮不是交付，再决定是等还是去干活。` +

@@ -68,6 +68,8 @@ export function makeFakeCtx({
 
   const warnLines = []
   const errorLines = []
+  /** #33: which child sessions a stop attempt actually reached, in order. */
+  const stopCalls = []
 
   return {
     ctx: {
@@ -88,6 +90,12 @@ export function makeFakeCtx({
       // that always answers would let a plugin pass while the real host refuses — and the
       // shapes below are the ones measured on 2.0.18 (`get` → {id,parentID,…}, `context` →
       // an array of {id,time,text,type}), not a guess.  See src/host/v2-transcript.ts.
+      //
+      // `session.interrupt` (#33) is seeded through `stop`, so a test can hand back each of
+      // the host's documented answers separately — `{interrupted:true}` (an active execution
+      // was stopped), `{interrupted:false}` (the idle no-op), no boolean at all, or a throw.
+      // A fake that always said `true` would let the tool claim 已停止 against a host that
+      // never stops anything, which is the exact overstatement the real code refuses.
       session: sessionData
         ? {
             hook: mkHook("session"),
@@ -99,6 +107,18 @@ export function makeFakeCtx({
             async context({ sessionID } = {}) {
               return sessionData.messages?.[sessionID] ?? []
             },
+            ...(sessionData.stop
+              ? {
+                  async interrupt({ sessionID } = {}) {
+                    stopCalls.push({ sessionID })
+                    const verdict = typeof sessionData.stop === "function"
+                      ? sessionData.stop(sessionID)
+                      : sessionData.stop
+                    if (verdict instanceof Error) throw verdict
+                    return verdict
+                  },
+                }
+              : {}),
           }
         : { hook: mkHook("session") },
       shell: { hook: mkHook("shell") },
@@ -127,6 +147,9 @@ export function makeFakeCtx({
     hookNames: () => [...hooks.keys()],
     consoleWarn: warnLines,
     consoleError: errorLines,
+    /** #33 — the stop attempts this fake actually received, so a test can pin that a
+     *  cancel reached the host with the child's id rather than trusting the tool's prose. */
+    stopCalls,
   }
 }
 
