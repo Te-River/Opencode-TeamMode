@@ -5,6 +5,54 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 versioning is semver (the 1.4.x train shipped under working labels; the
 registry saw 1.5.0 as the install-script fix release).
 
+## [Unreleased]
+
+> **What this change does and does not claim.** The stop seam is wired to the host's documented
+> `session.interrupt` and verified end to end against the fake ctx — a cancel call really reaches
+> the host carrying the CHILD's session id, and all five verdicts render. NOT verified live: no
+> 2.0.x host was present in the sandbox where this was built, so "the host confirms
+> `interrupted:true` for a background child" is still the API page's promise, not our
+> measurement. The capability row is `declared` until a host confirms one, and `tm_stats` says
+> so in words (`本进程没人用过 cancel:true，这一行还证明不了宿主真能停`).
+
+### Fixed
+
+- **A background child could not be stopped by the lead on OpenCode 2.x (#33).**
+  `tm_join { cancel: true }` was written against v1's `client.session.abort`, and the v2 session
+  bridge never wrapped the equivalent seam, so every cancel on 2.x answered
+  `宿主无 abort 接口，未取消` — a tool reply that was true about our bridge and useless to the
+  user, who had no way to stop a runaway child from Team. No new tool was needed: the host gives
+  plugins `ctx.session.interrupt` (`POST /api/session/{id}/interrupt`), and `tm_join` already
+  takes `ids`, so `{ ids: ["ses_…"], cancel: true }` stops ONE named child and a bare
+  `cancel: true` stops every still-running one. `src/host/v2-session-client.ts` bridges it,
+  calling the method with the flat `{sessionID}` shape every other `te`-wrapped ctx method uses.
+  Two deliberate calls there: `{path:{id}}` is NOT retried on this method (a wrong key on a read
+  fails safe; on a stop it interrupts the wrong session), and `resume=true` is never sent,
+  because "continue with pending steering input" is the opposite of what a caller who asked to
+  cancel wants.
+
+### Added
+
+- **The stop keeps five verdicts instead of one success word.** Per goal #6: `stopped` (the host
+  answered `interrupted:true` — the only confirmed stop), `idle` (the host's documented NO-OP
+  answer: the call succeeded and nothing was running, so our row was stale — never printed as
+  已停止 and never as a failure), `unknown` (the call worked, no boolean came back, so we say we
+  don't know), `no-seam`, and `threw` (carrying the host's own reason). Each is named per child
+  in the reply, counted in the trajectory (`cancel` + `cancel_summary`), printed in the shutdown
+  row (`stop_tried/confirmed/refused/unknown/keys`), and read back from `tm_stats`, whose boot
+  row shows the counters and admits when nothing has used them yet. The reply's summary line
+  tells the lead that only one of the five is a host-confirmed stop, so "已取消" cannot be
+  reconstructed by paraphrase. An idle child keeps `state:"idle"` and carries its verdict line;
+  anything else lands as `error` with the same text in `r.error`.
+- **A capability row for the stop.** `ctx.session.interrupt` is `declared` at boot — the host
+  documents it, we have not seen it confirm anything yet — and becomes `ok` only after a real
+  `interrupted:true`. `src/host/v2.ts` ships the counters in both the throttled mid-run snapshot
+  and the teardown row, so a feature that silently stopped working is a row, not a rumour.
+- **v1 stays frozen, and the ordering is now pinned by a test.** On an abort-capable client the
+  `abort` branch runs FIRST and byte-exact (`aborted on request`); `test-v2-adapter.mjs` group 14
+  asserts `interruptReached === 0` there, because that ordering IS the frozen-personality guard,
+  and a group that only checks "cancel works on v2" would pass whether or not v1 ever regressed.
+
 ## [1.6.1] - 2026-09-26
 
 > **What this release does and does not claim about OpenCode 2.x.** Verified live on real

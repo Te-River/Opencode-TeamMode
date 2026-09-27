@@ -313,3 +313,55 @@ that only inspects its own ctx): the plugin ctx carries `permission.list/get/rep
 `experimental.terminal.read`, all decoding `{sessionID}`; and `ctx.rpc` is a function of arity 1
 whose convention has NOT been read. `permission.reply` remains uncalled by design — answering a
 dialog for the user is self-allowing. Recorded in `docs/research/host-http-api.md` §4/§6.
+
+
+### 2026-09-28 — the stop seam, and why `false` is an answer `[D]` `[R]`
+
+The user's complaint was "the background child cannot be stopped by the lead". The diagnosis was
+not a missing feature: `tm_join` has had `cancel: true` (and `ids`) since it was written against
+v1's `client.session.abort`. What was missing is that the v2 bridge (`v2-session-client.ts`)
+wrapped `create/get/messages/context` and never wrapped a stop, so every cancel on 2.x fell into
+the `no abort seam` branch and printed 宿主无 abort 接口，未取消 — an honest sentence about our
+bridge that left the user with no way out. The host HAS the seam: `[D]` the v2 API page's
+`session.interrupt`, and the downloaded `/v2/openapi.json` spells the whole contract —
+
+```
+POST /api/session/{sessionID}/interrupt      (sessionID pattern ^ses; optional ?resume=true|false)
+  200 SessionInterruptResponse
+      "Interrupt active execution owned by this OpenCode process. Returns interrupted=true when
+       an active execution was interrupted and false for the idle no-op. When resume=true,
+       execution resumes pending steering input and next-in-line control items (manual
+       compaction, moves) while queued prompts remain parked."
+  400 InvalidRequestErrorEncoded   401 UnauthorizedErrorEncoded
+  404 SessionNotFoundErrorEncoded
+```
+
+Three things were read out of that text and shaped the implementation.
+
+- `interrupted:false` is a SUCCESS response meaning "nothing was running". `[R]` It is therefore
+  neither 已停止 nor a failure: our registry row was stale. That single sentence is why the fix is
+  five verdicts (`stopped/idle/unknown/no-seam/threw`) instead of a boolean, and why an `idle`
+  child settles to `state:"idle"` while everything else goes to `error` with the host's own words
+  in `r.error`. Collapsing them would be goal #6's exact failure mode — one success word for five
+  different facts.
+- The `{path:{id}}` fallback that the read methods carry was NOT extended here. `[R]` A wrong key
+  on `context` yields an empty read; a wrong key on a STOP can interrupt whichever session the
+  host resolved instead. So `interrupt` sends the flat `{sessionID}` — the shape every other
+  `te`-wrapped ctx method decodes (measured for `create/get/context`) — and nothing else.
+- `resume=true` is deliberately never sent. `[D]` It continues pending steering input, which is
+  the opposite intent of a caller who just asked to cancel; a caller who wants that has the host's
+  own UI.
+
+The probe that was NOT done, and the claim that therefore does not exist: no live 2.0.x host was
+reachable from the sandbox where this was written, so `interrupted:true` for a real background
+child is the API page's promise, not our measurement. That is why the capability row starts
+`declared`, why `ok` requires `confirmed > 0`, and why `tm_stats`'s stop row appends 本进程没人用
+过 cancel:true，这一行还证明不了宿主真能停 when the counter is zero. The first live round that
+stops a child is the evidence; until then the fake-ctx test proves only that the call leaves us
+with the CHILD's id and that the verdicts stay distinct on the way back.
+
+The frozen-personality half came out of the same file: v1's `abort` branch stays first and
+byte-exact (`aborted on request`), and `test-v2-adapter.mjs` group 14 asserts
+`interruptReached === 0` on a client that has both seams. That ordering is the guard — a test that
+only checked "cancel works on v2" would still pass if v1 had silently been rerouted.
+
