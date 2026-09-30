@@ -30,6 +30,69 @@ registry saw 1.5.0 as the install-script fix release).
   fails safe; on a stop it interrupts the wrong session), and `resume=true` is never sent,
   because "continue with pending steering input" is the opposite of what a caller who asked to
   cancel wants.
+- **The test runner and the browser suite were mis-reporting themselves (`af7bcf0`, B1–B5).**
+  `survivorsAfter` counted a REUSED Windows pid as a surviving browser child — it now filters
+  descendants by executable identity, the gate the product reaper already applies. The
+  network-error assertion rejected gate errors, contradicting its own message. The end-line regex
+  did not recognize `browser: OK`, so a real `AssertionError` was reported as a silent early exit
+  — exactly the shape the "an assertion that cannot announce itself" rule exists to catch. The
+  real-launch leg now retries once, bounded, and prints the untruncated launching path. The group
+  count is derived from the printed headers instead of a hand-written number.
+- **Every role was told to call a tool the 2.x host does not deliver that way (`7c1f666`, A5+A8).**
+  On v2 every `tm_*` tool reaches a model only through the Code Mode catalog, so a role that
+  followed the prompt literally got `No tool named "tm_board_write" is currently available` and
+  hand-wrote the board file — bypassing never-overwrite, the `NN`/`-rN` revision family, and the
+  role name taken from the host's `ctx.agent` rather than an argument. The contract now states the
+  `execute` → `tools.tm_board_write({…})` shape as a host-neutral conditional, so the v1 sentence
+  stays the primary instruction and neither personality is told a lie about the other. And the
+  roles' file-tool sentence was wrong twice over: architect and researcher lack a WRITE-CAPABLE
+  file tool, not all tools (measured on 2.0.20, `architect` still carries 4) — unified across
+  `shared.ts`, `lead.ts` and `note.ts`. A new `test-blackboard.mjs` group 8 pins both, its
+  counter-example verified RED before removal.
+- **The pt07 benchmark could exit 0 having judged nothing (`c5b9eec`, C1–C6).** `judge.mjs` read
+  `t.judge.checkId` while the runner stored the spec in `t.judgeSpec`, so `--results` printed
+  `unknown checkId: undefined` for all 8 tasks and still succeeded — and `--write` would have
+  overwritten the stored 8/8 pass with `fail`. Now `resolveSpec()` takes either spelling and a
+  missing spec throws (CLI exit 2); a per-file fixture fingerprint recorded at run start makes a
+  workspace the agent itself rewrote STALE (exit 3, not judged) instead of producing a fabricated
+  verdict, with `--allow-fixture-drift` judging while labelling the output non-reproducible; the
+  runner resets the fixture before a run and refuses on residue under `--no-reset`; an unusable
+  tool face (`/experimental/tool/ids` answers HTTP 200 with the SPA's `index.html` on 2.x) aborts
+  before the first model call (exit 4) and writes a PARTIAL result rather than storing that HTML
+  as a tool face, with `--allow-no-toolface` recording `toolFaceUnavailable` per task; the
+  isolated `auth.json` copy compares size+mtime and re-copies (metadata only — the file is never
+  read or printed); `--help` exists and malformed flags exit 2 before any spawn. The README's
+  14-name tool snapshot is marked 1.18.29-only, and the fixture aggregate is now defined there
+  because the previously quoted hash had no stated formula.
+- **The child body was read at a seam that did not know 2.0.20's message shape (`e9c7b32`, A1).**
+  `ctx.session.context` answers `{id, role, metadata, content:[{type:"text",text}]}` items there,
+  not 2.0.18's flat `{id,time:{created},text,type}`; `normaliseContextMessages` let anything
+  carrying `content` through as already-normal, so `lastAssistantMessage` found neither `parts[]`
+  nor a top-level `text`, `tm_join` logged `child_body_missing` and never printed `正文来源=`.
+  Normalisation is now BY SHAPE, not by host version: `content[]` is renamed to `parts[]` over the
+  same array, `role` and `type` are both read as the discriminator, only the message kinds the
+  OpenAPI contract lists (`Session.Message.Assistant`) are accepted, and an unrecognised item
+  keeps an EMPTY role rather than guessing — a wrong guess turns the lead's own brief into a
+  delivery. The three outcomes stay distinguishable (`child_body` / `child_body_missing` carrying
+  `contextShapeEvidence`, key names and counts only / a named failing seam), `time.completed` is
+  still never invented, and a v1 row is byte-identical. `test-v2-adapter.mjs` group 14 drives the
+  real 2.0.20 item through `tm_join`; group 12 re-checks the 2.0.18 path.
+- **Two claims the plugin made about itself were false in opposite directions (`54a6303`, A2+A3).**
+  The boot line asserted `配置里缺角色：<six ids>` from `ctx.agent.transform` — a snapshot blind by
+  construction, taken before the config directory merges; measured on 2.0.20 all six role files
+  exist, `--agent team` resolves, child sessions start, and `agents_editor_ids` still reads
+  "build plan". `agentVisibilityLine()` now renders three states from one definition (已装而看不见 /
+  本进程无法区分, naming the deciding observation / 真没装), fed only by observations the plugin
+  already makes — no new host seam — and the boot row's `agents_missing` is gone: a real absence
+  reads `agents_editor_rounds:0`, and a legacy row is labelled as what that field measured. And
+  the in-process observation counters, documented as surviving ONLY in `v2-shutdown`, died with
+  the process on the CLI path: three runs wrote ZERO such rows because dispose never fires there.
+  They ride the throttled `v2-surface` row too, late-bound so the probe's attach-time flush
+  cannot throw into the swallowed `onSummary` and lose the first row, and `counters_at` separates
+  `shutdown` (终值) / `surface` (快照进行值) / `attach` (未接上, carrying a `counters_note` that says
+  a missing field is 「没有地方去读」, NOT 0 次). `test-v2-adapter.mjs` group 6 asserts the
+  three-state line and that `配置里缺角色` cannot come back; `test-hosthooks.mjs` pins both counter
+  provenances.
 
 ### Added
 
@@ -52,6 +115,25 @@ registry saw 1.5.0 as the install-script fix release).
   `abort` branch runs FIRST and byte-exact (`aborted on request`); `test-v2-adapter.mjs` group 14
   asserts `interruptReached === 0` there, because that ordering IS the frozen-personality guard,
   and a group that only checks "cancel works on v2" would pass whether or not v1 ever regressed.
+
+### Changed
+
+- **Release-record drift, stated plainly (repo hygiene, not a product defect).** Since `193609b`
+  labelled the v2 round **1.6.1**, 49 further commits have landed under that same version number
+  — 9 of them after the annotated tag `v1.6.1` (`0bccede`) — and this file had **no `[Unreleased]`
+  section at all** until `cdce318` created the one above. So the repo's own rule ("git-only /
+  unreleased changes go under `[Unreleased]`") had nowhere to be kept, and the published 1.6.1
+  label covered work that was never published. Nothing here bumps a version, re-tags, or
+  re-publishes; the next label is the user's call. AGENTS.md's Development rules now record that
+  the v2 personality actually shipped as 1.6.1 rather than the planned 1.7.0.
+- **The documentation was re-synced to what today's runs actually measured** (`AGENTS.md`,
+  `docs/installation-v2.md`): the "`v2-shutdown` is the only place the counters survive" claim,
+  the removed `agents_missing` boot field and its three-state replacement, the 2.0.18-only child
+  message shape, `V2_TEXT`'s real location (`scripts/gen-v2-config.mjs`, not
+  `v2-permissions.ts`), the per-role tool matrix (the old list was the union over six roles),
+  the sandboxed real-model-turn boundary (a redirected `HOME` cannot authenticate the provider),
+  the HOME-shadow pin's silent-second-install face, and the false "the installers have no 2.x
+  branch yet" line in the 2.x install guide.
 
 ## [1.6.1] - 2026-09-26
 

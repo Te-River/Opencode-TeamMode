@@ -32,11 +32,15 @@ implied:
   then the bundled `opencode-cli.exe --version`), because the desktop install does not
   put `opencode` on `PATH` — on such a machine a PATH-only probe answers "not found"
   while 2.0.16 is running;
-- this branch has **not been exercised end-to-end on a live 2.x host yet** (both
-  scripts parse clean and the probe is verified against the installed app's version
-  file, which is not the same claim). So the manual steps below remain the verified
-  path; if the installer's v2 branch misbehaves, follow them and report which step said
-  what.
+- this v2 branch **has been exercised end to end on a live 2.0.18 host** with `HOME` and
+  `USERPROFILE` redirected (both front-ends): exactly one `loading plugin` line for Team, no load
+  failure, `v2-boot tools_registered:9`, a foreign plugin entry left intact in each config file,
+  and the legacy `.json` still strict-parseable afterwards. Running it — not reading it — found
+  and fixed two defects: `ours()` did not recognise a working-tree path spelling (so the next run
+  would have added a SECOND entry, the double load this function exists to prevent), and
+  PowerShell's `Copy-Item <src>\* <dst>` threw mid-copy when the destination did not exist yet,
+  leaving a half-copied package. The manual steps below are still the documented fallback: if the
+  installer's v2 branch misbehaves on YOUR host, follow them and report which step said what.
 
 ### What is different on 2.x (read this before the steps)
 
@@ -122,7 +126,12 @@ returning cleanly is not evidence the plugin loaded.
      log) → exactly **one** line `msg="loading plugin" id=<our entry>
      entrypoint=file:///…/index.js`, and **no** `failed to load plugin` naming us.
    - a new Team session → `tm_stats`, section `启动与人格`: `tools_registered: 9`, and the
-     `作用域` line. A row that says `agents_missing` named roles means Step 3 has not run.
+     `作用域` line. The role check is the visibility line, not a
+      missing-names field (the boot row's `agents_missing` is gone): it distinguishes 已装而看不见 —
+      `agents_editor_unseen` with `agents_resolved_in_request` non-empty, because the host really
+      resolved those ids in a request — from 本进程无法区分, since `ctx.agent.transform` is a
+      snapshot from BEFORE the config directory merges. "Step 3 has not run" shows up at the host
+      (`--agent team` does not resolve), never as a row in this table.
    - If the log shows nothing at all about our id, the entry is under a key the host does
      not read (`plugin`, singular) or the directory has no root `index.js`. Both failures
      are silent by design; the absence of an error is not a success signal.
@@ -242,7 +251,7 @@ a new release may have changed them. Re-running is cheap — unchanged files are
 `scripts/install.sh` / `scripts\install.ps1` 现在会探测宿主主版本，并在 2.x 上把本页的三步全做完（插件条目 → 生成角色与命令 → 最后写 `default_agent`，并从磁盘读回校验）。两件事直说而不含糊：
 
 - 版本探测也会去问**桌面端**（`resources/opencode-cli.version`，再试自带的 `opencode-cli.exe --version`），因为桌面安装不把 `opencode` 放进 `PATH`——在这种机器上，只探 PATH 会得到"没找到"，而 2.0.16 正在跑；
-- 这条 v2 分支**还没在活体 2.x 宿主上端到端跑过**（两份脚本解析通过、探测对已安装应用的版本文件验证过——这不等于同一个结论）。所以下面的手动步骤仍是已验证路径；安装脚本的 v2 分支若表现不对，请按手动步骤做，并回报是哪一步说了什么。
+- 这条 v2 分支**已经在活体 2.0.18 宿主上端到端跑过**（两个前端都跑了，`HOME` 与 `USERPROFILE` 重定向）：Team 只有**一条** `loading plugin`、零加载失败、`v2-boot tools_registered:9`、每个配置文件里别人家的条目原样保留、旧的 `.json` 之后仍能被严格 `JSON.parse`。是"跑"而不是"读"抓出并修好了两个缺陷：`ours()` 认不出工作树路径的写法（下一次运行就会加出**第二条**条目——恰好是这个函数存在的理由），以及 PowerShell 的 `Copy-Item <src>\* <dst>` 在目标目录尚不存在时会中途抛错，留下半份包。下面的手动步骤仍是文档化的退路：安装脚本在你那台宿主上表现不对，就按手动步骤做，并回报是哪一步说了什么。
 
 ### 2.x 上到底哪里不一样（先看这张表再动手）
 
@@ -322,7 +331,7 @@ Node 20+ 还会额外启用 Playwright 浏览器引擎）。
      **恰好一条** `msg="loading plugin" id=<我们的条目> entrypoint=file:///…/index.js`，
      并且**没有**指名我们的 `failed to load plugin`。
    - 新建一个 Team 会话 → `tm_stats` 的 `启动与人格`：`tools_registered: 9`，以及 `作用域`
-     那一行。如果 `agents_missing` 列出了角色名，说明第 3 步没做。
+     那一行。角色这一项看的是可见性行，不再是缺名字段（boot 行的 `agents_missing` 已经去掉）：它区分"已装而看不见"——`agents_editor_unseen` 有值，且 `agents_resolved_in_request` 也有值，说明宿主在真实请求里解析过这些 id——和"本进程无法区分"，因为 `ctx.agent.transform` 拿到的是配置目录合并**之前**的角色集。"第 3 步没做"要到宿主那边才看得见（`--agent team` 解析不到），不会在这张表里变成一行结论。
    - 日志里关于我们的 id 一个字都没有 → 条目写在了宿主不读的键下（单数 `plugin`），或者那个
      目录没有根 `index.js`。这两种失败都是设计上静默的，所以"没报错"不是成功信号。
 6. 明确说清你留下的是哪种写法、包来自 npm 还是本地路径 —— 扩展面板分不出来：一个叫
