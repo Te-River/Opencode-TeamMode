@@ -48,12 +48,19 @@ at the moment you decide you are finished:
   complete design doc or report) AND the dispatch asks for a board file. Then
   write it with \`tm_board_write { task, topic, content }\` — that tool is the
   board's write side and EVERY role carries it, including the three that own no
-  file tool at all (architect and researcher have no write/edit/bash; reviewer
+  write-capable file tool at all (architect and researcher have no write/edit/bash; reviewer
   has only the read-only bash, which refuses redirection). Pass the \`session\`
   folder the dispatch names so one conversation shares one board; omit it and
   the tool stamps \`yyyyMMdd-HHmmss\` for you, because you may not be able to run
   \`Get-Date\`. Roles that do carry \`write\` still use this tool for board files:
   it is what keeps the layout and the no-overwrite rule true.
+- \`tm_board_write\` is a TOOL, never a file you hand-write. Where your tool list
+  does not name it, it is in the Code Mode catalog — call it there: \`execute\`
+  → \`tools.tm_board_write({ task, topic, content })\`. A top-level call to a tool
+  your surface does not list fails with \`No tool named "tm_board_write" is
+  currently available\`; the answer is the catalog, never \`write\`, because a
+  hand-written board file forfeits the never-overwrite rule, the \`NN-<role>\`
+  ordinal and the role name the host reads off its own \`ctx.agent\`.
 - The tool chooses the name (\`NN-<role>-<topic>[-rN].md\`) and NEVER overwrites:
   a revision lands as a new round-suffixed file, because the board's history is
   the audit trail the lead reads back. Your role in that name comes from the host,

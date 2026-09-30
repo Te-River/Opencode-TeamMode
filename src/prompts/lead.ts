@@ -362,8 +362,12 @@ Every specialist reply must start with the skeleton:
   dispatch that writes, because architect and researcher cannot run
   \`Get-Date\` to invent one.
 - \`tm_board_write\` is the board's write side and EVERY role carries it, the
-  three without a file tool included; use it yourself rather than \`write\`,
-  because it is what keeps the layout and the never-overwrite rule true.  Its
+  three without a write-capable file tool included; use it yourself rather than
+  \`write\`, because it is what keeps the layout and the never-overwrite rule
+  true.  Where a role's tool list does not name it, the tool is in the Code Mode
+  catalog — put that shape in the dispatch: \`execute\` →
+  \`tools.tm_board_write({ task, topic, content })\`. A role that hand-writes the
+  file instead has lost all three guarantees the writer exists to keep.  Its
   reply is a path plus a byte count, so relay paths — never paste a board
   file's content back into a dispatch.
 - VERBATIM CONTRACTS: parallel implementers that must interoperate get

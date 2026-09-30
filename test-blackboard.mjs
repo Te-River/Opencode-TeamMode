@@ -698,4 +698,52 @@ console.log("7. TTL-only reclamation + session-partitioned boards: OK")
   assert.match(lead, /tm_join \{ waitMs: … \}` once, bounded/, "with the concrete collection move, bounded")
 }
 
+// A5: on a host that delivers the tm_* family only inside Code Mode, a TOP-LEVEL
+// call to tm_board_write is not a capability — the answer is `No tool named
+// "tm_board_write" is currently available`, and the role that hits it recovers by
+// hand-writing the file, which forfeits the three guarantees the writer exists to
+// keep (never-overwrite, the NN-<role> ordinal with its -rN revision family, the
+// role name read off the host's own context). So the contract names the catalog
+// shape, guarded by a clause a role whose surface DOES list the tool never acts
+// on — the v1 statement stays the primary one.
+// A8: the tool-less roles lack a WRITER, not every tool (measured on the v2
+// request surface: architect still carries four tools, without write/edit/shell).
+console.log("\n8. board-write call shape (A5) + write-capable wording (A8)")
+{
+  const { agents } = await import("./dist/agents.js")
+  const { commands } = await import("./dist/commands.js")
+  const { blackboardNote } = await import("./dist/host/note.js")
+  const note = blackboardNote("/board/root", 5)
+  const texts = [
+    ...Object.entries(agents).map(([id, cfg]) => [id, String(cfg.prompt)]),
+    ["board note", note],
+  ]
+  for (const [id, raw] of texts) {
+    const p = raw.replace(/\s+/g, " ")
+    assert.match(p, /tools\.tm_board_write\(\{ task, topic, content \}\)/,
+      `${id}: names the Code Mode call shape for a tm_* tool that is not top-level`)
+    assert.match(p, /Code Mode catalog/, `${id}: says WHERE that tool lives`)
+    assert.match(p, /tool list does not name it/,
+      `${id}: the catalog move is a guard, so a role that lists the tool keeps the plain call`)
+    assert.match(p, /write-capable file tool/, `${id}: the no-file-tool claim is scoped to writing`)
+    assert.ok(!/no file tool at all|without a file tool|with no file tool/.test(p),
+      `${id}: no prompt claims a role owns no file tool at all`)
+  }
+  // The v1 statement is not polluted: the tool-call shape is still what a role
+  // with a top-level tm_board_write is told to use.
+  for (const [id, raw] of texts.filter(([id]) => id !== "team")) {
+    assert.match(raw.replace(/\s+/g, " "), /`tm_board_write \{ task, topic, content/,
+      `${id}: the plain tool-call shape is still the primary instruction`)
+  }
+  // The board note is NOT forked (both personalities append it verbatim), so it
+  // may not name a tool one of them does not have.
+  assert.ok(!/no bash/.test(note),
+    "board note: host-neutral wording — it never names `bash`, which v2 calls `shell`")
+  for (const [name, c] of Object.entries(commands)) {
+    assert.ok(!/no file tool at all|without a file tool/.test(String(c.template)),
+      `command ${name}: carries no tool-less overstatement`)
+  }
+  console.log("   OK (catalog shape + guard in all six roles and the board note, v1 call shape intact, no tool-less overstatement left)")
+}
+
 console.log("\nALL BLACKBOARD TESTS PASSED ✅")
