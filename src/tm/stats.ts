@@ -354,6 +354,43 @@ export function bootSnapshots(
   return ordered.slice(0, Math.max(1, limit)).map((i) => lines[i])
 }
 
+/** A2: the sentence about roles the editor snapshot did not list — ONE definition,
+ *  printed by both places that used to paste "配置里缺角色".  That phrase was a false
+ *  assertion: measured on 2.0.20 all six role files exist and the host runs them
+ *  (`--agent team` resolves, child sessions start), while `ctx.agent.transform` hands
+ *  the agent set from BEFORE the config directory merged.  Three states, and only one
+ *  of them is a gap — and a real gap is never laundered into "看不见":
+ *   · unseen but the host resolved the ids in a request ⇒ installed, snapshot blind;
+ *   · unseen and never resolved anywhere ⇒ this process cannot tell the two apart, so
+ *     the line names the deciding observation instead of asserting either half;
+ *   · a legacy row (pre-A2 build, still inside the window) carrying `agents_missing`
+ *     ⇒ printed as what that field actually measured, not as a claim about files. */
+export function agentVisibilityLine(line: Record<string, unknown>): string {
+  const unseen = String(line.agents_editor_unseen ?? "").trim()
+  const resolved = String(line.agents_resolved_in_request ?? "").trim()
+  if (unseen) {
+    const rounds = String(line.agents_editor_rounds ?? "?")
+    return resolved
+      ? `editor 快照里看不到 ${unseen}（transform 观察 ${rounds} 次，那是配置合并前的角色集）——宿主请求里已解析 ${resolved}，所以是已装而看不见，不是文件缺失`
+      : `editor 快照里看不到 ${unseen}（transform 观察 ${rounds} 次），宿主请求里也没出现过这些 id——本进程无法区分两种情况，不写成结论：真没装的判据是宿主连 --agent team 都解析不到（交给安装器），已装而看不见的判据是本行的 agents_resolved_in_request 非空`
+  }
+  const legacy = String(line.agents_missing ?? "").trim()
+  return legacy
+    ? `旧版行的 editor 未列角色：${legacy}（该字段记的是合并前的 editor 快照，不作为文件缺失的结论）`
+    : ""
+}
+
+/** A3: where a row's observation counters were read — the shutdown row is the final
+ *  total, a surface row a value-in-progress, and the attach-time row has none at all.
+ *  Collapsing these is how "0" gets read as "never fired". */
+function countersSourceLine(line: Record<string, unknown>): string {
+  const at = String(line.counters_at ?? "")
+  if (!at) return ""
+  const gloss =
+    at === "shutdown" ? "终值" : at === "surface" ? "快照进行值" : "未接上（请求层/事件流当时还没注册）"
+  return `观察计数器来源=${at}（${gloss}）`
+}
+
 /** Markdown, in the shapes the host renders fastest (tables, not prose). */
 export function renderStats(
   stats: TmStats,
@@ -433,14 +470,24 @@ export function renderStats(
               : "")
           : "",
       ].filter(Boolean)
+      // Each row carries WHEN that process booted and which run it was, because without
+      // it a reader cannot tell the current build from an older one in the same window —
+      // and the model filling that gap invents an ordering (it did: "配置 A（较新）").
+      const stamp = `${String(line.ts ?? "?").slice(0, 16).replace("T", " ")} · run ${String(line.run_id ?? "?").replace(/^r-/, "").slice(0, 15)}`
       if (s === "v2-agents") {
+        const vis = agentVisibilityLine(line)
         out.push(
-          `- \`${s}\` · 人格 **${api}** · 默认角色 ${line.agents_default ?? "?"} · 归一化完成${line.agents_missing ? ` · 配置里缺角色：${line.agents_missing}` : ""}${line.agents_unmapped ? ` · 无 v2 对应的动作：${line.agents_unmapped}` : ""}`,
+          `- \`${s}\` · ${stamp} · 人格 **${api}** · 默认角色 ${line.agents_default ?? "?"} · 归一化完成${line.agents_unmapped ? ` · 无 v2 对应的动作：${line.agents_unmapped}` : ""}`,
         )
+        if (vis) out.push(`  - ${vis}`)
         continue
       }
       const bits = [
         `人格 **${api}**`,
+        // A3: label WHERE the counters on this row were read. The shutdown row is the
+        // final total, a surface row a value-in-progress, and the attach row has none —
+        // three different readings of the same absent field, so the row says which.
+        countersSourceLine(line),
         line.tools_registered !== undefined ? `工具 ${line.tools_registered}/${line.tools_total}` : "",
         line.tools_v1_only ? `v1 独有 \`${line.tools_v1_only}\`` : "",
         line.request_hooks ? `请求层 ${line.request_hooks} 钩子` : "",
@@ -466,10 +513,11 @@ export function renderStats(
         // what the assembled request actually CARRIED (tools_in_request). On 2.0.16 the
         // two disagree, and printing only the first would let a boot line claim a
         // delivery mode the host never gave.
-        line.tools_codemode ? `工具交付：发出=${line.tools_codemode} · 请求内实际可见=见下方 shutdown 行` : "",
-        // The shutdown line is the only one that can carry the observation, since the
-        // first request has not happened at boot. Both halves print, so a sent flag can
-        // never be read as an outcome again.
+        line.tools_codemode ? `工具交付：发出=${line.tools_codemode} · 请求内实际可见=同 run 的 surface/shutdown 行（来源标在行首）` : "",
+        // The boot row cannot carry this observation — the first request has not happened
+        // when it is written. Since A3 both the throttled surface row and the shutdown
+        // row do, so a sent flag can never be read as an outcome, and a run that never
+        // reaches dispose still shows what the host actually delivered.
         line.tools_in_request ? `工具交付：请求内实际可见=${line.tools_in_request}（direct 是否被宿主采纳只看这一项）` : "",
         line.browser_gate_note ? `  ${line.browser_gate_note}` : "",
         line.native_capped !== undefined ? `快照按寻址预算截断 ${line.native_capped} 次（不是卸载：ref 留在上下文里）` : "",
@@ -487,6 +535,13 @@ export function renderStats(
             (Number(line.host_children_settled_at_once) > 0 ? `；${line.host_children_settled_at_once} 次是同步子代理（结果本身就是正文，无需登记）` : "") +
             (Number(line.host_subagent_seen) > 0 && !Number(line.host_children_registered)
               ? " —— 看到了却一个都没登记：认领没生效，不要读成「这一轮没有后台子代理」"
+              : "") +
+            // A zero on a non-final row is a moment, not a fact about the run: three CLI
+            // runs on 2.0.20 wrote no shutdown row at all, so the surface row is often the
+            // only reading there is — and "nothing was dispatched" must never be printed
+            // from a snapshot taken before anybody answered.
+            (Number(line.host_subagent_seen) === 0 && String(line.counters_at ?? "") !== "shutdown"
+              ? " —— 0 且来源不是终值行：只说明写下这一行时本进程没听到 subagent 确认，不说明没有派发"
               : "")
           : "",
         // Did the session-read seam answer? `sessionID` is the shape the host's own code
@@ -508,18 +563,24 @@ export function renderStats(
             (Number(line.stop_tried) === 0 ? "（本进程没人用过 cancel:true，这一行还证明不了宿主真能停）" : "")
           : "",
       ].filter(Boolean)
-      // Each row carries WHEN that process booted and which run it was, because without
-      // it a reader cannot tell the current build from an older one in the same window —
-      // and the model filling that gap invents an ordering (it did: "配置 A（较新）").
-      const stamp = `${String(line.ts ?? "?").slice(0, 16).replace("T", " ")} · run ${String(line.run_id ?? "?").replace(/^r-/, "").slice(0, 15)}`
       out.push(`- \`${s}\` · ${stamp} · ${bits.join(" · ")}`)
+      // The attach-time row says out loud the counters were not wired yet; that note is
+      // the only thing standing between a missing `guard_seen` and a reader who takes it
+      // for "never fired", so it is printed verbatim and never folded into a 0.
+      if (line.counters_note) out.push(`  - ${line.counters_note}`)
       if (line.scope_unknown !== undefined && Number(line.scope_unknown) > 0) {
         out.push(
           `  - 未判定 ${line.scope_unknown} 次：宿主事件里没带 agent。这些调用我们一律没碰（隔离优先于覆盖率），` +
             `所以它们也没被 JIT 治理——不是"治理过了"，是"没资格治理"。`,
         )
       }
-      if (line.agents_missing) out.push(`  - 配置里缺角色：${line.agents_missing}`)
+      // A2: generic rows (v2-boot / v2-surface / v2-shutdown) go through the SAME
+      // three-state definition as the v2-agents row instead of pasting 配置里缺角色 —
+      // that phrase was a conclusion about files drawn from a snapshot which is blind
+      // before the config directory merges.  A legacy row that only carries
+      // `agents_missing` still prints, but as what that field actually measured.
+      const genericVis = agentVisibilityLine(line)
+      if (genericVis) out.push(`  - ${genericVis}`)
       if (line.tools_missing) out.push(`  - 未出现在宿主表面：${line.tools_missing}`)
       // The probe is the only place the host's own surface is recorded rather than
       // described, so it prints separately: a 60-name tool list would bury the

@@ -35,6 +35,7 @@ import { agents } from "../agents.js"
 import { DEFAULT_TTL_DAYS, resolveTtlMs, startBlackboardMaintenance } from "../blackboard.js"
 import { parseExtraDeny, resolveEnvProtectMode } from "../envprotect.js"
 import { createTmTools } from "../tm/index.js"
+import { agentVisibilityLine } from "../tm/stats.js"
 import { setAskUnavailableNote } from "../tm/perm-ask.js"
 import { setPrivateSpacePolicy } from "../tm/webfetch.js"
 import type { PluginInput, ToolDefinition } from "../types.js"
@@ -328,6 +329,29 @@ export const v2Personality: V2Plugin = {
       notes.push("原生 browser_* 的门禁没装上（ctx.tool.hook 不可用）：宿主的 45 个浏览器工具在 Team 会话里也不受我们的域名 / 地址规则约束")
     }
     registrations.push(...browserGate.registrations)
+    // ---- late-bound observation readers (A2 / A3) ----
+    // Both of these are `let` for one reason each: the layers they read register
+    // BELOW this point, and the probe takes its first snapshot at attach — a closure
+    // that touched a not-yet-initialized `const` would throw inside `onSummary`, the
+    // try/catch there would swallow it, and the row would silently disappear.  So
+    // until the real reader is installed, each one says "nothing observed yet"
+    // instead of inventing a zero.
+    /** How many times `ctx.agent.transform` actually handed us an editor.  Zero is
+     *  "nobody has looked", which is NOT the same fact as "all six roles found". */
+    let agentsEditorRounds = 0
+    /** The role ids the HOST resolved in a real request — the only observation that
+     *  separates "installed but invisible to the snapshot" from "not installed". */
+    let resolvedAgentIds: () => string[] = () => []
+    /** A3: the in-process observation counters.  Measured today: three runs wrote
+     *  ZERO `v2-shutdown` rows, because the CLI path never reaches dispose — so the
+     *  final totals have to survive on the throttled surface snapshot too, and a row
+     *  has to say WHERE its counters were read (`counters_at`) or "absent" gets read
+     *  as "never fired". */
+    let observationCounters: (source: "surface" | "shutdown") => Record<string, unknown> = () => ({
+      counters_at: "attach",
+      counters_note:
+        "观察计数器还没接上（请求层与事件流当时尚未注册）——这一行里缺失的字段是「没有地方去读」，不是 0 次，别把它读成「宿主从没调用过」",
+    })
     const probe = await applyV2Probe(ctx, {
       onSummary: (summary) => {
         try {
@@ -364,6 +388,10 @@ export const v2Personality: V2Plugin = {
             completion_context_fired: completion.report.contextFired,
             completion_skipped: completion.report.skipped,
             completion_settled: completion.report.settled,
+            // A3: the whole counter set rides the throttled snapshot, not only
+            // teardown — dispose is not guaranteed to run, and a run that is
+            // interrupted is exactly the run whose counters someone needs.
+            ...observationCounters("surface"),
             ...summary,
           })
         } catch {
@@ -409,6 +437,7 @@ export const v2Personality: V2Plugin = {
     if (typeof ctx.agent?.transform === "function") {
       registrations.push(
         await ctx.agent.transform((editor) => {
+          agentsEditorRounds++
           for (const id of wantedIds) {
             const existing = editor.get(id)
             if (!existing) {
@@ -457,6 +486,14 @@ export const v2Personality: V2Plugin = {
               event: "personality",
               api: 2,
               agents_missing: missingAgents.join(" "),
+              // A2: the three fields tm_stats' `agentVisibilityLine` needs to keep
+              // the three states apart.  The editor snapshot is blind by construction
+              // (it gets the agent set from BEFORE the config directory merges), so
+              // "not in the snapshot" is never evidence of a missing file — the
+              // decisive observation is whether the host resolved the id in a request.
+              agents_editor_rounds: agentsEditorRounds,
+              agents_editor_unseen: missingAgents.join(","),
+              agents_resolved_in_request: resolvedAgentIds().join(","),
               agents_default: defaultPromoted === null ? "opt-out" : defaultPostCheck === "present-after" ? "team" : "called-unverified",
               agents_unmapped: [...unmappedActions].join(" "),
               agents_normalized: true,
@@ -608,6 +645,65 @@ export const v2Personality: V2Plugin = {
     if (!feed.report.active) {
       notes.push(`事件流没接通（${feed.report.stopped ?? "原因未知"}）：tm_join 的结算检测只剩等待预算内的轮询，子代理结算了也要等到超时才报告`)
     }
+    // Every layer the counters live in is registered now, so point the late-bound
+    // readers at the real observations. From here on, both the throttled `v2-surface`
+    // row and `v2-shutdown` carry the same set — labelled by `counters_at`, because
+    // "no dispatch happened" and "we were deaf to it" must never print one sentence.
+    resolvedAgentIds = () => {
+      const ids = new Set<string>(probe.report.agentsSeen)
+      for (const id of Object.keys(session.report.removed)) ids.add(id)
+      return [...ids].filter((id) => wantedIds.includes(id)).sort()
+    }
+    observationCounters = (source) => ({
+      counters_at: source,
+      guard_seen: guards.report.seen,
+      guard_actions: Object.entries(guards.report.byAction).map(([k, v]) => `${k}=${v}`).join(" "),
+      guard_shell_matched: guards.report.shellMatched,
+      guard_strictened: guards.report.strictened,
+      guard_denied: guards.report.denied,
+      guard_foreign_skipped: guards.report.foreignSkipped,
+      subagent_seen: bgForce.report.seen,
+      subagent_forced: bgForce.report.forced,
+      tools_removed: Object.entries(session.report.removed).map(([k, v]) => `${k}=${v}`).join(" "),
+      note_pushed: session.report.notePushed,
+      compaction_lines: session.report.compactionLines,
+      scope_ours: scope.report.ours,
+      scope_foreign: scope.report.foreign,
+      scope_unknown: scope.report.unknown,
+      host_subagent_seen: hostChildren.report.seen,
+      host_children_registered: hostChildren.report.registered,
+      host_children_unpaired: hostChildren.report.unpaired,
+      host_children_no_id: hostChildren.report.noChildId,
+      host_children_settled_at_once: hostChildren.report.settledAtOnce,
+      session_get_attempts: sessionReader.report.attempted,
+      session_get_shape: sessionReader.report.usedShape ?? "(none)",
+      session_get_resolved: sessionReader.report.resolved,
+      session_context_ok: sessionReader.report.contextOk,
+      session_context_keys: sessionReader.report.contextKeys.join(","),
+      session_get_error: sessionReader.report.lastError ?? sessionReader.report.contextError ?? "",
+      completion_context_fired: completion.report.contextFired,
+      completion_prompt_fired: completion.report.promptFired,
+      completion_skipped: completion.report.skipped,
+      completion_envelopes: completion.report.seen,
+      completion_settled: completion.report.settled,
+      event_feed: feed.report.active ? "subscribed" : "absent",
+      event_stopped: feed.report.stopped ?? "",
+      event_received: feed.report.received,
+      event_forwarded: feed.report.forwarded,
+      event_unknown_types: Object.entries(feed.report.unknown).map(([k, v]) => `${k}=${v}`).join(" "),
+      browser_gate_seen: browserGate.report.seen,
+      browser_gate_refused: browserGate.report.refused,
+      browser_gate_leaked: browserGate.report.leaked,
+      browser_gate_held: browserGate.report.held,
+      native_seen: offload.report.seen,
+      native_ours: offload.report.ours,
+      native_unmatched: offload.report.unmatched,
+      native_offloaded: offload.report.offloaded,
+      native_envelopes: offload.report.envelopes,
+      native_tokens_saved: offload.report.tokensSaved,
+      native_capped: offload.report.capped,
+      native_report_capped: offload.report.reportCapped,
+    })
     const removedPlanSizes = [...plan.entries()].map(([id, set]) => `${id}=${set.size}`).join(" ")
 
     try {
@@ -621,7 +717,14 @@ export const v2Personality: V2Plugin = {
         tools_v1_only: [...V2_UNREGISTERED].join(","),
         tools_total: bindings.length,
         tools_missing: missing.join(","),
-        agents_missing: missingAgents.length ? missingAgents.join(",") : defaultPromoted === null ? "待观察" : "",
+        // A2: the boot row no longer carries `agents_missing`.  At this instant the
+        // host may not have called the transform at all, so the old placeholder
+        // ("待观察") was pasted by tm_stats as 配置里缺角色 — an assertion about files
+        // nobody had measured.  The three fields below are what the three-state
+        // renderer reads; the observation itself lands in the `v2-agents` row.
+        agents_editor_rounds: agentsEditorRounds,
+        agents_editor_unseen: agentsEditorRounds ? missingAgents.join(",") : "",
+        agents_resolved_in_request: resolvedAgentIds().join(","),
         agents_default: defaultPromoted === null ? "待观察（宿主异步调用 transform，见 v2-agents 行）" : defaultPromoted ? "team" : "not-promoted",
         request_hooks: session.registrations.length,
         guard_hooks: guards.registrations.length,
@@ -653,9 +756,23 @@ export const v2Personality: V2Plugin = {
     // A v1 user reading their own logs would otherwise conclude the plugin was
     // silently broken: these two facts are the visible difference between the
     // personalities.
-    if (missingAgents.length || missing.length || notes.length) {
+    // A2: three states, ONE definition.  The sentence that used to live here —
+    // `配置里缺角色：…` — asserted a fact about files from a snapshot that is blind by
+    // construction (`ctx.agent.transform` receives the agent set from before the
+    // config directory merges), and a real gap is never laundered into "看不见" either:
+    // `agentVisibilityLine` only says that when the host never resolved the id.
+    const agentGap =
+      agentVisibilityLine({
+        agents_editor_rounds: agentsEditorRounds,
+        agents_editor_unseen: missingAgents.join(","),
+        agents_resolved_in_request: resolvedAgentIds().join(","),
+      }) ||
+      (agentsEditorRounds
+        ? ""
+        : "角色集还没观察：宿主尚未调用 ctx.agent.transform（它是异步的）——此刻既不能说六个角色都在，也不能说缺哪个，判据是 v2-agents 行的 agents_editor_rounds 与 agents_resolved_in_request")
+    if (agentGap || missing.length || notes.length) {
       const detail = [
-        missingAgents.length ? `配置里缺角色：${missingAgents.join(",")}（v2 插件不能新建角色，交给安装器）` : "",
+        agentGap,
         missing.length ? `工具未出现在宿主表面：${missing.join(",")}` : "",
         notes.length ? notes.join(" · ") : "",
       ].filter(Boolean).join("；")
@@ -733,6 +850,10 @@ export const v2Personality: V2Plugin = {
           completion_skipped: completion.report.skipped,
           completion_envelopes: completion.report.seen,
           completion_settled: completion.report.settled,
+          // A3: same set as the throttled snapshot, labelled as the final total.
+          // The explicit fields above stay (they are this row's own record); the
+          // spread is what stamps `counters_at:"shutdown"` and adds the rest.
+          ...observationCounters("shutdown"),
           ...probeSummary(probe.report),
         })
       } catch {

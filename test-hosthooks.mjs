@@ -382,8 +382,8 @@ console.log("hosthooks. tool.definition / chat.params / compaction / shell.env /
     // check from inside a session — which is the whole reason tm_stats exists.
     const boot = summarizeEvents([
       { ts: iso(0), tool: "host", step_id: "v2-boot", event: "personality", api: 2, tools_registered: 12, tools_total: 12, tools_v1_only: "tm_ptc_run", agents_default: "team", request_hooks: 2, request_temperature: 0.2, subagent_background: "forced-true", guard_hooks: 1, note: "参数表是推导的" },
-      { ts: iso(1), tool: "host", step_id: "v2-shutdown", event: "personality", api: 2, guard_seen: 7, guard_actions: "shell=5 read=2", guard_shell_matched: 1, subagent_seen: 2, subagent_forced: 2, tools_removed: "architect=19 team=8" },
-      { ts: iso(2), run_id: "rA", tool: "host", step_id: "v2-surface", event: "personality", api: 2, native_offload_active: true, native_seen: 1, native_offloaded: 1, native_tokens_saved: 12824, scope_ours: 9, scope_foreign: 2, scope_unknown: 1, guard_foreign_skipped: 1, probe_tool_count: 6, probe_agents: "team", probe_executed: "shell", probe_actions: "shell", probe_evaluations: 1 },
+      { ts: iso(1), tool: "host", step_id: "v2-shutdown", event: "personality", api: 2, counters_at: "shutdown", guard_seen: 7, guard_actions: "shell=5 read=2", guard_shell_matched: 1, subagent_seen: 2, subagent_forced: 2, tools_removed: "architect=19 team=8" },
+      { ts: iso(2), run_id: "rA", tool: "host", step_id: "v2-surface", event: "personality", api: 2, counters_at: "surface", native_offload_active: true, native_seen: 1, native_offloaded: 1, native_tokens_saved: 12824, scope_ours: 9, scope_foreign: 2, scope_unknown: 1, guard_foreign_skipped: 1, probe_tool_count: 6, probe_agents: "team", probe_executed: "shell", probe_actions: "shell", probe_evaluations: 1 },
       { ts: iso(3), run_id: "rA", tool: "host", step_id: "v2-agents", event: "personality", api: 2, agents_default: "team", agents_normalized: true },
     ])
     const bmd = renderStats(boot, { runDirs: 1, roots: [] })
@@ -395,6 +395,14 @@ console.log("hosthooks. tool.definition / chat.params / compaction / shell.env /
     ok(bmd.includes("作用域：我们 9 · 他人 2 · 未判定 1"), "…and the Team-scope counts, so 'we only touch Team' is a number rather than a promise")
     ok(bmd.includes("未判定 1 次") && bmd.includes("没资格治理"), "…naming what an unresolved owner means: untouched, and therefore also not governed")
     ok(bmd.includes("architect=19"), "…and the per-role tool trim, measured rather than claimed")
+    // A3.  Measured on 2.0.20: three CLI runs wrote ZERO `v2-shutdown` rows — the host
+    // never reaches dispose there — so the counters AGENTS.md called "the only place
+    // they survive" died with the process.  They now ride the throttled `v2-surface`
+    // row as well, which only earns its keep if a reader can tell a final total from a
+    // value-in-progress: collapsing those two is how an absent counter gets read as
+    // "the host never called it".
+    ok(bmd.includes("观察计数器来源=shutdown（终值"), "…and names that the shutdown row is a FINAL total")
+    ok(bmd.includes("观察计数器来源=surface（快照进行值"), "…and that the surface row is a value-IN-PROGRESS, not a zero")
     // The native-offload counters ride the snapshot line, and a counter that is
     // written but never printed is the same defect this section was added to fix.
     ok(bmd.includes("原生工具治理 开") && bmd.includes("卸载 1 次") && bmd.includes("省 12824 token"), "…and the JIT-over-native-tools evidence prints, not just persists")

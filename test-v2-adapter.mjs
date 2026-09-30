@@ -493,8 +493,18 @@ const bare = makeFakeCtx({ directory: ws, agents: [] })
 const second = await withCapturedConsole(() => plugin.setup(bare.ctx))
 assert.equal(typeof second.value, "function", "a config with no roles still boots (tools are ours to register)")
 assert.ok(
-  second.warns.some((w) => /配置里缺角色/.test(w)),
-  `missing config-declared agents are logged, not swallowed: ${second.warns.join(" | ")}`,
+  second.warns.some((w) => /本进程无法区分|editor 快照里看不到|角色集还没观察/.test(w)),
+  `the role gap is logged WITH the observation that decides it, not swallowed: ${second.warns.join(" | ")}`,
+)
+// A2.  The old line said `配置里缺角色：<six ids>` straight from
+// ctx.agent.transform — a snapshot that is blind by construction, because the
+// config directory has not merged when the callback runs.  Measured on 2.0.20 all
+// six role files exist and the host runs them, so that sentence was a false
+// assertion about files.  It must not come back laundered as a fact either way:
+// a real gap and a blind snapshot are two different claims.
+assert.ok(
+  !second.warns.some((w) => /配置里缺角色/.test(w)),
+  "A2: no boot line may assert files are missing from an editor snapshot that is blind by construction",
 )
 assert.ok(
   second.warns.some((w) => Object.keys(agents).every((id) => w.includes(id))),
