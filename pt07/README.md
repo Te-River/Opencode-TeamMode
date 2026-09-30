@@ -8,7 +8,7 @@ Fixed tasks + fixtures for the A/B comparison **baseline (no `tm_*` tools, curre
 |---|---|
 | `generate.mjs` | Seeded fixture generator → rebuilds `workspace/` + `groundtruth.json` (same seed ⇒ byte-identical) |
 | `tasks.json` | Task manifest: id / category / exact agent prompt / success criteria / judge ref / expected steps |
-| `judge.mjs` | Per-task judge; recomputes expectations from the fixture, outputs pass/fail + evidence. Importable or CLI re-judge. Resolves each task's judge spec, gates re-judges on the fixture fingerprint, and exits non-zero when the harness itself is broken |
+| `judge.mjs` | Per-task judge; recomputes expectations from the fixture, outputs pass/fail + evidence. Importable or CLI re-judge. Resolves each task's judge spec, gates re-judges on the fixture fingerprint, and exits non-zero when the harness itself is broken — **including when it judged nothing**: `total === 0` (a mistyped `--task`, or an empty `tasks[]`) is exit 2, never the exit 0 that means "every judged task passed" |
 | `runner.mjs` | Executes tasks via `opencode run`, captures events/tokens/tool sequence, writes `results/*.json`. Resets the fixture before running, records a workspace fingerprint per task, and refuses to spend tokens when a measurement item cannot be captured |
 | `workspace/` | Generated fixture (gitignored): 9-file synthetic codebase, 6.3k log lines, 1.5k-row CSV |
 | `groundtruth.json` | Deterministic expected values (committed for review; regenerated identically by `generate.mjs`) |

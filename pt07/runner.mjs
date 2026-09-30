@@ -572,6 +572,10 @@ async function main() {
     fixture: {
       reset: !F["--no-reset"],
       residueAtStart: residue,
+      // Symmetric with toolFaceWaived below: an exemption that only prints to stdout
+      // cannot be audited later, and "was this run judged on a fixture someone had
+      // already solved?" is exactly the fact a stored baseline must answer on its own.
+      dirtyWaived: Boolean(F["--allow-dirty-fixture"] && residue.length),
       cleanSha256: fixtureClean.digest,
       cleanFiles: fixtureClean.files,
       cleanBytes: fixtureClean.bytes,

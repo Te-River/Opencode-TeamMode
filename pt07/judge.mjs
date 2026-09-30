@@ -259,7 +259,12 @@ export function judgeTask(task, ctx) {
           `expected ERROR count at peak: ${gt.peakErrorHourDay02Count} (unique max: ${gt.peakErrorHourDay02Unique})`
         );
       } else {
-        evidence.push("unknown reply-substring task id");
+        // A check with no branch for this task id is a HARNESS gap, not a task FAIL:
+        // `pass=false` here would launder "we never looked" into "the agent got it
+        // wrong", the same collapse resolveSpec() refuses at the spec layer (C1/C6).
+        throw new JudgeSpecError(
+          `reply-substring check has no branch for task id "${task.id}" (known: t01-read-codeqa, t08-read-logqa)`
+        );
       }
       break;
     }
@@ -458,9 +463,10 @@ flags:
   --help                   this text (exit 0)
 
 exit codes:
-  0  every judged task passed
+  0  every judged task passed — and at least one task was actually judged
   1  at least one genuine FAIL verdict
-  2  invalid harness: missing/unknown judge spec, bad flag, unreadable results
+  2  invalid harness: missing/unknown judge spec, bad flag, unreadable results, or
+     NOTHING judged (0 tasks matched; a mistyped --task is not a pass)
   3  fixture drift: some checks were reported STALE and not judged`;
 
 function argError(msg) {
@@ -641,6 +647,24 @@ function cli() {
         judgedFrom: { checkId: spec.checkId, fixtureSha256: currentFp ? currentFp.digest : null, groundtruthSha256: gtSha },
       };
     }
+  }
+
+  // C1's other direction, caught by review: judging ZERO tasks is not a pass. The
+  // summary used to print `judged 0 tasks: 0 pass, 0 fail` and fall through to
+  // exit 0, which this file's own usage text documents as "every judged task
+  // passed" — so a mistyped `--task` id (:575 continues past every row) or a
+  // results file with an empty tasks[] reported success for work that was never
+  // done. A harness that cannot say "I judged nothing" is the same defect C1 was
+  // filed to kill, wearing the opposite face.
+  if (total === 0) {
+    const available = (Array.isArray(results.tasks) ? results.tasks : [])
+      .map((t) => t && t.id)
+      .filter(Boolean)
+      .join(", ") || "<none recorded>";
+    argError(
+      `nothing judged: 0 tasks matched${only ? ` --task "${only}"` : ""}. ` +
+        `task ids in this results file: ${available}`
+    );
   }
 
   if (write) {
