@@ -68,6 +68,9 @@ export interface V2SessionReaderReport {
   interruptError?: string
   /** the KEY NAMES the interrupt call returned (names only, never values) */
   interruptKeys: string[]
+  /** the SHAPE of the last list the seam answered with — names and counts only, and the
+   *  reason a `child_body_missing` row can be checked later (`contextShapeEvidence`). */
+  contextShape?: string
 }
 
 export interface V2SessionReader {
@@ -105,32 +108,131 @@ function unwrap(value: unknown): Record<string, unknown> | undefined {
   return rec
 }
 
-/** Turn the host's flat context items into the `{info,parts}` shape the collect path
- *  already understands. Only the ROLE is inferred here, and only from the item's own `type`
- *  field (measured values: "user" for the brief, something else for the answer); a
- *  `time.completed` is NEVER invented, because that field is the settle verdict and a
- *  fabricated one would let tm_join claim a child finished at a time nobody observed.
- *  Anything already shaped like v1 passes through untouched, so a host that changes back
- *  does not need this code to change. */
+/** The message-kind values the host writes on its discriminator field — the members of the
+ *  published union `Session.Message.Info`. Anything else on `type` is a PART kind ("text" /
+ *  "reasoning" / "tool") and must never be read as a role: that is what keeps a bare
+ *  `Part[]` item readable, and what stops a part labelled `text` from being mistaken for a
+ *  turn that is not the answer. */
+const MESSAGE_KINDS = ["user", "assistant", "system", "synthetic", "skill", "shell", "compaction", "idle"]
+
+function messageKind(value: unknown): string {
+  const s = typeof value === "string" ? value.trim().toLowerCase() : ""
+  return MESSAGE_KINDS.includes(s) ? s : ""
+}
+
+/** Which kind of message an item is. The OpenAPI contract puts the discriminator on `type`;
+ *  the plugin ctx measured on 2.0.20 puts it on `role` — so BOTH are read, in the order the
+ *  values are checked against the known kinds rather than by field name. An unrecognised
+ *  value yields "" and the caller leaves the role OFF instead of guessing one: a guessed
+ *  role is how a user turn gets delivered as the child's report. */
+function roleOfMessage(rec: Record<string, unknown>): string {
+  return messageKind(rec.role) || messageKind(rec.type)
+}
+
+/** Copy the host's own timestamps, and ONLY those. `time.completed` IS the settle verdict
+ *  (AGENTS.md), so it is never invented: 2.0.20's plugin ctx carries no `time` field at all,
+ *  and tm_join then settles from `event` / `injection` / 推定 — which is what it prints. */
+function timeOfMessage(rec: Record<string, unknown>): Record<string, number> | undefined {
+  const t = rec.time
+  if (!t || typeof t !== "object") return undefined
+  const src = t as { created?: unknown; completed?: unknown }
+  const out: Record<string, number> = {}
+  const created = Number(src.created)
+  if (Number.isFinite(created)) out.created = created
+  const completed = Number(src.completed)
+  if (Number.isFinite(completed)) out.completed = completed
+  return Object.keys(out).length ? out : undefined
+}
+
+/** The `{info,…}` envelope for a message item, carrying ONLY what the host actually wrote. */
+function infoOfMessage(rec: Record<string, unknown>, role: string): Record<string, unknown> {
+  const time = timeOfMessage(rec)
+  return {
+    ...(role ? { role } : {}),
+    ...(time ? { time } : {}),
+    // an errored assistant turn carries its reason on the item itself in these shapes;
+    // without the copy, "no reply" reads as "the agent had nothing to say"
+    ...(rec.error == null ? {} : { error: rec.error }),
+  }
+}
+
+/** Turn the host's context items into the `{info,parts}` shape the collect path already
+ *  understands — HERE, at the seam that knows the shape, so nothing downstream has to guess.
+ *  Three shapes are in the wild and all three are measurements, not version numbers:
+ *   · 2.0.18 `[L]`: a FLAT item per message, `{id, time:{created}, text, type}`.
+ *   · 2.0.20 `[L][D]`: a MESSAGE whose body is `content: (Text|Reasoning|Tool)[]` and whose
+ *     kind is on `role` — the name-level probe recorded `{keys:["content","id","metadata",
+ *     "role"]}`. The previous version of this function passed that item through untouched
+ *     ("already message-shaped"), `lastAssistantMessage` found no `parts` and no `text` on
+ *     it, and the seam answered while the body was dropped AGAIN — which is why 正文来源=
+ *     never printed on 2.0.20 (A1).
+ *   · v1's `[{info,parts[]}]`: passed through untouched, so a host that changes back needs
+ *     no change here.
+ *  Only the bag is renamed and the envelope added: the elements are already v1 part shapes
+ *  (`{type:"text", text}`), and reasoning/tool parts stay exactly as the host wrote them.
+ *  An empty `content` normalises to empty parts — this function MOVES text, it never
+ *  manufactures any. */
 export function normaliseContextMessages(list: unknown): unknown {
   if (!Array.isArray(list)) return list
   return list.map((item) => {
     if (!item || typeof item !== "object") return item
     const rec = item as Record<string, unknown>
-    if (rec.info || Array.isArray(rec.parts) || Array.isArray(rec.content)) return item
+    if (rec.info || Array.isArray(rec.parts)) return item
+    if (Array.isArray(rec.content)) {
+      return { info: infoOfMessage(rec, roleOfMessage(rec)), parts: rec.content }
+    }
     const text = rec.text
     if (typeof text !== "string" || !text.trim()) return item
-    const type = String(rec.type ?? "")
-    const role = /^user$/i.test(type) ? "user" : "assistant"
-    const created = (rec.time as { created?: unknown } | undefined)?.created
+    // 2.0.18's flat item: a role word is read from either field; anything else (the measured
+    // answer items carry `type:"text"`, a PART kind) falls to "assistant", which is the
+    // behaviour that shipped and that the 2.0.18 probe pinned.
     return {
-      info: { role, ...(typeof created === "number" ? { time: { created } } : {}) },
+      info: infoOfMessage(rec, roleOfMessage(rec) || "assistant"),
       parts: [{ type: "text", text }],
     }
   })
 }
 
-export function createV2SessionReader(ctx: unknown): V2SessionReader {  const report: V2SessionReaderReport = {
+/** WHY a body came back empty, in names and counts only — never a value, a path, or a
+ *  snippet of text (the R6 口径 binds a diagnostic). tm_join writes this onto the
+ *  `child_body_missing` trajectory line so the three conclusions stay distinguishable:
+ *  a real body (`child_body`), a seam that answered with nothing readable in it
+ *  (`items=2 keys=[content+id+metadata+role] content=1 kinds=[tool] text=0`), and a seam
+ *  that did not answer at all (`no-context-method`). Without it, "we read it" and "we could
+ *  not read it" print the same row — goal #6's failure shape. */
+export function contextShapeEvidence(list: unknown): string {
+  if (list === undefined || list === null) return "no-list"
+  if (!Array.isArray(list)) return `not-array(${typeof list})`
+  if (list.length === 0) return "items=0"
+  const last = list[list.length - 1]
+  if (!last || typeof last !== "object") return `items=${list.length} last=${last === null ? "null" : typeof last}`
+  const rec = last as Record<string, unknown>
+  const keys = Object.keys(rec).slice(0, 12).join("+")
+  const bag = Array.isArray(rec.content) ? "content" : Array.isArray(rec.parts) ? "parts" : ""
+  if (bag) {
+    const arr = rec[bag] as unknown[]
+    const kinds = Array.from(
+      new Set(arr.map((p) => (p && typeof p === "object" ? String((p as { type?: unknown }).type ?? "?") : typeof p))),
+    )
+      .slice(0, 6)
+      .join("+")
+    let withText = 0
+    for (const p of arr) {
+      const t = (p as { text?: unknown } | null)?.text
+      if (typeof t === "string" && t.trim()) withText++
+    }
+    return `items=${list.length} keys=[${keys}] ${bag}=${arr.length} kinds=[${kinds}] text=${withText}`
+  }
+  if (typeof rec.text === "string") return `items=${list.length} keys=[${keys}] textlen=${rec.text.length}`
+  return `items=${list.length} keys=[${keys}] nobag`
+}
+
+/** The one name this bridge has for itself, so a reply credits the seam that answered and a
+ *  refusal names the seam that did not — never the v1 endpoint this host does not have. */
+const SEAM = "ctx.session.context"
+
+export function createV2SessionReader(ctx: unknown): V2SessionReader {
+  const report: V2SessionReaderReport = {
     attempted: 0, resolved: 0, failedShapes: [], contextTried: 0, contextOk: 0, contextKeys: [],
     interruptTried: 0, interruptConfirmed: 0, interruptRefused: 0, interruptUnknown: 0, interruptKeys: [],
   }
@@ -173,30 +275,41 @@ export function createV2SessionReader(ctx: unknown): V2SessionReader {  const re
       },
 
       /** The reply path: `ctx.session.context({sessionID})` is the in-process seam that
-       *  answers for a child's messages — measured on 2.0.18, where it returns an ARRAY of
-       *  `{id, time:{created}, text, type}`. That is NOT v1's `[{info:{role},parts:[…]}]`,
-       *  and this is the reason `tm_join` kept saying it could not read a reply that was
-       *  sitting right there: `lastAssistantMessage` tolerates an unknown shape by returning
-       *  no text, so the call succeeded and the body was silently dropped. The flat shape is
-       *  therefore NORMALISED here, at the seam that knows it, so the collect path stays
-       *  single-shaped — and the result says WHICH seam answered, because a reply that
-       *  credits "session.messages" (a v1 endpoint this host does not have) is a claim about
-       *  the host that nobody measured. */
+       *  answers for a child's messages. Measured on 2.0.18 it returns an ARRAY of flat
+       *  `{id, time:{created}, text, type}` items; measured on 2.0.20 it returns items of
+       *  `{id, role, metadata, content:[…]}` — the shape the published
+       *  `Session.Message.Info` contract describes, with the kind on `role` instead of the
+       *  documented `type`. Neither is v1's `[{info:{role},parts:[…]}]`, and both were the
+       *  reason `tm_join` said it could not read a reply that was sitting right there:
+       *  `lastAssistantMessage` tolerates an unknown shape by returning NO text, so the call
+       *  succeeded and the body was silently dropped. Both shapes are therefore NORMALISED
+       *  here, at the seam that knows them, so the collect path stays single-shaped — and
+       *  every answer carries WHICH seam it came from plus the SHAPE it saw, because a reply
+       *  that credits "session.messages" (a v1 endpoint this host does not have) is a claim
+       *  about the host nobody measured, and a missing body with no shape on it is the same
+       *  claim in the other direction. */
       messages: async (opts: unknown) => {
         const id = idOf(opts)
-        if (!id || typeof domain?.context !== "function") return { data: undefined }
+        if (!id) return { data: undefined, via: SEAM, shape: "no-id" }
+        if (typeof domain?.context !== "function") {
+          // The seam is ABSENT, which is a different fact from "it answered with nothing".
+          report.contextError = domain ? "ctx.session has no context method" : "ctx has no session domain"
+          return { data: undefined, via: SEAM, shape: domain ? "no-context-method" : "no-session-domain" }
+        }
         report.contextTried++
         try {
           const raw = await call("context", { sessionID: id })
           const rec = unwrap(raw)
-          if (!rec) return { data: undefined }
+          if (!rec) return { data: undefined, via: SEAM, shape: `seam-answered-${raw === null ? "null" : typeof raw}` }
           report.contextOk++
           report.contextKeys = Array.isArray(rec) ? ["array"] : Object.keys(rec).slice(0, 24)
           const list = Array.isArray(rec) ? rec : (rec.messages ?? rec.data ?? rec)
-          return { data: normaliseContextMessages(list), via: "ctx.session.context" }
+          const seen = contextShapeEvidence(list)
+          report.contextShape = seen
+          return { data: normaliseContextMessages(list), via: SEAM, shape: seen }
         } catch (err) {
           report.contextError = String((err as { message?: unknown })?.message ?? err).slice(0, 160)
-          return { data: undefined }
+          return { data: undefined, via: SEAM, shape: "context-threw" }
         }
       },
 

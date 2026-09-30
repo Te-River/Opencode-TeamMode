@@ -1692,6 +1692,7 @@ console.log("13. the host's own sub-agents are collectable (decision 4, 2026-09-
   assert.ok(!/段落散文 5：/.test(capped.text), "and it is the paragraph prose that pays")
   console.log("   OK (measured ack shape → registry row → tm_join, Team-scoped, provenance-labelled)")
 }
+
 console.log("14. the lead can STOP a background child — five verdicts, not one success word (#33)")
 {
   const { cancelOutcomeOf, cancelVerdictLine, cancelOutcomeParts, cancelOutcomeLabel } =
@@ -1833,6 +1834,186 @@ console.log("14. the lead can STOP a background child — five verdicts, not one
   assert.match(ssrc, /stop_refused/, "…with the idle no-op kept separate from a real stop")
   assert.match(ssrc, /没人用过 cancel:true/, "…and an untested seam says so instead of implying a defect")
   console.log("   OK (stop reaches the host; five verdicts stay distinct; v1 byte-exact; counters printed)")
+}
+
+console.log("15. the 2.0.20 message shape is normalised AT the seam — a real body, or the shape that says why not (A1, 2026-09-30)")
+{
+  const { normaliseContextMessages, contextShapeEvidence } = await import("./dist/host/v2-session-client.js")
+  const { lastAssistantMessage } = await import("./dist/tm/dispatch.js")
+
+  // (a) What the name-level probe recorded on 2.0.20 (`{keys:["content","id","metadata",
+  //     "role"], content:["array(1)"]}`) and what the published `Session.Message.Info`
+  //     contract describes: a MESSAGE whose body is `content: (Text|Reasoning|Tool)[]` and
+  //     whose kind is on `role`. The previous normaliser passed such an item through as
+  //     "already message-shaped", `lastAssistantMessage` then found no `parts` and no
+  //     `text`, and the seam ANSWERED while the body was dropped — which is the live
+  //     symptom: `child_body_missing … via="ctx.session.context"`, and 正文来源= printed
+  //     for nobody, today not once.
+  const v2020 = [
+    { id: "msg_u1", role: "user", metadata: {}, content: [{ type: "text", text: "简报：A1-BRIEF-SECRET" }] },
+    {
+      id: "msg_a1",
+      role: "assistant",
+      metadata: {},
+      content: [
+        { type: "reasoning", text: "A1-THINKING" },
+        { type: "text", text: "STATUS: A1-DELIVERED" },
+        { type: "tool", id: "t1", name: "shell", executed: true },
+        { type: "text", text: "CHANGES: 两处" },
+      ],
+    },
+  ]
+  const norm = normaliseContextMessages(v2020)
+  assert.equal(norm[0].info.role, "user", "the kind on `role` becomes the role")
+  assert.equal(norm[1].info.role, "assistant", "for every item, not only the answer")
+  assert.equal(norm[1].parts, v2020[1].content, "only the bag is renamed — the host's own part array, element for element")
+  assert.equal(norm[1].info.time, undefined, "2.0.20's ctx carries no `time`, and none is invented (that field IS the settle verdict)")
+  assert.equal(
+    lastAssistantMessage(v2020).text,
+    "",
+    "the RAW shape is still nothing downstream: the fix lives at the seam that knows it, not as a second guess in the collect path",
+  )
+  assert.equal(
+    lastAssistantMessage(norm).text,
+    "STATUS: A1-DELIVERED\nCHANGES: 两处",
+    "the text parts are joined in order, and reasoning/tool parts are never counted as the reply",
+  )
+  assert.equal(lastAssistantMessage(norm).completedAt, undefined, "a body with no completion time settles nothing on its own")
+
+  // The documented discriminator (`type`) reads the same way; an unrecognised kind is left
+  // OFF rather than guessed, because a guessed role is how a user turn ships as the report.
+  const docShape = [{ id: "msg_d", type: "assistant", content: [{ type: "text", text: "DOC-KIND-OK" }] }]
+  assert.equal(lastAssistantMessage(normaliseContextMessages(docShape)).text, "DOC-KIND-OK", "the OpenAPI spelling (kind on `type`) reads identically")
+  const trailingUser = [
+    { id: "a", role: "assistant", content: [{ type: "text", text: "THE-ANSWER" }] },
+    { id: "u", role: "user", content: [{ type: "text", text: "A-LATER-BRIEF" }] },
+  ]
+  assert.equal(lastAssistantMessage(normaliseContextMessages(trailingUser)).text, "THE-ANSWER", "a later user turn is skipped, never delivered as the child's report")
+  const kindless = [{ id: "x", content: [{ type: "text", text: "KINDLESS" }] }]
+  assert.equal(normaliseContextMessages(kindless)[0].info.role, undefined, "a kind nobody recognises is left unset instead of guessed")
+  assert.equal(lastAssistantMessage(normaliseContextMessages(kindless)).text, "KINDLESS", "and an unset kind is still a candidate turn — v1's list follows the same rule")
+
+  // `time` is COPIED when the host wrote it (the contract's Assistant.time), never inferred.
+  const timed = [{ role: "assistant", time: { created: 5, completed: 9 }, content: [{ type: "text", text: "TIMED" }] }]
+  assert.equal(lastAssistantMessage(normaliseContextMessages(timed)).completedAt, 9, "a `time.completed` the host really wrote is carried through")
+  const halfTimed = [{ role: "assistant", time: { created: 5 }, content: [{ type: "text", text: "HALF" }] }]
+  assert.equal(lastAssistantMessage(normaliseContextMessages(halfTimed)).completedAt, undefined, "and `created` alone settles nothing")
+
+  // (b) the shape report — names and counts only, never a value (the R6 口径 binds a
+  //     diagnostic), and the thing that keeps `child_body_missing` falsifiable.
+  const emptyContent = contextShapeEvidence([{ id: "m", role: "assistant", metadata: {}, content: [] }])
+  assert.match(emptyContent, /items=1/, "one item, said as a count")
+  assert.match(emptyContent, /content=0/, "an empty content bag says the bag was empty")
+  assert.match(emptyContent, /keys=\[id\+role\+metadata\+content\]/, "with the key NAMES it saw")
+  const noText = contextShapeEvidence([{ id: "m", role: "assistant", content: [{ type: "tool", id: "t", name: "shell", executed: true }] }])
+  assert.match(noText, /kinds=\[tool\] text=0/, "a tool-only assistant turn is reported as zero text parts, not as a reply")
+  assert.equal(contextShapeEvidence([]), "items=0", "an empty list is its own answer")
+  assert.equal(contextShapeEvidence(undefined), "no-list", "and no list at all is a different one")
+  const withText = contextShapeEvidence([{ id: "m", role: "assistant", content: [{ type: "text", text: "A1-DELIVERED" }] }])
+  assert.match(withText, /text=1/, "a readable part is counted")
+  assert.ok(!withText.includes("A1-DELIVERED"), "and the evidence never carries the body — counts and names only")
+
+  // (c) end to end through a booted personality whose ctx really answers with the 2.0.20
+  //     shape, and through the REAL trajectory file, so both the user-visible sentence and
+  //     the audit row are checked — not just the pure function.
+  const tjRoot = mktmp("a1-trajectory")
+  const prevTj = process.env.TM_TRAJECTORY_DIR
+  process.env.TM_TRAJECTORY_DIR = tjRoot
+  const fakeC = makeFakeCtx({
+    directory: workspace("a1-2020"),
+    agents: sixAgents,
+    sessionData: {
+      sessions: {
+        ses_kidOK: { parentID: "ses_leadC", agent: "implementer" },
+        ses_kidEMPTY: { parentID: "ses_leadC", agent: "reviewer" },
+      },
+      messages: {
+        ses_kidOK: v2020,
+        ses_kidEMPTY: [{ id: "msg_e", role: "assistant", metadata: {}, content: [] }],
+      },
+    },
+  })
+  const bootC = await withCapturedConsole(() => plugin.setup(fakeC.ctx))
+  try {
+    const byC = Object.fromEntries(fakeC.tools.list().map((t) => [t.id ?? t.name, t]))
+    const CTXC = { sessionID: "ses_leadC", agent: "team", messageID: "msg_c", id: "call_c" }
+    const fireC = (name, input) => fakeC.hook(`tool.${name}`).handlers.forEach((h) => h(input))
+    const dispatchChild = (kid, role, label) => {
+      fireC("execute.before", {
+        tool: "subagent", sessionID: "ses_leadC", agent: "team",
+        input: { agent: role, background: true, description: label, prompt: "只回一句" },
+      })
+      fireC("execute.after", {
+        tool: "subagent", sessionID: "ses_leadC", agent: "team",
+        result: {
+          content: [{ type: "text", text: `The subagent is working in the background (sessionID: ${kid}).` }],
+          metadata: { sessionID: kid, status: "running", truncated: false },
+          output: "",
+        },
+      })
+    }
+    dispatchChild("ses_kidOK", "implementer", "A1 正文")
+    dispatchChild("ses_kidEMPTY", "reviewer", "A1 空正文")
+    // The host's own completion envelopes settle them (2.0.20's ctx gives no `time`, so the
+    // body cannot be the settle source and is not claimed as one).
+    fakeC.hook("session.context").handlers.forEach((h) =>
+      h({
+        sessionID: "ses_leadC", agent: "team", tools: {}, system: [], options: {},
+        model: { providerID: "p", modelID: "m" },
+        messages: [{
+          role: "user",
+          parts: [
+            { type: "text", synthetic: true, text: '<subagent sessionID="ses_kidOK" state="completed" description="A1 正文">INJECTED-OK</subagent>' },
+            { type: "text", synthetic: true, text: '<subagent sessionID="ses_kidEMPTY" state="completed" description="A1 空正文">INJECTED-EMPTY</subagent>' },
+          ],
+        }],
+      }),
+    )
+    const joinC = textOf(await byC.tm_join.execute({ ids: ["ses_kidOK", "ses_kidEMPTY"] }, CTXC))
+    assert.ok(joinC.includes("STATUS: A1-DELIVERED"), "tm_join delivers a 2.0.20 child's own report: " + joinC.replace(/\n/g, " | ").slice(0, 300))
+    assert.ok(joinC.includes("CHANGES: 两处"), "every text part of it, in order")
+    assert.match(joinC, /正文来源=ctx\.session\.context/, "the sentence that never printed on 2.0.20 now does, and credits the seam that answered")
+    assert.ok(!joinC.includes("A1-BRIEF-SECRET"), "the child's brief is not dragged into the parent's context")
+    assert.ok(!joinC.includes("A1-THINKING"), "reasoning parts are never delivered as the reply")
+    const blockOf = (sid) =>
+      joinC.split(/(?=^--- )/m).filter((b) => b.startsWith("--- ")).find((b) => b.includes(`(${sid})`)) ?? ""
+    const okBlock = blockOf("ses_kidOK")
+    assert.ok(okBlock.includes("正文来源=ctx.session.context"), "the seam is credited ON the block that carries the body: " + okBlock.replace(/\n/g, " | ").slice(0, 200))
+    const emptyBlock = blockOf("ses_kidEMPTY")
+    assert.ok(emptyBlock.length > 0, "the empty child is still listed")
+    assert.ok(emptyBlock.includes("没有读到它的正文"), "and its block says the body could not be read: " + emptyBlock.replace(/\n/g, " | ").slice(0, 240))
+    assert.ok(!emptyBlock.includes("正文来源="), "while the success sentence is NOT printed for it — normalisation may not launder a miss into a read")
+
+    const rows = fs
+      .readdirSync(path.join(tjRoot, "runs"))
+      .flatMap((run) =>
+        fs
+          .readFileSync(path.join(tjRoot, "runs", run, "steps.jsonl"), "utf8")
+          .split(/\r?\n/)
+          .filter(Boolean)
+          .map((l) => {
+            try {
+              return JSON.parse(l)
+            } catch {
+              return null
+            }
+          })
+          .filter(Boolean),
+      )
+    const bodyRows = rows.filter((e) => e.event === "child_body" || e.event === "child_body_missing")
+    const okRow = bodyRows.find((e) => e.child === "ses_kidOK")
+    const missRow = bodyRows.find((e) => e.child === "ses_kidEMPTY")
+    assert.equal(okRow?.event, "child_body", "the trajectory records that a body was REALLY read, beside the seam name")
+    assert.equal(okRow?.via, "ctx.session.context", "and which seam read it")
+    assert.equal(missRow?.event, "child_body_missing", "the empty child keeps the missing row — the three conclusions stay distinguishable")
+    assert.match(String(missRow?.shape), /content=0/, "with the SHAPE that says why: the seam answered, the bag was empty")
+    assert.ok(!JSON.stringify(missRow).includes("A1-DELIVERED"), "no body text rides the audit row (R6)")
+    await bootC.value()
+  } finally {
+    if (prevTj === undefined) delete process.env.TM_TRAJECTORY_DIR
+    else process.env.TM_TRAJECTORY_DIR = prevTj
+  }
+  console.log("   OK (2.0.20's content[]/role item reads as a body, credits its seam, and an empty one still says so with its shape)")
 }
 // B5: the group count is DERIVED from the numbered group headers this file
 // actually printed, never hand-written — the last hand-written number was

@@ -365,3 +365,49 @@ byte-exact (`aborted on request`), and `test-v2-adapter.mjs` group 14 asserts
 `interruptReached === 0` on a client that has both seams. That ordering is the guard — a test that
 only checked "cancel works on v2" would still pass if v1 had silently been rerouted.
 
+### 2026-09-30 — the same seam missed 2.0.20's MESSAGE shape; both are normalised now `[L][D][R]`
+
+Today's full-suite run on OpenCode 2.0.20 exported the symptom rather than a hypothesis: a child's
+trajectory row read `child_body_missing child=ses_f0e3bf4c0ffe… via="ctx.session.context"`, and
+`正文来源=ctx.session.context` — the sentence the entry above advertises — printed for nobody, not
+once. The name-level probe (`TM_V2_PROBE`) recorded the reason in the same breath: the items this
+host answers with are `{keys:["content","id","metadata","role"], content:["array(1)"]}`.
+
+That is the shape the published contract describes (`GET /api/session/{sessionID}/context` →
+`{data: Session.Message.Info[]}`, `Session.Message.Assistant = {id ^msg_, metadata,
+time:{created, streamed?, completed?}, type:"assistant", agent, model, content:(Text|Reasoning|Tool)[],
+snapshot}`) — with one documented-vs-observed difference a plugin cannot afford to read as a version
+number: the contract puts the discriminator on `type`, this host's plugin ctx puts it on `role`, and
+carries no `time` at all. The 2026-09-26 normaliser treated any item that already had `content` as
+"already message-shaped" and passed it through; `lastAssistantMessage` then found neither `parts`
+nor a top-level `text` and returned no text. The seam answered, the body was dropped a second time,
+and the reply blamed the host — the same failure shape one host build later, which is why the fix
+goes at the seam and not into the collect path.
+
+What `normaliseContextMessages` (`src/host/v2-session-client.ts`) does now, by SHAPE and never by a
+host-version test:
+ · `content[]` → renamed to `parts[]`; `info.role` is read from `role` OR `type`, and only when the
+   value is one of the contract's message kinds (`user assistant system synthetic skill shell
+   compaction idle`). An unrecognised value leaves the role OFF instead of guessing one, because a
+   guessed role is how a user turn ships as the child's report;
+ · flat `{type:"text", text}` items (2.0.18) → the rule that already shipped, unchanged;
+ · v1's `[{info,parts[]}]` → passed through untouched, same object identity;
+ · `time` is COPIED when the host wrote it and never invented — 2.0.20's ctx gives no `time`, so a
+   body with no completion time still settles nothing, and tm_join's settle source stays
+   `event` / `injection` / 推定, printed as such;
+ · `reasoning` and `tool` parts are kept exactly as the host wrote them and are never counted as
+   the reply; several `text` parts are joined in order.
+
+The three conclusions are still three. `contextShapeEvidence` reports names and counts only (the R6
+口径 binds a diagnostic) and tm_join's row now carries it: a real body logs `child_body`; a seam
+that answered with nothing readable logs `child_body_missing` with
+`shape=items=1 keys=[id+role+metadata+content] content=0 kinds=[] text=0`; a seam that never
+answered logs `no-context-method` / `no-session-domain` / `context-threw`. `正文来源=` is printed
+only when text was actually delivered, so normalisation cannot launder a miss into a read — pinned
+by `test-v2-adapter.mjs` group 14, which drives both the 2.0.20 item and an empty `content[]`
+through a booted personality and reads the trajectory rows back off disk.
+
+Adjacent and still unread: `Session.Message.Assistant.snapshot {start,end,files}` and
+`Text.state?: ProviderState` are in the contract and are not consumed here — nothing needs
+them yet, and since the probe records key names only, the next reader must re-measure rather than
+trust this paragraph.

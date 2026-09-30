@@ -291,9 +291,17 @@ export function parseDispatchTitle(
  * bare Part[] — the LAST assistant message is the answer, everything earlier
  * is that agent's own working transcript.
  *
+ * This function deliberately does NOT learn about the host's message shapes:
+ * `ctx.session.context` answers with `{id, role, metadata, content:[…]}` on
+ * 2.0.20 and with flat `{id, time, text, type}` on 2.0.18, and BOTH are
+ * normalised at that seam (`normaliseContextMessages`, src/host/v2-session-client.ts)
+ * before they reach here. Recognising `content` here as well would mean two
+ * places guess at a shape nobody measured, which is exactly how A1 shipped: the
+ * seam answered, the body was dropped, and the sentence blamed the host.
+ *
  * `completedAt` is what lets a rebuilt registry tell "still running" from
  * "finished while we were not listening": AssistantMessage.time.completed is
- * only set once the message is done.
+ * only set once the message is done, and it is copied, never invented.
  */
 export function lastAssistantMessage(messages: unknown): { text: string; completedAt?: number; error?: string } {
   const list = Array.isArray(messages) ? messages : []
@@ -564,7 +572,10 @@ export function buildDispatchTools(deps: DispatchDeps): {
     }
   }
 
-  function fetchReply(sid: string, directory: string | undefined): Promise<{ text: string; completedAt?: number; error?: string; via?: string; items?: number; pickedType?: string }> {
+  function fetchReply(
+    sid: string,
+    directory: string | undefined,
+  ): Promise<{ text: string; completedAt?: number; error?: string; via?: string; shape?: string; items?: number; pickedType?: string }> {
     return (async () => {
       if (typeof api?.messages !== "function") {
         return { text: "", error: "这个宿主客户端没有给出读取子会话正文的缝（v2 上它是 ctx.session.context 的兼容层）" }
@@ -578,7 +589,14 @@ export function buildDispatchTools(deps: DispatchDeps): {
         // printing "session.messages" there would credit an endpoint this host does not
         // have — the class of claim this product exists to refuse.
         const via = String((raw as { via?: unknown } | null)?.via ?? "session.messages")
-        return got.text ? { ...got, via } : { text: "", error: got.error, via }
+        // And the SHAPE the seam saw, reported by the seam (names and counts only). This is
+        // what makes a `child_body_missing` row falsifiable instead of a shrug: "answered,
+        // and the last item carried no text part" is a different fact from "no seam".
+        const reported = (raw as { shape?: unknown } | null)?.shape
+        const shape = typeof reported === "string" && reported ? reported : undefined
+        return got.text
+          ? { ...got, via, ...(shape ? { shape } : {}) }
+          : { text: "", error: got.error, via, ...(shape ? { shape } : {}) }
       } catch (err) {
         return { text: "", error: describeHostError((err as { message?: unknown })?.message ?? err, 140) }
       }
@@ -1007,9 +1025,21 @@ export function buildDispatchTools(deps: DispatchDeps): {
             const reply = await fetchReply(r.sessionID, directory)
             const text = reply.text
             const src = text && reply.via ? ` ·正文来源=${reply.via}` : ""
-            // Which seam answered, per child — an id and a seam name, never a body (R6 binds
-            // a diagnostic too). This is the line that makes "正文来源=…" checkable later.
-            log({ step_id: "join", event: text ? "child_body" : "child_body_missing", child: r.sessionID, via: reply.via ?? "none" })
+            // Which seam answered, per child — an id, a seam name and the SHAPE it saw, never
+            // a body (R6 binds a diagnostic too). This is the line that makes "正文来源=…"
+            // checkable later, and the only place the three outcomes stay distinguishable:
+            // a real body, a seam that answered with nothing readable (`shape=items=2 …
+            // content=1 kinds=[tool] text=0`), and a seam that never answered (`no-context-method`).
+            log({
+              step_id: "join",
+              event: text ? "child_body" : "child_body_missing",
+              child: r.sessionID,
+              via: reply.via ?? "none",
+              // Only when the SEAM reported one: v1's SDK client gives no shape, and the v1
+              // personality is frozen — its rows stay byte-exact rather than gaining a field
+              // nobody asked for. The v2 bridge reports a shape on every path.
+              ...(text || !reply.shape ? {} : { shape: reply.shape }),
+            })
             blocks.push(
               `--- ${r.agent} "${r.label}" (${r.sessionID})${src} ---\n${
                 text.trim() ||
