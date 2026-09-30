@@ -323,7 +323,7 @@ assert.match(textOf(notLead), /领队/, "the list is the lead's instrument; a sp
 // The other half of the seam: tm_join's goal tripwire has to read the SAME store,
 // because "所有子代理已结算" says nothing about the user's goal.  Pinned textually —
 // a second source of truth for the list would make the warning lie.
-const dispatchSrc = fs.readFileSync("src/tm/dispatch.ts", "utf8")
+const dispatchSrc = fs.readFileSync(fileURLToPath(new URL("./src/tm/dispatch.ts", import.meta.url)), "utf8")
 assert.ok(/deps\.ledgerStore/.test(dispatchSrc), "tm_join consults the ledger store")
 assert.ok(/ledger_empty/.test(dispatchSrc), "and an empty ledger is its own answer, not a silent pass")
 console.log("   OK (host-backed list, ids that cannot be guessed, a write that says whether it landed)")
@@ -1890,8 +1890,7 @@ console.log("15. the 2.0.20 message shape is normalised AT the seam — a real b
   )
   assert.equal(lastAssistantMessage(norm).completedAt, undefined, "a body with no completion time settles nothing on its own")
 
-  // The documented discriminator (`type`) reads the same way; an unrecognised kind is left
-  // OFF rather than guessed, because a guessed role is how a user turn ships as the report.
+  // The documented discriminator (`type`) reads the same way.
   const docShape = [{ id: "msg_d", type: "assistant", content: [{ type: "text", text: "DOC-KIND-OK" }] }]
   assert.equal(lastAssistantMessage(normaliseContextMessages(docShape)).text, "DOC-KIND-OK", "the OpenAPI spelling (kind on `type`) reads identically")
   const trailingUser = [
@@ -1899,9 +1898,31 @@ console.log("15. the 2.0.20 message shape is normalised AT the seam — a real b
     { id: "u", role: "user", content: [{ type: "text", text: "A-LATER-BRIEF" }] },
   ]
   assert.equal(lastAssistantMessage(normaliseContextMessages(trailingUser)).text, "THE-ANSWER", "a later user turn is skipped, never delivered as the child's report")
+
+  // INVERTED 2026-09-30 (correctness recheck, Major #2). The old pair of assertions pinned
+  // the FALSE behaviour — "a kind nobody recognises is left unset instead of guessed" +
+  // "an unset kind is still a candidate turn". Downstream skips on `role && role !==
+  // "assistant"`, so an UNSET role WAS an assistant candidate: leaving it empty was
+  // guessing "assistant" in other words, and a host that spelled the discriminator a
+  // value outside MESSAGE_KINDS would have had its item delivered as the child's report
+  // while the comment promised the opposite. The seam now carries the raw value
+  // (lower-cased) so the skip is real. Only an item with NO discriminator on either
+  // field stays unset — that is v1's bare Part[] rule, and it stays readable.
   const kindless = [{ id: "x", content: [{ type: "text", text: "KINDLESS" }] }]
-  assert.equal(normaliseContextMessages(kindless)[0].info.role, undefined, "a kind nobody recognises is left unset instead of guessed")
-  assert.equal(lastAssistantMessage(normaliseContextMessages(kindless)).text, "KINDLESS", "and an unset kind is still a candidate turn — v1's list follows the same rule")
+  assert.equal(normaliseContextMessages(kindless)[0].info.role, undefined, "no discriminator on either field leaves the role unset (bare Part[] case)")
+  assert.equal(lastAssistantMessage(normaliseContextMessages(kindless)).text, "KINDLESS", "a bare item is still readable as a candidate — v1's list follows the same rule")
+  const unknownRole = [{ id: "k", role: "Task", content: [{ type: "text", text: "NOT-A-REPORT" }] }]
+  assert.equal(normaliseContextMessages(unknownRole)[0].info.role, "task", "a present-but-unknown kind carries the host's raw value, lower-cased")
+  assert.equal(lastAssistantMessage(normaliseContextMessages(unknownRole)).text, "", "counter-example: an unknown-kind item is NOT delivered as the body")
+  const unknownType = [{ id: "k2", type: "mystery", content: [{ type: "text", text: "ALSO-NOT-A-REPORT" }] }]
+  assert.equal(lastAssistantMessage(normaliseContextMessages(unknownType)).text, "", "the same through the documented `type` discriminator")
+
+  // MINOR #3: a PART item that carries its own `content` bag is not a message. Renaming
+  // the bag would have made it an unroled assistant candidate — a TOOL OUTPUT delivered
+  // as the reply — so the item passes through untouched and stays unread as a body.
+  const partItem = [{ id: "p", type: "tool", content: [{ type: "text", text: "TOOL-OUTPUT" }] }]
+  assert.equal(normaliseContextMessages(partItem)[0], partItem[0], "a role-less item whose `type` is a part kind gets no message-level conversion")
+  assert.equal(lastAssistantMessage(normaliseContextMessages(partItem)).text, "", "and its tool output is never the child's report")
 
   // `time` is COPIED when the host wrote it (the contract's Assistant.time), never inferred.
   const timed = [{ role: "assistant", time: { created: 5, completed: 9 }, content: [{ type: "text", text: "TIMED" }] }]
@@ -2025,11 +2046,55 @@ console.log("15. the 2.0.20 message shape is normalised AT the seam — a real b
   }
   console.log("   OK (2.0.20's content[]/role item reads as a body, credits its seam, and an empty one still says so with its shape)")
 }
+
+console.log("16. the role-visibility claim is per-id, and the context shape is readable (correctness recheck: Major #1 + Minor #4)")
+{
+  const { agentVisibilityLine } = await import("./dist/tm/stats.js")
+  const six = "team,architect,researcher,reviewer,implementer,tester"
+  // Major #1: "已装" is a per-id OBSERVATION. The cold 2.0.20 boot: the pre-merge editor
+  // snapshot misses all six while the request has resolved only `team` — the old line
+  // asserted 已装而看不见 for the WHOLE unseen list off that one id, writing up five
+  // never-observed roles as a conclusion.
+  const mixed = agentVisibilityLine({
+    agents_editor_rounds: 1,
+    agents_editor_unseen: six,
+    agents_resolved_in_request: "team",
+  })
+  const segs = mixed.split("；")
+  assert.equal(segs.length, 2, "two non-empty sets ⇒ two segments, one assertion strength each")
+  const installed = segs.find((s) => s.includes("所以是已装而看不见"))
+  const undecided = segs.find((s) => s.includes("本进程无法区分"))
+  assert.ok(installed && installed.includes("team") && !installed.includes("architect"), "the 已装 segment names ONLY the id the host actually resolved")
+  assert.ok(undecided && undecided.includes("architect") && undecided.includes("tester"), "the undecided segment carries the never-observed ids")
+  assert.ok(!undecided.includes("所以是已装而看不见"), "and states no conclusion about them")
+  assert.match(undecided, /该 id 出现在本行的 agents_resolved_in_request/, "the deciding criterion is named per id")
+  // Single-set cases keep one strength each — the old sentences, scoped to their set.
+  const allObserved = agentVisibilityLine({ agents_editor_rounds: 2, agents_editor_unseen: "team,reviewer", agents_resolved_in_request: "team,reviewer" })
+  assert.ok(allObserved.includes("所以是已装而看不见") && !allObserved.includes("本进程无法区分"), "all observed ⇒ only the 已装 claim")
+  const noneObserved = agentVisibilityLine({ agents_editor_rounds: 1, agents_editor_unseen: six, agents_resolved_in_request: "" })
+  assert.ok(noneObserved.includes("本进程无法区分") && !noneObserved.includes("所以是已装而看不见"), "none observed ⇒ only the undecided claim")
+  assert.ok(six.split(",").every((id) => noneObserved.includes(id)), "…and it still names every unseen id")
+  assert.equal(
+    agentVisibilityLine({ agents_missing: "team" }),
+    "旧版行的 editor 未列角色：team（该字段记的是合并前的 editor 快照，不作为文件缺失的结论）",
+    "the legacy-row wording is byte-exact",
+  )
+  // Minor #4: AGENTS.md promises a `child_body_missing` row can be checked against the
+  // shape the seam saw — the counter row is what makes that claim readable in the
+  // trajectory instead of write-only (names and counts only, R6 口径).
+  const v2src16 = fs.readFileSync(fileURLToPath(new URL("./dist/host/v2.js", import.meta.url)), "utf8")
+  assert.match(v2src16, /session_context_shape/, "observationCounters publishes the context shape")
+  assert.match(v2src16, /report\.contextShape/, "…read off report.contextShape, with an explicit none case")
+}
+console.log("   OK (per-id strength, two segments never mixed; the shape claim has a readback)")
 // B5: the group count is DERIVED from the numbered group headers this file
 // actually printed, never hand-written — the last hand-written number was
-// already stale while the file had more.
+// already stale while the file had more.  The self-scan reads THIS file by its
+// own URL, not a repo-relative name: the runner's cwd made "test-v2-adapter.mjs"
+// work, and a direct `node test-v2-adapter.mjs` from anywhere else died ENOENT
+// AFTER printing all-pass.
 const groupCount = fs
-  .readFileSync("test-v2-adapter.mjs", "utf8")
+  .readFileSync(fileURLToPath(import.meta.url), "utf8")
   .split(/\r?\n/)
   .filter((l) => /^console\.log\("\d+[a-z0-9]*\./.test(l)).length
 console.log(`\ntest-v2-adapter.mjs: ALL PASS (${groupCount} groups)`)

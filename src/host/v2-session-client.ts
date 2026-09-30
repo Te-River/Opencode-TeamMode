@@ -109,24 +109,48 @@ function unwrap(value: unknown): Record<string, unknown> | undefined {
 }
 
 /** The message-kind values the host writes on its discriminator field — the members of the
- *  published union `Session.Message.Info`. Anything else on `type` is a PART kind ("text" /
- *  "reasoning" / "tool") and must never be read as a role: that is what keeps a bare
- *  `Part[]` item readable, and what stops a part labelled `text` from being mistaken for a
- *  turn that is not the answer. */
+ *  published union `Session.Message.Info`. Anything else on `type` is a PART kind and must
+ *  never be read as a message kind. */
 const MESSAGE_KINDS = ["user", "assistant", "system", "synthetic", "skill", "shell", "compaction", "idle"]
 
+/** The PART kinds the host writes inside a message's `content` bag. A TOP-LEVEL item
+ *  carrying one of these on `type` with no `role` is a part, not a message (the shape
+ *  `{type:"tool", content:[{type:"text",…}]}` exists): renaming its bag to `parts` would
+ *  hand a tool output to the collect path as an unroled assistant candidate. */
+const PART_KINDS = ["text", "reasoning", "tool"]
+
+/** The discriminator field's own value, lower-cased — "" only when the field is ABSENT
+ *  (or not a string). "Present but unknown" and "absent" are two different facts, and
+ *  downstream can only tell them apart if the seam keeps them apart. */
+function rawKind(value: unknown): string {
+  return typeof value === "string" ? value.trim().toLowerCase() : ""
+}
+
 function messageKind(value: unknown): string {
-  const s = typeof value === "string" ? value.trim().toLowerCase() : ""
+  const s = rawKind(value)
   return MESSAGE_KINDS.includes(s) ? s : ""
 }
 
 /** Which kind of message an item is. The OpenAPI contract puts the discriminator on `type`;
- *  the plugin ctx measured on 2.0.20 puts it on `role` — so BOTH are read, in the order the
- *  values are checked against the known kinds rather than by field name. An unrecognised
- *  value yields "" and the caller leaves the role OFF instead of guessing one: a guessed
- *  role is how a user turn gets delivered as the child's report. */
+ *  the plugin ctx measured on 2.0.20 puts it on `role` — so BOTH are read, a recognised
+ *  kind first (`role` before `type`), exactly as before.
+ *
+ *  A value that is PRESENT but not a known message kind is carried through verbatim
+ *  (lower-cased) instead of dropped to "". This INVERTS the previous rule — "an
+ *  unrecognised value yields "" and the caller leaves the role OFF instead of guessing
+ *  one" — because that rule was false where it mattered: `lastAssistantMessage` skips on
+ *  `if (role && role !== "assistant")`, so an EMPTY role IS an assistant candidate,
+ *  exactly equivalent to guessing "assistant". A host that spelled the discriminator a
+ *  value outside MESSAGE_KINDS would have had its item delivered as the child's report
+ *  while the comment claimed the opposite (and while AGENTS.md's "keeps an EMPTY role …
+ *  rather than guessing" described downstream semantics under which leaving it empty was
+ *  the guess). Carrying the raw value makes the skip real: unknown kind ⇒ not delivered.
+ *  Only when BOTH fields are absent — a bare Part[] item — does the role stay unset,
+ *  which is the shape the collect path reads by the item's own `type:"text"`. */
 function roleOfMessage(rec: Record<string, unknown>): string {
-  return messageKind(rec.role) || messageKind(rec.type)
+  const roleRaw = rawKind(rec.role)
+  const typeRaw = rawKind(rec.type)
+  return messageKind(roleRaw) || messageKind(typeRaw) || roleRaw || typeRaw
 }
 
 /** Copy the host's own timestamps, and ONLY those. `time.completed` IS the settle verdict
@@ -179,15 +203,23 @@ export function normaliseContextMessages(list: unknown): unknown {
     const rec = item as Record<string, unknown>
     if (rec.info || Array.isArray(rec.parts)) return item
     if (Array.isArray(rec.content)) {
+      // A PART item (no `role`, `type` a part kind) is not a message: renaming its bag to
+      // `parts` would make it an unroled assistant candidate downstream, i.e. a TOOL OUTPUT
+      // delivered as the child's report — while passing it through untouched was the SAFE
+      // case, because the collect path reads a part's own `type` and skips `tool`.
+      if (!rawKind(rec.role) && PART_KINDS.includes(rawKind(rec.type))) return item
       return { info: infoOfMessage(rec, roleOfMessage(rec)), parts: rec.content }
     }
     const text = rec.text
     if (typeof text !== "string" || !text.trim()) return item
-    // 2.0.18's flat item: a role word is read from either field; anything else (the measured
-    // answer items carry `type:"text"`, a PART kind) falls to "assistant", which is the
-    // behaviour that shipped and that the 2.0.18 probe pinned.
+    // 2.0.18's flat item: a recognised role word is read from either field; anything else
+    // (the measured answer items carry `type:"text"`, a PART kind) falls to "assistant",
+    // which is the behaviour that shipped and that the 2.0.18 probe pinned. This branch
+    // deliberately keeps the fallback the content[] branch above no longer needs: a flat
+    // item's `type` is the PART kind of its own body, not a message discriminator, so
+    // carrying the raw value here would skip the real 2.0.18 replies.
     return {
-      info: infoOfMessage(rec, roleOfMessage(rec) || "assistant"),
+      info: infoOfMessage(rec, messageKind(rec.role) || messageKind(rec.type) || "assistant"),
       parts: [{ type: "text", text }],
     }
   })

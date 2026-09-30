@@ -358,11 +358,18 @@ export function bootSnapshots(
  *  printed by both places that used to paste "配置里缺角色".  That phrase was a false
  *  assertion: measured on 2.0.20 all six role files exist and the host runs them
  *  (`--agent team` resolves, child sessions start), while `ctx.agent.transform` hands
- *  the agent set from BEFORE the config directory merged.  Three states, and only one
- *  of them is a gap — and a real gap is never laundered into "看不见":
- *   · unseen but the host resolved the ids in a request ⇒ installed, snapshot blind;
+ *  the agent set from BEFORE the config directory merged.
+ *
+ *  "已装" is a PER-ID observation, so the line is built per id.  The first version only
+ *  required `agents_resolved_in_request` to be non-empty and then asserted "installed,
+ *  snapshot blind" for the WHOLE unseen list — but on a cold 2.0.20 boot the pre-merge
+ *  snapshot misses all six while the request has resolved just `team`, so five roles
+ *  nobody had ever observed were written up as a conclusion.  Two strengths, never mixed
+ *  inside one sentence; when both sets are non-empty the line says them as two segments:
+ *   · unseen AND resolved in a request ⇒ installed, snapshot blind;
  *   · unseen and never resolved anywhere ⇒ this process cannot tell the two apart, so
- *     the line names the deciding observation instead of asserting either half;
+ *     the segment names the deciding observation (that id appearing in
+ *     agents_resolved_in_request) instead of asserting either half;
  *   · a legacy row (pre-A2 build, still inside the window) carrying `agents_missing`
  *     ⇒ printed as what that field actually measured, not as a claim about files. */
 export function agentVisibilityLine(line: Record<string, unknown>): string {
@@ -370,9 +377,19 @@ export function agentVisibilityLine(line: Record<string, unknown>): string {
   const resolved = String(line.agents_resolved_in_request ?? "").trim()
   if (unseen) {
     const rounds = String(line.agents_editor_rounds ?? "?")
-    return resolved
-      ? `editor 快照里看不到 ${unseen}（transform 观察 ${rounds} 次，那是配置合并前的角色集）——宿主请求里已解析 ${resolved}，所以是已装而看不见，不是文件缺失`
-      : `editor 快照里看不到 ${unseen}（transform 观察 ${rounds} 次），宿主请求里也没出现过这些 id——本进程无法区分两种情况，不写成结论：真没装的判据是宿主连 --agent team 都解析不到（交给安装器），已装而看不见的判据是本行的 agents_resolved_in_request 非空`
+    const splitIds = (s: string) => s.split(/[,\s;]+/).map((x) => x.trim()).filter(Boolean)
+    const resolvedSet = new Set(splitIds(resolved))
+    const unseenIds = splitIds(unseen)
+    const observed = unseenIds.filter((id) => resolvedSet.has(id))
+    const neverObserved = unseenIds.filter((id) => !resolvedSet.has(id))
+    const segments: string[] = []
+    if (observed.length) {
+      segments.push(`editor 快照里看不到 ${observed.join(",")}（transform 观察 ${rounds} 次，那是配置合并前的角色集）——宿主请求里已解析这些 id，所以是已装而看不见，不是文件缺失`)
+    }
+    if (neverObserved.length) {
+      segments.push(`editor 快照里看不到 ${neverObserved.join(",")}（transform 观察 ${rounds} 次），宿主请求里也没出现过这些 id——本进程无法区分两种情况，不写成结论：真没装的判据是宿主连 --agent team 都解析不到（交给安装器），已装而看不见的判据是该 id 出现在本行的 agents_resolved_in_request 里`)
+    }
+    return segments.join("；")
   }
   const legacy = String(line.agents_missing ?? "").trim()
   return legacy

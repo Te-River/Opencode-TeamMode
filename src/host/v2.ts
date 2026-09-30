@@ -679,6 +679,11 @@ export const v2Personality: V2Plugin = {
       session_get_shape: sessionReader.report.usedShape ?? "(none)",
       session_get_resolved: sessionReader.report.resolved,
       session_context_ok: sessionReader.report.contextOk,
+      // AGENTS.md says a `child_body_missing` row can be checked against the shape the
+      // seam saw — until now `report.contextShape` was write-only (the trajectory rows
+      // printed the return value, `session_get_shape` printed `usedShape`), so the claim
+      // had no readback. Names and counts only, never a value (R6 binds a diagnostic).
+      session_context_shape: sessionReader.report.contextShape ?? "(none)",
       session_context_keys: sessionReader.report.contextKeys.join(","),
       session_get_error: sessionReader.report.lastError ?? sessionReader.report.contextError ?? "",
       completion_context_fired: completion.report.contextFired,
