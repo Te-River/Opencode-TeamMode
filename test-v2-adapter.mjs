@@ -342,7 +342,15 @@ const pubText = textOf(pub)
 // "…without needing permission", so content matching would make a passing fetch
 // look like a refusal.
 assert.ok(!/phase=permission/.test(pubText), "a public host outside every seed is NOT refused by policy")
-assert.match(pubText, /Example Domain|正文|http/i, "…and is actually fetched (DNS/网络错误可以，门禁错误不行)")
+// The regex must honor the message it carries (B2): a DNS / timeout / general
+// network failure of example.com is ACCEPTED here — the point is that the
+// request was actually attempted past every gate, not that the remote answers.
+// Gate-class refusals are still rejected, by the phase=permission line above.
+assert.match(
+  pubText,
+  /Example Domain|正文|http|超时|timeout|DNS|ENOTFOUND|EAI_AGAIN|ECONN|ETIMEDOUT|socket|网络|fetch failed|抓取失败/i,
+  "…and is actually fetched (DNS/网络错误可以，门禁错误不行)",
+)
 for (const [url, why] of [
   ["http://169.254.169.254/latest/meta-data/", "元数据"],
   ["http://192.168.1.1/", "私网"],
@@ -1684,7 +1692,6 @@ console.log("13. the host's own sub-agents are collectable (decision 4, 2026-09-
   assert.ok(!/段落散文 5：/.test(capped.text), "and it is the paragraph prose that pays")
   console.log("   OK (measured ack shape → registry row → tm_join, Team-scoped, provenance-labelled)")
 }
-
 console.log("14. the lead can STOP a background child — five verdicts, not one success word (#33)")
 {
   const { cancelOutcomeOf, cancelVerdictLine, cancelOutcomeParts, cancelOutcomeLabel } =
@@ -1827,4 +1834,11 @@ console.log("14. the lead can STOP a background child — five verdicts, not one
   assert.match(ssrc, /没人用过 cancel:true/, "…and an untested seam says so instead of implying a defect")
   console.log("   OK (stop reaches the host; five verdicts stay distinct; v1 byte-exact; counters printed)")
 }
-console.log("\ntest-v2-adapter.mjs: ALL PASS (13 groups)")
+// B5: the group count is DERIVED from the numbered group headers this file
+// actually printed, never hand-written — the last hand-written number was
+// already stale while the file had more.
+const groupCount = fs
+  .readFileSync("test-v2-adapter.mjs", "utf8")
+  .split(/\r?\n/)
+  .filter((l) => /^console\.log\("\d+[a-z0-9]*\./.test(l)).length
+console.log(`\ntest-v2-adapter.mjs: ALL PASS (${groupCount} groups)`)

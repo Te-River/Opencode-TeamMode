@@ -1047,19 +1047,81 @@ async function main() {
       }
       /** Children outlive the root by a few hundred ms while they tear down, so
        *  "the tree is gone" is polled, not sampled once.  The budget only buys
-       *  time — a survivor at the end still fails the assertion. */
-      const survivorsAfter = async (pids, budgetMs = 4000) => {
+       *  time — a survivor at the end still fails the assertion.
+       *  B1: a bare pidAlive() counted RECYCLED OS pids as survivors — a live
+       *  run once "survived" as UACSdk.exe / UNCServer.exe / Tvsukernel.exe /
+       *  OneDrive.Sync.Service.exe, numbers the OS re-handed out after our
+       *  children died while the browser root had really exited. The product's
+       *  reaper refuses a force-kill unless the pid still IS the recorded
+       *  executable (identityMatchesExecutable); the test owes the same proof
+       *  in the other direction: only a live pid that still carries our
+       *  browser's image counts as a survivor. One CIM dump per poll, not one
+       *  spawn per pid; if the dump itself fails we fall back to counting every
+       *  live pid (an unreadable identity may not launder a real survivor). */
+      const procIdents = () => {
+        const r = spawnSync(
+          "powershell.exe",
+          [
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            "(Get-CimInstance Win32_Process | Select-Object ProcessId,Name,CommandLine | ConvertTo-Json -Compress)",
+          ],
+          { encoding: "utf8", windowsHide: true, maxBuffer: 64 * 1024 * 1024, timeout: 15000 },
+        )
+        if (r.status !== 0 || !String(r.stdout || "").trim()) return null
+        try {
+          let rows = JSON.parse(r.stdout)
+          if (!Array.isArray(rows)) rows = [rows]
+          const m = new Map()
+          for (const row of rows) m.set(Number(row.ProcessId), { name: String(row.Name ?? ""), cmdline: String(row.CommandLine ?? "") })
+          return m
+        } catch {
+          return null
+        }
+      }
+      const survivorsAfter = async (pids, budgetMs = 4000, exe = "") => {
         const deadline = Date.now() + budgetMs
         for (;;) {
-          const left = pids.filter((p) => br.pidAlive(p))
+          const alive = pids.filter((p) => br.pidAlive(p))
+          const table = alive.length && exe && process.platform === "win32" ? procIdents() : null
+          const left = table ? alive.filter((p) => br.identityMatchesExecutable(exe, table.get(p) ?? null)) : alive
           if (!left.length || Date.now() >= deadline) return left
           await new Promise((r) => setTimeout(r, 150))
         }
       }
+      /** B4: a real launch can flake ("browserType.launch: Target page,
+       *  context or browser has been closed"), and the old report sliced the
+       *  failure text at 160 chars — cutting off the <launching> line exactly
+       *  where the executable path lived.  One bounded retry before the red
+       *  light; a genuine double failure still fails, printing BOTH attempts
+       *  in full so nothing is swallowed. */
+      const openReal = async (tool, label) => {
+        const attempts = []
+        for (let i = 0; i < 2; i++) {
+          let text
+          try {
+            text = o(await tool.execute({ action: "open", url: "https://cn.bing.com" }, ctxNoAsk))
+          } catch (e) {
+            text = `execute threw: ${String(e?.stack ?? e)}`
+          }
+          attempts.push(text)
+          if (text.includes("浏览器已启动")) return text
+          if (i === 0) {
+            // drop whatever the failed attempt left behind so the retry launches clean
+            try {
+              await tool.execute({ action: "close" }, ctxNoAsk)
+            } catch {
+              /* nothing to close */
+            }
+            await new Promise((r) => setTimeout(r, 500))
+          }
+        }
+        assert.fail(`${label} — failed twice (bounded retry exhausted):\n  attempt 1: ${attempts[0]}\n  attempt 2: ${attempts[1]}`)
+      }
       try {
-        const open = await mk.tool.execute({ action: "open", url: "https://cn.bing.com" }, ctxNoAsk)
-        assert.ok(o(open).includes("浏览器已启动"), `real playwright open — got: ${o(open).slice(0, 160)}`)
-        console.log(`  (real smoke launched: ${/· (playwright\/[^）]*)/.exec(o(open))?.[1] ?? "n/a"})`)
+        const open = await openReal(mk.tool, "real playwright open")
+        console.log(`  (real smoke launched: ${/· (playwright\/[^）]*)/.exec(open)?.[1] ?? "n/a"})`)
         const browserPid = launchedPid(store1)
         assert.ok(browserPid > 0, "the orphan ledger recorded the pid this session launched")
         if (mk.tool.engineInfo().kind === "playwright") {
@@ -1085,7 +1147,6 @@ async function main() {
           const kids = descendants(rowsAtClose, browserPid)
           const cl = o(await mk.tool.execute({ action: "close" }, ctxNoAsk))
           assert.ok(cl.includes("浏览器会话已确认关闭"), `close must EARN 已确认关闭 — got: ${cl.slice(0, 240)}`)
-          assert.ok(cl.includes("浏览器会话已确认关闭"), `close must EARN 已确认关闭 — got: ${cl.slice(0, 240)}`)
           // playwright's own close() takes the process down before the note is
           // written, so "早已不在" is the NORMAL honest branch; both wordings
           // mean the same verified thing, and neither is allowed to be a guess.
@@ -1095,7 +1156,7 @@ async function main() {
           )
           assert.ok(!br.pidAlive(browserPid), `pid ${browserPid} survived 已确认关闭`)
           if (rowsAtClose) {
-            const survivors = await survivorsAfter(kids)
+            const survivors = await survivorsAfter(kids, 4000, br.findBrowserExecutable() ?? "")
             assert.equal(survivors.length, 0, `已确认关闭 but ${survivors.length} descendant(s) of ${browserPid} survived: ${survivors.join(",")}`)
             console.log(`  (real close took pid ${browserPid} and its ${kids.length} descendant process(es))`)
           } else {
@@ -1125,8 +1186,7 @@ async function main() {
         const mk2 = makeTool({ realDiscovery: true, blackboardRoot: store2 })
         let victim = 0
         try {
-          const second = o(await mk2.tool.execute({ action: "open", url: "https://cn.bing.com" }, ctxNoAsk))
-          assert.ok(second.includes("浏览器已启动"), `second real launch — got: ${second.slice(0, 160)}`)
+          await openReal(mk2.tool, "second real launch")
           victim = launchedPid(store2)
           assert.ok(victim > 0, "the second session recorded its own pid")
           const kids = descendants(winRows(), victim)
@@ -1154,7 +1214,7 @@ async function main() {
           const r = br.reapOrphanBrowsers(ledgerOf(store2))
           assert.ok(r.reaped.includes(victim), `the reaper did not claim pid ${victim} — got ${JSON.stringify(r)}`)
           assert.ok(await br.waitForPidExit(victim, 5000), `the default kill path left pid ${victim} alive`)
-          const survivors = await survivorsAfter(kids)
+          const survivors = await survivorsAfter(kids, 4000, br.findBrowserExecutable() ?? "")
           assert.equal(survivors.length, 0, `reaped the browser but ${survivors.length} descendant(s) survived: ${survivors.join(",")}`)
           assert.ok(!fs.existsSync(ledgerOf(store2)), "an emptied ledger removes itself")
           console.log(`  (real reaper killed orphan pid ${victim} + ${kids.length} descendant(s), default kill path)`)

@@ -151,8 +151,11 @@ const report = (r) => {
   console.log(okRun ? lines.slice(-6).join("\n") : text)
   // A suite that dies before printing its own final line says nothing about why.
   // Say what is missing rather than letting the reader guess between a hang, an
-  // OOM kill and a real assertion.
-  if (!okRun && !/ALL .* TESTS PASSED|ALL PASS/.test(r.out)) {
+  // OOM kill and a real assertion.  The alternation lists each suite's real end
+  // line: "ALL … TESTS PASSED" / "ALL PASS (N groups)" / test-browser's
+  // "browser: OK (…)" (B3 — that shape was missing, so every genuine assertion
+  // failure in test-browser also got a misleading "提前退出" sentence).
+  if (!okRun && !/ALL .* TESTS PASSED|ALL PASS|^browser: OK/m.test(r.out)) {
     console.log(`[runner] 该套件没打印自己的结束行（最后一行：${JSON.stringify(lines.at(-1) ?? "(无输出)")}）——这是提前退出，不是断言失败`)
   }
 }
