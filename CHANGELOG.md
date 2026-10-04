@@ -7,13 +7,20 @@ registry saw 1.5.0 as the install-script fix release).
 
 ## [Unreleased]
 
-> **What this change does and does not claim.** The stop seam is wired to the host's documented
-> `session.interrupt` and verified end to end against the fake ctx — a cancel call really reaches
-> the host carrying the CHILD's session id, and all five verdicts render. NOT verified live: no
-> 2.0.x host was present in the sandbox where this was built, so "the host confirms
-> `interrupted:true` for a background child" is still the API page's promise, not our
-> measurement. The capability row is `declared` until a host confirms one, and `tm_stats` says
-> so in words (`本进程没人用过 cancel:true，这一行还证明不了宿主真能停`).
+## [1.6.2] - 2026-10-04
+
+> **What this release does and does not claim.** The stop seam is wired to the host's documented
+> `session.interrupt`, verified end to end against the fake ctx (a cancel call really reaches the
+> host carrying the CHILD's session id, and all five verdicts render) — and, since 2026-10-04,
+> **confirmed once on a live OpenCode 2.0.22**: a standalone run's capability matrix reports
+> `session.interrupt … ok` with `stop_tried=1 confirmed=1 refused=0 unknown=0`, so "the host
+> confirms `interrupted:true`" is now our measurement, not the API page's promise.
+> What is still NOT closed: that same run could not cleanly demonstrate "cancel stops a child that
+> is actively running" — its child settled on a provider quota error first, and the run's own
+> narration attributes the confirmed stop to an earlier cancel while the counters record only one
+> attempt. The two statements cannot both be true. Until that attribution is resolved, this
+> release claims the seam exists and the host confirmed one interruption — not a demonstrated
+> cancel-mid-execution.
 
 ### Fixed
 
