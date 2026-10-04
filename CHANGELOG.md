@@ -15,12 +15,13 @@ registry saw 1.5.0 as the install-script fix release).
 > **confirmed once on a live OpenCode 2.0.22**: a standalone run's capability matrix reports
 > `session.interrupt … ok` with `stop_tried=1 confirmed=1 refused=0 unknown=0`, so "the host
 > confirms `interrupted:true`" is now our measurement, not the API page's promise.
-> What is still NOT closed: that same run could not cleanly demonstrate "cancel stops a child that
-> is actively running" — its child settled on a provider quota error first, and the run's own
-> narration attributes the confirmed stop to an earlier cancel while the counters record only one
-> attempt. The two statements cannot both be true. Until that attribution is resolved, this
-> release claims the seam exists and the host confirmed one interruption — not a demonstrated
-> cancel-mid-execution.
+> Closed on 2026-10-04, minutes after the release, in the restarted desktop process: a child
+> dispatched to run `Start-Sleep -Seconds 240` was observed `运行中 26s`, and
+> `tm_join { cancel: true }` then returned `已由宿主中断（interrupted=true）` — the `stopped`
+> verdict, taken against a child demonstrably inside an active execution. The earlier ambiguity
+> (counters recording one attempt while that run's narration attributed the confirmation to a
+> prior cancel) is resolved: the seam does stop a live child, and the verdict line keeps
+> `已由宿主中断` / `空闲未中断` / `未确认` distinct exactly as designed.
 
 ### Fixed
 
