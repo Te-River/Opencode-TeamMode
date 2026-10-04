@@ -2087,6 +2087,299 @@ console.log("16. the role-visibility claim is per-id, and the context shape is r
   assert.match(v2src16, /report\.contextShape/, "…read off report.contextShape, with an explicit none case")
 }
 console.log("   OK (per-id strength, two segments never mixed; the shape claim has a readback)")
+console.log("17. the lead can STEER a running child — three outcomes, parentage is a hard gate (steering, 2026-10-04)")
+{
+  const {
+    steerOutcomeOf, steerVerdictLine, steerOutcomeParts, steerOutcomeLabel,
+    unsendOutcomeOf, unsendVerdictLine, unsendOutcomeParts, parseUnsendArg, inboxItemLines,
+  } = await import("./dist/tm/dispatch.js")
+
+  // (a) the pure reader.  The host's contract is `Session.Inbox.Delivery = "steer" |
+  //     "queue"` plus "Steering wakes session execution" — admitting the input is an
+  //     observation only when the answer NAMES the inbox item, so `steered` without a
+  //     `^msg_` id contradicts itself and the conservative reading wins.
+  assert.equal(steerOutcomeOf({ data: { outcome: "steered", inboxID: "msg_a1", seam: "session.prompt" } }).outcome, "steered", "an answer that names the item is acceptance")
+  assert.equal(steerOutcomeOf({ data: { outcome: "steered" } }).outcome, "not-steered", "a `steered` with no id is NOT a success — the seam may not launder its own contradiction")
+  assert.equal(steerOutcomeOf({ data: { outcome: "steered", inboxID: "ses_wrong" } }).outcome, "not-steered", "and an id that is not ^msg_ shaped is not an inbox item")
+  assert.equal(steerOutcomeOf({ data: { outcome: "not-steered", message: "宿主说 no" } }).outcome, "not-steered", "a refusal keeps its own verdict")
+  assert.equal(steerOutcomeOf({ data: { outcome: "no-seam" } }).outcome, "no-seam", "a host with neither prompt nor synthetic says so")
+  assert.equal(steerOutcomeOf({ data: { outcome: "weird" } }).outcome, "not-steered", "an unrecognisable result is NOT read as acceptance")
+  assert.equal(steerOutcomeOf(null).outcome, "not-steered", "an empty client result is a failure, not a silence")
+  const okLine = steerVerdictLine("steered", { inboxID: "msg_a1", seam: "session.prompt" })
+  assert.match(okLine, /已受理/, "the success word exists for the one observed case")
+  assert.match(okLine, /不等于子代理已经读到/, "and it still says the input is queued, not read")
+  assert.ok(!/已送达/.test(okLine), "even the accepted case never claims delivery")
+  assert.ok(!/已受理/.test(steerVerdictLine("not-steered", { note: "x" }) + steerVerdictLine("no-seam")), "no success word for an unobserved accept")
+  assert.match(steerVerdictLine("no-seam"), /没给插话的缝/, "no seam is said as no seam")
+  assert.equal(steerOutcomeParts({ "not-steered": 1, steered: 2 }).join(" "), `2 ${steerOutcomeLabel("steered")} 1 ${steerOutcomeLabel("not-steered")}`, "counted per outcome, fixed order")
+  assert.deepEqual(steerOutcomeParts({}), [], "an absent outcome prints nothing rather than 0")
+
+  // unsend: "Cancel an inbox item that has not yet been delivered. Unavailable items are a
+  // no-op" — so an answer that names nothing may have cancelled nothing.
+  assert.equal(unsendOutcomeOf({ data: { outcome: "cancelled", inboxID: "msg_a1" } }).outcome, "cancelled", "the host naming the item back is a withdrawal")
+  assert.equal(unsendOutcomeOf({ data: { outcome: "cancelled" } }).outcome, "noop", "a cancel that names no item is not believed")
+  assert.equal(unsendOutcomeOf({ data: { outcome: "noop" } }).outcome, "noop", "the documented no-op keeps its own verdict")
+  assert.equal(unsendOutcomeOf({ data: { outcome: "no-seam" } }).outcome, "no-seam", "no cancel seam is its own answer")
+  assert.equal(unsendOutcomeOf({ ok: false, message: "boom" }).outcome, "threw", "a host refusal is named as one")
+  assert.equal(unsendOutcomeOf({ data: { outcome: "mystery" } }).outcome, "noop", "a shape we cannot read is NOT read as a withdrawal")
+  assert.match(unsendVerdictLine("noop"), /no-op/, "and it quotes the host's own sentence")
+  assert.ok(!/已撤回/.test([unsendVerdictLine("noop"), unsendVerdictLine("threw", { note: "x" }), unsendVerdictLine("no-seam")].join("|")), "three non-cancels, none of them a success word")
+  assert.deepEqual(unsendOutcomeParts({}), [], "the unsend tally is as quiet as the steer one when nothing ran")
+
+  // parseUnsendArg: three shapes accepted, none of them guessed.
+  assert.deepEqual(parseUnsendArg({ sessionID: "ses_a", inboxID: "msg_b" }), { ok: true, sessionID: "ses_a", inboxID: "msg_b" }, "the object form")
+  assert.deepEqual(parseUnsendArg('{"sessionID":"ses_a","inboxID":"msg_b"}'), { ok: true, sessionID: "ses_a", inboxID: "msg_b" }, "the JSON-string form models actually send")
+  assert.deepEqual(parseUnsendArg("ses_a|msg_b"), { ok: true, sessionID: "ses_a", inboxID: "msg_b" }, "the compact form")
+  assert.equal(parseUnsendArg({ sessionID: "ses_a" }).ok, false, "a missing inboxID is an error, not a default")
+  assert.match(parseUnsendArg({ sessionID: "ses_a", inboxID: "notmsg" }).error, /\^msg_/u, "and the refusal names the documented pattern")
+  assert.equal(parseUnsendArg("{oops").ok, false, "unparseable JSON is refused before anything is sent")
+
+  // inboxItemLines: ids and shape only — the body of an inbox item never enters the parent.
+  const bodyText = "INBOX-BODY-MUST-NOT-LEAK"
+  const listed = inboxItemLines([
+    { id: "msg_u1", role: "user", delivery: "steer", text: bodyText },
+    { id: "msg_u2", kind: "synthetic", delivery: "queue" },
+    { id: "ses_not_an_inbox_id", text: "NOPE" },
+  ])
+  assert.equal(listed.lines.length, 2, "only ^msg_ items are listed")
+  assert.equal(listed.skipped, 1, "and the one we could not recognise is counted, not silently dropped")
+  assert.ok(listed.lines.join("\n").includes("delivery=steer"), "the delivery mode is reported — it is the thing steer/queue decides")
+  assert.ok(listed.lines.join("\n").includes(`textlen=${bodyText.length}`), "a LENGTH is reported")
+  assert.ok(!listed.lines.join("\n").includes("INBOX-BODY-MUST-NOT-LEAK"), "never the body (R6 binds a read-back too)")
+
+  // (b) end to end on a booted personality: a registered host child, then tm_join { steer }
+  //     reaches ctx.session.prompt with THAT child's id.
+  const bootSteer = async (name, extra) => {
+    const fakeT = makeFakeCtx({
+      directory: workspace(name),
+      agents: sixAgents,
+      sessionData: {
+        sessions: {
+          ses_kidW: { parentID: "ses_leadW", agent: "implementer" },
+          ses_foreign: { parentID: "ses_somebody_elses_session", agent: "tester" },
+          ses_orphan: { agent: "tester" },
+        },
+        messages: { ses_kidW: [{ id: "m1", time: { created: 1 }, type: "text", text: "STATUS: 还在跑" }] },
+        ...extra,
+      },
+    })
+    const boot = await withCapturedConsole(() => plugin.setup(fakeT.ctx))
+    const by = Object.fromEntries(fakeT.tools.list().map((t) => [t.id ?? t.name, t]))
+    const CTXT = { sessionID: "ses_leadW", agent: "team", messageID: "msg_w", id: "call_w" }
+    const fire = (which, input) => fakeT.hook(`tool.execute.${which}`).handlers.forEach((h) => h(input))
+    fire("before", { tool: "subagent", sessionID: "ses_leadW", agent: "team", input: { agent: "implementer", background: true, description: "改 A1", prompt: "P" } })
+    fire("after", {
+      tool: "subagent", sessionID: "ses_leadW", agent: "team",
+      result: { content: [{ type: "text", text: "The subagent is working in the background (sessionID: ses_kidW)." }], metadata: { sessionID: "ses_kidW", status: "running" }, output: "" },
+    })
+    return { by, CTXT, boot, fakeT }
+  }
+
+  {
+    const { by, CTXT, boot, fakeT } = await bootSteer("steer-accepted", { prompt: { id: "msg_steer1" } })
+    const out = textOf(await by.tm_join.execute({ steer: "先停手，验收改成只跑 v2 套件", ids: ["ses_kidW"] }, CTXT))
+    assert.deepEqual(
+      fakeT.promptCalls.map((c) => ({ sessionID: c.sessionID, delivery: c.delivery })),
+      [{ sessionID: "ses_kidW", delivery: "steer" }],
+      "the interjection reached the host with the CHILD's id, and delivery defaults to steer",
+    )
+    assert.match(fakeT.promptCalls[0].text, /先停手/, "and carried the text itself")
+    assert.match(out, /已受理/, "the one case allowed a success word")
+    assert.match(out, /msg_steer1/, "naming the inbox item the host returned")
+    assert.match(out, /seam=session\.prompt/, "and crediting the seam that carried it")
+    assert.match(out, /1 已受理/, "counted")
+    assert.ok(!/已送达/.test(out), "never 已送达")
+    // the untouched half: a plain collect call on the same boot still collects
+    const plain = textOf(await by.tm_join.execute({ ids: ["ses_kidW"] }, CTXT))
+    assert.ok(!/插话/.test(plain), "an ids-only call says nothing about steering — the shipped semantics are unchanged")
+    await boot.value()
+  }
+  {
+    const { by, CTXT, boot, fakeT } = await bootSteer("steer-queue", { prompt: { id: "msg_q1" } })
+    textOf(await by.tm_join.execute({ steer: "排队一句，别打断它", ids: ["ses_kidW"], delivery: "queue" }, CTXT))
+    assert.equal(fakeT.promptCalls[0].delivery, "queue", "the queue spelling is sent as written")
+    await boot.value()
+  }
+  {
+    // The parentage gate is a HARD gate: nothing reaches the host for a session that is
+    // not the caller's child, and a session whose parent nobody named is not ours either.
+    const { by, CTXT, boot, fakeT } = await bootSteer("steer-foreign", { prompt: { id: "msg_no" } })
+    const out = textOf(await by.tm_join.execute({ steer: "这条不该发出去", ids: ["ses_foreign"] }, CTXT))
+    assert.equal(fakeT.promptCalls.length, 0, "a foreign session is never steered — not even attempted")
+    assert.match(out, /不是本会话/, "and the refusal says it is not the caller's")
+    assert.match(out, /ses_somebody_elses_session/, "naming whose child it actually is")
+    assert.ok(!/已受理/.test(out), "a refusal cannot print the success word")
+    const orph = textOf(await by.tm_join.execute({ steer: "这条也不该发", ids: ["ses_orphan"] }, CTXT))
+    assert.equal(fakeT.promptCalls.length, 0, "unknown parentage fails closed too")
+    assert.match(orph, /parentID/, "…and says the host never named one")
+    await boot.value()
+  }
+  {
+    // A host that refuses, and a host that answers without naming the item: both are
+    // `not-steered`, both carry the host's own words, neither may print 已受理.
+    const refused = await bootSteer("steer-refused", { prompt: new Error("BadRequestError: session is not running") })
+    const outR = textOf(await refused.by.tm_join.execute({ steer: "插一句", ids: ["ses_kidW"] }, refused.CTXT))
+    assert.equal(refused.fakeT.promptCalls.length, 1, "it did reach the host")
+    assert.match(outR, /未插话/, "and came back as not-steered")
+    assert.match(outR, /BadRequestError/, "with the host's own reason, not a bare 失败")
+    assert.ok(!/已受理/.test(outR), "no success word")
+    await refused.boot.value()
+    const noId = await bootSteer("steer-no-id", { prompt: { status: "ok" } })
+    const outN = textOf(await noId.by.tm_join.execute({ steer: "插一句", ids: ["ses_kidW"] }, noId.CTXT))
+    assert.match(outN, /未插话/, "an answer with no inbox id is NOT acceptance")
+    assert.match(outN, /没有回 inbox id/, "…and says what was missing")
+    assert.ok(!/已受理/.test(outN), "the success word stays where the observation is")
+    await noId.boot.value()
+    const noSeam = await bootSteer("steer-no-seam", {})
+    const outS = textOf(await noSeam.by.tm_join.execute({ steer: "插一句", ids: ["ses_kidW"] }, noSeam.CTXT))
+    assert.equal(noSeam.fakeT.promptCalls.length, 0, "a host with no prompt seam is not called")
+    assert.match(outS, /没给插话的缝/, "and the refusal names the MISSING SEAM")
+    await noSeam.boot.value()
+    const synth = await bootSteer("steer-synthetic", { synthetic: { id: "msg_syn1" } })
+    const outY = textOf(await synth.by.tm_join.execute({ steer: "插一句", ids: ["ses_kidW"] }, synth.CTXT))
+    assert.equal(synth.fakeT.promptCalls.length, 0, "prompt is absent, so nothing was called there")
+    assert.equal(synth.fakeT.syntheticCalls[0].delivery, "steer", "the synthetic seam got the same flat contract")
+    assert.match(outY, /seam=session\.synthetic/, "…and the reply credits the seam that ACTUALLY carried it")
+    await synth.boot.value()
+  }
+  {
+    // unread / unsend, both spellings of the inbox op, and the body never rides along.
+    const { by, CTXT, boot, fakeT } = await bootSteer("unread-list", {
+      inbox: {
+        list: [
+          { id: "msg_undel1", role: "user", delivery: "steer", text: "UNDelivered-BODY-SECRET" },
+          { id: "msg_undel2", kind: "synthetic", delivery: "queue" },
+        ],
+        cancel: { id: "msg_undel1" },
+      },
+    })
+    const out = textOf(await by.tm_join.execute({ unread: true, ids: ["ses_kidW"] }, CTXT))
+    assert.deepEqual(fakeT.inboxListCalls, [{ sessionID: "ses_kidW" }], "the query used the CHILD's id")
+    assert.ok(out.includes("msg_undel1") && out.includes("msg_undel2"), "both ids are listed")
+    assert.ok(!out.includes("UNDelivered-BODY-SECRET"), "and no body enters the parent's context")
+    assert.match(out, /delivery=queue/, "the shape is reported")
+    const unsent = textOf(await by.tm_join.execute({ unsend: { sessionID: "ses_kidW", inboxID: "msg_undel1" } }, CTXT))
+    assert.deepEqual(fakeT.inboxCancelCalls, [{ sessionID: "ses_kidW", inboxID: "msg_undel1" }], "the withdrawal reached the host with both ids")
+    assert.match(unsent, /已撤回/, "a cancel the host named back is reported as one")
+    assert.match(unsent, /1 已撤回/, "and counted")
+    await boot.value()
+    // the flat spelling must resolve too — otherwise a host that namespaces its methods
+    // differently reads, to the lead, as a host with no inbox at all.
+    const flat = await bootSteer("unread-flat", { inbox: { list: [{ id: "msg_flat1" }] }, inboxFlat: true })
+    const outF = textOf(await flat.by.tm_join.execute({ unread: true, ids: ["ses_kidW"] }, flat.CTXT))
+    assert.ok(outF.includes("msg_flat1"), "the fallback spelling session[inbox.list] is reached")
+    assert.equal(flat.fakeT.inboxListCalls.length, 1, "one call, not one per spelling")
+    await flat.boot.value()
+    const noop = await bootSteer("unsend-noop", { inbox: { cancel: {} } })
+    const outP = textOf(await noop.by.tm_join.execute({ unsend: "ses_kidW|msg_gone" }, noop.CTXT))
+    assert.match(outP, /没有指认/, "an answer that names nothing is the documented no-op")
+    assert.ok(!/已撤回/.test(outP), "and it is never reported as a withdrawal")
+    await noop.boot.value()
+    const noSeamU = await bootSteer("unsend-no-seam", {})
+    const outQ = textOf(await noSeamU.by.tm_join.execute({ unsend: { sessionID: "ses_kidW", inboxID: "msg_x" } }, noSeamU.CTXT))
+    assert.match(outQ, /没给 session\.inbox\.cancel 的缝/, "no cancel seam is said as one")
+    assert.ok(!/已撤回/.test(outQ), "and nothing was withdrawn")
+    await noSeamU.boot.value()
+  }
+  {
+    // args errors refuse BEFORE any host call, and the three actions cannot be mixed —
+    // a mixed call would make the three outcome counts meaningless.
+    const { by, CTXT, boot, fakeT } = await bootSteer("steer-args", { prompt: { id: "msg_x" } })
+    const noIds = textOf(await by.tm_join.execute({ steer: "该点名" }, CTXT))
+    assert.match(noIds, /要用 ids 点名一个子会话/, "steer without a named child is refused")
+    const twoIds = textOf(await by.tm_join.execute({ steer: "该点名", ids: ["ses_kidW", "ses_foreign"] }, CTXT))
+    assert.match(twoIds, /只能针对一个子会话/, "and two children in one call is refused")
+    const both = textOf(await by.tm_join.execute({ steer: "a", unread: true, ids: ["ses_kidW"] }, CTXT))
+    assert.match(both, /三选一/, "two actions at once is refused")
+    const badDelivery = textOf(await by.tm_join.execute({ steer: "a", ids: ["ses_kidW"], delivery: "now" }, CTXT))
+    assert.match(badDelivery, /只能是 "steer" 或 "queue"/, "an undocumented delivery value is refused, not defaulted")
+    const badId = textOf(await by.tm_join.execute({ unsend: { sessionID: "ses_kidW", inboxID: "12345" } }, CTXT))
+    assert.match(badId, /\^msg_/u, "an inboxID outside the host's pattern is refused")
+    assert.equal(fakeT.promptCalls.length, 0, "none of the five reached the host")
+    assert.equal(fakeT.inboxCancelCalls.length, 0, "not even the withdrawal")
+    await boot.value()
+  }
+
+  // (c) v1 stays untouched.  `src/host/v1.ts` is FROZEN, and its SDK client DOES expose a
+  //     `session.prompt` — with `{path, body}` and no `delivery` field.  A capability gate
+  //     that only looked for a method named `prompt` would fire that v1 endpoint with a v2
+  //     contract and call whatever came back a steering verdict, so the gate is the bridge
+  //     marker and the test pins that nothing was called.
+  {
+    const { createTmTools } = await import("./dist/tm/index.js")
+    let promptReached = 0
+    let inboxReached = 0
+    const rt = await createTmTools({
+      directory: workspace("steer-v1-frozen"),
+      project: "",
+      $: undefined,
+      client: {
+        session: {
+          messages: async () => ({ data: [] }),
+          status: async () => ({ data: { ses_old: { type: "busy" } } }),
+          get: async ({ path }) => ({ data: { id: path.id, parentID: "ses_v1", agent: "tester" } }),
+          abort: async () => ({ ok: true, data: {} }),
+          prompt: async () => {
+            promptReached++
+            return { data: { id: "msg_from_v1" } }
+          },
+          inbox: { list: async () => { inboxReached++; return { data: [] } }, cancel: async () => { inboxReached++; return { data: {} } } },
+        },
+      },
+    })
+    rt.registerHostChild({ sessionID: "ses_old", parentSessionID: "ses_v1", agent: "tester", label: "遗留" })
+    const raw = await rt.tools.tm_join.execute({ steer: "v1 不该收到这条", ids: ["ses_old"] }, { agent: "team", sessionID: "ses_v1" })
+    const out = String(raw?.output ?? "") + String(raw?.content ?? "")
+    assert.equal(promptReached, 0, "an abort-capable v1 client NEVER reaches session.prompt — the same technique that pins interruptReached === 0")
+    assert.equal(inboxReached, 0, "and its inbox-shaped methods are not called either")
+    assert.match(out, /没给插话的缝/, "the v1 path answers that the seam does not exist")
+    assert.ok(!/已受理/.test(out), "which is the one thing it may not print")
+    const rawU = await rt.tools.tm_join.execute({ unread: true, ids: ["ses_old"] }, { agent: "team", sessionID: "ses_v1" })
+    assert.match(String(rawU?.output ?? ""), /session\.inbox\.list/, "unread names the missing seam too")
+    assert.equal(inboxReached, 0, "without calling it")
+    await rt.dispose()
+  }
+
+  // (d) R6: the interjection text never rides the trajectory — only ids, counts, shapes.
+  {
+    const tjRoot = mktmp("steer-trajectory")
+    const prevTj = process.env.TM_TRAJECTORY_DIR
+    process.env.TM_TRAJECTORY_DIR = tjRoot
+    try {
+      const { by, CTXT, boot } = await bootSteer("steer-r6", { prompt: { id: "msg_r6" } })
+      const SENTINEL = "SENTINEL-插话正文-不能进轨迹"
+      textOf(await by.tm_join.execute({ steer: SENTINEL, ids: ["ses_kidW"] }, CTXT))
+      await boot.value()
+      const rows = fs
+        .readdirSync(path.join(tjRoot, "runs"))
+        .flatMap((run) =>
+          fs.readFileSync(path.join(tjRoot, "runs", run, "steps.jsonl"), "utf8").split(/\r?\n/).filter(Boolean)
+            .map((l) => { try { return JSON.parse(l) } catch { return null } }).filter(Boolean),
+        )
+      const steerRow = rows.find((e) => e.event === "steer")
+      assert.ok(steerRow, "the steer is audited at all")
+      assert.equal(steerRow.child, "ses_kidW", "with the child id")
+      assert.equal(steerRow.delivery, "steer", "the delivery mode")
+      assert.equal(steerRow.outcome, "steered", "and the outcome")
+      assert.ok(steerRow.chars > 0, "a LENGTH is recorded")
+      assert.ok(!JSON.stringify(rows).includes(SENTINEL), "and the text itself is nowhere in the audit trail (R6 binds a diagnostic)")
+    } finally {
+      if (prevTj === undefined) delete process.env.TM_TRAJECTORY_DIR
+      else process.env.TM_TRAJECTORY_DIR = prevTj
+    }
+  }
+
+  // (e) the parameter surface actually reaches the model.  tm_join builds its args WITHOUT
+  //     zod, so on v2 they arrive through the descriptor channel — and a descriptor the
+  //     translator cannot type is a parameter the model cannot send.
+  assert.equal(byName.tm_join.input.properties.steer.type, "string", "steer reads as a string")
+  assert.deepEqual(byName.tm_join.input.properties.delivery.enum, ["steer", "queue"], "delivery arrives as the documented enum, not as free text")
+  assert.equal(byName.tm_join.input.properties.unread.type, "boolean", "unread reads as a boolean")
+  assert.equal(byName.tm_join.input.properties.unsend.type, "string", "unsend is described as its JSON text (the descriptor channel has no object rule)")
+  assert.ok(String(byName.tm_join.input.properties.steer.description).includes("已受理"), "and the guidance text survives the translation")
+  console.log("   OK (steer reaches the host with the child's id; three outcomes stay distinct; parentage is a hard gate; v1 never called; the text stays out of the trail)")
+}
+
 // B5: the group count is DERIVED from the numbered group headers this file
 // actually printed, never hand-written — the last hand-written number was
 // already stale while the file had more.  The self-scan reads THIS file by its

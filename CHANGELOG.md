@@ -7,6 +7,28 @@ registry saw 1.5.0 as the install-script fix release).
 
 ## [Unreleased]
 
+### Added
+
+- **The lead can STEER a running child.** `tm_join` gained `steer` (+ optional
+  `delivery: "steer"|"queue"`, default `steer`), `unread` and `unsend`, so the lead is no
+  longer limited to waiting or killing: it can put guidance into a child's inbox and let the
+  host deliver it at the next step boundary. Parentage is a hard gate — `session.get` must
+  answer `parentID === caller` before anything is sent, and a foreign session is refused with
+  its owner named. Three outcomes stay distinct: `steered` (the host accepted it and returned
+  a `^msg_` inbox id) is the only one that may print `已受理`, and that sentence says
+  "accepted, delivered at a step boundary", never "the child has read it"; `not-steered`
+  carries the host's own refusal; `no-seam` says the host does not give the plugin that method.
+  The steered text never enters the trajectory (id, counts and char length only — R6). v1 is
+  untouched: the gate is the `v2SteerSeam` contract marker, not "does a method of that name
+  exist", because v1's `session.prompt` has a different shape and no `delivery`.
+- **Live-verified on OpenCode 2.0.22 the same day**: `steer` returned
+  `已受理 · seam=session.prompt · inbox=msg_107b833f5001…` against a child observed at
+  `运行中 17s`, and the same run then cancelled that child with `已由宿主中断`.
+  `unread` reported `no-seam` — `session.inbox.list` is an HTTP route in the OpenAPI, but the
+  plugin ctx does not expose it on this host (both the nested `session.inbox.list` and the flat
+  `session["inbox.list"]` spellings were tried and recorded). A documented route is not a
+  delivered seam, and the tool now says which one it found.
+
 ## [1.6.2] - 2026-10-04
 
 > **What this release does and does not claim.** The stop seam is wired to the host's documented

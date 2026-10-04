@@ -71,6 +71,30 @@ export interface V2SessionReaderReport {
   /** the SHAPE of the last list the seam answered with — names and counts only, and the
    *  reason a `child_body_missing` row can be checked later (`contextShapeEvidence`). */
   contextShape?: string
+  /** #steer — `tm_join { steer }` calls. The three outcomes are counted separately because
+   *  the reply may only say 已受理 for the first one: the host admitting the input is an
+   *  observation (it named the inbox item), the host answering without an id is not. */
+  promptTried: number
+  /** the answer carried a `^msg_` inbox id — the only evidence of acceptance */
+  promptConfirmed: number
+  /** the call worked and no inbox id came back, or the host refused */
+  promptUnconfirmed: number
+  promptError?: string
+  /** the KEY NAMES the prompt/synthetic answer returned (names only, never values) */
+  promptKeys: string[]
+  /** which seam carried the steering input: `session.prompt` or `session.synthetic` */
+  steerSeamUsed?: string
+  /** `session.inbox.list` / `session.inbox.cancel` calls (unread / unsend) */
+  inboxListTried: number
+  inboxListOk: number
+  inboxCancelTried: number
+  /** the host named the item it removed */
+  inboxCancelConfirmed: number
+  /** the host answered and named nothing — the documented no-op for an unavailable item */
+  inboxCancelNoop: number
+  inboxError?: string
+  /** which SPELLING of each inbox op answered (names only) */
+  inboxSpellings: string[]
 }
 
 export interface V2SessionReader {
@@ -79,7 +103,77 @@ export interface V2SessionReader {
   report: V2SessionReaderReport
 }
 
-type SessionDomain = { get?: unknown; context?: unknown; interrupt?: unknown }
+type SessionDomain = {
+  get?: unknown
+  context?: unknown
+  interrupt?: unknown
+  prompt?: unknown
+  synthetic?: unknown
+  /** The host's inbox operations, published as the operation ids `session.inbox.list` /
+   *  `.patch` / `.cancel`.  Only `list` and `cancel` are wrapped here: `patch` changes an
+   *  already-queued item's delivery mode, and tm_join has no argument that asks for it, so
+   *  wiring it would be an unexercised path in the one file that decides what this
+   *  personality can claim about the host. */
+  inbox?: unknown
+}
+
+type InboxOp = "list" | "cancel"
+
+/** Which spelling of the inbox operation reached the host.  The plugin ctx puts a
+ *  namespaced operation under a nested domain (`ctx.session.inbox.list`), the same way
+ *  `session.get` is `ctx.session.get`; the flat spelling (`ctx.session["inbox.list"]`) is
+ *  tried ONLY as a fallback.  Which one answered is returned and recorded, because "this
+ *  host has no inbox seam" and "we looked under the wrong key" are two different facts and
+ *  must not print the same sentence (goal #6). */
+function resolveInboxMethod(
+  domain: SessionDomain | undefined,
+  op: InboxOp,
+): { fn: (a?: unknown) => unknown; owner: object; spelling: string } | null {
+  const nested = (domain?.inbox as Record<string, unknown> | undefined)?.[op]
+  if (typeof nested === "function") {
+    return {
+      fn: nested as (a?: unknown) => unknown,
+      owner: domain!.inbox as object,
+      spelling: `session.inbox.${op}`,
+    }
+  }
+  const flat = (domain as unknown as Record<string, unknown> | undefined)?.[`inbox.${op}`]
+  if (typeof flat === "function") {
+    return {
+      fn: flat as (a?: unknown) => unknown,
+      owner: domain as unknown as object,
+      spelling: `session[inbox.${op}]`,
+    }
+  }
+  return null
+}
+
+/** The host's inbox ids match `^msg_` — that is the published pattern on `inboxID`, and
+ *  `session.inbox.list` answers with `Session.Inbox.Info` (anyOf User | Synthetic |
+ *  Compaction), all of which are message-shaped.  So an answer that NAMES one is the only
+ *  acceptance evidence this seam can have, and the search is bounded to the envelopes this
+ *  file has actually measured (`{data}` / `{result}`) plus the id fields the contract
+ *  spells.  It is never a scan of arbitrary text: an id is a name, and R6 binds a
+ *  diagnostic as much as a guard. */
+function inboxIdOf(value: unknown): string {
+  const carriers: unknown[] = [
+    value,
+    (value as { data?: unknown } | null | undefined)?.data,
+    (value as { result?: unknown } | null | undefined)?.result,
+    (value as { inbox?: unknown } | null | undefined)?.inbox,
+    (value as { item?: unknown } | null | undefined)?.item,
+    (value as { message?: unknown } | null | undefined)?.message,
+  ]
+  for (const cand of carriers) {
+    if (!cand || typeof cand !== "object") continue
+    const rec = cand as Record<string, unknown>
+    for (const key of ["inboxID", "inbox_id", "messageID", "id"]) {
+      const v = rec[key]
+      if (typeof v === "string" && /^msg_[\w-]+$/.test(v.trim())) return v.trim()
+    }
+  }
+  return ""
+}
 
 /** Measured first, then the v1 spellings kept as fallbacks for an older 2.x build. Each
  *  builder returns the ARGUMENT OBJECT — `te`-wrapped methods take one object, not an
@@ -267,6 +361,9 @@ export function createV2SessionReader(ctx: unknown): V2SessionReader {
   const report: V2SessionReaderReport = {
     attempted: 0, resolved: 0, failedShapes: [], contextTried: 0, contextOk: 0, contextKeys: [],
     interruptTried: 0, interruptConfirmed: 0, interruptRefused: 0, interruptUnknown: 0, interruptKeys: [],
+    promptTried: 0, promptConfirmed: 0, promptUnconfirmed: 0, promptKeys: [],
+    inboxListTried: 0, inboxListOk: 0, inboxCancelTried: 0, inboxCancelConfirmed: 0, inboxCancelNoop: 0,
+    inboxSpellings: [],
   }
   const domain = (ctx as { session?: SessionDomain } | null | undefined)?.session
 
@@ -373,9 +470,15 @@ export function createV2SessionReader(ctx: unknown): V2SessionReader {
        *  the v1 `{path:{id}}` spellings are NOT retried here because a wrong key on THIS
        *  method is not a decode failure but an interrupt of the wrong session.
        *
-       *  `resume` is deliberately never sent: `resume=true` continues pending steering
-       *  input after the interrupt, which is the opposite of what a caller who asked to
-       *  cancel a runaway child wants.
+       *  `resume` is deliberately never sent, and the reason is now a quotation rather than
+       *  a guess: on the published OpenAPI the parameter is named `resume`, it is OPTIONAL,
+       *  and it carries NO documented default — so what this host does when the field is
+       *  absent is not written down anywhere, and `continue: false` (the other spelling the
+       *  docs use for the same knob) cannot be honoured honestly from here.  The steering
+       *  work of 2026-10-04 read the contract for the INBOX side (`Session.Inbox.Delivery`,
+       *  `session.inbox.list/patch/cancel`) and this parameter stayed unspecified: deciding
+       *  it needs a live probe of this host's `session.interrupt`, not another inference
+       *  from a field name.  Until then the honest statement is "we did not send it".
        *
        *  Privacy: the key NAMES the host returned are recorded; the value text is not
        *  (R6 binds a diagnostic). */
@@ -415,6 +518,179 @@ export function createV2SessionReader(ctx: unknown): V2SessionReader {
           return { data: { outcome: "threw", message: report.interruptError } }
         }
       },
+
+      /** #steer — the INTERJECTION path: `tm_join { steer: "…" }` puts a line of text into
+       *  a running child's inbox so the lead can correct it mid-flight instead of waiting
+       *  for it to settle and re-dispatching.  The contract is quoted from the published
+       *  docs, not inferred:
+       *
+       *    Session.Inbox.Delivery = "steer" | "queue"
+       *    ctx.session.prompt({ sessionID, text, delivery })
+       *    ctx.session.synthetic({ sessionID, text, … })
+       *      "Durably admit synthetic session input and schedule execution unless resume is false"
+       *    "Steering wakes session execution."
+       *
+       *  `prompt` is the primary seam (its documented example carries `delivery`, and a
+       *  lead's interjection is real input, not a synthetic envelope); `synthetic` is the
+       *  fallback for a host that gives only that one, and WHICH carried the input rides
+       *  back in `seam` so the reply credits the seam it used rather than the one it
+       *  hoped for.  `delivery` is always spelled explicitly — the caller's default is
+       *  `steer`, and leaving the field off would hand the model an undocumented host
+       *  default to be surprised by later.
+       *
+       *  Three outcomes, kept as data because the reply may only say 已受理 for the first:
+       *    steered       — the answer named the inbox item (`^msg_`), i.e. it was admitted
+       *    not-steered   — the host refused, or answered without an id (its words ride back)
+       *    no-seam       — this ctx has neither `prompt` nor `synthetic`
+       *  And even `steered` is NOT delivery: the host queues it and wakes execution at the
+       *  step boundary, which is why the caller's sentence must never read 已送达.
+       *
+       *  The argument is the FLAT `{sessionID, text, delivery}` object every other method
+       *  on this surface takes (the `te`-wrapper rule), and the v1 `{path, body}` spelling
+       *  is not tried here for the same reason `interrupt` refuses it: on a write method a
+       *  wrong key is not a decode failure, it is an input sent to the wrong session. */
+      prompt: async (opts: unknown) => {
+        const o = (opts ?? {}) as { sessionID?: unknown; text?: unknown; delivery?: unknown }
+        const id = String(o.sessionID ?? "").trim()
+        const text = typeof o.text === "string" ? o.text : ""
+        report.promptTried++
+        if (!id || !text) return { data: { outcome: "not-steered", message: "缺少 sessionID 或插话文本，未发送" } }
+        const seam =
+          typeof domain?.prompt === "function"
+            ? "prompt"
+            : typeof domain?.synthetic === "function"
+              ? "synthetic"
+              : ""
+        if (!seam) {
+          report.promptError = domain ? "ctx.session 既没有 prompt 也没有 synthetic" : "ctx 没有 session 域"
+          return { data: { outcome: "no-seam", seam: "none", message: report.promptError } }
+        }
+        const arg: Record<string, unknown> = { sessionID: id, text }
+        if (typeof o.delivery === "string" && o.delivery.trim()) arg.delivery = o.delivery.trim()
+        // Property access on the domain, never a captured reference (see `call`).
+        const fn = (seam === "prompt" ? domain!.prompt : domain!.synthetic) as (a?: unknown) => unknown
+        try {
+          const raw = await fn.call(domain, arg)
+          const rec = unwrap(raw)
+          report.promptKeys = rec ? Object.keys(rec).slice(0, 16) : ["(non-object)"]
+          report.steerSeamUsed = `session.${seam}`
+          const inboxID = inboxIdOf(raw)
+          if (inboxID) {
+            report.promptConfirmed++
+            return { data: { outcome: "steered", inboxID, seam: `session.${seam}` } }
+          }
+          // An answer with no inbox id is NOT evidence anything was admitted.  Counting it
+          // as a success is the exact overstatement goal #6 exists to refuse.
+          report.promptUnconfirmed++
+          return {
+            data: {
+              outcome: "not-steered",
+              seam: `session.${seam}`,
+              message: `宿主应答了但没有回 inbox id（keys=[${report.promptKeys.join("+")}]），无法确认入队`,
+            },
+          }
+        } catch (err) {
+          report.promptError = String((err as { message?: unknown })?.message ?? err).slice(0, 160)
+          report.promptUnconfirmed++
+          return {
+            data: {
+              outcome: "not-steered",
+              seam: `session.${seam}`,
+              message: report.promptError,
+            },
+          }
+        }
+      },
+
+      /** `session.inbox.list` for `tm_join { unread: true }` — the UNDELIVERED items of a
+       *  child session.  This seam returns the host's array as-is; the caller reduces it to
+       *  ids and shape and never the body (`src/tm/dispatch.ts` `inboxItemLines`), because
+       *  an inbox item's text is the lead's or a child's working content and the R6 口径
+       *  binds a read-back as much as a diagnostic. */
+      inboxList: async (opts: unknown) => {
+        const o = (opts ?? {}) as { sessionID?: unknown }
+        const id = String(o.sessionID ?? "").trim()
+        report.inboxListTried++
+        if (!id) return { data: { outcome: "threw", message: "缺少 sessionID，未查询" } }
+        const m = resolveInboxMethod(domain, "list")
+        if (!m) {
+          report.inboxError = "ctx.session 没有 inbox.list（试过的拼写见 inboxSpellings）"
+          return { data: { outcome: "no-seam" } }
+        }
+        if (!report.inboxSpellings.includes(m.spelling)) report.inboxSpellings.push(m.spelling)
+        try {
+          const raw = await m.fn.call(m.owner, { sessionID: id })
+          const rec = unwrap(raw)
+          const list = Array.isArray(rec)
+            ? rec
+            : ((rec as { items?: unknown } | undefined)?.items ??
+                (rec as { data?: unknown } | undefined)?.data ??
+                [])
+          if (!Array.isArray(list)) return { data: { outcome: "threw", spelling: m.spelling, message: "宿主返回的不是列表" } }
+          report.inboxListOk++
+          return { data: { outcome: "listed", items: list, spelling: m.spelling } }
+        } catch (err) {
+          report.inboxError = String((err as { message?: unknown })?.message ?? err).slice(0, 160)
+          return { data: { outcome: "threw", spelling: m.spelling, message: report.inboxError } }
+        }
+      },
+
+      /** `session.inbox.cancel` for `tm_join { unsend }`.  The documented contract is the
+       *  reason there are two positive-looking answers and only one of them is a success:
+       *
+       *    "Cancel an inbox item that has not yet been delivered. Unavailable items are a
+       *     no-op…"
+       *
+       *  So a host that answers WITHOUT naming the item back may have cancelled nothing —
+       *  the item was already delivered, or never existed.  That is `noop`, said as one,
+       *  and never laundered into 已撤回.  `cancelled` requires the answer to name a `^msg_`
+       *  id (the published `inboxID` pattern).  There is no tool-level cancel seam beyond
+       *  this: what a host can stop is the whole active execution (`interrupt`), not one
+       *  running tool call inside it. */
+      inboxCancel: async (opts: unknown) => {
+        const o = (opts ?? {}) as { sessionID?: unknown; inboxID?: unknown }
+        const id = String(o.sessionID ?? "").trim()
+        const inboxID = String(o.inboxID ?? "").trim()
+        report.inboxCancelTried++
+        if (!id || !inboxID) return { data: { outcome: "threw", message: "缺少 sessionID 或 inboxID，未发送撤回" } }
+        const m = resolveInboxMethod(domain, "cancel")
+        if (!m) {
+          report.inboxError = "ctx.session 没有 inbox.cancel"
+          return { data: { outcome: "no-seam" } }
+        }
+        if (!report.inboxSpellings.includes(m.spelling)) report.inboxSpellings.push(m.spelling)
+        try {
+          const raw = await m.fn.call(m.owner, { sessionID: id, inboxID })
+          const rec = unwrap(raw)
+          const named = inboxIdOf(raw)
+          if (named) {
+            report.inboxCancelConfirmed++
+            return { data: { outcome: "cancelled", inboxID: named, spelling: m.spelling } }
+          }
+          report.inboxCancelNoop++
+          return {
+            data: {
+              outcome: "noop",
+              spelling: m.spelling,
+              keys: rec ? Object.keys(rec).slice(0, 12) : ["(non-object)"],
+            },
+          }
+        } catch (err) {
+          report.inboxError = String((err as { message?: unknown })?.message ?? err).slice(0, 160)
+          return { data: { outcome: "threw", spelling: m.spelling, message: report.inboxError } }
+        }
+      },
+
+      /** THE STEER MARKER.  `tm_join` gates its interjection paths on this flag instead of
+       *  on `typeof api.prompt === "function"`, and the difference is load-bearing: v1's SDK
+       *  client DOES have `session.prompt`, but it takes `{path:{id}, body:{parts}}` and has
+       *  no `delivery` field at all.  A gate that only looked for a method named `prompt`
+       *  would fire a v1 endpoint with a v2 contract and report whatever came back as a
+       *  steering verdict.  This object is the only place the v2 flat contract is built, so
+       *  its presence — not a version number — is the fact the caller may rely on, and a
+       *  v1-shaped client answers `no-seam` without calling anything (pinned by a test:
+       *  promptReached === 0 on an abort-capable client). */
+      v2SteerSeam: true,
     },
   }
 

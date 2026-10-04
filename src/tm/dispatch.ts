@@ -28,6 +28,18 @@
  * through the SAME governance pipeline as every other tm_* tool, so a long
  * sub-agent report arrives as a handle + an 80-token preview the lead can page
  * through with tm_fetch — not kilotokens dumped inline.
+ *
+ * Steering (2026-10-04): the same tool is also the lead's INTERJECTION channel —
+ * `steer` puts a line into a running child's inbox (`Session.Inbox.Delivery =
+ * "steer" | "queue"`, "Steering wakes session execution."), `unread` lists that
+ * child's undelivered items by id and shape, `unsend` withdraws one that has not
+ * been delivered yet.  No new tool was registered for it: a new tool name would
+ * have to move the whitelist in agents.ts, the permission triples in
+ * v2-permissions.ts and the request-layer deletion logic at once, and three
+ * places that can drift are worse than one argument set on a tool the lead
+ * already calls.  What the host does NOT give is tool-level cancellation — the
+ * only thing stoppable is the whole active execution (`interrupt`) — so nothing
+ * here pretends that granularity exists.
  */
 
 import type { HostEvent, ToolDefinition, ToolResult } from "../types.js"
@@ -140,6 +152,22 @@ interface SessionApi {
    *  body; writing is the built-in `todowrite` tool's job).  We use it as the
    *  goal tripwire below. */
   todo?: (opts: unknown) => Promise<unknown>
+  /** #steer — the v2 bridge's INTERJECTION seams, built only by
+   *  `createV2SessionReader` (`src/host/v2-session-client.ts`).  `prompt` carries the
+   *  documented `{sessionID, text, delivery}` contract and folds `session.synthetic`
+   *  into itself as the fallback seam; `inboxList` / `inboxCancel` wrap
+   *  `session.inbox.list` / `session.inbox.cancel`. */
+  prompt?: (opts: unknown) => Promise<unknown>
+  inboxList?: (opts: unknown) => Promise<unknown>
+  inboxCancel?: (opts: unknown) => Promise<unknown>
+  /** THE MARKER, not a capability probe: the v1 SDK client also has a method named
+   *  `prompt`, but it takes `{path:{id}, body:{parts}}` and has no `delivery` field, so
+   *  gating the steer path on `typeof api.prompt === "function"` would fire a v1
+   *  endpoint with a v2 contract and report whatever came back as a steering verdict.
+   *  Only the object that SPEAKS the v2 flat contract carries this flag, and a client
+   *  without it answers `no-seam` without calling anything (pinned by a test:
+   *  promptReached === 0 on an abort-capable v1 client). */
+  v2SteerSeam?: boolean
 }
 
 /** Open items on the host's own todo list, in the shape tm_join reports. */
@@ -509,6 +537,233 @@ export function cancelOutcomeParts(tally: Partial<Record<CancelOutcome, number>>
   return out
 }
 
+/**
+ * #steer — the THREE outcomes an interjection can produce, kept as data for the same
+ * reason #33 kept five: the host admitting input is an observation (it named the inbox
+ * item), and the host answering without naming one is not.  `steered` is the only bucket
+ * allowed to print 已受理, and even it says 已受理 rather than 已送达 — the documented
+ * behaviour is "Steering wakes session execution", i.e. delivery happens at a step
+ * boundary and whether the child READ the line is a later fact, not this call's claim.
+ */
+export type SteerOutcome = "steered" | "not-steered" | "no-seam"
+
+/** Read the acceptance verdict out of the v2 bridge's `{data:{outcome,inboxID,seam,message}}`.
+ *  Anything unrecognisable is `not-steered`, never `steered` — a shape we cannot read is not
+ *  evidence a child was told anything.  The id check is applied HERE as well as in the seam:
+ *  a `steered` that carries no `^msg_` id contradicts itself, and the conservative reading
+ *  wins. */
+export function steerOutcomeOf(res: unknown): {
+  outcome: SteerOutcome
+  inboxID?: string
+  note?: string
+  seam?: string
+} {
+  const un = unwrapClientResult(res)
+  if (!un.ok) return { outcome: "not-steered", note: un.message }
+  const data = un.data as
+    | { outcome?: unknown; inboxID?: unknown; message?: unknown; seam?: unknown }
+    | null
+    | undefined
+  const o = String(data?.outcome ?? "")
+  const seam = typeof data?.seam === "string" && data.seam ? data.seam : undefined
+  const note = typeof data?.message === "string" && data.message ? data.message : undefined
+  const known: string[] = ["steered", "not-steered", "no-seam"]
+  if (!known.includes(o)) {
+    return {
+      outcome: "not-steered",
+      note: o ? `宿主返回了没认出的结果（${shorten(o, 24)}）` : (note ?? "宿主没有回 inbox id"),
+      ...(seam ? { seam } : {}),
+    }
+  }
+  if (o === "no-seam") return { outcome: "no-seam", ...(note ? { note } : {}) }
+  const raw = typeof data?.inboxID === "string" ? data.inboxID.trim() : ""
+  const inboxID = /^msg_/.test(raw) ? raw : ""
+  if (o === "steered") {
+    if (!inboxID) return { outcome: "not-steered", note: "宿主说受理但没有给出 ^msg_ 形状的 inbox id，无法确认入队", ...(seam ? { seam } : {}) }
+    return { outcome: "steered", inboxID, ...(seam ? { seam } : {}) }
+  }
+  return { outcome: "not-steered", ...(note ? { note } : {}), ...(seam ? { seam } : {}) }
+}
+
+/** What the lead reads, per outcome.  Only the first may carry a success word, and none of
+ *  them may claim the child has seen the text. */
+export function steerVerdictLine(
+  outcome: SteerOutcome,
+  opts?: { note?: string; inboxID?: string; seam?: string },
+): string {
+  const seam = opts?.seam ? ` · seam=${opts.seam}` : ""
+  switch (outcome) {
+    case "steered":
+      return `已受理${seam} · inbox=${opts?.inboxID ?? "?"} —— 宿主把它放进该子会话的 inbox，并在步边界唤醒执行（文档原句 "Steering wakes session execution."）。这不等于子代理已经读到这条插话。`
+    case "no-seam":
+      return `这个宿主没给插话的缝（ctx.session 既没有 prompt 也没有 synthetic），未发送${opts?.note ? `：${shorten(opts.note, 80)}` : ""}`
+    case "not-steered":
+      return `未插话${seam}：${shorten(opts?.note ?? "宿主没有回 inbox id", 120)}`
+  }
+}
+
+export function steerOutcomeLabel(o: SteerOutcome): string {
+  return o === "steered" ? "已受理" : o === "not-steered" ? "未插话" : "无插话缝"
+}
+
+/** Fixed order so a rerun prints the same line; an absent outcome prints nothing, not "0". */
+export function steerOutcomeParts(tally: Partial<Record<SteerOutcome, number>>): string[] {
+  const order: SteerOutcome[] = ["steered", "not-steered", "no-seam"]
+  const out: string[] = []
+  for (const o of order) {
+    const n = tally[o]
+    if (n) out.push(`${n} ${steerOutcomeLabel(o)}`)
+  }
+  return out
+}
+
+/**
+ * `unsend` outcomes.  The host's own sentence is the reason there are two
+ * positive-LOOKING answers and only one of them is a success:
+ *
+ *   "Cancel an inbox item that has not yet been delivered. Unavailable items are a no-op…"
+ *
+ * An answer that names the item back cancelled something; an answer that names nothing may
+ * have cancelled nothing at all (already delivered, or never there).  `no-seam` and `threw`
+ * are the two failure shapes, same as the stop path.
+ */
+export type UnsendOutcome = "cancelled" | "noop" | "threw" | "no-seam"
+
+export function unsendOutcomeOf(res: unknown): {
+  outcome: UnsendOutcome
+  inboxID?: string
+  note?: string
+} {
+  const un = unwrapClientResult(res)
+  if (!un.ok) return { outcome: "threw", note: un.message }
+  const data = un.data as { outcome?: unknown; inboxID?: unknown; message?: unknown; keys?: unknown } | null | undefined
+  const o = String(data?.outcome ?? "")
+  const known: string[] = ["cancelled", "noop", "threw", "no-seam"]
+  const note = typeof data?.message === "string" && data.message ? data.message : undefined
+  if (!known.includes(o)) {
+    // The host answered with something we cannot read.  It is NOT a cancel, and calling a
+    // parse miss a refusal would be inventing a host verdict — so it keeps the "answered,
+    // named nothing" reading with what it saw attached.
+    return { outcome: "noop", note: o ? `宿主返回了没认出的结果（${shorten(o, 24)}）` : (note ?? "宿主应答但没有指认被撤回的项") }
+  }
+  if (o === "cancelled") {
+    const raw = typeof data?.inboxID === "string" ? data.inboxID.trim() : ""
+    if (!/^msg_/.test(raw)) return { outcome: "noop", note: "宿主回说撤回但没有给出 ^msg_ 形状的 id" }
+    return { outcome: "cancelled", inboxID: raw }
+  }
+  if (o === "threw") return { outcome: "threw", ...(note ? { note } : {}) }
+  if (o === "no-seam") return { outcome: "no-seam", ...(note ? { note } : {}) }
+  return { outcome: "noop", ...(note ? { note } : {}) }
+}
+
+export function unsendVerdictLine(
+  outcome: UnsendOutcome,
+  opts?: { note?: string; inboxID?: string },
+): string {
+  switch (outcome) {
+    case "cancelled":
+      return `已撤回（宿主回指 inbox=${opts?.inboxID ?? "?"}）—— 它此前还没被投递`
+    case "noop":
+      return `宿主应答了但没有指认被撤回的项${opts?.note ? `（${shorten(opts.note, 80)}）` : ""} —— 按文档 "Unavailable items are a no-op"，已投递或不存在的项就是这个结果，所以我没有撤回任何东西可报告`
+    case "threw":
+      return `撤回被宿主拒绝：${shorten(opts?.note ?? "", 120)}`
+    case "no-seam":
+      return "这个宿主没给 session.inbox.cancel 的缝，未发送撤回"
+  }
+}
+
+export function unsendOutcomeLabel(o: UnsendOutcome): string {
+  return o === "cancelled" ? "已撤回" : o === "noop" ? "应答未指认" : o === "threw" ? "被宿主拒绝" : "无撤回缝"
+}
+
+export function unsendOutcomeParts(tally: Partial<Record<UnsendOutcome, number>>): string[] {
+  const order: UnsendOutcome[] = ["cancelled", "noop", "threw", "no-seam"]
+  const out: string[] = []
+  for (const o of order) {
+    const n = tally[o]
+    if (n) out.push(`${n} ${unsendOutcomeLabel(o)}`)
+  }
+  return out
+}
+
+/** `unsend` arrives in three shapes and NONE of them is guessed at: a real object, a JSON
+ *  string (models send objects as text — the exact `ids` failure this file already records),
+ *  or the compact `"ses_…|msg_…"`.  A missing field is an error, never a default, because
+ *  withdrawing the wrong inbox item is a write to someone else's queue. */
+export function parseUnsendArg(
+  raw: unknown,
+): { ok: true; sessionID: string; inboxID: string } | { ok: false; error: string } {
+  let o: Record<string, unknown> | null = null
+  if (raw && typeof raw === "object") o = raw as Record<string, unknown>
+  else if (typeof raw === "string") {
+    const s = raw.trim()
+    if (s.startsWith("{")) {
+      try {
+        const parsed: unknown = JSON.parse(s)
+        if (parsed && typeof parsed === "object") o = parsed as Record<string, unknown>
+        else return { ok: false, error: `unsend 的 JSON 文本不是一个对象（收到 ${shorten(s, 60)}）` }
+      } catch {
+        return { ok: false, error: `unsend 的 JSON 文本解析失败（收到 ${shorten(s, 60)}）` }
+      }
+    } else {
+      const m = /^(ses[\w-]*)\s*[|/]\s*(msg_[\w-]+)$/.exec(s)
+      if (!m) return { ok: false, error: `unsend 需要 {"sessionID":"ses_…","inboxID":"msg_…"}（或 "ses_…|msg_…"），收到 ${shorten(s, 60)}` }
+      o = { sessionID: m[1], inboxID: m[2] }
+    }
+  } else {
+    return { ok: false, error: `unsend 需要对象 {sessionID, inboxID}，收到 ${raw === undefined ? "undefined" : typeof raw}` }
+  }
+  const sessionID = String(o?.sessionID ?? o?.id ?? "").trim()
+  const inboxID = String(o?.inboxID ?? o?.inbox_id ?? o?.messageID ?? "").trim()
+  if (!sessionID.startsWith("ses")) return { ok: false, error: `unsend.sessionID 不是一个会话 id（收到 ${shorten(sessionID || "(空)", 40)}）` }
+  if (!/^msg_/.test(inboxID)) return { ok: false, error: `unsend.inboxID 必须匹配宿主文档的 ^msg_ 模式（收到 ${shorten(inboxID || "(空)", 40)}）` }
+  return { ok: true, sessionID, inboxID }
+}
+
+/**
+ * Undelivered inbox items, reduced to a NAME and a SHAPE — never the body.  An item's text
+ * is the lead's own interjection or a child's brief, and the R6 口径 binds a read-back as
+ * much as a diagnostic, so the answer can say "there are 3, here are their ids" and the
+ * caller can `unsend` one without any of their content entering the parent's context.
+ * `skipped` is counted rather than silent: an item whose id does not match the documented
+ * `^msg_` pattern is a host shape we did not recognise, not an item that does not exist.
+ */
+export function inboxItemLines(
+  list: unknown,
+  max = 20,
+): { lines: string[]; total: number; skipped: number } {
+  if (!Array.isArray(list)) return { lines: [], total: 0, skipped: 0 }
+  const lines: string[] = []
+  let skipped = 0
+  for (const item of list.slice(0, max)) {
+    if (!item || typeof item !== "object") {
+      skipped++
+      continue
+    }
+    const rec = item as Record<string, unknown>
+    const info =
+      rec.info && typeof rec.info === "object" ? (rec.info as Record<string, unknown>) : undefined
+    const id = String(rec.inboxID ?? rec.id ?? info?.id ?? "").trim()
+    if (!/^msg_/.test(id)) {
+      skipped++
+      continue
+    }
+    const kind = String(rec.kind ?? rec.role ?? info?.role ?? rec.type ?? "")
+      .trim()
+      .toLowerCase()
+      .slice(0, 16)
+    const delivery = String(rec.delivery ?? info?.delivery ?? "").trim().toLowerCase().slice(0, 8)
+    const parts = [`id=${id}`]
+    if (kind) parts.push(`kind=${kind}`)
+    if (delivery) parts.push(`delivery=${delivery}`)
+    // a LENGTH only — the text itself is never copied into the parent's reply
+    if (typeof rec.text === "string") parts.push(`textlen=${rec.text.length}`)
+    lines.push(parts.join(" · "))
+  }
+  if (list.length > max) skipped += list.length - max
+  return { lines, total: list.length, skipped }
+}
+
 export function buildDispatchTools(deps: DispatchDeps): {
   tm_join: ToolDefinition
   /** Feed the host event bus: `session.idle` / `session.error` /
@@ -717,11 +972,49 @@ export function buildDispatchTools(deps: DispatchDeps): {
     }
   }
 
+  /** #steer — the PARENTAGE GATE, and a hard one: an interjection is a WRITE into
+   *  someone else's conversation, so it takes the lock `claimNamedChild` takes and takes
+   *  it BEFORE anything is sent — the host itself must say `parentID === the caller`.
+   *  Three shapes are all refusals and all fail closed: no seam to ask, a call that
+   *  threw, and a session whose parent the host did not name (an `unknown` ownership is
+   *  never treated as ours — the same rule `v2-scope` applies to sessions).  A foreign
+   *  parent is NAMED, because "whose child is it" is the question the lead has next. */
+  async function parentageOf(
+    sid: string,
+    parent: string,
+    directory: string | undefined,
+  ): Promise<{ ok: true; agent: string } | { ok: false; why: string }> {
+    if (!sid) return { ok: false, why: "没有点名子会话 id" }
+    if (!parent) return { ok: false, why: "调用方会话 id 缺失，无法核对归属" }
+    if (sid === parent) return { ok: false, why: "那是你自己的会话，不是子代理" }
+    if (typeof api?.get !== "function") {
+      return { ok: false, why: "这个宿主客户端没有给出读取会话的缝（session.get），我无法确认它是你的子会话，因此没有发送" }
+    }
+    let un: Unwrapped
+    try {
+      un = unwrapClientResult(await api.get({ path: { id: sid }, ...(directory ? { query: { directory } } : {}) }))
+    } catch (err) {
+      return { ok: false, why: `向宿主核对归属失败：${describeHostError((err as { message?: unknown })?.message ?? err)}` }
+    }
+    if (!un.ok) return { ok: false, why: `宿主没有给出这个会话的信息：${shorten(un.message ?? "", 90)}` }
+    const info = un.data as Record<string, unknown> | null
+    const pid = String(info?.parentID ?? "").trim()
+    if (!pid) return { ok: false, why: "宿主没有回 parentID —— 归属未知，未知不当作自己的，未发送" }
+    if (pid !== parent) {
+      // Both ids printed in full (bounded, not to 24): "whose child is it" is the question
+      // the lead has next, and a truncated id is one it cannot act on.
+      return { ok: false, why: `它是会话 ${shorten(pid, 40)} 的子代理，不是本会话（${shorten(parent, 40)}）的 —— 不是我的，我不碰` }
+    }
+    const rawAgent = String(info?.agent ?? "").trim().toLowerCase()
+    return { ok: true, agent: rawAgent || children.get(sid)?.agent || "subagent" }
+  }
+
   const join: ToolDefinition = {
     description: `Collect the sub-agent work attached to THIS session — the read-back side of delegation. You reach for it in two situations: the host's background \`task\` finished and TeamMode replaced its injected reply with a preview (pull the whole thing back with \`{ ids: ["<child session>"] }\`), or a dispatched child from before this build is still open and needs collecting or cancelling.
 - No args: status snapshot of every open child of THIS session — running / idle(done) / error, with elapsed seconds.  Cheap and non-blocking: use it to decide whether to keep working or start merging.
 - { waitMs: 30000 }: bounded wait (capped at ${waitLabel(maxWaitMs)}) until every child settles.  A wait BLOCKS YOU — your turn is parked in this tool call, so it is the synchronous \`task\` experience with none of its visibility.  Wait once, briefly, and only when the very next step needs the answer; a second consecutive wait after nothing settled is cut to 10s and answered with what to do instead.  Never wait for a child whose result you do not need — abort it instead ({ cancel: true }).
 - { ids: [...] }: restrict to those child sessions — a host \`task\` child is collectable when you NAME it (its parentage is verified against the host's own session tree, never assumed); { cancel: true }: abort still-running ones.
+- Steer a child while it runs — the same call, no separate tool: { steer: "先停手，验收改成 X", ids: ["<child>"] } admits the line into that child's inbox with delivery "steer" (or "queue") and the host wakes execution at the step boundary.  已受理 is the whole claim: it is NOT proof the child read it, and the reply never says 已送达.  { unread: true, ids: ["<child>"] } lists that child's undelivered inbox items (ids + shape only, never the body); { unsend: {"sessionID":"ses_…","inboxID":"msg_…"} } withdraws one that has not been delivered — an already-delivered item is the documented no-op and is reported as one.  All three ask the host for parentage FIRST and refuse a session that is not yours; a host without the seam answers no-seam instead of pretending.
 - A plugin/host restart does NOT orphan a child: those the host still lists under your session are re-adopted automatically (their rows are marked 接管), and one that answered while nobody was listening is reported 已完成, not lost.
 - Replies come back through the offload pipeline: a long sub-agent report arrives as a handle + ≤80-token preview (page it with tm_fetch), so a batch of parallel work does not multiply your context.  STATUS: blocked/failed children are surfaced first, always.`,
     args: {
@@ -729,6 +1022,30 @@ export function buildDispatchTools(deps: DispatchDeps): {
       waitMs: { descriptor: `waitMs: number (optional 0..${maxWaitMs} — bounded wait; a SECOND consecutive wait is cut to 10s, because waiting is not parallel work)` },
       cancel: { descriptor: "cancel: true (abort the still-running children in this set)" },
       includeText: { descriptor: "includeText: false to get only the status table (default true)" },
+      // #steer — the four interjection args.  They ride the DESCRIPTOR channel (tm_join
+      // builds its args without zod), and on v2 that channel is what the host serialises
+      // into the parameter spec, so the head token decides the type: `string` → string,
+      // `steer|queue` → an enum, `true` → boolean.  `unsend` is described as a STRING on
+      // purpose — the descriptor parser has no object rule, and a parameter the schema
+      // calls an object while the host validates strictly is a parameter the model cannot
+      // send — so the object shape arrives as its JSON text, and execute() also accepts a
+      // real object and the compact "ses_…|msg_…" form (parseUnsendArg).
+      steer: {
+        descriptor:
+          'steer: string (optional — one line to interject into the child named by ids; the host admits it as inbox input and wakes execution at the step boundary, so 已受理 is not the same claim as 已送达. Needs exactly one id, and parentage is verified with the host first.)',
+      },
+      delivery: {
+        descriptor:
+          "delivery: steer|queue (optional, default steer — applies to steer only. Any other value is refused rather than silently defaulted.)",
+      },
+      unread: {
+        descriptor:
+          "unread: true (optional — list the undelivered inbox items of the child named by ids: ids and shape only, never the body)",
+      },
+      unsend: {
+        descriptor:
+          'unsend: string (optional — the JSON object as text {"sessionID":"ses_…","inboxID":"msg_…"}, or "ses_…|msg_…"; withdraws an item that has not been delivered yet. An unavailable item is the documented no-op and is reported as one, not as a success.)',
+      },
     },
     execute: async (rawArgs, ctx): Promise<ToolResult> => {
       const tool = "tm_join"
@@ -803,6 +1120,167 @@ export function buildDispatchTools(deps: DispatchDeps): {
             })
           }
           return line
+        }
+        // ── #steer: 插话 / 未读 / 撤回 ──────────────────────────────────────────────
+        // Three new actions, each answered and returned HERE.  A call that names none of
+        // them falls through to the collect/wait flow below untouched, which is what keeps
+        // the shipped `ids` / `waitMs` / `cancel` / `includeText` semantics byte-exact.
+        const steerText = typeof args.steer === "string" ? args.steer.trim() : ""
+        const wantsUnread = args.unread === true || args.unread === "true"
+        const unsendRequested = args.unsend !== undefined && args.unsend !== null && args.unsend !== ""
+        const steerActions = (steerText ? 1 : 0) + (wantsUnread ? 1 : 0) + (unsendRequested ? 1 : 0)
+        if (!steerActions && args.steer !== undefined) {
+          return toToolResult(tmError(tool, "args", "steer 需要非空文本（只要状态就去掉它，或改用 unread / cancel）。"))
+        }
+        if (steerActions > 1) {
+          return toToolResult(tmError(tool, "args", "一次只能做一件插话动作：steer / unread / unsend 三选一 —— 合在一起，三种结论就没法分开计数了。"))
+        }
+        if (steerActions) {
+          const deliveryRaw = typeof args.delivery === "string" ? args.delivery.trim().toLowerCase() : ""
+          if (args.delivery !== undefined && deliveryRaw !== "steer" && deliveryRaw !== "queue") {
+            return toToolResult(tmError(tool, "args", `delivery 只能是 "steer" 或 "queue"（收到 ${shorten(String(args.delivery ?? ""), 24)}），未发送。`))
+          }
+          // The documented default is not something we let the host decide: an omitted
+          // `delivery` is spelled `steer` here, so the value in the reply is the value that
+          // was sent rather than a guess about this build's inbox scheduler.
+          const delivery = deliveryRaw === "queue" ? "queue" : "steer"
+          const unsendParsed = unsendRequested ? parseUnsendArg(args.unsend) : null
+          if (unsendParsed && !unsendParsed.ok) return toToolResult(tmError(tool, "args", `${unsendParsed.error}。`))
+          const unsendID = unsendParsed && unsendParsed.ok ? unsendParsed.inboxID : ""
+          let target = unsendID ? (unsendParsed && unsendParsed.ok ? unsendParsed.sessionID : "") : ""
+          if (!target) {
+            if (!idFilter) {
+              return toToolResult(tmError(tool, "args", `${steerText ? "steer" : "unread"} 要用 ids 点名一个子会话：{ ids: ["ses_…"], ${steerText ? "steer" : "unread"}: … }。`))
+            }
+            if (idFilter.size !== 1) {
+              return toToolResult(tmError(tool, "args", `插话只能针对一个子会话（ids 里有 ${idFilter.size} 个）。`))
+            }
+            target = [...idFilter][0]
+          }
+          // #87 applies to these answers too: a forgotten window surfaces on EVERY reply.
+          const lease = leaseLine()
+          const tail = lease ? `\n${lease}` : ""
+          const gate = await parentageOf(target, parent, directory)
+          if (!gate.ok) {
+            log({
+              step_id: "join",
+              event: unsendID ? "unsend_refused" : steerText ? "steer_refused" : "unread_refused",
+              child: target,
+              reason: "parentage",
+            })
+            return toToolResult(`没有发送：${gate.why}。${tail}`)
+          }
+          const row = children.get(target)
+          const rowLine = row
+            ? renderChildLine(row, (row.finishedAt ?? now()) - row.startedAt)
+            : `${target} · ${gate.agent} ·（本进程没有它的登记行，归属由宿主确认）`
+
+          if (steerText) {
+            let outcome: SteerOutcome = "no-seam"
+            let inboxID: string | undefined
+            let note: string | undefined
+            let seam: string | undefined
+            if (api && api.v2SteerSeam === true && typeof api.prompt === "function") {
+              const got = steerOutcomeOf(await api.prompt({ sessionID: target, text: steerText, delivery }))
+              outcome = got.outcome
+              inboxID = got.inboxID
+              note = got.note
+              seam = got.seam
+            } else {
+              // The v1 client is NOT called: its `session.prompt` takes `{path,body}` with
+              // no `delivery` field, so firing it would be a write with the wrong contract
+              // and a verdict read off whatever came back.
+              note = "这个客户端不是 v2 的 ctx.session 桥（v1 的 session.prompt 走 {path,body}，没有 delivery 字段），未调用"
+            }
+            log({
+              step_id: "join",
+              event: "steer",
+              child: target,
+              agent: gate.agent,
+              delivery,
+              outcome,
+              ok: outcome === "steered",
+              ...(inboxID ? { inboxID } : {}),
+              ...(seam ? { seam } : {}),
+              // the LENGTH, never the text — R6 binds the audit trail as much as the reply
+              chars: steerText.length,
+            })
+            const tally: Partial<Record<SteerOutcome, number>> = {}
+            tally[outcome] = 1
+            log({ step_id: "join", event: "steer_summary", count: 1, outcomes: steerOutcomeParts(tally).join(" / ") })
+            const wake =
+              row && row.state !== "running"
+                ? `\n它现在不是运行中（${row.state === "error" ? "失败" : "已结算"}）；按文档 steer 会唤醒它的执行，但唤醒之后它做什么，要等它结算才看得到。`
+                : ""
+            return toToolResult(
+              `插话目标：${rowLine}\n插话结果：${steerVerdictLine(outcome, { inboxID, note, seam })}\n插话计数：${steerOutcomeParts(tally).join(" · ")}${wake}${tail}`,
+            )
+          }
+
+          if (wantsUnread) {
+            if (!api || api.v2SteerSeam !== true || typeof api.inboxList !== "function") {
+              log({ step_id: "join", event: "unread", child: target, outcome: "no-seam" })
+              return toToolResult(
+                `未读列表没有查询：这个宿主没给 session.inbox.list 的缝（v1 客户端没有这条契约），未发送。\n目标：${rowLine}${tail}`,
+              )
+            }
+            const un = unwrapClientResult(await api.inboxList({ sessionID: target }))
+            const data = un.ok
+              ? (un.data as { outcome?: unknown; items?: unknown; spelling?: unknown; message?: unknown } | null | undefined)
+              : null
+            const seamOut = String(data?.outcome ?? "")
+            const spelling = typeof data?.spelling === "string" ? data.spelling : ""
+            if (!un.ok || seamOut === "threw" || seamOut === "no-seam") {
+              const why =
+                seamOut === "no-seam"
+                  ? "这个宿主没给 session.inbox.list 的缝（两种拼写都试了）"
+                  : `查询被宿主拒绝：${shorten(String(data?.message ?? (un.ok ? "" : un.message) ?? ""), 120)}`
+              log({ step_id: "join", event: "unread", child: target, outcome: seamOut === "no-seam" ? "no-seam" : "threw" })
+              return toToolResult(`未读列表没有查到：${why}。\n目标：${rowLine}${tail}`)
+            }
+            const listed = inboxItemLines(data?.items)
+            log({
+              step_id: "join",
+              event: "unread",
+              child: target,
+              outcome: "listed",
+              count: listed.lines.length,
+              total: listed.total,
+              skipped: listed.skipped,
+              ...(spelling ? { spelling } : {}),
+            })
+            const trimmed = listed.total > listed.lines.length
+              ? `（宿主返回 ${listed.total} 项，${listed.skipped} 项的 id 不匹配 ^msg_ 或超出 20 条上限，没有列出）`
+              : ""
+            return toToolResult(
+              `未投递的插话项（${target}）：${listed.lines.length} 条${trimmed}\n` +
+                `${listed.lines.join("\n") || "（没有未投递项）"}\n` +
+                `（只给 id 与形状，正文不进这里 —— 要撤回某条就 unsend 它的 id）\n目标：${rowLine}${tail}`,
+            )
+          }
+
+          // unsend — the only way to take back a line that has not been delivered yet.
+          if (!api || api.v2SteerSeam !== true || typeof api.inboxCancel !== "function") {
+            log({ step_id: "join", event: "unsend", child: target, inboxID: unsendID, outcome: "no-seam" })
+            return toToolResult(
+              `撤回没有发送：这个宿主没给 session.inbox.cancel 的缝（v1 客户端没有这条契约）。\n目标：${rowLine}${tail}`,
+            )
+          }
+          const got = unsendOutcomeOf(await api.inboxCancel({ sessionID: target, inboxID: unsendID }))
+          const tallyU: Partial<Record<UnsendOutcome, number>> = {}
+          tallyU[got.outcome] = 1
+          log({
+            step_id: "join",
+            event: "unsend",
+            child: target,
+            inboxID: unsendID,
+            outcome: got.outcome,
+            ok: got.outcome === "cancelled",
+          })
+          log({ step_id: "join", event: "unsend_summary", count: 1, outcomes: unsendOutcomeParts(tallyU).join(" / ") })
+          return toToolResult(
+            `撤回目标：${target} · inbox=${unsendID}\n结果：${unsendVerdictLine(got.outcome, { inboxID: got.inboxID, note: got.note })}\n撤回计数：${unsendOutcomeParts(tallyU).join(" · ")}\n${rowLine}${tail}`,
+          )
         }
         if (!mine.length) {
           const lease = leaseLine()

@@ -70,6 +70,25 @@ export function makeFakeCtx({
   const errorLines = []
   /** #33: which child sessions a stop attempt actually reached, in order. */
   const stopCalls = []
+  /** #steer: what each interjection seam actually received, args and all.  A test that
+   *  only read the tool's prose could not tell 插话给了子会话 from 插话给了调用者自己,
+   *  and that distinction is the whole safety property of the feature. */
+  const promptCalls = []
+  const syntheticCalls = []
+  const inboxListCalls = []
+  const inboxCancelCalls = []
+
+  /** Turn a seeded verdict into a host-shaped method: a function is called with the args
+   *  (so a test can answer per-session), an Error throws, anything else is returned as-is.
+   *  Same construction as `stop` above — a fake that always answered `true` would let the
+   *  tool claim 已受理 against a host that never admitted anything. */
+  const verdictMethod = (seed, logArr) => async (args = {}) => {
+    logArr.push({ ...(args ?? {}) })
+    const v = typeof seed === "function" ? seed(args) : seed
+    if (v instanceof Error) throw v
+    return v
+  }
+  const has = (key) => sessionData && Object.prototype.hasOwnProperty.call(sessionData, key)
 
   return {
     ctx: {
@@ -119,6 +138,33 @@ export function makeFakeCtx({
                   },
                 }
               : {}),
+            // #steer — the interjection seams, seeded ONLY when a test asks for them, for
+            // the same reason `interrupt` is: a host that never admits inbox input must not
+            // be able to be described as having accepted one.  `prompt` is the documented
+            // `{sessionID, text, delivery}` call; `synthetic` is the fallback seam; the
+            // inbox ops exist in TWO spellings (nested `session.inbox.list`, which the
+            // published operation ids imply, and flat `session["inbox.list"]`), and
+            // `inboxFlat` lets a test drive the fallback and pin which one answered.
+            ...(has("prompt") ? { prompt: verdictMethod(sessionData.prompt, promptCalls) } : {}),
+            ...(has("synthetic") ? { synthetic: verdictMethod(sessionData.synthetic, syntheticCalls) } : {}),
+            ...(has("inbox") && sessionData.inbox && !sessionData.inboxFlat
+              ? {
+                  inbox: {
+                    ...(sessionData.inbox.list !== undefined
+                      ? { list: verdictMethod(sessionData.inbox.list, inboxListCalls) }
+                      : {}),
+                    ...(sessionData.inbox.cancel !== undefined
+                      ? { cancel: verdictMethod(sessionData.inbox.cancel, inboxCancelCalls) }
+                      : {}),
+                  },
+                }
+              : {}),
+            ...(has("inbox") && sessionData.inbox && sessionData.inboxFlat
+              ? {
+                  "inbox.list": verdictMethod(sessionData.inbox.list, inboxListCalls),
+                  "inbox.cancel": verdictMethod(sessionData.inbox.cancel, inboxCancelCalls),
+                }
+              : {}),
           }
         : { hook: mkHook("session") },
       shell: { hook: mkHook("shell") },
@@ -150,6 +196,11 @@ export function makeFakeCtx({
     /** #33 — the stop attempts this fake actually received, so a test can pin that a
      *  cancel reached the host with the child's id rather than trusting the tool's prose. */
     stopCalls,
+    /** #steer — the same for the interjection seams: the args each one really got. */
+    promptCalls,
+    syntheticCalls,
+    inboxListCalls,
+    inboxCancelCalls,
   }
 }
 
