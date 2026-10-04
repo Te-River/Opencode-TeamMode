@@ -104,8 +104,9 @@ const PER_AGENT_TOOLS = ["edit", "write", "task", "bash", "todowrite", "question
  *  plugin's own trajectory (no network, no shell, no secrets) so any role can
  *  answer "what did we spend" — and after a host upgrade, "what broke". */
 /** tm_board_write is in this set on purpose.  The blackboard is the ONLY
- *  oversized-deliverable channel, and two roles (architect, researcher) own no
- *  write/edit/bash at all — so a board write through the host's file tools is
+ *  oversized-deliverable channel, and two roles (architect, researcher) carry no
+ *  write/edit/bash — `whitelist()` grants them no built-in at all, only the
+ *  read-capable tm_* set — so a board write through the host's file tools is
  *  impossible for them by construction, and the rule that keeps a report from
  *  becoming a wall of text was un-followable exactly where it mattered.  A
  *  governed writer scoped to <board-root>/<session>/<task>/ is the small fix;
@@ -306,8 +307,10 @@ const researcher: AgentConfig = {
   // researcher is a network role).  The built-in webfetch/websearch tools
   // stay removed — web lookups ride user-configured MCP tools (preferred)
   // or the governed tm_* web channels (allowlisted, threshold-offloaded).
-  // No bash / no execution rights is intentional trimming — local research
-  // reads, it does not run.
+  // No built-in `bash` grant — whitelist() denies every built-in here, which is
+  // intentional trimming (local research reads, it does not run).  The role is
+  // not tool-less: it keeps the governed tm_* set, and on v2 the host's own
+  // read/grep/glob + Code Mode `execute`, which our matrix never denies.
   permission: whitelist(),
   temperature: 0.2,
 }

@@ -238,7 +238,7 @@ export interface TmConfig {
   joinMaxWaitMs: number
   /** tm_board_write: one board file's character cap and one session folder's file cap.
    *  The board is the ONLY oversized-deliverable channel, and the roles that
-   *  need it most (architect / researcher) own no file tool at all, so the caps
+   *  need it most (architect / researcher) own no write-capable file tool, so the caps
    *  are what keeps a governed writer from becoming a disk leak. */
   boardMaxChars: number
   boardMaxFiles: number
