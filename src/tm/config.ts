@@ -236,25 +236,22 @@ export interface TmConfig {
    *  TTL-expired entries — never a live run.  `off` keeps the disk as is; the
    *  test runner sets it so a suite cannot mutate the developer's real Temp. */
   storeReclaim: "on" | "off"
-  /** Floor (minutes) for the approval-gate ask timeout.  LIVE (Wave A/T2):
-   *  approval-gate.ts `resolveAskTimeoutMs` clamps the reply with
-   *  `Math.max(min, resolveTmConfig(env).askTimeoutFloorMin)` — this knob
-   *  drives the floor, replacing the old hardcoded MIN_ASK_TIMEOUT_MIN=3.
-   *  DEFAULTED TO 1 (user directive): a reject that lands on an already-
-   *  closed request is classified benign `already-closed` by T2's
-   *  classifyReplyFailure, so the ~120s replied-event bus lag no longer
-   *  forces a 3-min floor — an unanswered dialog auto-rejects after 1 min. */
+  /** Floor (minutes) for the (v1) approval-gate ask timeout.  ORPHANED: its
+   *  only consumer, approval-gate.ts `resolveAskTimeoutMs`, was deleted with
+   *  the v1 personality (v2 raises no plugin dialog, so there is no timer to
+   *  floor).  The knob is still parsed so an existing config keeps resolving;
+   *  nothing reads it.  DEFAULTED TO 1. */
   askTimeoutFloorMin: number
   /** Ceiling (ms) forced onto the built-in bash tool's `timeout` ARG through
    *  the official `tool.execute.before` hook.  0 (default) = no cap: a build
    *  or test run stays whatever the model asked for.  Consumed by
-   *  bash-timeout.ts. */
+   *  src/host/v2-guard.ts (applyV2ShellTimeoutClamp). */
   bashTimeoutMaxMs: number
   /** Ceiling (ms) for a bash command that the P3 read-only allowlist already
    *  classifies as a pure probe (ls/grep/rg/cat/Get-ChildItem …).  Those
    *  never legitimately need the host's 120 s default, and models routinely
    *  set 120000+ on them, so this one ships ENABLED.  0 disables.
-   *  Consumed by bash-timeout.ts. */
+   *  Consumed by src/host/v2-guard.ts (applyV2ShellTimeoutClamp). */
   bashTimeoutProbeMs: number
 }
 
@@ -302,8 +299,8 @@ export const TM_CONFIG_DEFAULTS = {
   boardMaxFiles: 200,
   taskOffload: "on",
   storeReclaim: "on",
-  // Consumed by approval-gate.ts resolveAskTimeoutMs (Math.max floor, Wave A).
-  // 1 min since the T2 benign already-closed split (user directive).
+  // ORPHANED: approval-gate.ts resolveAskTimeoutMs (its only consumer) was
+  // deleted with the v1 personality.  Kept so an existing config still parses.
   askTimeoutFloorMin: 1,
   // The GENERAL bash cap stays off by default (a real build may legitimately
   // need minutes); the probe cap ships on because a read-only probe never

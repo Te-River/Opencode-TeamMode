@@ -1,34 +1,20 @@
 /**
- * host-hooks (tool.definition / chat.params / compaction / shell.env) +
- * tm_pty (non-blocking command execution on the host's terminal sessions).
+ * tm_stats (the throughput claim, with a number behind it) + plan B (the host's
+ * background task, governed by us).
  *
- * These ride surfaces whose live delivery we cannot exercise from a unit
- * test (the desktop binary owns them), so the contract pinned here is the
- * adapter shape: mutate ONLY the verified field, ONLY when the payload has
- * the expected shape, idempotently, and never throw into a host hook.  The
- * governance half (tm_pty must pass R6 AND the official dialog before a
- * process exists) is asserted against a fake pty client, because that is the
- * part that would be a bypass if it were wrong.
+ * The v1 host-hook adapters (tool.definition / chat.params / compaction /
+ * shell.env) and the built-in arg-coercion helper were deleted with the v1
+ * personality: src/host-hooks.ts and src/tool-coerce.ts are gone, and v2
+ * covers the same ground elsewhere (the request layer sets temperature and
+ * pushes the compaction survival list; src/host/v2-guard.ts forces every
+ * subagent call into the background, which subsumes the "True" string repair).
+ * The retired groups keep their numbers and print SKIPPED.
  */
 
 import assert from "node:assert/strict"
 import * as fs from "node:fs"
 import * as os from "node:os"
 import * as path from "node:path"
-import {
-  applyToolDefinition,
-  applyChatParams,
-  resolveAgentTemperature,
-  applySessionCompacting,
-  applyCompactionAutoContinue,
-  applyShellEnv,
-  resolveShellEnv,
-  hookSwitches,
-  COMPACTION_CONTEXT,
-  TOOL_HINTS,
-  TASK_HINT_BACKGROUND,
-  AGENT_TEMPERATURES,
-} from "./dist/host-hooks.js"
 
 const tm = await import("./dist/tm/index.js")
 const plugin = (await import("./dist/index.js")).default
@@ -42,114 +28,18 @@ const mktmp = (label) => {
 const ok = (cond, msg) => assert.ok(cond, msg)
 const eq = (a, b, msg) => assert.deepEqual(a, b, msg)
 
-console.log("hosthooks. tool.definition / chat.params / compaction / shell.env / tm_pty")
+console.log("hosthooks. tm_stats + plan B offload (v1 host-hook adapters retired)")
 
-/* ---------- 1. tool.definition: append at the call site, never replace ---- */
-{
-  const out = { description: "Executes a given bash command in a persistent shell session." }
-  eq(applyToolDefinition({ toolID: "bash" }, out, true), true, "bash description is annotated")
-  ok(out.description.startsWith("Executes a given bash command"), "the host's own description is preserved verbatim")
-  ok(out.description.includes("[OpenCode TeamMode]"), "our marker is present")
-  ok(out.description.includes("120 s"), "the timeout discipline reaches the tool description")
-  const before = out.description
-  eq(applyToolDefinition({ toolID: "bash" }, out, true), false, "idempotent: never appended twice")
-  eq(out.description, before, "the second pass leaves the string byte-exact")
-  const task = { description: "Launch a sub-agent to handle the task." }
-  eq(applyToolDefinition({ toolID: "task" }, task, true), true, "task gets the delegation pointer")
-  ok(
-    task.description.includes("background: true") && task.description.includes("blocks your session"),
-    "task is told BOTH shapes: blocking for one answer, background for parallel follow-up",
-  )
-  ok(!task.description.includes("tm_dispatch"), "the hint never points back at the dispatcher we removed")
-  const bg = { description: "Launch a sub-agent to handle the task." }
-  eq(applyToolDefinition({ toolID: "task" }, bg, true, { task: TASK_HINT_BACKGROUND.task }), true, "the flag-on override appends")
-  ok(
-    bg.description.includes("tm_join") && bg.description.includes("OUT of your context"),
-    "with the host flag on the hint names the collect path and the offload that keeps it cheap",
-  )
-  const unrelated = { description: "edit a file" }
-  eq(applyToolDefinition({ toolID: "edit" }, unrelated, true), false, "unlisted tools untouched")
-  eq(unrelated.description, "edit a file", "no mutation of an unlisted description")
-  const missing = {}
-  eq(applyToolDefinition({ toolID: "bash" }, missing, true), false, "a payload without a string description is skipped")
-  eq(applyToolDefinition(null, null, true), false, "garbage input cannot throw")
-  eq(applyToolDefinition({ toolID: "bash" }, out, false), false, "TM_TOOL_HINTS=off disables the whole hook")
-  ok(typeof TOOL_HINTS.bash === "string" && typeof TOOL_HINTS.task === "string", "hint table covers bash + task")
-  console.log("  1. tool.definition: append-only, idempotent, switch-off, never throws")
-}
-
-/* ---------- 2. chat.params: default is DON'T TOUCH ------------------------ */
-{
-  const baseline = { temperature: 0.2, topP: 1, topK: 40, maxOutputTokens: undefined, options: {} }
-  eq(applyChatParams({ agent: "architect" }, { ...baseline }, {}), false, "TM_AGENT_TEMPERATURE unset (off) leaves sampling alone")
-  const out = { ...baseline }
-  eq(applyChatParams({ agent: "architect" }, out, { TM_AGENT_TEMPERATURE: "on" }), true, "opt-in applies the table")
-  eq(out.temperature, AGENT_TEMPERATURES.architect, "architect gets the design-table value")
-  eq(out.topP, 1, "only temperature is touched — topP/topK/maxOutputTokens stay the host's")
-  eq(applyChatParams({ agent: "unknown-role" }, { ...baseline }, { TM_AGENT_TEMPERATURE: "on" }), false, "an unlisted agent is left alone")
-  eq(applyChatParams({ agent: "reviewer" }, out, { TM_AGENT_TEMPERATURE: "reviewer=0.05;team=0.4" }), true, "a custom table parses")
-  eq(out.temperature, 0.05, "custom value wins over the built-in table")
-  eq(resolveAgentTemperature("reviewer", { TM_AGENT_TEMPERATURE: "reviewer=abc" }), null, "a malformed table resolves to NO override (never half-applied)")
-  eq(resolveAgentTemperature("reviewer", { TM_AGENT_TEMPERATURE: "reviewer=9" }), null, "out-of-range sampling is refused, not clamped")
-  eq(resolveAgentTemperature("", { TM_AGENT_TEMPERATURE: "on" }), null, "an anonymous session gets no override")
-  eq(applyChatParams({ agent: "architect" }, undefined, { TM_AGENT_TEMPERATURE: "on" }), false, "missing output cannot throw")
-  console.log("  2. chat.params: off by default, one field only, malformed table = no change")
-}
-
-/* ---------- 3. compaction: additive context, autocontinue untouched ------- */
-{
-  const out = { context: ["host's own line"], prompt: undefined }
-  eq(applySessionCompacting(out, true), true, "context lines are added")
-  eq(out.context[0], "host's own line", "existing entries keep their order")
-  eq(out.context.length, 1 + COMPACTION_CONTEXT.length, "every contract line lands")
-  eq(out.prompt, undefined, "output.prompt is NEVER replaced (the summarizer stays the host's)")
-  ok(COMPACTION_CONTEXT.some((l) => l.includes("STATUS")), "the reply skeleton survives compaction")
-  ok(COMPACTION_CONTEXT.some((l) => l.includes("access_token")), "offload handles are named as must-keep")
-  ok(
-    COMPACTION_CONTEXT.some((l) => l.includes("Sub-agent children") && l.includes("host's task")),
-    "uncollected children survive the summary, named as the host's — not our removed dispatcher",
-  )
-  ok(
-    COMPACTION_CONTEXT.some((l) => l.includes("does NOT mean the task is done")),
-    "…and as a NOT-FINISHED state, so a compaction mid-wait cannot leave the lead believing it delivered",
-  )
-  ok(COMPACTION_CONTEXT.some((l) => l.includes("GOAL")), "the goal directive survives the summary — a compressed transcript must not redefine the ask")
-  ok(
-    COMPACTION_CONTEXT.every((l) => /survive|VERBATIM|keep|keeps|not the transcript/i.test(l)),
-    "every line is a carry-forward instruction, not commentary — that is the only thing a summarizer obeys",
-  )
-  eq(applySessionCompacting(out, true), false, "idempotent: a second compaction adds nothing")
-  eq(applySessionCompacting(out, false), false, "TM_COMPACTION_CONTEXT=off disables it")
-  eq(applySessionCompacting(null, true), false, "garbage output cannot throw")
-  const ac = { enabled: true }
-  eq(applyCompactionAutoContinue(ac, {}), false, "auto-continue untouched by default (the host keeps resuming)")
-  eq(ac.enabled, true, "so the run still carries on after a summary")
-  eq(applyCompactionAutoContinue(ac, { TM_COMPACTION_AUTOCONTINUE: "off" }), true, "TM_COMPACTION_AUTOCONTINUE=off opts out")
-  eq(ac.enabled, false, "then the turn pauses for the user")
-  eq(hookSwitches({}).compactionContext, true, "compaction context defaults on")
-  console.log("  3. compaction: additive + idempotent, prompt never replaced, autocontinue left alone by default")
-}
-
-/* ---------- 4. shell.env: NO_COLOR + an explicit allowlisted passthrough -- */
-{
-  eq(resolveShellEnv({}), { NO_COLOR: "1", CLANG_COLOR_MODE: "never", TERM: "dumb" }, "color-off by default (ANSI is context noise)")
-  const out = { env: { TERM: "xterm-256color", PATH: "/usr/bin" } }
-  eq(applyShellEnv(out, {}), true, "the hook fills what the host did not set")
-  eq(out.env.TERM, "xterm-256color", "an existing value is NEVER overwritten")
-  eq(out.env.NO_COLOR, "1", "NO_COLOR injected")
-  eq(out.env.PATH, "/usr/bin", "PATH untouched — this hook forwards nothing implicitly")
-  const withExtra = applyShellEnv({ env: {} }, { TM_SHELL_ENV: "LC_ALL=C.UTF-8;PIPX=1;BAD LINE;=nope" })
-  eq(withExtra, true, "a well-formed entry still gets through a sloppy list")
-  const out2 = { env: {} }
-  applyShellEnv(out2, { TM_SHELL_ENV: "LC_ALL=C.UTF-8;PIPX=1;=nope;NOKEY" })
-  eq(out2.env.LC_ALL, "C.UTF-8", "operator passthrough applied")
-  eq(out2.env.PIPX, "1", "second pair applied")
-  eq(out2.env[""], undefined, "a valueless pair is dropped")
-  ok(!("NOKEY" in out2.env), "a key without =value is dropped (no blanket env forwarding)")
-  eq(applyShellEnv({ env: {} }, { TM_SHELL_NO_COLOR: "off", TM_SHELL_ENV: "" }), false, "everything off = no mutation at all")
-  eq(applyShellEnv(null, {}), false, "garbage output cannot throw")
-  console.log("  4. shell.env: NO_COLOR/TERM only + explicit allowlist, never clobbers, never leaks the parent env")
-}
+/* ---------- 1-4. host-hook adapters — RETIRED with the v1 personality (1.7.0 cut).
+ *  src/host-hooks.ts (applyToolDefinition / applyChatParams / applySessionCompacting
+ *  / applyCompactionAutoContinue / applyShellEnv / hookSwitches / TOOL_HINTS /
+ *  TASK_HINT_BACKGROUND / AGENT_TEMPERATURES) is deleted.  The v2 equivalents:
+ *  temperature 0.2 rides the request layer (src/host/v2-session.ts, pinned by
+ *  test-v2-adapter "THE REQUEST LAYER"), the compaction survival list is pushed by
+ *  the same layer (COMPACTION_CONTEXT now lives in src/host/v2-session.ts), and the
+ *  subagent background force is src/host/v2-guard.ts applyV2BackgroundForce.  The
+ *  NUMBERS stay so 5-10 do not renumber. ---------- */
+console.log("  1-4. host-hook adapters: SKIPPED — src/host-hooks.ts removed with the v1 personality; v2 request layer + guard pinned by test-v2-adapter")
 
 /* ---------- 5. tm_pty governance gate — RETIRED with the v1 personality (1.7.0 cut).
  *  tm_pty was v1-only: the v2 plugin ctx exposes no client.pty seam, so it
@@ -458,39 +348,13 @@ console.log("  7. capability probe: SKIPPED — v1 createCapabilityProbe removed
   console.log("  9. plan B: host background-task injection offloaded under three locks (synthetic + envelope + threshold), never on disk")
 }
 
-/* ---------- 10. built-in arg coercion: the trap the host's schema rejects -- */
-{
-  const { coerceToolArgs } = await import("./dist/tool-coerce.js")
-  // live evidence: a lead following our own advice burned two task calls with
-  // "background":"True" then "true" before it sent a real boolean
-  const a = { args: { description: "d", background: "True" } }
-  eq(coerceToolArgs({ tool: "task" }, a), ["background"], "a string 'True' becomes the boolean the host validates")
-  eq(a.args.background, true, "…in place, on the object the host is about to read")
-  const b = { args: { background: "false" } }
-  coerceToolArgs({ tool: "opencode:task" }, b)
-  eq(b.args.background, false, "'false' is a real false, not an absent true — namespaced tool ids match too")
-  const c = { args: { background: "true" } }
-  coerceToolArgs({ tool: "local/task" }, c)
-  eq(c.args.background, true, "a path-suffixed id matches as well")
-  const keep = { args: { background: "when it finishes", prompt: "p", description: "d" } }
-  eq(coerceToolArgs({ tool: "task" }, keep), [], "any other string is left exactly as the model wrote it")
-  eq(keep.args.background, "when it finishes", "…including the value")
-  const absent = { args: { prompt: "p" } }
-  eq(coerceToolArgs({ tool: "task" }, absent), [], "an omitted flag is never invented")
-  ok(!("background" in absent.args), "…so the call keeps the host's own default")
-  const other = { args: { background: "true", command: "ls" } }
-  eq(coerceToolArgs({ tool: "bash" }, other), [], "other tools are not touched at all")
-  eq(other.args.background, "true", "…and their values stay byte-exact")
-  const real = { args: { background: true } }
-  eq(coerceToolArgs({ tool: "task" }, real), [], "a correct boolean passes through unchanged")
-  for (const bad of [undefined, null, {}, { args: null }, { args: "nope" }, { args: [] }]) {
-    eq(coerceToolArgs({ tool: "task" }, bad), [], "a malformed hook payload never throws")
-  }
-  const { summarizeEvents: sum2, renderStats: ren2 } = await import("./dist/tm/stats.js")
-  const md5 = ren2(sum2([{ ts: new Date(1_700_000_000_000).toISOString(), tool: "task", step_id: "args-coerce", event: "coerced", keys: "background" }]), { runDirs: 1, roots: [] })
-  ok(md5.includes("内置工具参数纠偏") && md5.includes("1 次"), "the repair is counted in tm_stats — a silent fix would hide how often the host would have rejected the call")
-  console.log("  10. built-in arg coercion: lossless, scoped to the known boolean, counted")
-}
+/* ---------- 10. built-in arg coercion — RETIRED with the v1 personality (1.7.0 cut).
+ *  src/tool-coerce.ts (coerceToolArgs) is deleted.  Its one job — normalising a
+ *  string "True"/"true" into the boolean the host's schema validates — is subsumed
+ *  on v2 by src/host/v2-guard.ts applyV2BackgroundForce, which forces every
+ *  subagent call to background:true and overrides the string form alike (pinned by
+ *  test-v2-adapter).  The NUMBER stays so the final count does not move. ---------- */
+console.log("  10. built-in arg coercion: SKIPPED — src/tool-coerce.ts removed with the v1 personality; v2 background force in src/host/v2-guard.ts")
 
 for (const dir of tmpDirs) fs.rmSync(dir, { recursive: true, force: true })
 console.log("\nHOSTHOOKS: ALL PASS (10 groups)")

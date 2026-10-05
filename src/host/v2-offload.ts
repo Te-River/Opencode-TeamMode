@@ -74,7 +74,7 @@ export const NATIVE_GOVERNED_TOOLS: ReadonlySet<string> = new Set([
    * `session.hook("context")` carrying a single message and no
    * `<task id=… state="completed">` envelope at all -- so v1's chat.message offload
    * has no anchor on v2, and rewriting the message list against a guessed shape is
-   * how evidence gets deleted silently (the same reason host-hooks.ts declines
+   * how evidence gets deleted silently (the same reason we decline
    * `experimental.chat.messages.transform`).  Consequence stated plainly: a
    * BACKGROUND child's reply, which the host injects later, is NOT governed here --
    * closing that needs the ctx.event/ctx.session rebuild, which is an open decision.

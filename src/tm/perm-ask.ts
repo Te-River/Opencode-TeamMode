@@ -125,9 +125,9 @@ export const ASK_GRACE_MS = 15_000
 const ASK_WAIT_FLOOR_MS = 5_000
 let askWaitMs = 75_000
 
-/** Wired once at boot from `resolveAskTimeoutMs() + ASK_GRACE_MS`, so the
- *  gate's authoritative reject always wins when it is able to fire and this
- *  timer only catches the un-armed case. */
+/** The v1 boot wiring (`resolveAskTimeoutMs() + ASK_GRACE_MS`) is gone with
+ *  the approval gate; the default below is the backstop for the un-armed
+ *  case.  Kept as a setter so a caller can still tighten it. */
 export function setAskWaitMs(ms: number): void {
   if (Number.isFinite(ms) && ms >= ASK_WAIT_FLOOR_MS) askWaitMs = Math.round(ms)
 }

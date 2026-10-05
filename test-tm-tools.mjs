@@ -838,7 +838,7 @@ try {
   //  is gone; the P3 read-only matrix itself is unchanged and stays pinned by
   //  group 5 (classifyReadonlyCommand directly).  The Test-Path existence-probe
   //  allowlisting below is kept because classifyReadonlyCommand is still a live
-  //  shared function (bash-timeout.ts resolves the probe ceiling through it).
+  //  shared function (src/host/v2-guard.ts resolves the probe ceiling through it).
   assert.equal(
     tm.classifyReadonlyCommand("Test-Path \"x\"", tm.DEFAULT_BASH_READONLY_ALLOWED).ok,
     true,
@@ -2915,56 +2915,23 @@ try {
     console.log("10. tm_dispatch removed (not registered, lead denied) + tm_join as the collect side: adoption of leftovers (both title shapes) with a host task child never claimed on speculation, named-id claims verified against host parentage, status/event settle, cancel, offloaded fat replies, the wait budget and its chained-wait cut, the goal tripwire with the todowrite escape, and the pure helpers")
   }
 
-  // ---------- 11. bash timeout clamp (tool.execute.before mutation) ----------
-  // The host's shell tool defaults to 120 s (flags.bashDefaultTimeoutMs ??
-  // 2*60*1e3) and models pass 120000+ for `Get-ChildItem`.  The plugin owns no
-  // timer; it clamps the ARG through the official mutable hook, and only for
-  // commands the P3 read-only allowlist already accepts.
+  // ---------- 11. bash timeout clamp — RETIRED with the v1 personality ----------
+  // The clamp MODULE (src/tm/bash-timeout.ts: resolveBashTimeout /
+  // createBashTimeoutHook / parseTimeoutArg) was deleted with the v1 personality;
+  // the clamp now lives in src/host/v2-guard.ts (applyV2ShellTimeoutClamp, commit
+  // e15bca3) and is pinned by test-v2-adapter.  The CONFIG plumbing below stays:
+  // bashTimeoutProbeMs / bashTimeoutMaxMs are still read by v2 (src/host/v2.ts) and
+  // must keep resolving.
   {
-    const bt = await import("./dist/tm/bash-timeout.js")
-    const RO = ["ls", "grep", "Get-ChildItem"]
-    const r = (o2) => bt.resolveBashTimeout({ readonlyAllowed: RO, probeMs: 60_000, maxMs: 0, ...o2 })
-    assert.deepEqual(
-      r({ command: "Get-ChildItem .", timeoutMs: 120000 }),
-      { changed: true, via: "probe", from: 120000, to: 60000 },
-      "a read-only probe carrying 120 s is clamped to the probe ceiling",
-    )
-    assert.equal(r({ command: "npm test", timeoutMs: 120000 }).changed, false, "a real build/test run keeps the model's timeout (general cap is off by default)")
-    assert.deepEqual(
-      r({ command: "npm test", timeoutMs: 600000, maxMs: 300000 }),
-      { changed: true, via: "max", from: 600000, to: 300000 },
-      "TM_BASH_TIMEOUT_MAX_MS caps everything once the user opts in",
-    )
-    assert.equal(r({ command: "ls", timeoutMs: null }).changed, false, "no timeout supplied = untouched (never invent one for the model)")
-    assert.equal(r({ command: "ls", timeoutMs: 30000 }).changed, false, "already under the ceiling = no rewrite")
-    assert.equal(r({ command: "ls", timeoutMs: 90000, probeMs: 0 }).changed, false, "probeMs=0 disables the probe ceiling")
-    assert.equal(bt.parseTimeoutArg("120000"), 120000, "a stringified timeout still parses (LLMs do this)")
-    assert.equal(bt.parseTimeoutArg("0"), null, "zero is not a timeout")
-    assert.equal(bt.parseTimeoutArg("abc"), null, "garbage = absent, never a clamp to NaN")
-    // hook behavior
-    const clamped = []
-    const hook = bt.createBashTimeoutHook({ probeMs: 60_000, maxMs: 0, readonlyAllowed: RO, onClamp: (i) => clamped.push(i) })
-    const out = { args: { command: "ls -la", timeout: 120000 } }
-    assert.equal(hook({ tool: "bash", sessionID: "s1" }, out), true, "the hook mutates output.args")
-    assert.equal(out.args.timeout, 60000, "args.timeout rewritten in place")
-    assert.equal(clamped.length, 1, "one clamp reported for the trajectory")
-    assert.equal(hook({ tool: "write", sessionID: "s1" }, { args: { command: "ls", timeout: 120000 } }), false, "only the built-in bash tool is touched")
-    assert.equal(out.args.command, "ls -la", "the command itself is never rewritten")
-    assert.equal(hook({ tool: "bash" }, undefined), false, "a malformed hook payload cannot throw")
-    assert.equal(hook({ tool: "bash" }, { args: { command: "rm -rf /", timeout: 120000 } }), false, "a NON-allowlisted command is left alone (this hook never widens what may run)")
-    // config plumbing
+    console.log("  11. bash timeout clamp module: SKIPPED — src/tm/bash-timeout.ts removed with the v1 personality; v2 clamp in src/host/v2-guard.ts (test-v2-adapter)")
+    // config plumbing (still live — v2 reads these knobs)
     const cfgBt = tm.resolveTmConfig({ TM_BASH_TIMEOUT_MAX_MS: "1200000", TM_BASH_TIMEOUT_PROBE_MS: "0" })
     assert.equal(cfgBt.bashTimeoutMaxMs, 1200000, "TM_BASH_TIMEOUT_MAX_MS resolves")
     assert.equal(cfgBt.bashTimeoutProbeMs, 0, "TM_BASH_TIMEOUT_PROBE_MS=0 disables the probe ceiling")
     assert.equal(tm.resolveTmConfig({}).bashTimeoutMaxMs, 0, "the general cap is OFF by default")
     assert.equal(tm.resolveTmConfig({}).bashTimeoutProbeMs, 60_000, "the probe ceiling ships enabled")
     assert.equal(tm.resolveTmConfig({ TM_BASH_TIMEOUT_MAX_MS: "banana" }).bashTimeoutMaxMs, 0, "invalid value falls back to the default")
-    // v1 wiring (the composed plugin.server() tool.execute.before hook that ran
-    // the clamp AND R6 together) is retired with the v1 personality — the pure
-    // resolveBashTimeout / createBashTimeoutHook / config plumbing above is
-    // personality-agnostic and stays pinned.  On v2 the clamp composes into
-    // src/host/v2-guard.ts, not a plugin.server hook.
-    console.log("11. bash timeout clamp: OK (probe-only ceiling by default, opt-in global cap, never invents a timeout, never widens the allowlist, string args tolerated; v1 hook-wiring sub-block retired with the v1 personality)")
+    console.log("  11. bash timeout config plumbing: OK (v2 still reads bashTimeoutProbeMs/MaxMs)")
   }
     // ---------- 12. tm_board_write — the board's write side (a role with no file tool) ----------
     {

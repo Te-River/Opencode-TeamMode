@@ -231,54 +231,21 @@ console.log("5. inspectToolCall: OK (filePath/path/pattern/include, scope bounda
 console.log("6. loader integration: SKIPPED — v1 plugin.server removed; R6 matchers pinned by groups 3-5, v2 hook wiring by test-v2-adapter")
 
 
-/* ---------- 7. unified approval gate (R6 env face + R2 danger face) ---------- */
-// FIX ROUND: fixtures now pin the REAL host shapes captured live on 1.18.29
-// (gate-test report-p5): open = `permission.asked` with props
-// { id, sessionID, permission:"bash", patterns:[<command segments>],
-//   metadata:{command}, always:[...] } and NO type field; close =
-// `permission.replied` with props { sessionID, requestID, reply } — or ONLY
-// { sessionID } at the plugin hook — so a reply must cancel the session's
-// WHOLE pending set (an approved command left on a live timer would
-// auto-reject on a dead id → 4xx → permanent degraded).  The host pops its
-// official confirmation dialog for the bash `ask` patterns injected into the
-// execution roles (Layer 1); a single timer auto-REJECTS an unanswered
-// dialog after TM_ASK_TIMEOUT_MIN (Layer 2) and a failed reply — including
-// the v1 throwOnError:false `{error}` envelope — fails closed back to the
-// hard throw (Layer 3).  The plugin NEVER self-allows.
+/* ---------- 7. R6/R2 ask-face classification + tm_bash guidance ---------- */
+// The unified approval gate MODULE (createApprovalGate / resolveAskTimeoutMs /
+// hasPermissionReplyCapability / classifyReplyFailure) was deleted with the v1
+// personality: v2 gives a plugin no dialog to raise, so a timer that
+// auto-rejects an unanswered dialog has no object to manage.  What remains in
+// this group are the personality-agnostic pieces — the ask-pattern builder, the
+// expressible/inexpressible split, the permission categorizer (all envprotect
+// pure functions) and tm_bash's rejection guidance.  The v2 guard wiring is
+// pinned by test-v2-adapter.
 {
-  const ag = await import("./dist/approval-gate.js")
-  const {
-    createApprovalGate,
-    resolveAskTimeoutMs,
-    hasPermissionReplyCapability,
-    DEFAULT_ASK_TIMEOUT_MIN,
-  } = ag
-  const flush = async () => { for (let i = 0; i < 12; i++) await new Promise((r) => setImmediate(r)) }
-
-  // 7a. TM_ASK_TIMEOUT_MIN parsing (default 1; valid-but-short CLAMPS UP to
-  // the 1-min floor — a late auto-reject on an already-approved dialog hits
-  // an already-closed id, and classifyReplyFailure records that as benign
-  // already-closed WITHOUT flipping degraded (T2), so short timers no
-  // longer need the historic 3-min bus-lag floor; anything silly -> default)
-  assert.equal(ag.MIN_ASK_TIMEOUT_MIN, 1, "floor is 1 minute (benign already-closed makes the bus lag harmless)")
-  assert.equal(resolveAskTimeoutMs({}), DEFAULT_ASK_TIMEOUT_MIN * 60000, "default 1min")
-  assert.equal(resolveAskTimeoutMs({}), 60000, "default timeout resolves to 60000ms")
-  assert.equal(resolveAskTimeoutMs({ TM_ASK_TIMEOUT_MIN: "1" }), 60000, "1min is legal at the new 1-min floor (no clamp)")
-  assert.equal(resolveAskTimeoutMs({ TM_ASK_TIMEOUT_MIN: "2" }), 120000, "2min honoured (above the floor)")
-  assert.equal(resolveAskTimeoutMs({ TM_ASK_TIMEOUT_MIN: " 3 " }), 180000, "trimmed + honoured above the floor")
-  // P0 floor knob (TM_ASK_TIMEOUT_FLOOR_MIN, resolveTmConfig().askTimeoutFloorMin):
-  // the clamp floor is read from config, not hardcoded.  Defaults to 1 now;
-  // a stricter posture can still raise it via CONFIG alone.
-  assert.equal(resolveAskTimeoutMs({ TM_ASK_TIMEOUT_MIN: "1", TM_ASK_TIMEOUT_FLOOR_MIN: "5" }), 300000, "floor knob: 1min clamps to a configured 5-min floor")
-  assert.equal(resolveAskTimeoutMs({ TM_ASK_TIMEOUT_MIN: "10", TM_ASK_TIMEOUT_FLOOR_MIN: "5" }), 600000, "floor knob: a value above the floor is honoured unchanged")
-  assert.equal(resolveAskTimeoutMs({ TM_ASK_TIMEOUT_MIN: "1", TM_ASK_TIMEOUT_FLOOR_MIN: "1" }), 60000, "floor knob at its default 1 -> 1min honoured")
-  assert.equal(resolveAskTimeoutMs({ TM_ASK_TIMEOUT_MIN: "1", TM_ASK_TIMEOUT_FLOOR_MIN: "0" }), 60000, "invalid floor (0<1) falls back to the default 1")
-  assert.equal(resolveAskTimeoutMs({ TM_ASK_TIMEOUT_MIN: "2", TM_ASK_TIMEOUT_FLOOR_MIN: "abc" }), 120000, "non-numeric floor falls back to the default 1 (2min > 1min honoured)")
-  assert.equal(resolveAskTimeoutMs({ TM_ASK_TIMEOUT_MIN: "10" }), 600000, "10min honoured unchanged")
-  assert.equal(resolveAskTimeoutMs({ TM_ASK_TIMEOUT_MIN: "1440" }), 86400000, "24h boundary honoured")
-  for (const bad of ["0", "-5", "99999", "abc", "1.5x", ""]) {
-    assert.equal(resolveAskTimeoutMs({ TM_ASK_TIMEOUT_MIN: bad }), 60000, `invalid -> default 1min: "${bad}"`)
-  }
+  // 7a. TM_ASK_TIMEOUT_MIN parsing — RETIRED with the approval gate module
+  // (approval-gate.ts deleted with the v1 personality).  v2 raises no plugin
+  // dialog, so there is no timer to configure; the v2 guard fails closed and is
+  // pinned by test-v2-adapter's permission-guard group.
+  console.log("  7a. ask-timeout parsing: SKIPPED — approval-gate.ts removed with the v1 personality; v2 has no plugin dialog (test-v2-adapter guard group)")
 
   // 7b. ask-pattern builder — mode-sensitive, default stays allow
   {
@@ -378,367 +345,24 @@ console.log("6. loader integration: SKIPPED — v1 plugin.server removed; R6 mat
   assert.equal(ep.categorizePermission({}), null, "empty props")
   assert.equal(ep.categorizePermission(null), null, "null-safe")
 
-  // 7e. reply-capability detection
-  assert.ok(!hasPermissionReplyCapability({ app: { log() {} } }), "audit-only client is not reply-capable")
-  assert.ok(hasPermissionReplyCapability({ postSessionIdPermissionsPermissionId() {} }), "v1 reply method detected")
-  assert.ok(hasPermissionReplyCapability({ permission: { reply() {} } }), "permission.reply namespace detected")
+  // 7e. reply-capability detection — RETIRED with the approval gate module
+  // (hasPermissionReplyCapability lived in approval-gate.ts).  v2 has no reply
+  // seam to detect; the v2 guard fails closed (test-v2-adapter guard group).
+  console.log("  7e. reply-capability detection: SKIPPED — approval-gate.ts removed with the v1 personality")
 
-  // 7f. timer on REAL event shapes: asked -> timeout -> reject ONLY;
-  // replied{sessionID} -> cancel the WHOLE session; ghosts stay suppressed.
-  {
-    const replies = []
-    const logs = []
-    // REAL-host-shaped mocks: SDK endpoint methods REQUIRE their `this`
-    // receiver (live-observed: an unbound fetch-and-call — `const post =
-    // c.post...; await post({...})` — throws synchronously inside the SDK,
-    // so every auto-reject silently failed and the gate flipped degraded
-    // with the dialog still open).  If the gate ever regresses to that
-    // pattern these mocks THROW, and the timeout-rejected assertions below
-    // fail — the lesson from the R6 app.log unbind bug, pinned for real.
-    const appOwner = {
-      log(req) {
-        if (this !== appOwner) throw new TypeError("SDK app.log called unbound (this lost)")
-        logs.push(String(req?.body?.message ?? ""))
-      },
-    }
-    const client = {
-      app: appOwner,
-      postSessionIdPermissionsPermissionId(o) {
-        if (this !== client) throw new TypeError("SDK reply endpoint called unbound (this lost)")
-        replies.push(o)
-        return Promise.resolve({ data: true })
-      },
-    }
-    const made = []
-    const fake = {
-      setTimeoutFn: (cb, ms) => { const t = { cb, ms, cleared: false, id: made.length }; made.push(t); return t },
-      clearTimeoutFn: (h) => { if (h) h.cleared = true },
-    }
-    let clock = 1000
-    // notify hook: EVERY permission.asked fires ONE toast message (dedupe by
-    // request id) naming the first pattern + the auto-reject timeout — the
-    // user asked to be notified wherever a confirmation window pops
-    {
-      const toasts = []
-      const nGate = createApprovalGate({
-        client, timeoutMs: 600000, timers: fake, now: () => clock,
-        notify: (m) => toasts.push(String(m)),
-      })
-      nGate.handleEvent({ type: "permission.asked", properties: {
-        id: "per_n1", sessionID: "ses_9", permission: "bash",
-        patterns: ["printenv PATH"], metadata: { command: "printenv PATH" },
-      } })
-      assert.equal(toasts.length, 1, "notify fired once for a fresh dialog")
-      assert.ok(toasts[0].includes("printenv PATH") && toasts[0].includes("自动拒绝"), "toast names the pending pattern + timeout")
-      nGate.handleEvent({ type: "permission.asked", properties: {
-        id: "per_n1", sessionID: "ses_9", permission: "bash",
-        patterns: ["printenv PATH"], metadata: { command: "printenv PATH" },
-      } })
-      assert.equal(toasts.length, 1, "duplicate asked replay does NOT re-notify")
-      nGate.handleEvent({ type: "permission.asked", properties: {
-        id: "per_n2", sessionID: "ses_9", permission: "tm_webfetch",
-        patterns: ["https://example.org/page"], metadata: {},
-      } })
-      assert.equal(toasts.length, 2, "tm_* ctx.ask dialogs notify too (non-bash permission covered)")
-      assert.ok(toasts[1].includes("https://example.org/page"), "web-dialog toast names the URL")
-      nGate.handleEvent({ type: "permission.replied", properties: {
-        sessionID: "ses_9", requestID: "per_n1", reply: "once",
-      } })
-      nGate.handleEvent({ type: "permission.asked", properties: {
-        id: "per_n1", sessionID: "ses_9", permission: "bash",
-        patterns: ["printenv PATH"], metadata: { command: "printenv PATH" },
-      } })
-      assert.equal(toasts.length, 2, "ghost asked replay after a reply does NOT re-notify")
-    }
+  // 7f. timer on REAL event shapes (asked -> timeout -> reject ONLY; replied
+  // -> cancel the whole session; ghosts suppressed) — RETIRED with the approval
+  // gate module.  The timer existed to auto-reject an unanswered HOST dialog;
+  // v2 gives a plugin no dialog to raise, so there is nothing to time out.  The
+  // v2 guard fails closed instead (test-v2-adapter permission-guard group).
+  console.log("  7f. approval-gate timer: SKIPPED — approval-gate.ts removed with the v1 personality; v2 raises no plugin dialog")
 
-    const gate = createApprovalGate({ client, timeoutMs: 600000, timers: fake, now: () => clock })
-    assert.equal(gate.isArmed(), true, "armed while capable")
-    // the exact 1.18.29 permission.asked payload (report-p5): no type field,
-    // tool name in `permission`, concrete command segments in `patterns[]`
-    gate.handleEvent({ type: "permission.asked", properties: {
-      id: "per_p1", sessionID: "ses_1", permission: "bash",
-      patterns: ["printenv PATH"], metadata: { command: "printenv PATH" }, always: ["printenv *"],
-    } })
-    gate.handleEvent({ type: "permission.asked", properties: {
-      id: "per_p2", sessionID: "ses_1", permission: "bash",
-      patterns: ["echo g3head", "rm g3-target.txt"], metadata: { command: "echo g3head; rm g3-target.txt" },
-    } })
-    assert.equal(gate.pendingSize(), 2, "env + compound-danger asks pending")
-    assert.equal(gate.hasLiveAsk("ses_1"), true, "env-classified ask registers the session (deferral whitelist)")
-    assert.equal(gate.canDefer("ses_1"), true, "registered + armed -> deferral allowed")
-    assert.equal(gate.canDefer("ses_stock"), false, "unregistered session: NO deferral (C1 bypass closed)")
-    assert.equal(gate.canDefer(undefined), false, "no sessionID: NO deferral")
-    // a NON-governed dialog (edit) must not be tracked
-    gate.handleEvent({ type: "permission.asked", properties: { id: "per_p3", sessionID: "ses_1", permission: "edit", patterns: ["src/a.ts"] } })
-    assert.equal(gate.pendingSize(), 2, "edit dialog left to the human (not governed)")
-    assert.ok(logs.some((l) => l.endsWith(":: bash :: env :: ask")) && logs.some((l) => l.endsWith(":: bash :: danger :: ask")), "ask audited per governed dialog")
-    // replied (real wire shape {sessionID, requestID, reply}) — ONE cancel
-    // must drop EVERY pending timer of that session: an approved command left
-    // on a live timer would reject on a dead id later (4xx -> degraded)
-    gate.handleEvent({ type: "permission.replied", properties: { sessionID: "ses_1", requestID: "per_p1", reply: "once" } })
-    assert.equal(gate.pendingSize(), 0, "session-wide cancel on replied")
-    assert.ok(made.every((t) => t.cleared), "no orphan timers survive the session cancel")
-    assert.ok(logs.some((l) => l.endsWith(":: bash :: env :: allowed-once")), "human verdict audited (reply, not response)")
-    // late/duplicate asked replay for the closed id -> ghost must NOT re-arm
-    gate.handleEvent({ type: "permission.asked", properties: { id: "per_p1", sessionID: "ses_1", permission: "bash", patterns: ["printenv PATH"], metadata: { command: "printenv PATH" } } })
-    assert.equal(gate.pendingSize(), 0, "tombstoned asked replay ignored (no ghost timer)")
-    // genuine NEW dialog in the same session still arms afterwards
-    gate.handleEvent({ type: "permission.asked", properties: { id: "per_p4", sessionID: "ses_1", permission: "bash", patterns: ["Get-ChildItem env:PATH"], metadata: { command: "Get-ChildItem env:PATH" }, always: ["Get-ChildItem *"] } })
-    assert.equal(gate.pendingSize(), 1, "fresh asked after a replied one is timed")
-    // the remaining timer reaches its deadline -> auto-reject (reject only!)
-    const live = made.find((t) => !t.cleared)
-    assert.ok(live, "exactly one live timer remains")
-    live.cb()
-    await flush()
-    assert.equal(gate.pendingSize(), 0, "cleared after timeout auto-reject")
-    assert.equal(replies.length, 1, "exactly one SDK reply (the timeout)")
-    assert.equal(replies[0].path.permissionID, "per_p4", "rejects the timed-out request, not the answered one")
-    assert.equal(replies[0].path.id, "ses_1", "session id forwarded")
-    // NEGATIVE red-line assertion: the plugin never self-allows.
-    assert.ok(replies.every((r) => r.body.response === "reject"), "plugin ONLY ever replies reject — never once/always/allow")
-    assert.ok(logs.some((l) => l.endsWith(":: bash :: env :: timeout-rejected")), "timeout audited")
-    // privacy red line on the GATE audit too: category+verdict only
-    assert.ok(logs.every((l) => !/printenv|Get-ChildItem|g3-target|rm /i.test(l)), "gate audit never carries command/pattern text")
-    // envApproved: "always" on env ask → session blanket-approved
-    // Reset for a clean gate to test the always→envApproved path
-    const gate2 = createApprovalGate({ client, timeoutMs: 600000, timers: fake, now: () => clock })
-    assert.equal(gate2.isEnvApproved("ses_always"), false, "not approved initially")
-    gate2.handleEvent({ type: "permission.asked", properties: {
-      id: "per_env1", sessionID: "ses_always", permission: "bash",
-      patterns: ["printenv PATH"], metadata: { command: "printenv PATH" }, always: ["printenv *"],
-    } })
-    assert.equal(gate2.isEnvApproved("ses_always"), false, "not approved until replied")
-    gate2.handleEvent({ type: "permission.replied", properties: { sessionID: "ses_always", requestID: "per_env1", reply: "always" } })
-    assert.equal(gate2.isEnvApproved("ses_always"), true, "always on env ask → env approved")
-    assert.equal(gate2.isEnvApproved("ses_other"), false, "other session not approved")
-    assert.equal(gate2.isEnvApproved(undefined), false, "undefined session not approved")
-    // "once" on env ask → NOT approved
-    const gate3 = createApprovalGate({ client, timeoutMs: 600000, timers: fake, now: () => clock })
-    gate3.handleEvent({ type: "permission.asked", properties: {
-      id: "per_env2", sessionID: "ses_once", permission: "bash",
-      patterns: ["printenv PATH"], metadata: { command: "printenv PATH" }, always: ["printenv *"],
-    } })
-    gate3.handleEvent({ type: "permission.replied", properties: { sessionID: "ses_once", requestID: "per_env2", reply: "once" } })
-    assert.equal(gate3.isEnvApproved("ses_once"), false, "once on env ask → NOT approved")
-    // "always" on danger ask → NOT env approved
-    const gate4 = createApprovalGate({ client, timeoutMs: 600000, timers: fake, now: () => clock })
-    gate4.handleEvent({ type: "permission.asked", properties: {
-      id: "per_d1", sessionID: "ses_danger", permission: "bash",
-      patterns: ["rm x"], metadata: { command: "rm x" },
-    } })
-    gate4.handleEvent({ type: "permission.replied", properties: { sessionID: "ses_danger", requestID: "per_d1", reply: "always" } })
-    assert.equal(gate4.isEnvApproved("ses_danger"), false, "always on danger ask → NOT env approved (env-only scope)")
-    // replied carrying ONLY { sessionID } (observer-attested degraded shape):
-    // cancel-all + short ghost window; other sessions unaffected
-    gate.handleEvent({ type: "permission.asked", properties: { id: "per_p5", sessionID: "ses_2", permission: "bash", patterns: ["npm publish"], metadata: { command: "npm publish" } } })
-    assert.equal(gate.pendingSize(), 1, "ses_2 armed")
-    gate.handleEvent({ type: "permission.asked", properties: { id: "per_p5b", sessionID: "ses_3", permission: "bash", patterns: ["printenv"], metadata: { command: "printenv" } } })
-    assert.equal(gate.pendingSize(), 2, "ses_3 armed independently")
-    gate.handleEvent({ type: "permission.replied", properties: { sessionID: "ses_2" } })
-    assert.equal(gate.pendingSize(), 1, "bare {sessionID} reply cancels only its own session")
-    gate.handleEvent({ type: "permission.asked", properties: { id: "per_p6", sessionID: "ses_2", permission: "bash", patterns: ["printenv"], metadata: { command: "printenv" } } })
-    assert.equal(gate.pendingSize(), 1, "id-less reply ghost-window suppresses that session's fresh asks briefly")
-    clock += 61_000 // window elapsed
-    gate.handleEvent({ type: "permission.asked", properties: { id: "per_p6", sessionID: "ses_2", permission: "bash", patterns: ["printenv"], metadata: { command: "printenv" } } })
-    assert.equal(gate.pendingSize(), 2, "after the window the session arms again (window only absorbs ghosts)")
-    // out-of-vocabulary response word -> degraded audit, NEVER "rejected"
-    gate.handleEvent({ type: "permission.replied", properties: { sessionID: "ses_3", requestID: "per_p5b", reply: "lgtm" } })
-    assert.ok(logs.some((l) => l.endsWith(":: bash :: env :: degraded")), "unknown verdict word audited degraded")
-    assert.ok(!logs.some((l) => /per_p5b|lgtm/.test(l)), "response word itself never audited verbatim")
-    // danger-only asked must NOT register deferral (session may ask rm yet
-    // silently allow printenv under its own stock rules)
-    gate.handleEvent({ type: "permission.asked", properties: { id: "per_d", sessionID: "ses_d", permission: "bash", patterns: ["rm gone.txt"], metadata: { command: "rm gone.txt" } } })
-    assert.equal(gate.canDefer("ses_d"), false, "danger-face dialog alone never grants env deferral")
-    // registerExecSession: the pre-tool exec-route index.ts feeds from
-    // message.updated / chat.message
-    gate.registerExecSession("ses_team")
-    assert.equal(gate.canDefer("ses_team"), true, "exec-role session registration enables deferral")
-    // revokeExecSession: index.ts feeds this when a user prompt routes to an
-    // agent that does NOT carry our injected ask set (the verified host passes
-    // {tool, sessionID, callID} with NO agent to tool.execute.before, so the
-    // per-turn agent signal can only ride message.updated/chat.message).
-    // Without revocation a session that once ran a team prompt stayed
-    // deferrable forever — a stale window for silent env reads.
-    gate.revokeExecSession("ses_team")
-    assert.equal(gate.canDefer("ses_team"), false, "revoke drops the exec registration (mixed-agent window closed)")
-    assert.equal(gate.hasLiveAsk("ses_team"), false, "revoke clears the live-ask set")
-    gate.registerExecSession("ses_team")
-    assert.equal(gate.canDefer("ses_team"), true, "a later exec-role prompt re-registers from fresh evidence")
-    gate.dispose()
-    assert.equal(gate.isArmed(), false, "disarmed after dispose")
-    assert.equal(gate.canDefer("ses_team"), false, "disposed gate defers nothing")
-  }
-
-  // 7g. SDK reply FAILURE is CLASSIFIED, not a blanket degraded flip.
-  // Round-fix M2 kept: the v1 client defaults to throwOnError:false — an HTTP
-  // failure RESOLVES with an envelope.  The REAL contract (now pinned) is
-  // `{ error: { name, data:{message} }, response: { status } }` — the old mock
-  // faked a top-level `{error:{name,status}}` shape the host never sends.  A
-  // 404/NotFound means the dialog was ALREADY closed (the D4 late-reply race):
-  // BENIGN — do NOT degrade.  A 400/BadRequest is a reply-shape bug and a real
-  // Error / 5xx / empty body is transport — both still fail closed.  Pin the
-  // classifier, the per-class gate behaviour, and never-self-allow intact.
-  {
-    // 7g-0. classifyReplyFailure (unit) on the real envelope shapes.
-    assert.equal(ag.classifyReplyFailure(Object.assign(new Error("x"), { status: 404 })), "benign-closed", "404 -> benign-closed")
-    assert.equal(ag.classifyReplyFailure({ name: "PermissionNotFound" }), "benign-closed", "PermissionNotFound name -> benign-closed")
-    assert.equal(ag.classifyReplyFailure({ _tag: "NotFoundError" }), "benign-closed", "_tag NotFound -> benign-closed")
-    assert.equal(ag.classifyReplyFailure({ name: "BadRequest", status: 400 }), "param-shape", "400/BadRequest -> param-shape")
-    assert.equal(ag.classifyReplyFailure({ name: "InvalidRequest", data: { message: "bad" } }), "param-shape", "InvalidRequest name -> param-shape")
-    assert.equal(ag.classifyReplyFailure(new Error("host down")), "transport", "real Error -> transport")
-    assert.equal(ag.classifyReplyFailure({ name: "InternalServerError", status: 500 }), "transport", "5xx -> transport")
-    assert.equal(ag.classifyReplyFailure(undefined), "transport", "empty/undefined -> transport")
-  }
-
-  // Arm one bash-env dialog, fire the timeout auto-reject against a reply
-  // endpoint whose shape is `shape`, return { gate, logs, replies }.
-  async function driveFailedReply(shape) {
-    const logs = []
-    const replies = []
-    // this-bound host mocks (same anti-unbind teeth as 7f) — an unbound reply
-    // call would throw BEFORE the failure shapes below are even reached.
-    const appOwner = {
-      log(req) {
-        if (this !== appOwner) throw new TypeError("SDK app.log called unbound (this lost)")
-        logs.push(String(req?.body?.message ?? ""))
-      },
-    }
-    const client = {
-      app: appOwner,
-      postSessionIdPermissionsPermissionId(o) {
-        if (this !== client) throw new TypeError("SDK reply endpoint called unbound (this lost)")
-        replies.push(o)
-        // REAL v1 envelope contract: { error: {...}, response: { status } }.
-        if (shape === "rejection") return Promise.reject(new Error("host down at /api/secret-path"))
-        if (shape === "closedTag") return Promise.resolve({ error: { _tag: "PermissionNotFound" }, response: {} })
-        if (shape === "empty") return Promise.resolve({ error: { name: "Error" }, response: undefined })
-        const meta =
-          shape === "closed404" ? { status: 404, name: "NotFoundError" }
-          : shape === "shape400" ? { status: 400, name: "BadRequest" }
-          : { status: 500, name: "InternalServerError" }
-        return Promise.resolve({
-          error: { name: meta.name, data: { message: "detail at /api/secret-path" } },
-          response: { status: meta.status },
-        })
-      },
-    }
-    const made = []
-    const fake = { setTimeoutFn: (cb) => { const t = { cb, cleared: false }; made.push(t); return t }, clearTimeoutFn: (h) => { if (h) h.cleared = true } }
-    const gate = createApprovalGate({ client, timeoutMs: 1000, timers: fake })
-    assert.equal(gate.isArmed(), true, `${shape}: starts armed`)
-    gate.handleEvent({ type: "permission.asked", properties: { id: "x", sessionID: "s", permission: "bash", patterns: ["env FOO=bar"], metadata: { command: "env FOO=bar" } } })
-    assert.equal(gate.pendingSize(), 1, `${shape}: pending armed`)
-    assert.equal(gate.canDefer("s"), true, `${shape}: registered while healthy`)
-    made[0].cb()
-    await flush()
-    return { gate, logs, replies }
-  }
-
-  // benign-closed (404 real envelope): NO degraded flip, already-closed audit.
-  {
-    const { gate, logs, replies } = await driveFailedReply("closed404")
-    assert.equal(gate.pendingSize(), 0, "closed404: entry dropped even though already closed")
-    assert.equal(gate.isArmed(), true, "closed404: a benign 'already closed' does NOT degrade the gate")
-    assert.equal(gate.canDefer("s"), true, "closed404: a healthy gate still defers for the session")
-    assert.ok(replies.every((r) => r.body.response === "reject"), "closed404: the plugin STILL only rejects (never self-allows)")
-    const line = logs.find((l) => /:: already-closed/.test(l))
-    assert.ok(line, "closed404: 'already-closed' verdict audited")
-    assert.ok(/err=NotFoundError status=404$/.test(line), "closed404: non-privacy status diagnostic preserved via the envelope")
-    assert.ok(!logs.some((l) => /degraded/.test(l)), "closed404: never audited degraded")
-    assert.ok(!/secret-path|FOO|detail/.test(line), "closed404: error message / params never audited")
-  }
-  // benign-closed via _tag with NO numeric status: still benign (no flip).
-  {
-    const { gate, logs } = await driveFailedReply("closedTag")
-    assert.equal(gate.isArmed(), true, "closedTag: a _tag NotFound (no status) is benign too")
-    assert.ok(logs.some((l) => /:: already-closed/.test(l)), "closedTag: already-closed audited")
-  }
-  // param-shape (400): STILL fails closed, rejected-shape-bug audit.
-  {
-    const { gate, logs } = await driveFailedReply("shape400")
-    assert.equal(gate.isArmed(), false, "shape400: a reply-shape bug fails closed (degrades)")
-    assert.equal(gate.canDefer("s"), false, "shape400: degraded gate defers nothing")
-    const line = logs.find((l) => /:: rejected-shape-bug/.test(l))
-    assert.ok(line, "shape400: 'rejected-shape-bug' verdict audited")
-    assert.ok(/err=BadRequest status=400$/.test(line), "shape400: status diagnostic on the bug audit")
-    assert.ok(!/secret-path|detail|FOO/.test(line), "shape400: message never audited")
-  }
-  // transport (real Error rejection): STILL fails closed — the historic path.
-  {
-    const { gate, logs, replies } = await driveFailedReply("rejection")
-    assert.equal(gate.isArmed(), false, "rejection: a transport failure fails closed")
-    assert.equal(gate.canDefer("s"), false, "rejection: degraded gate defers nothing")
-    assert.ok(replies.every((r) => r.body.response === "reject"), "rejection: only a reject was ever sent")
-    const line = logs.find((l) => /:: degraded/.test(l))
-    assert.ok(line, "rejection: degraded verdict audited")
-    assert.ok(/err=Error$/.test(line), "rejection: error class recorded, no status")
-    assert.ok(!/host down|secret-path|FOO/.test(line), "rejection: message/params never audited")
-    gate.handleEvent({ type: "permission.asked", properties: { id: "y", sessionID: "s", permission: "bash", patterns: ["env"], metadata: { command: "env" } } })
-    assert.equal(gate.pendingSize(), 0, "rejection: a degraded gate stops opening new timers")
-  }
-  // transport (5xx envelope): fails closed.
-  {
-    const { gate, logs } = await driveFailedReply("fiveHundred")
-    assert.equal(gate.isArmed(), false, "fiveHundred: a 5xx envelope is transport -> degrade")
-    assert.ok(logs.some((l) => /:: degraded/.test(l)), "fiveHundred: degraded audited")
-  }
-  // transport (status-less error body): fails closed.
-  {
-    const { gate, logs } = await driveFailedReply("empty")
-    assert.equal(gate.isArmed(), false, "empty: a status-less error body is transport -> degrade")
-    assert.ok(logs.some((l) => /:: degraded/.test(l)), "empty: degraded audited")
-  }
-
-  // 7g-2. R1#8 LATE VERDICT: the timer auto-rejected (the reject landed), THEN
-  // the human's real reply reached the plugin late.  A `late-<verdict>` audit
-  // is recorded for observability ONLY — it never re-arms, never revives the
-  // command, and sends no second SDK reply (the plugin still only rejects).
-  {
-    const logs = []
-    const replies = []
-    const appOwner = {
-      log(req) {
-        if (this !== appOwner) throw new TypeError("SDK app.log called unbound (this lost)")
-        logs.push(String(req?.body?.message ?? ""))
-      },
-    }
-    const client = {
-      app: appOwner,
-      postSessionIdPermissionsPermissionId(o) {
-        if (this !== client) throw new TypeError("SDK reply endpoint called unbound (this lost)")
-        replies.push(o)
-        return Promise.resolve({ data: true })
-      },
-    }
-    const made = []
-    const fake = { setTimeoutFn: (cb) => { const t = { cb, cleared: false }; made.push(t); return t }, clearTimeoutFn: (h) => { if (h) h.cleared = true } }
-    const gate = createApprovalGate({ client, timeoutMs: 1000, timers: fake })
-    gate.handleEvent({ type: "permission.asked", properties: { id: "per_late", sessionID: "ses_l", permission: "bash", patterns: ["printenv PATH"], metadata: { command: "printenv PATH" } } })
-    made[0].cb() // the timer fires first -> the auto-reject lands
-    await flush()
-    assert.ok(logs.some((l) => l.endsWith(":: bash :: env :: timeout-rejected")), "late-1: the timeout auto-reject was audited")
-    const repliesAfterTimeout = replies.length
-    // the human's genuine "once" now arrives LATE (past the timer) on a real reply word:
-    gate.handleEvent({ type: "permission.replied", properties: { sessionID: "ses_l", requestID: "per_late", reply: "once" } })
-    assert.ok(logs.some((l) => l.endsWith(":: bash :: env :: late-allowed-once")), "late-2: the real verdict is recorded as late-<verdict>")
-    assert.equal(replies.length, repliesAfterTimeout, "late-3: NO second SDK reply is sent on a late verdict (never revive, never self-allow)")
-    assert.equal(gate.pendingSize(), 0, "late-4: the late reply re-arms nothing")
-    gate.handleEvent({ type: "permission.asked", properties: { id: "per_late", sessionID: "ses_l", permission: "bash", patterns: ["printenv PATH"], metadata: { command: "printenv PATH" } } })
-    assert.equal(gate.pendingSize(), 0, "late-5: the closed id stays tombstoned after the late verdict (ghost still suppressed)")
-    // an out-of-vocabulary late word must NOT fabricate a verdict / late-degraded
-    const lateBefore = logs.filter((l) => /late-/.test(l)).length
-    assert.ok(lateBefore >= 1, "late-pre: the per_late 'once' reply already produced a late-allowed-once")
-    gate.handleEvent({ type: "permission.asked", properties: { id: "per_l2", sessionID: "ses_l2", permission: "bash", patterns: ["printenv"], metadata: { command: "printenv" } } })
-    made[made.length - 1].cb()
-    await flush()
-    gate.handleEvent({ type: "permission.replied", properties: { sessionID: "ses_l2", requestID: "per_l2", reply: "lgtm" } })
-    assert.equal(logs.filter((l) => /late-/.test(l)).length, lateBefore, "late-6: an unknown late word never becomes a late-<verdict>")
-    assert.ok(!logs.some((l) => /late-degraded/.test(l)), "late-6b: no fabricated late-degraded for an out-of-vocab word")
-    // a reply for an id we NEVER saw must NOT self-trigger a late audit (the
-    // wasClosed guard reads closed.has() BEFORE this reply tombstones it).
-    gate.handleEvent({ type: "permission.replied", properties: { sessionID: "ses_unknown", requestID: "per_unknown", reply: "once" } })
-    assert.equal(logs.filter((l) => /late-/.test(l)).length, lateBefore, "late-7: an unknown-id reply does not fabricate a late verdict")
-  }
+  // 7g. SDK reply FAILURE classification (classifyReplyFailure) + late-verdict
+  // handling — RETIRED with the approval gate module.  Both were properties of
+  // the v1 reply path (postSessionIdPermissionsPermissionId / permission.reply),
+  // which v2 does not have; the plugin never self-allows and v2 fails closed
+  // (test-v2-adapter permission-guard group).
+  console.log("  7g. reply-failure classification + late verdicts: SKIPPED — approval-gate.ts removed with the v1 personality")
 
   // 7h / 7h-2. The R6 hook's deferral and the session-wide env-approved pass were
   // properties of v1's `createEnvProtectHook` — a `tool.execute.before` factory that
@@ -747,25 +371,23 @@ console.log("6. loader integration: SKIPPED — v1 plugin.server removed; R6 mat
   // defer to: the guard fails CLOSED instead. What those two groups protected therefore
   // lives in two different places now, and both are pinned: the per-command R6/R2
   // classification by the pure matchers above (groups 3-5) and by test-v2-adapter's
-  // permission-guard group, and the never-self-allow / reply-capable discipline by the
-  // gate module's own blocks (7a-7d). The NUMBERS stay so 7i and 7j do not renumber.
+  // permission-guard group. The NUMBERS stay so 7i and 7j do not renumber.
   console.log("  7h/7h-2. v1 R6 hook deferral + env-approved pass: SKIPPED — createEnvProtectHook removed with the v1 personality; 2.x fails closed (test-v2-adapter guard group, groups 3-5 here)")
 
   // 7i. end-to-end through server() (gate + real-host event routing + session
   // registration via message.updated) - RETIRED with the v1 personality (1.7.0
   // cut).  This drove plugin.server() to wire the composed R6+gate hook and the
-  // event/chat.message/dispose routes.  plugin.server is gone.  The approval-gate
-  // MODULE itself (createApprovalGate: asked/replied shapes, session-wide cancel,
-  // ghost tombstones, scoped deferral registry, timeout parse, never self-allow,
-  // SDK error-envelope fail-closed) is personality-agnostic and stays pinned by the
-  // pure 7a-7h blocks above; the v2 hook wiring lives in src/host/v2-guard.ts
-  // (pinned by test-v2-adapter).  The NUMBER stays so 7j does not move.
-  console.log("  7i. end-to-end through server(): SKIPPED - v1 plugin.server removed; gate module pinned by 7a-7h, v2 wiring by test-v2-adapter")
+  // event/chat.message/dispose routes.  plugin.server is gone, and the approval
+  // gate module it drove is gone with it (v2 raises no plugin dialog).  The
+  // per-command classification stays pinned by the pure matchers above (groups
+  // 3-5); the v2 hook wiring lives in src/host/v2-guard.ts (pinned by
+  // test-v2-adapter).  The NUMBER stays so 7j does not move.
+  console.log("  7i. end-to-end through server(): SKIPPED - v1 plugin.server removed; gate module removed too, v2 wiring by test-v2-adapter")
 
   // 7i2. dead-popup guard via plugin.server() - RETIRED with the v1 personality
   // for the same reason (it drove the v1 config hook to assert the R6 env ask face
   // is omitted when the gate cannot arm).  The never-self-allow / dead-popup
-  // invariant is a property of the gate + config-surgery, pinned elsewhere.
+  // invariant is a property of the config-surgery, pinned elsewhere.
   console.log("  7i2. dead-popup guard via server(): SKIPPED - v1 plugin.server removed")
 
 
@@ -776,7 +398,7 @@ console.log("6. loader integration: SKIPPED — v1 plugin.server removed; R6 mat
     assert.ok(!v.ok, "rm still rejected in tm_bash (read-only allowlist)")
     assert.ok(/官方确认框/.test(v.suggestion) && /bash/.test(v.suggestion), "rejection guidance mentions the bash confirmation dialog")
   }
-  console.log("7. unified approval gate: OK (real-host asked/replied shapes, session-wide cancel + ghost tombstones, scoped deferral registry, timeout parse, ask patterns incl. bare M3, expressible/inexpressible + byte-exact M4 split, categorize inference, timer reject-only, never self-allow, SDK {error}-envelope fail-closed, hook session-scoping, off no-timer, dead-popup guard, tm_bash guidance)")
+  console.log("7. R6/R2 ask-face classification: OK (ask patterns incl. bare M3, expressible/inexpressible + byte-exact M4 split, categorize inference, tm_bash guidance; approval-gate timer/reply blocks retired with the v1 personality)")
 }
 
 console.log("\nALL ENV-PROTECT TESTS PASSED ✅")

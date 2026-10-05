@@ -805,8 +805,8 @@ export function buildDispatchTools(deps: DispatchDeps): {
     if (typeof api?.status !== "function") return
     let un: Unwrapped
     try {
-      // PROPERTY-ACCESS CALL — the SDK's endpoints need their receiver (see
-      // approval-gate.ts's replyCapableFn note); `const f = api.status` then
+      // PROPERTY-ACCESS CALL — the SDK's endpoints need their receiver;
+      // `const f = api.status` then
       // `f(...)` threw "Cannot read properties of undefined (reading
       // 'client')" on the live host and killed every dispatch.
       un = unwrapClientResult(await api.status(directory ? { query: { directory } } : {}))

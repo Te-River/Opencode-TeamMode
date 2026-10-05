@@ -4,8 +4,9 @@
  * Split out of the former monolithic envprotect.ts; behavior unchanged.
  *
  * These are the shapes a wildcard CAN express (head-anchored globs).  The
- * plugin NEVER self-allows; an unanswered dialog is auto-REJECTED by the
- * approval timer (see approval-gate.ts).
+ * plugin NEVER self-allows; an unanswered dialog is the host's own to resolve
+ * (v2 gives a plugin no dialog to raise, so the guard fails closed — see
+ * src/host/v2-guard.ts).
  */
 
 /** Audit log service identifier (also the query key for "what was blocked"). */
@@ -32,8 +33,9 @@ export const CATEGORY_EXTRA_DENY = "extra-deny"
  * declaring them `ask` in each agent's bash permission object.  The host
  * pops a dialog for any command matching one of these patterns and SUSPENDS
  * it: a human reply ("once"/"always") runs the command, a "reject" or NO
- * REPLY is handled by the approval timer (Layer 2, see approval-gate.ts)
- * which auto-REJECTS after TM_ASK_TIMEOUT_MIN.  The plugin NEVER self-allows.
+ * REPLY is the host's own to resolve — v2 gives a plugin no dialog to raise,
+ * so the guard fails closed (see src/host/v2-guard.ts).  The plugin NEVER
+ * self-allows.
  *
  * These are the shapes a wildcard CAN express (head-anchored globs, matching
  * the probe-verified grammar: `printenv*`, `rm *`, `Get-ChildItem env:*`).
