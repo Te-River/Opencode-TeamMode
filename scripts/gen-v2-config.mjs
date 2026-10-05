@@ -29,7 +29,7 @@
  * Refuses to touch a file it did not generate unless --force is given.
  */
 
-import { mkdirSync, readFileSync, writeFileSync, existsSync } from "node:fs"
+import { mkdirSync, readFileSync, writeFileSync, existsSync, readdirSync, realpathSync } from "node:fs"
 import { join } from "node:path"
 import { homedir } from "node:os"
 
@@ -51,6 +51,11 @@ const { commands } = await import(new URL("../dist/commands.js", import.meta.url
 const { triplesFromAgentPermission, V1_ONLY_TOOLS } = await import(
   new URL("../dist/host/v2-permissions.js", import.meta.url).href
 )
+// Deletion goes through the repo's own safe remover: win32 `fs.rmSync` silently
+// no-ops on non-ASCII paths, and a reclaim that silently failed would leave the
+// duplicate role it exists to remove.  Same rule as every other destructive call
+// site in the plugin (src/fs-safe.ts).
+const { rmForceSafe } = await import(new URL("../dist/fs-safe.js", import.meta.url).href)
 
 /** YAML is a superset of JSON, so a JSON scalar is a valid YAML scalar —
  *  and the descriptions are full of em-dashes and colons that a hand-rolled
@@ -232,6 +237,83 @@ function emit(dir, name, content) {
   written.push(file)
 }
 
+const reclaimed = []
+const keptForeign = []
+const caseNotes = []
+
+/** Windows is case-insensitive: `team.md` and `Team.md` are ONE file, and
+ *  `realpathSync` echoes the case it was GIVEN rather than the on-disk case, so
+ *  the comparison must fold case on win32 — otherwise the reclaim would delete
+ *  the very file it just wrote. */
+const normPath = (p) => (process.platform === "win32" ? p.toLowerCase() : p)
+
+/**
+ * Reclaim role/command files this generator wrote in a PREVIOUS run but no
+ * longer emits — the `team.md` → `Team.md` rename (#47) is the case that
+ * motivated it.  On a case-sensitive filesystem (Linux/macOS) the old lowercase
+ * file survives beside the new one and the host loads TWO Team roles; on
+ * Windows the two names are one file, so there is nothing to reclaim.
+ *
+ * Strict rules:
+ *  - only a file carrying MARKER is ours to remove; a hand-written file with a
+ *    stale name is left alone and REPORTED, never silently kept.
+ *  - the decision is made on the RESOLVED real path (case-folded on win32), so
+ *    the file we just wrote is never deleted by its own reclaim pass.
+ *  - deletion goes through rmForceSafe (dist/fs-safe.js): win32 fs.rmSync
+ *    silently no-ops on non-ASCII paths, and a reclaim that silently failed
+ *    would leave the duplicate role it exists to remove.
+ */
+function reclaimStale(dir, keepNames, label) {
+  if (!existsSync(dir)) return
+  const keep = new Set(keepNames.map((n) => `${n}.md`))
+  const keepReal = new Map()
+  for (const n of keep) {
+    const p = join(dir, n)
+    if (!existsSync(p)) continue
+    try {
+      keepReal.set(normPath(realpathSync(p)), n)
+    } catch {
+      /* keep the exact-name check as the fallback */
+    }
+  }
+  for (const entry of readdirSync(dir)) {
+    if (!entry.endsWith(".md")) continue
+    if (keep.has(entry)) continue
+    const file = join(dir, entry)
+    let real
+    try {
+      real = normPath(realpathSync(file))
+    } catch {
+      continue
+    }
+    const canonical = keepReal.get(real)
+    if (canonical) {
+      // Same file as a target, stored under a different case (Windows).  There
+      // is nothing stale here, and deleting it would delete the file we just
+      // wrote — so it is reported, never removed.
+      caseNotes.push(`保留 ${file} — 与目标 ${canonical} 是同一个文件（本机不区分大小写），未删除`)
+      continue
+    }
+    let current
+    try {
+      current = readFileSync(file, "utf8")
+    } catch {
+      continue
+    }
+    if (!current.includes(MARKER)) {
+      keptForeign.push(`保留 ${file} — 不是我生成的（无标记），请自行决定`)
+      continue
+    }
+    if (printOnly) {
+      reclaimed.push(`回收 ${file} — 本次不再生成该${label}（--print，未落盘）`)
+      continue
+    }
+    rmForceSafe(file)
+    if (existsSync(file)) reclaimed.push(`回收失败 ${file} — 仍在磁盘上，请手动删除`)
+    else reclaimed.push(`回收 ${file} — 本次不再生成该${label}（旧文件已清理）`)
+  }
+}
+
 const agentsDir = join(baseDir, "agents")
 const forkHits = new Set()
 for (const [id, cfg] of Object.entries(agents)) {
@@ -243,15 +325,27 @@ for (const [id, cfg] of Object.entries(agents)) {
   emit(agentsDir, id, agentFrontmatter(cfg, v2Triples) + text + "\n")
 }
 assertForkApplied(forkHits)
+// Reclaim role files a previous run wrote under a name this run no longer emits
+// (the `team.md` → `Team.md` rename, #47).  Runs AFTER the writes so the keep
+// set is the current output, and the real-path guard keeps it from deleting a
+// file it just wrote on a case-insensitive filesystem.
+reclaimStale(agentsDir, Object.keys(agents), "角色")
 
 const commandsDir = join(baseDir, "commands")
 for (const [name, cfg] of Object.entries(commands)) {
   emit(commandsDir, name, commandFrontmatter(cfg) + body(cfg.template) + "\n")
 }
+// Same pass for commands.  No command name has changed yet, so this is a no-op
+// today — it is here so a future rename is closed by the same mechanism rather
+// than by a second, hand-written reclaim that could drift from this one.
+reclaimStale(commandsDir, Object.keys(commands), "命令")
 
 console.log(`目标：${agentsDir} 与 ${commandsDir}`)
 for (const f of written) console.log(printOnly ? `将写入 ${f}` : `已写入 ${f}`)
 for (const s of skipped) console.log(`跳过 ${s}`)
+for (const r of reclaimed) console.log(r)
+for (const k of keptForeign) console.log(k)
+for (const c of caseNotes) console.log(c)
 console.log(
   `\n共 ${written.length} 个文件（角色 ${Object.keys(agents).length} + 命令 ${Object.keys(commands).length}）` +
     `${printOnly ? "（--print，未落盘）" : ""}。重启桌面端（或 opencode reload）后 Team 出现在 agent 选择器、/team-* 出现在命令列表。`,
