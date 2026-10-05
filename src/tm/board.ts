@@ -2,15 +2,16 @@
  * tm_board_write — the write side of the blackboard (2026-09-23).
  *
  * Why it exists: the board is the one place an oversized deliverable is
- * supposed to go, but reaching it needs a file tool — and three of the six
- * roles carry none.  `architect` and `researcher` have no write/edit/bash at
- * all (a deliberate permission-matrix decision), so every "write the design
- * doc to the board" dispatch ended as `BLACKBOARD WRITE FAILED` with the
- * document pasted inline anyway — the reply shape this team exists to enforce
- * (skeleton + path, never a wall of text) was un-followable for exactly the two
- * roles that produce the longest artifacts.  Even the documented session folder
- * is out of reach: creating it means running `Get-Date`, which those roles
- * cannot run either.
+ * supposed to go, but reaching it needs a write-capable file tool, and three of
+ * the six roles carry none: `architect` and `researcher` get no write/edit/bash
+ * from `whitelist()` and `reviewer` has only the read-only bash whose redirects
+ * P3 refuses — all three keep the read-capable tm_* set, so they are not
+ * tool-less.  Every "write the design doc to the board" dispatch therefore ended
+ * as `BLACKBOARD WRITE FAILED` with the document pasted inline anyway — the
+ * reply shape this team exists to enforce (skeleton + path, never a wall of
+ * text) was un-followable for exactly the two roles that produce the longest
+ * artifacts.  Even the documented session folder is out of reach: creating it
+ * means running `Get-Date`, which those roles cannot run either.
  *
  * What this is NOT: a general file writer.  It places a NEW markdown file
  * inside `<board-root>/<session-key>/<task-slug>/` and nothing else — no

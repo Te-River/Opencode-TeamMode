@@ -452,7 +452,7 @@ export async function buildBrowserArgsSchema(): Promise<Record<string, unknown>>
 }
 /** tm_board_write — four strings, and the shape of the PATH is the tool's
  *  business, not the model's (that is what makes it safe to hand a writer to a
- *  role that owns no file tool). */
+ *  role that owns no write-capable file tool). */
 export async function buildBoardArgsSchema(): Promise<Record<string, unknown>> {
   const z = await loadZod()
   if (!z) {

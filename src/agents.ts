@@ -208,7 +208,7 @@ const teamLead: AgentConfig = {
     "different expertise areas.",
   prompt: TEAM_LEAD_PROMPT,
   color: "#E879F9", // purple
-  // Whitelist: tm_* x4 + tm_ptc_run + tm_webfetch/tm_search/tm_browser (the lead is
+  // Whitelist: TM_TOOLS + tm_ptc_run + tm_webfetch/tm_search/tm_browser (the lead is
   // a network role) + task dispatch + edit (<=10-line non-product edits) +
   // write (board files) + bash (discovery-gate probes) + todowrite + question
   // (the lead's TodoList discipline and batched blocking questions are
@@ -226,7 +226,7 @@ const architect: AgentConfig = {
     "module breakdown before implementation.",
   prompt: ARCHITECT_PROMPT,
   color: "#38BDF8", // sky blue
-  // Whitelist: tm_* x4 only (T3 task-reclaim: "task" DROPPED — no
+  // Whitelist: TM_TOOLS only (T3 task-reclaim: "task" DROPPED — no
   // sub-agents for sub-agents, the lead is the only dispatcher);
   // tm_webfetch DENIED (not a network role).  Fully read-only by design
   // (T2.1): output lives in the reply; if a board artifact is ever
@@ -245,7 +245,7 @@ const implementer: AgentConfig = {
     "tasks.  Use when you need clean, working code written quickly.",
   prompt: IMPLEMENTER_PROMPT,
   color: "#4ADE80", // green
-  // Whitelist: tm_* x4 + edit/write (code implementation) + bash (narrowest
+  // Whitelist: TM_TOOLS + edit/write (code implementation) + bash (narrowest
   // verification for the fix: build / typecheck / failing test);
   // tm_webfetch DENIED (not a network role).
   permission: whitelist("edit", "write", "bash"),
@@ -262,7 +262,7 @@ const reviewer: AgentConfig = {
     "any non-trivial change.",
   prompt: REVIEWER_PROMPT,
   color: "#FB923C", // orange
-  // Whitelist: tm_* x4 + bash; tm_webfetch DENIED (not a network role).
+  // Whitelist: TM_TOOLS + bash; tm_webfetch DENIED (not a network role).
   // T3 task-reclaim: "task" DROPPED (only the lead dispatches).  No
   // edit/write (T2.1): findings travel in the reply skeleton; a dispatched
   // board artifact rides the BLACKBOARD WRITE FAILED
@@ -283,7 +283,7 @@ const tester: AgentConfig = {
     "correctness or raise coverage.",
   prompt: TESTER_PROMPT,
   color: "#F472B6", // pink
-  // Whitelist: tm_* x4 + edit/write (test files) + bash (the whole
+  // Whitelist: TM_TOOLS + edit/write (test files) + bash (the whole
   // verification stack: build / typecheck / lint / test runs).
   // tm_browser granted for governed UI verification; tm_webfetch / tm_search
   // DENIED (open web lookups stay with the lead + researcher).
@@ -303,7 +303,7 @@ const researcher: AgentConfig = {
     "for information that must inform a technical decision.",
   prompt: RESEARCHER_PROMPT,
   color: "#A78BFA", // violet
-  // Whitelist: tm_* x4 + tm_webfetch / tm_search / tm_browser (the
+  // Whitelist: TM_TOOLS + tm_webfetch / tm_search / tm_browser (the
   // researcher is a network role).  The built-in webfetch/websearch tools
   // stay removed — web lookups ride user-configured MCP tools (preferred)
   // or the governed tm_* web channels (allowlisted, threshold-offloaded).

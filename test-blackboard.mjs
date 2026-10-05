@@ -743,6 +743,31 @@ console.log("\n8. board-write call shape (A5) + write-capable wording (A8)")
     assert.ok(!/no file tool at all|without a file tool/.test(String(c.template)),
       `command ${name}: carries no tool-less overstatement`)
   }
+  // The same overstatement lived in CODE-adjacent text too — the board tool's own
+  // DESCRIPTION, its file header, the browser args-schema note, and the per-role
+  // comments in agents.ts. Nothing pinned those, so A8 fixed the prompts twice (and
+  // P2 the descriptions) while the next refactor was free to write it back. Scan the
+  // SOURCE, not dist/: dist can be stale, and a test that reads a stale artifact
+  // passes while the shipped text is wrong.
+  {
+    const read = (rel) => fs.readFileSync(new URL(`./${rel}`, import.meta.url), "utf8").replace(/\s+/g, " ")
+    const TOOLLESS = /own no file tools|no file tool at all|without a file tool|with no file tool|carry none[^.]{0,40}tool-less/
+    const sources = {
+      "src/tm/board.ts": read("src/tm/board.ts"),
+      "src/tm/args-schema.ts": read("src/tm/args-schema.ts"),
+      "src/agents.ts": read("src/agents.ts"),
+    }
+    for (const [name, body] of Object.entries(sources)) {
+      assert.ok(!TOOLLESS.test(body), `${name}: no "role owns no file tools" claim (the writer is what they lack)`)
+    }
+    assert.match(sources["src/tm/board.ts"], /write-capable file tool/,
+      "src/tm/board.ts: states the scoped claim positively, not just the absence")
+    // The role comments used to hand-count the tm_* family ("tm_* x4") after TM_TOOLS
+    // grew to seven; a number in prose is a number that goes stale.
+    assert.ok(!/tm_\* x\d/.test(sources["src/agents.ts"]),
+      "src/agents.ts: role comments name TM_TOOLS rather than a hand-written count")
+    assert.match(sources["src/agents.ts"], /const TM_TOOLS = \[/, "src/agents.ts: TM_TOOLS is the single source the comments can point at")
+  }
   console.log("   OK (catalog shape + guard in all six roles and the board note, v1 call shape intact, no tool-less overstatement left)")
 }
 
