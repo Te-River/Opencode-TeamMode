@@ -56,4 +56,4 @@ export {
   isAskGatedEnvCommand,
 } from "./envprotect/gate-predicates.js"
 
-export { classifyPathFields, createEnvProtectHook, inspectToolCall } from "./envprotect/hook.js"
+export { classifyPathFields, inspectToolCall } from "./envprotect/hook.js"

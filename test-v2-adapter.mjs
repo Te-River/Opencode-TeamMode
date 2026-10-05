@@ -2637,6 +2637,69 @@ console.log("18. Team compacts EARLY — the 75% trigger is plugin logic, not so
 }
 console.log("   OK (75% is plugin logic; one admission per usage number with a floor interval; the host's formula and both refusal shapes kept distinct; foreign/no-id/no-denominator all counted; declared ≠ ok)")
 
+console.log("19. the shell timeout clamp came back to 2.x — the same lever, the same discipline (#43)")
+{
+  const { applyV2ShellTimeoutClamp, resolveShellTimeout, parseShellTimeout } = await import("./dist/host/v2-guard.js")
+  const repoRoot = path.dirname(fileURLToPath(import.meta.url))
+  const { resolveTmConfig } = await import("./dist/tm/config.js")
+  // The REAL default allowlist, not a hand-written one: the clamp applies only to a
+  // command `classifyReadonlyCommand` already accepts, so testing against a invented list
+  // would pin the classifier's opinion rather than the shipped one.
+  const tmCfg = resolveTmConfig({})
+  const RO = tmCfg.bashReadonlyAllowed
+  const PROBE = "tasklist"
+  assert.equal(resolveShellTimeout({ command: PROBE, timeoutMs: null, probeMs: 60_000, maxMs: 0, readonlyAllowed: RO }).changed, false, "sanity: the probe command is in the shipped allowlist")
+  const p = (command, timeoutMs, extra = {}) => resolveShellTimeout({ command, timeoutMs, probeMs: 60_000, maxMs: 0, readonlyAllowed: RO, ...extra })
+  assert.equal(p(PROBE, 120_000).changed, true, "a read-only probe at 120s is clamped — this is issue #6, three serialised probes used to cost six minutes of dead air")
+  assert.equal(p(PROBE, 120_000).to, 60_000, "clamped to the documented probe ceiling")
+  assert.equal(p(PROBE, 30_000).changed, false, "a timeout already under the ceiling is left alone")
+  assert.equal(p(PROBE, null).changed, false, "a model that set NO timeout never gets one invented for it")
+  assert.equal(p("npm run build", 300_000).changed, false, "a non-read-only command is untouched — the clamp never widens what may run and never second-guesses a real build")
+  assert.equal(p("rm -rf build", 300_000).changed, false, "and certainly not on the R2 danger face")
+  assert.equal(p(PROBE, 120_000, { probeMs: 0 }).changed, false, "TM_BASH_TIMEOUT_PROBE_MS=0 disables the probe ceiling")
+  assert.equal(p("npm run build", 900_000, { maxMs: 600_000 }).to, 600_000, "the operator ceiling is opt-in and applies to everything")
+  assert.equal(typeof p(PROBE, 120_000).from, "number", "the line reports what it changed FROM, so a clamp is checkable")
+  assert.equal(parseShellTimeout("120000"), 120_000, "a string number is parsed, not rejected")
+  assert.equal(parseShellTimeout("abc"), null, "garbage is not a timeout")
+  assert.equal(parseShellTimeout(undefined), null, "absent stays absent")
+
+  // (b) the hook itself, on the fake host
+  const f = makeFakeCtx({ directory: ws, agents: sixAgents })
+  const clamps = []
+  const layer = await applyV2ShellTimeoutClamp(f.ctx, {
+    probeMs: 60_000,
+    maxMs: 0,
+    readonlyAllowed: RO,
+    scope: { decide: (e) => (e && e.agent === "team" ? "ours" : "foreign"), count: (v) => v },
+    onClamp: (info) => clamps.push(info),
+  })
+  assert.equal(layer.registrations.length, 1, "the clamp rides tool.hook(\"execute.before\")")
+  await f.hook("tool.execute.before").fire({ tool: "shell", agent: "team", sessionID: "ses_t", input: { command: PROBE, timeout: 120_000 } })
+  assert.equal(layer.report.clamped, 1, "the probe got clamped")
+  assert.equal(clamps.length, 1, "and the clamp was REPORTED — a clamp nobody can see reads as the tool killing a probe for no reason")
+  assert.deepEqual({ via: clamps[0].via, from: clamps[0].from, to: clamps[0].to, sid: clamps[0].sessionID }, { via: "probe", from: 120_000, to: 60_000, sid: "ses_t" }, "the line carries from/to/via/session")
+  const untouched = { tool: "shell", agent: "team", sessionID: "ses_t", input: { command: "npm run build", timeout: 300_000 } }
+  await f.hook("tool.execute.before").fire(untouched)
+  assert.equal(untouched.input.timeout, 300_000, "a non-probe command keeps the model's number exactly")
+  const invented = { tool: "shell", agent: "team", sessionID: "ses_t", input: { command: PROBE } }
+  await f.hook("tool.execute.before").fire(invented)
+  assert.ok(!("timeout" in invented.input), "and the hook NEVER adds a timeout the model did not write")
+  const foreign = { tool: "shell", agent: "build", sessionID: "ses_b", input: { command: PROBE, timeout: 120_000 } }
+  await f.hook("tool.execute.before").fire(foreign)
+  assert.equal(foreign.input.timeout, 120_000, "a foreign agent's request is not ours to touch (#22)")
+  assert.equal(layer.report.foreignSkipped, 1, "counted, not silently passed")
+  const broken = { tool: "shell", agent: "team", sessionID: "ses_t", get input() { throw new Error("host gave a poisoned input") } }
+  await f.hook("tool.execute.before").fire(broken)
+  assert.equal(layer.report.threw, 1, "a throw inside the clamp is counted and swallowed")
+  assert.ok(layer.report.seen > 0, "every shell call it looked at is counted")
+
+  // (c) the wiring exists in the personality, not just in the module
+  const v2src = fs.readFileSync(path.join(repoRoot, "src", "host", "v2.ts"), "utf8")
+  assert.ok(/applyV2ShellTimeoutClamp\(ctx,/.test(v2src), "the personality installs the clamp")
+  assert.ok(/step_id: "timeout-clamp"/.test(v2src), "and writes a trajectory line per clamp")
+}
+console.log("   OK (issue #6 restored on 2.x: only a volunteered number, only inside the read-only allowlist, never on a foreign session, never throwing into the hook, and every clamp reported)")
+
 // B5: the group count is DERIVED from the numbered group headers this file
 // actually printed, never hand-written — the last hand-written number was
 // already stale while the file had more.  The self-scan reads THIS file by its

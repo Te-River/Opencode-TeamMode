@@ -275,7 +275,9 @@ export function summarizeEvents(events: readonly TrajEvent[]): TmStats {
         stats.governance.taskOffloadTokens += num(e.tokens)
       }
     }
-    if (tool === "bash" && e.step_id === "timeout-clamp") {
+    // v1 labelled the row by its tool name `bash`; on v2 the host's own id is
+    // `shell`, and the clamp is the same protection either way.
+    if ((tool === "bash" || tool === "shell") && e.step_id === "timeout-clamp") {
       stats.governance.clampedTimeouts++
       stats.governance.clampSavedMs += Math.max(0, num(e.from_ms) - num(e.to_ms))
     }

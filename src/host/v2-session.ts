@@ -20,9 +20,39 @@
  * registration, and nothing is claimed that the host did not hand us.
  */
 
-import { COMPACTION_CONTEXT } from "../host-hooks.js"
 import { V2_LADDER_ACTIONS } from "./v2-permissions.js"
 import type { V2Registration, V2SessionContext, V2Context } from "./v2-types.js"
+
+/**
+ * Context lines the host's compaction summarizer must carry forward.  On v2 the
+ * seam is `session.hook("compaction")` and the lines ride `event.system[]` as
+ * text parts; we ADD and never replace, so the summarizer stays the host's and
+ * whatever the host itself learns to preserve is not voided.  (v1 pushed the
+ * same list through `experimental.session.compacting` → `output.context[]`;
+ * the list moved here when the v1 adapter layer was cut, and its content is
+ * unchanged — it is the only survivor of `src/host-hooks.ts`.)
+ *
+ * Each line corresponds to a thing that, once summarized away, cannot be
+ * re-derived without spending a round to rediscover it:
+ *   - the reply skeleton — prose instead of STATUS:/CHANGES/… makes the
+ *     lead's machine check fail for the rest of the session;
+ *   - offload handles (ref/access_token/expire_at) — they are the ONLY
+ *     window onto a payload that never entered context;
+ *   - sub-agent child session ids (host `task`, leftovers of the old
+ *     running work, and after a summary it looks indistinguishably like done
+ *     work;
+ *   - provenance (file:line / URL + confidence) — without it a finding
+ *     degrades into model memory, the one thing this project refuses;
+ *   - the todo list and board paths — the state lives there, not in chat.
+ */
+export const COMPACTION_CONTEXT = [
+  "The GOAL directive survives compaction: the user's own ask (GOAL + its ACCEPTANCE criteria) is the contract for this run — carry it verbatim, keep working while a criterion lacks EVIDENCE, and never let a summarized transcript quietly redefine or shrink what they asked for.",
+  "OpenCode TeamMode contract survives compaction: every specialist reply keeps the STATUS / CHANGES / FINDINGS / EVIDENCE / HANDOFF skeleton and the lead machine-checks it — never summarize a reply into prose without those keys.",
+  "Offloaded payloads are addressed by handle (ref + access_token + expire_at) from tm_* results. Carry the handles forward VERBATIM; never re-run a tool to rediscover a payload a handle already names.",
+  "Sub-agent children (the host's task tool, including background tasks) must survive with their session ids: an uncollected child is still-running work, not finished work — and a turn that ends with children open does NOT mean the task is done. After this summary, keep waiting/collecting before reporting anything as delivered.",
+  "Every finding keeps its source (file:line or URL) and confidence tag after compaction, otherwise it is unverifiable memory.",
+  "The todo list and the blackboard files are the state, not the transcript: keep task items and board paths, drop chit-chat and raw command echo.",
+]
 
 /** v1 named three built-in tools differently from v2's tool ids.  Anything not
  *  listed is already spelled the same on both sides. */

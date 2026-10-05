@@ -37,7 +37,7 @@ import { setAskUnavailableNote } from "../tm/perm-ask.js"
 import { setPrivateSpacePolicy } from "../tm/webfetch.js"
 import type { PluginInput, ToolDefinition } from "../types.js"
 import { blackboardNote } from "./note.js"
-import { applyV2BackgroundForce, applyV2PermissionGuards, needsCoarseShellAsk } from "./v2-guard.js"
+import { applyV2BackgroundForce, applyV2PermissionGuards, applyV2ShellTimeoutClamp, needsCoarseShellAsk } from "./v2-guard.js"
 import { applyV2EventFeed } from "./v2-events.js"
 import { createV2SessionReader } from "./v2-session-client.js"
 import { applyV2Probe, probeSummary } from "./v2-probe.js"
@@ -277,6 +277,33 @@ export const v2Personality: V2Plugin = {
     registrations.push(...guards.registrations)
     const bgForce = await applyV2BackgroundForce(ctx, { scope })
     registrations.push(...bgForce.registrations)
+    // The shell timeout clamp (issue #6), ported here when the v1 personality was
+    // cut: the host gives `execute.before` a mutable `input`, the same seam
+    // `applyV2BackgroundForce` writes, so the protection survives the deletion —
+    // but only if it is counted, because a clamp nobody can see is a clamp a user
+    // reads as "the tool killed my probe for no reason".
+    const shellTimeout = await applyV2ShellTimeoutClamp(ctx, {
+      probeMs: tmRuntime.config.bashTimeoutProbeMs,
+      maxMs: tmRuntime.config.bashTimeoutMaxMs,
+      readonlyAllowed: tmRuntime.config.bashReadonlyAllowed,
+      scope,
+      onClamp: (info) => {
+        try {
+          tmRuntime.pipelines.store.appendTrajectory({
+            tool: "shell",
+            step_id: "timeout-clamp",
+            event: "clamped",
+            via: info.via,
+            from_ms: info.from,
+            to_ms: info.to,
+            sessionID: info.sessionID ?? "",
+          })
+        } catch {
+          /* the trajectory is an extra, never a reason to fail the call */
+        }
+      },
+    })
+    registrations.push(...shellTimeout.registrations)
     // JIT governance over the HOST's tools, so the offload promise does not depend
     // on which tool the model happened to pick (see v2-offload.ts for why a
     // per-tool promise is no promise).  Registered BEFORE the probe so the probe's
@@ -699,6 +726,10 @@ export const v2Personality: V2Plugin = {
       guard_foreign_skipped: guards.report.foreignSkipped,
       subagent_seen: bgForce.report.seen,
       subagent_forced: bgForce.report.forced,
+      shell_timeout_seen: shellTimeout.report.seen,
+      shell_timeout_clamped: shellTimeout.report.clamped,
+      shell_timeout_foreign_skipped: shellTimeout.report.foreignSkipped,
+      shell_timeout_threw: shellTimeout.report.threw,
       tools_removed: Object.entries(session.report.removed).map(([k, v]) => `${k}=${v}`).join(" "),
       note_pushed: session.report.notePushed,
       compaction_lines: session.report.compactionLines,
@@ -848,6 +879,10 @@ export const v2Personality: V2Plugin = {
           guard_denied: guards.report.denied,
           subagent_seen: bgForce.report.seen,
           subagent_forced: bgForce.report.forced,
+          shell_timeout_seen: shellTimeout.report.seen,
+          shell_timeout_clamped: shellTimeout.report.clamped,
+          shell_timeout_foreign_skipped: shellTimeout.report.foreignSkipped,
+          shell_timeout_threw: shellTimeout.report.threw,
           tools_removed: Object.entries(session.report.removed).map(([k, v]) => `${k}=${v}`).join(" "),
           note_pushed: session.report.notePushed,
           compaction_lines: session.report.compactionLines,

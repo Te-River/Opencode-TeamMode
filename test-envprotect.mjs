@@ -740,105 +740,16 @@ console.log("6. loader integration: SKIPPED — v1 plugin.server removed; R6 mat
     assert.equal(logs.filter((l) => /late-/.test(l)).length, lateBefore, "late-7: an unknown-id reply does not fabricate a late verdict")
   }
 
-  // 7h. hook-level deferral wiring — now SESSION-SCOPED (round-fix C1): the
-  // gate hands the R6 hook `canDefer(sessionID)`; unregistered sessions keep
-  // the hard throw even while the gate is globally healthy.
-  {
-    const hookApp = { log() { if (this !== hookApp) throw new TypeError("SDK app.log called unbound (this lost)") } }
-    const hookClient = {
-      app: hookApp,
-      postSessionIdPermissionsPermissionId() {
-        if (this !== hookClient) throw new TypeError("SDK reply endpoint called unbound (this lost)")
-        return Promise.resolve({ data: true })
-      },
-    }
-    const fakeTimers = { setTimeoutFn: () => ({}), clearTimeoutFn: () => {} }
-    const gate = createApprovalGate({ client: hookClient, timeoutMs: 600000, timers: fakeTimers })
-    // registration via a real-env-shaped asked event
-    gate.handleEvent({ type: "permission.asked", properties: { id: "a1", sessionID: "s-team", permission: "bash", patterns: ["printenv PATH"], metadata: { command: "printenv PATH" } } })
-    const hookAuditApp = { log() { if (this !== hookAuditApp) throw new TypeError("SDK app.log called unbound (this lost)") } }
-    const hook = ep.createEnvProtectHook({ app: hookAuditApp }, "strict", [], {
-      deferToApproval: (sid) => gate.canDefer(sid),
-    })
-    // expressible env read in a REGISTERED session -> deferred (no throw)
-    await hook({ tool: "bash", sessionID: "s-team" }, { args: { command: "printenv PATH" } })
-    await hook({ tool: "bash", sessionID: "s-team" }, { args: { command: "Get-ChildItem env:PATH" } })
-    // UNREGISTERED session (stock build/plan) -> hard throw, NOT deferred
-    await assert.rejects(hook({ tool: "bash", sessionID: "s-stock" }, { args: { command: "printenv PATH" } }), /category=bash-env-command/, "stock session keeps the hard throw — global R6 bypass closed")
-    // missing sessionID -> no deferral possible
-    await assert.rejects(hook({ tool: "bash" }, { args: { command: "printenv PATH" } }), /category=bash-env-command/, "no sessionID: stays hard")
-    // M4: case/trim-deviated forms never defer even in a registered session
-    await assert.rejects(hook({ tool: "bash", sessionID: "s-team" }, { args: { command: "GET-CONTENT ENV:PATH" } }), /category=bash-env-command/, "case mismatch: no deferral, no silent env read")
-    await assert.rejects(hook({ tool: "bash", sessionID: "s-team" }, { args: { command: " printenv" } }), /category=bash-env-command/, "leading-space form: no deferral (host grammar unknown)")
-    // M5: path/launcher heads stay hard everywhere
-    await assert.rejects(hook({ tool: "bash", sessionID: "s-team" }, { args: { command: "/usr/bin/env" } }), /category=bash-env-command/, "path-head dump: hard throw")
-    await assert.rejects(hook({ tool: "bash", sessionID: "s-team" }, { args: { command: "cmd /c set" } }), /category=bash-env-command/, "cmd-head dump: hard throw")
-    // inexpressible env shapes stay hard even while registered
-    await assert.rejects(hook({ tool: "bash", sessionID: "s-team" }, { args: { command: "$(printenv)" } }), /bash-env/, "command substitution stays hard when armed")
-    await assert.rejects(hook({ tool: "bash", sessionID: "s-team" }, { args: { command: "echo $HOME" } }), /bash-env-expansion/, "ALLCAPS expansion stays hard when armed")
-    await assert.rejects(hook({ tool: "bash", sessionID: "s-team" }, { args: { command: "cat .env" } }), /env-file-path/, "env-file read stays hard when armed")
-    // the governed tm_bash channel NEVER defers (no dialog ever opens for it)
-    await assert.rejects(hook({ tool: "tm_bash", sessionID: "s-team" }, { args: { command: "printenv PATH" } }), /bash-env-command/, "tm_bash stays hard regardless of the dialog")
-    // degraded gate: registered session defers nothing
-    gate.dispose()
-    await assert.rejects(hook({ tool: "bash", sessionID: "s-team" }, { args: { command: "printenv PATH" } }), /category=bash-env-command/, "disposed gate: back to hard throw")
-  }
-
-  // 7h-2. envApproved bypass — "always" on env ask → session-wide env pass
-  {
-    const hookApp2 = { log() { if (this !== hookApp2) throw new TypeError("unbound") } }
-    const hookClient2 = {
-      app: hookApp2,
-      postSessionIdPermissionsPermissionId() { return Promise.resolve({ data: true }) },
-    }
-    const fakeTimers2 = { setTimeoutFn: () => ({}), clearTimeoutFn: () => {} }
-    const gate2 = createApprovalGate({ client: hookClient2, timeoutMs: 600000, timers: fakeTimers2 })
-    // user picks "always" on env ask → session becomes env-approved
-    gate2.handleEvent({ type: "permission.asked", properties: {
-      id: "ea1", sessionID: "ses-approved", permission: "bash",
-      patterns: ["printenv PATH"], metadata: { command: "printenv PATH" }, always: ["printenv *"],
-    } })
-    gate2.handleEvent({ type: "permission.replied", properties: { sessionID: "ses-approved", requestID: "ea1", reply: "always" } })
-    assert.equal(gate2.isEnvApproved("ses-approved"), true, "precondition: session is env-approved")
-    const hookAuditApp2 = { log() {} }
-    const hook2 = ep.createEnvProtectHook({ app: hookAuditApp2 }, "strict", [], {
-      deferToApproval: (sid) => gate2.canDefer(sid),
-      envApproved: (sid) => gate2.isEnvApproved(sid),
-    })
-    // approved session: bash env commands pass silently (no throw)
-    await hook2({ tool: "bash", sessionID: "ses-approved" }, { args: { command: "printenv PATH" } })
-    await hook2({ tool: "bash", sessionID: "ses-approved" }, { args: { command: "Get-ChildItem env:PATH" } })
-    // approved session: ALLCAPS expansion also passes (covers strict mode)
-    await hook2({ tool: "bash", sessionID: "ses-approved" }, { args: { command: "echo $HOME" } })
-    // P1 fix: the env blanket NEVER covers env-FILE reads — files on disk
-    // never open a dialog of their own, so no "always" verdict can have
-    // consented to them.  They hard-throw even in an env-approved session.
-    await assert.rejects(hook2({ tool: "read", sessionID: "ses-approved" }, { args: { filePath: "src/.env" } }), /env-file-path/, "approved session .env read: STILL blocked (blanket excludes env files)")
-    await assert.rejects(hook2({ tool: "bash", sessionID: "ses-approved" }, { args: { command: "cat .env.local" } }), /env-file-path/, "approved session bash cat .env: STILL blocked")
-    await assert.rejects(hook2({ tool: "grep", sessionID: "ses-approved" }, { args: { pattern: "x", include: "*.env" } }), /env-file-path/, "approved session grep include *.env: STILL blocked")
-    // non-approved session: still hard throws
-    await assert.rejects(hook2({ tool: "bash", sessionID: "ses-other" }, { args: { command: "printenv PATH" } }), /bash-env-command/, "non-approved session: still blocked")
-    await assert.rejects(hook2({ tool: "read", sessionID: "ses-other" }, { args: { filePath: ".env" } }), /env-file-path/, "non-approved session .env: still blocked")
-    // no sessionID: still hard throws
-    await assert.rejects(hook2({ tool: "bash" }, { args: { command: "printenv PATH" } }), /bash-env-command/, "no sessionID: still blocked")
-    // "once" does NOT approve (setup via gate3)
-    const gate3 = createApprovalGate({ client: hookClient2, timeoutMs: 600000, timers: fakeTimers2 })
-    gate3.handleEvent({ type: "permission.asked", properties: {
-      id: "ea2", sessionID: "ses-once", permission: "bash",
-      patterns: ["printenv PATH"], metadata: { command: "printenv PATH" }, always: ["printenv *"],
-    } })
-    gate3.handleEvent({ type: "permission.replied", properties: { sessionID: "ses-once", requestID: "ea2", reply: "once" } })
-    assert.equal(gate3.isEnvApproved("ses-once"), false, "once does not approve")
-    const hook3 = ep.createEnvProtectHook({ app: hookAuditApp2 }, "strict", [], {
-      deferToApproval: (sid) => gate3.canDefer(sid),
-      envApproved: (sid) => gate3.isEnvApproved(sid),
-    })
-    // "once" on env ask → session still registered → hook defers (host dialog
-    // handles each subsequent call individually, NOT blanket-approved)
-    await hook3({ tool: "bash", sessionID: "ses-once" }, { args: { command: "printenv PATH" } })
-    // but inexpressible forms still hard-block (deferral only for ask-gated shapes)
-    await assert.rejects(hook3({ tool: "bash", sessionID: "ses-once" }, { args: { command: "echo $HOME" } }), /bash-env-expansion/, "once session: inexpressible form still hard-blocks")
-  }
+  // 7h / 7h-2. The R6 hook's deferral and the session-wide env-approved pass were
+  // properties of v1's `createEnvProtectHook` — a `tool.execute.before` factory that
+  // hard-threw until the approval gate could arm. The v1 personality is cut (26209fa),
+  // nothing on 2.x calls that factory any more, and 2.x gives a plugin no dialog to
+  // defer to: the guard fails CLOSED instead. What those two groups protected therefore
+  // lives in two different places now, and both are pinned: the per-command R6/R2
+  // classification by the pure matchers above (groups 3-5) and by test-v2-adapter's
+  // permission-guard group, and the never-self-allow / reply-capable discipline by the
+  // gate module's own blocks (7a-7d). The NUMBERS stay so 7i and 7j do not renumber.
+  console.log("  7h/7h-2. v1 R6 hook deferral + env-approved pass: SKIPPED — createEnvProtectHook removed with the v1 personality; 2.x fails closed (test-v2-adapter guard group, groups 3-5 here)")
 
   // 7i. end-to-end through server() (gate + real-host event routing + session
   // registration via message.updated) - RETIRED with the v1 personality (1.7.0

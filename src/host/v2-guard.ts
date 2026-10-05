@@ -22,6 +22,22 @@
  *     until `TM_R6_FINE_ASK=on` says otherwise.  A guard that fails open because
  *     we trusted an unproven hook is the opposite of this product.
  *
+ *  3. THE SHELL TIMEOUT CLAMP (issue #6), ported from the retired v1
+ *     `src/tm/bash-timeout.ts`.  The host's shell tool resolves
+ *     `flags.bashDefaultTimeoutMs ?? 2 * 60 * 1e3`, and a model that passes a
+ *     timeout at all passes 120000+ for a `Get-ChildItem` — three serialised
+ *     probes then cost the user six minutes of dead air for a reason no model
+ *     ever had.  v1 clamped it in a composed `tool.execute.before` hook; v2
+ *     gives the same mutable `input` to `tool.hook("execute.before")`, which is
+ *     where `applyV2BackgroundForce` already writes, so the protection is not
+ *     something the cut lost — it is the same lever at the same seam.
+ *     The discipline is unchanged and load-bearing: it clamps a number the
+ *     model ALREADY volunteered, never invents one it omitted, applies the
+ *     probe ceiling only to a command the P3 read-only allowlist accepts,
+ *     never rewrites the command, never widens what may run, and never throws
+ *     into the hook — a failure there means the call goes through untouched
+ *     and the attempt is counted.
+ *
  * The hook only ever makes a decision STRICTER (allow -> ask, anything -> deny on
  * a red line).  It never loosens what the host or the user's own rules chose.
  */
@@ -34,6 +50,7 @@ import {
   type EnvProtectMode,
 } from "../envprotect.js"
 import { classifyHost } from "../tm/egress.js"
+import { classifyReadonlyCommand } from "../tm/guard.js"
 import type { TeamScope } from "./v2-scope.js"
 import type { V2Context, V2Registration } from "./v2-types.js"
 
@@ -230,4 +247,131 @@ export function needsCoarseShellAsk(env: NodeJS.ProcessEnv, guardsInstalled: boo
   // classifier, because "unset" is now the supported configuration.
   if (/^(0|false|no|off)$/i.test(v)) return true
   return false
+}
+
+// ---------- 3. the shell timeout clamp (issue #6, ported from v1) ----------
+
+/** The host's tool id on v2 is `shell`; v1 spelled it `bash`, and a namespaced
+ *  delivery (`opencode:shell`, `local/shell`) is the same tool.  Anything else —
+ *  including the Code Mode `execute` program that calls shell inside it — is not
+ *  ours to rewrite. */
+function isShellTool(raw: unknown): boolean {
+  const text = String(raw ?? "").trim().toLowerCase()
+  if (!text) return false
+  const last = text.slice(Math.max(text.lastIndexOf(":"), text.lastIndexOf("/")) + 1)
+  return last === "shell" || last === "bash"
+}
+
+/** Parse the model-supplied timeout defensively: the host schema wants a positive
+ *  integer of milliseconds, but an LLM hands us `"120000"`, `120000.0`, or omits
+ *  it entirely.  Anything unreadable means "no timeout was supplied", and a
+ *  supplied-none is NEVER turned into one by us. */
+export function parseShellTimeout(raw: unknown): number | null {
+  if (typeof raw === "number" && Number.isFinite(raw) && raw > 0) return Math.trunc(raw)
+  if (typeof raw === "string") {
+    const n = Number(raw.trim())
+    if (Number.isFinite(n) && n > 0) return Math.trunc(n)
+  }
+  return null
+}
+
+export type ShellTimeoutVerdict =
+  | { changed: false; via: "none" | "already-short" }
+  | { changed: true; via: "probe" | "max"; from: number; to: number }
+
+/**
+ * Decide the clamped timeout for one shell call.  `probeMs` / `maxMs` of 0
+ * disable that ceiling.  `probeMs` applies ONLY to a command the P3 read-only
+ * allowlist already accepts; `maxMs` is the operator's explicit global cap and
+ * ships at 0 (off), because silently killing a build is worse than a slow one.
+ */
+export function resolveShellTimeout(opts: {
+  command: string
+  timeoutMs: number | null
+  probeMs: number
+  maxMs: number
+  readonlyAllowed: readonly string[]
+}): ShellTimeoutVerdict {
+  const t = opts.timeoutMs
+  if (t === null) return { changed: false, via: "none" }
+  const probe = opts.probeMs > 0 && classifyReadonlyCommand(opts.command, opts.readonlyAllowed).ok
+  if (probe && t > opts.probeMs) return { changed: true, via: "probe", from: t, to: opts.probeMs }
+  if (opts.maxMs > 0 && t > opts.maxMs) return { changed: true, via: "max", from: t, to: opts.maxMs }
+  if (!probe && opts.maxMs === 0) return { changed: false, via: "none" }
+  return { changed: false, via: "already-short" }
+}
+
+export interface ShellTimeoutReport {
+  seen: number
+  clamped: number
+  /** clamps skipped because the session is not one of ours (#22) — a build
+   *  session's timeout is the host's business, not a plugin's */
+  foreignSkipped: number
+  /** attempts that threw (including a classifier throw) and therefore
+   *  left the call byte-exact — counted so "the clamp is silent" is
+   *  distinguishable from "the clamp is broken" */
+  threw: number
+}
+
+/**
+ * The `tool.hook("execute.before")` installation of the clamp.  Returns the
+ * registrations plus the counters that ride `v2-surface` / `v2-shutdown`.
+ * `onClamp` is how the caller writes the trajectory row; a throw inside it is
+ * swallowed there, never here.
+ */
+export async function applyV2ShellTimeoutClamp(
+  ctx: V2Context,
+  opts: {
+    probeMs: number
+    maxMs: number
+    readonlyAllowed: readonly string[]
+    scope?: TeamScope
+    onClamp?: (info: { via: string; from: number; to: number; sessionID?: string }) => void
+  },
+): Promise<{ registrations: V2Registration[]; report: ShellTimeoutReport }> {
+  const report: ShellTimeoutReport = { seen: 0, clamped: 0, foreignSkipped: 0, threw: 0 }
+  const tool = ctx.tool
+  if (!tool || typeof tool.hook !== "function") return { registrations: [], report }
+  let registrations: V2Registration[]
+  try {
+    registrations = [
+      await tool.hook("execute.before", (event) => {
+        try {
+          if (!isShellTool(event?.tool)) return
+          report.seen++
+          if (opts.scope && opts.scope.count(opts.scope.decide(event)) !== "ours") {
+            report.foreignSkipped++
+            return
+          }
+          const input = event.input as Record<string, unknown> | undefined
+          if (!input || typeof input !== "object" || Array.isArray(input)) return
+          const command = typeof input.command === "string" ? input.command : ""
+          if (!command) return
+          const verdict = resolveShellTimeout({
+            command,
+            timeoutMs: parseShellTimeout(input.timeout),
+            probeMs: opts.probeMs,
+            maxMs: opts.maxMs,
+            readonlyAllowed: opts.readonlyAllowed,
+          })
+          if (!verdict.changed) return
+          // Only the number the model volunteered.  `input.command` is never
+          // touched, and nothing is added to the object.
+          input.timeout = verdict.to
+          report.clamped++
+          const sessionID = typeof event.sessionID === "string" ? event.sessionID : undefined
+          opts.onClamp?.({ via: verdict.via, from: verdict.from, to: verdict.to, sessionID })
+        } catch {
+          // A clamp that cannot decide must not break the call it is trying to
+          // speed up: leave the args exactly as the model wrote them and count it.
+          report.threw++
+        }
+      }),
+    ]
+  } catch {
+    // No hook seam (an older host, or a ctx without `tool.hook`): the clamp is
+    // simply absent, and the counters say so rather than throwing into boot.
+    return { registrations: [], report }
+  }
+  return { registrations, report }
 }
