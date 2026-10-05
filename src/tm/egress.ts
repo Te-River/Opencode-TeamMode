@@ -6,10 +6,21 @@
  * for every string — including `169.254.169.254`, the cloud instance-metadata
  * endpoint that hands out temporary credentials to anything that asks. Fetching
  * that reads a secret into the model context, the run store and the trajectory
- * in one call, and no user is being asked first. Loopback and RFC1918 are the
- * softer half of the same problem: they are genuinely useful (a local dev API,
- * the dev server the tester verifies), so they are not forbidden — but "*" must
- * not answer for them either, so they go to the dialog every time.
+ * in one call, and no user is being asked first.
+ *
+ * Three tiers, and the middle one is why this file changed:
+ *   - FORBIDDEN (metadata / link-local / reserved / multicast): no consent path
+ *     under any setting.
+ *   - LOOPBACK (127.0.0.0/8, ::1, localhost, *.localhost): allowed by default.
+ *     It only ever reaches a service the user started on their own machine, and
+ *     the browser doing the fetching is the user's own browser — there is no
+ *     third party to protect from it.  On OpenCode 2.x a plugin cannot raise
+ *     the host's dialog, so "needs approval" here would mean "always refused",
+ *     which is exactly the defect this tier fixes (a local dev server was
+ *     unreachable through every governed tool).
+ *   - PRIVATE (RFC1918, ULA, CGNAT, fe80::/10): gated by TM_PRIVATE_SPACE
+ *     (default deny on v2, ask on v1) because it reaches OTHER machines — a
+ *     real lateral-movement surface, and "*" must not answer for it.
  *
  * Borrowed shape, own implementation: ZCode's `webfetch-egress-guard.ts` unwraps
  * IPv4-mapped IPv6 AND the DNS64/NAT64 well-known prefix before applying its
@@ -23,7 +34,7 @@
  * nothing we care about — so the stricter rule applies where the payload is.
  */
 
-export type EgressLevel = "public" | "private" | "forbidden"
+export type EgressLevel = "public" | "loopback" | "private" | "forbidden"
 
 export interface EgressVerdict {
   level: EgressLevel
@@ -106,7 +117,7 @@ function classifyIpv4(n: number): EgressVerdict {
   if (a >= 224 && a <= 239) return { level: "forbidden", via: "IPv4 组播 224.0.0.0/4" }
   if (a >= 240) return { level: "forbidden", via: "IPv4 保留 240.0.0.0/4" }
   if (inCidr4(n, 198 << 24 | 18 << 16, 23)) return { level: "forbidden", via: "IPv4 基准测试段 198.18.0.0/15" }
-  if (a === 127) return { level: "private", via: "IPv4 回环 127.0.0.0/8" }
+  if (a === 127) return { level: "loopback", via: "IPv4 回环 127.0.0.0/8（只到本机）" }
   if (a === 10) return { level: "private", via: "IPv4 私网 10.0.0.0/8" }
   if (a === 172 && b >= 16 && b <= 31) return { level: "private", via: "IPv4 私网 172.16.0.0/12" }
   if (a === 192 && b === 168) return { level: "private", via: "IPv4 私网 192.168.0.0/16" }
@@ -156,18 +167,19 @@ function classifyIpv6(groups: readonly number[]): EgressVerdict {
   if (groups.every((g) => g === 0)) return { level: "forbidden", via: "IPv6 未指定 ::" }
   if (groups[0] >= 0xff00) return { level: "forbidden", via: "IPv6 组播 ff00::/12" }
   if (groups[0] === 0x0000 && groups[1] === 0 && groups[2] === 0 && groups[3] === 0 && groups[4] === 0 && groups[5] === 0 && groups[6] === 0 && groups[7] === 1)
-    return { level: "private", via: "IPv6 回环 ::1" }
+    return { level: "loopback", via: "IPv6 回环 ::1（只到本机）" }
   if ((groups[0] & 0xffc0) === 0xfe80) return { level: "private", via: "IPv6 链路本地 fe80::/10" }
   if ((groups[0] & 0xfe00) === 0xfc00) return { level: "private", via: "IPv6 唯一本地地址 fc00::/7" }
   return { level: "public" }
 }
 
-/** One host, one verdict. Public means "the domain allowlist decides"; private
- *  means "only a dialog decides"; forbidden means nothing decides. */
+/** One host, one verdict. Public means "the domain allowlist decides"; loopback
+ *  means "the user's own machine — allowed by default"; private means "only
+ *  TM_PRIVATE_SPACE=allow decides"; forbidden means nothing decides. */
 export function classifyHost(raw: unknown): EgressVerdict {
   const host = normalizeEgressHost(raw)
   if (!host) return { level: "public" }
-  if (host === "localhost" || host.endsWith(".localhost")) return { level: "private", via: ".localhost 保留名" }
+  if (host === "localhost" || host.endsWith(".localhost")) return { level: "loopback", via: ".localhost 保留名（只到本机）" }
   const v4 = parseIpv4(host)
   if (v4 !== null) return classifyIpv4(v4)
   if (host.includes(":")) {

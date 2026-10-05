@@ -354,7 +354,6 @@ assert.match(
 for (const [url, why] of [
   ["http://169.254.169.254/latest/meta-data/", "元数据"],
   ["http://192.168.1.1/", "私网"],
-  ["http://localhost:3000/", "回环"],
 ]) {
   const r = textOf(await byName.tm_webfetch.execute({ url }, CTX))
   assert.match(r, new RegExp(why), `${url} is still refused as ${why}`)
@@ -371,7 +370,17 @@ for (const [url, why] of [
     assert.fail(`${url}: the refusal promises user approval without saying v2 cannot open that dialog`)
   }
 }
-console.log("   OK (public hosts unpoliced by default, metadata/private/loopback refused, no promise of a dialog that cannot open)")
+// Loopback left that list on purpose. It reaches only a service the user started
+// on their own machine, and the browser/fetch runs as them — and on v2 a plugin
+// cannot raise a dialog, so "needs approval" was really "always refused": a local
+// dev server was unreachable through every governed tool. RFC1918/ULA/CGNAT/fe80
+// stay gated above, because those reach OTHER machines.
+{
+  const lb = textOf(await byName.tm_webfetch.execute({ url: "http://localhost:3000/" }, CTX))
+  assert.ok(!/回环/.test(lb), "loopback is not gate-refused — any failure here is the connection, not our policy")
+  assert.ok(!/TM_PRIVATE_SPACE/.test(lb), "…and it is not told to go open a gate that no longer applies to it")
+}
+console.log("   OK (public hosts unpoliced by default, metadata and private space refused with a real exit or an honest dead end, loopback served, no promise of a dialog that cannot open)")
 
 console.log("5. permission triples, user rules, idempotency")
 const team = fake.agents.get("team")
@@ -623,7 +632,11 @@ assert.equal(
   "deny",
   "the IPv4-mapped carrier is unwrapped before the policy reads it (changing notation is not a way around)",
 )
-assert.equal(webGuard(["http://127.0.0.1:9/"]).effect, "ask", "loopback stays ASKABLE — private is the user's call, not ours")
+// Loopback is its own egress level now, so the guard does not touch it: the only
+// thing that could open a gate here was a dialog v2 cannot raise, and a gate with
+// no reachable exit is the same defect as a lie. RFC1918 still gets the ask.
+assert.equal(webGuard(["http://127.0.0.1:9/"]), null, "loopback is left alone — it is the user's own machine, not private space")
+assert.equal(webGuard(["http://10.1.2.3/"]).effect, "ask", "RFC1918 still goes to the operator, not silently past the gate")
 assert.equal(webGuard(["https://example.com/docs"]), null, "a public host is untouched")
 assert.equal(webGuard(["https://example.com/.env"]).effect, "deny", "the remote env-file red line rides along")
 

@@ -106,7 +106,7 @@ export function hostAllowed(hostname: string, allowlist: readonly string[]): boo
 }
 
 export type UrlVerdict =
-  | { ok: true; url: URL; via?: "explicit-host" | "private-allowed" }
+  | { ok: true; url: URL; via?: "explicit-host" | "private-allowed" | "loopback" }
   | {
       ok: false
       message: string
@@ -120,18 +120,22 @@ export type UrlVerdict =
 export type PrivateSpacePolicy = "ask" | "allow" | "deny"
 
 /**
- * What happens to a PRIVATE-space target (loopback, RFC1918, ULA, CGNAT,
- * `.localhost`).  This is NOT the domain allowlist — it is the one place where an
- * address class, not a hostname, decides — and it stays separate on purpose:
- * the FORBIDDEN ranges (cloud metadata, link-local, reserved, multicast) have no
- * policy at all and are refused under every setting.
+ * What happens to a PRIVATE-space target (RFC1918, ULA, CGNAT, fe80::/10).
+ * This is NOT the domain allowlist — it is the one place where an address
+ * class, not a hostname, decides — and it stays separate on purpose: the
+ * FORBIDDEN ranges (cloud metadata, link-local, reserved, multicast) have no
+ * policy at all and are refused under every setting, and LOOPBACK is not on
+ * this policy either — it is allowed by default (it only reaches the user's
+ * own machine; see egress.ts for why "needs approval" there would mean
+ * "always refused" on v2).
  *
  * "ask" is v1's answer, because v1 can raise the host's dialog.  On OpenCode 2.x a
  * plugin cannot raise anything (measured: no `ask` on the tool ctx), so "ask" there
  * is a gate with no exit — which is why the v2 personality sets "allow" unless the
- * operator says otherwise.  Private space on a laptop is the user's own dev server;
- * the credential-leak class this policy used to conflate with it is handled by the
- * forbidden branch, which comes first and cannot be configured.
+ * operator says otherwise.  Private space is still the user's own network (a NAS,
+ * a colleague's box, the office intranet) — useful, but it reaches OTHER machines,
+ * so it stays gated; the credential-leak class this policy used to conflate with it
+ * is handled by the forbidden branch, which comes first and cannot be configured.
  */
 let privateSpace: PrivateSpacePolicy = "ask"
 
@@ -170,8 +174,9 @@ export function checkWebUrl(raw: unknown, allowlist: readonly string[]): UrlVerd
   }
   // The egress red line runs BEFORE the allowlist, because "*" is a documented
   // operator setting and an allowlist that answers for `169.254.169.254` is a
-  // credential leak with a config file behind it. Private space is the softer
-  // half: a local dev API is a real target, so it asks — every time.
+  // credential leak with a config file behind it. Loopback is allowed by
+  // default (see egress.ts); private space is the gated half: it reaches other
+  // machines, so it asks — every time.
   const egress = classifyHost(url.hostname)
   if (egress.level === "forbidden") {
     return {
@@ -181,6 +186,16 @@ export function checkWebUrl(raw: unknown, allowlist: readonly string[]): UrlVerd
         `这类地址没有"看起来对不对"可供判断：云元数据端点会把临时凭据直接送进上下文、run store 和 trajectory。` +
         `要本机服务请用 tm_browser（有头窗口由用户自己看着），要公网内容请给公开主机名。`,
     }
+  }
+  if (egress.level === "loopback") {
+    // Loopback only ever reaches a service the user started on their own
+    // machine, and the browser doing the fetching is the user's own browser —
+    // there is no third party to protect from it.  Allowed by default: on
+    // OpenCode 2.x a plugin cannot raise the dialog, so "needs approval" here
+    // would mean "always refused" (a local dev server was unreachable through
+    // every governed tool).  RFC1918/ULA/CGNAT/fe80 stay gated below — they
+    // reach OTHER machines.
+    return { ok: true, url, via: "loopback" }
   }
   if (egress.level === "private") {
     // A gate needs an exit the operator can actually walk.  `"*"` deliberately
@@ -201,10 +216,10 @@ export function checkWebUrl(raw: unknown, allowlist: readonly string[]): UrlVerd
       return {
         ok: false,
         message:
-          `目标 ${url.hostname} 属于私网 / 回环地址段（${egress.via}），本站点策略不放行私网，且这里没有确认窗可弹（OpenCode 2.x 的插件没有弹窗权限）——` +
-          `所以这不是"等人批准"，是到此为止。要访问自己的本地服务，两条出路（都要操作者自己改，然后重启宿主）：` +
-          `TM_PRIVATE_SPACE=allow 放开整段私网，或把这一台主机名写进 TM_WEBFETCH_ALLOWED_DOMAINS（如 127.0.0.1，只放开它自己）。` +
-          `公网内容不受此限制。`,
+          `目标 ${url.hostname} 属于私网地址段（${egress.via}），本站点策略不放行私网，且这里没有确认窗可弹（OpenCode 2.x 的插件没有弹窗权限）——` +
+          `所以这不是"等人批准"，是到此为止。要访问私网里的服务，两条出路（都要操作者自己改，然后重启宿主）：` +
+          `TM_PRIVATE_SPACE=allow 放开整段私网，或把这一台主机名写进 TM_WEBFETCH_ALLOWED_DOMAINS（如 192.168.1.10，只放开它自己）。` +
+          `回环地址（127.0.0.1 / localhost）默认放行，不受此限制；公网内容也不受此限制。`,
       }
     }
     return {
@@ -212,10 +227,10 @@ export function checkWebUrl(raw: unknown, allowlist: readonly string[]): UrlVerd
       askable: true,
       url,
       message:
-        `目标 ${url.hostname} 属于私网 / 回环地址段（${egress.via}），域名白名单——包括 "*"——不能替你放行，只能逐次经用户批准。` +
-        `正在请求官方确认窗；批准仅对本次有效。本地开发服务器的 UI 验证更该用 tm_browser（那才是为它设计的通道）。` +
+        `目标 ${url.hostname} 属于私网地址段（${egress.via}），域名白名单——包括 "*"——不能替你放行，只能逐次经用户批准。` +
+        `正在请求官方确认窗；批准仅对本次有效。私网服务的 UI 验证更该用 tm_browser（那才是为它设计的通道）。` +
         `如果这个会话的宿主给不出确认窗（OpenCode 2.x 的插件没有弹窗权限），出路只有操作者把这一台主机名写进 ` +
-        `TM_WEBFETCH_ALLOWED_DOMAINS（显式主机名，如 127.0.0.1 或 localhost；"*" 不算）后重启宿主。`,
+        `TM_WEBFETCH_ALLOWED_DOMAINS（显式主机名，如 192.168.1.10；"*" 不算）后重启宿主。`,
     }
   }
   if (!hostAllowed(url.hostname, allowlist)) {
