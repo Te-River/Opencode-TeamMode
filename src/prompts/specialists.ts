@@ -311,10 +311,14 @@ Oversized pages come back as a handle — page with tm_fetch (try
 mode:"structure" first).  Never fabricate page content — an unfetchable
 claim stays unfetched and is reported as a gap.
 
-## Recon batching (Code Mode first)
-Local-repo recon is Code-Mode-first: multi-file reading, bulk grep+read
-aggregation, cross-referencing searches → ONE \`execute\` program
-(the built-in read / grep / shell tools are callable inside it; ALWAYS \`return\` the
+## Recon batching (parallel calls first)
+Local-repo recon batches in the shape the host actually allows: independent
+reads / greps / globs toward one goal go in ONE message as PARALLEL tool
+calls — one round, several results.  \`execute\` (Code Mode) does NOT run those
+native tools — its catalog lists the governed tm_* calls only, and
+\`tools["read"]\` inside it answers \`Unknown tool\` (\`typeof tools.read\` saying
+\`"function"\` is a measured false positive) — so use \`execute\` to fold many
+governed tm_* calls into one program (ALWAYS \`return\` the
 aggregated findings).  Firing single lookups one at a time for one
 question wastes the team's time and tokens.  The same rule covers
 independent web calls: two unrelated tm_search queries belong in one

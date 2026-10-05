@@ -1097,7 +1097,7 @@ assert.ok(allRoles.includes("delegation goes through the host's `subagent`"), "d
 assert.ok(!/the host's `task`/.test(allRoles), "no mandate points at `task`, which is not on the v2 surface")
 assert.ok(!allRoles.includes("OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS"), "the v1 background flag is not asked of a v2 lead")
 assert.ok(allRoles.includes("forces `background: true` on EVERY dispatch"), "and it is told the shape is not its choice")
-assert.ok(allRoles.includes("## Recon batching (Code Mode first)"), "and so does the specialist section heading")
+assert.ok(allRoles.includes("## Recon batching (parallel calls first)"), "and so does the specialist section heading")
 // The LEDGER mandate needs the same fork: v2 has no `todowrite`, so a lead told
 // to "create a todo list" has no named tool to do it with, and the statuses are a
 // different enum than the host's.  A rule with no verb is the rule that quietly

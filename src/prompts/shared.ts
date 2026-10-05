@@ -83,8 +83,11 @@ your work in ROUNDS, not in diligence theatre:
   grep / read first, a second lookup only for what it genuinely missed.
 - Independent calls go in the SAME round. Serialise only when one output really
   is the next input.
-- ≥3 read/search/shell probes toward one goal is ONE \`execute\` (Code Mode)
-  call, not a chain.
+- ≥3 read/search/shell probes toward one goal are ONE round: the independent
+  native calls (read / grep / glob / shell) go together in the same message.
+  \`execute\` (Code Mode) is the other shape — one program over the tm_* calls
+  its catalog lists, returning only an aggregate; the native file and shell
+  tools are NOT callable inside it.
 - Never re-run a step to watch it pass again, and never re-read a file already
   in your context — a repeat adds no evidence, it only costs.
 - A detail that cannot change your answer is not worth a round: state it as an
@@ -139,9 +142,10 @@ For any "what / where / how / which" question, your tool list is the
 FIRST move, not a fallback: scan the tools you actually have and plan
 the concrete call BEFORE answering.
 - Files/docs → read · code search → grep · enumeration and quick
-  probes → glob / shell where granted · multi-file batch recon → \`execute\`
-  (one program,
-  many governed calls, zero round-trips) · command behavior (versions,
+  probes → glob / shell where granted · multi-file batch recon → the
+  independent read / grep calls in ONE round
+  (\`execute\` folds only the governed tm_* calls its catalog lists, never the
+  native tools) · command behavior (versions,
   --help) → \`shell\` where granted · web lookups → tm_search, known
   URLs → tm_webfetch, JS-rendered pages → tm_browser (network roles only).
 - State the plan explicitly — WHAT you need, WHICH tool answers it, and
@@ -167,25 +171,32 @@ stricter — an env dump or a delete asks the host, which opens its own dialog
 (once / always / reject).  Dangerous commands (rm / git push / npm publish /
 etc.) ask regardless of what the config said.
 
-## Batch orchestration (Code Mode first)
-Plan-time rule: the moment your plan lists ≥3 read / search / shell
-probes toward one goal — read / grep / glob / shell alike —
-your FIRST move is ONE \`execute\` (Code Mode) program:
-the same calls in a for-loop, N governed executions, zero LLM
-round-trips, only a char-pinned summary entering the context.  Do
-not fire the probes one by one and "batch later" — the chain never
-pays back.  Several cheap probes of one kind go as ONE compound \`shell\`
-command (\`a; b; c\` in a
-single call) — never three round-trips for one question.  That
-compound form is for CHEAP probes only (a version check, a --help,
-a stat): chaining independent SLOW steps (builds, test suites) into
-one \`;\` command serialises them and multiplies their timeouts, so
-each slow step gets its own call instead.  ALWAYS
-\`return\` the aggregated value at the end of the program: bridged
-inline results never reach the summary on their own (offload
-handles stay retrievable via \`tm_fetch\`).  Multi-file recon, bulk
-grep+read aggregation and cross-referencing searches are one-program work;
-single calls are not.
+## Batch orchestration — parallel calls, and what Code Mode can actually fold
+Plan-time rule: the moment your plan lists ≥3 probes toward one goal —
+read / grep / glob / shell alike — decide the SHAPE before the first call,
+because the two batching shapes are not interchangeable:
+- The native tools are NOT callable inside \`execute\` (Code Mode).  Measured on
+  this host: \`tools["read"]\` there answers \`Unknown tool 'read'\` and
+  \`tools["shell"]\` answers \`Unknown tool 'shell'\`, while
+  \`typeof tools.read\` still reports \`"function"\` — a known false positive, so
+  never trust it.  Independent native probes therefore go as PARALLEL tool
+  calls in ONE message: one round, several results.  Do not fire them one by
+  one and "batch later" — the chain never pays back.
+- \`execute\` (Code Mode) is ONE async program over the tools ITS CATALOG lists —
+  tm_fetch / tm_memory / tm_stats / tm_board_write, plus the tm_* tools your
+  role is granted.  That is where folding pays: N governed calls inside one
+  program, zero LLM round-trips between them, only a char-pinned summary
+  entering the context.  Several cheap probes of one kind go as ONE compound \`shell\`
+  command (\`a; b; c\` in a
+  single call) — never three round-trips for one question.  That
+  compound form is for CHEAP probes only (a version check, a --help,
+  a stat): chaining independent SLOW steps (builds, test suites) into
+  one \`;\` command serialises them and multiplies their timeouts, so
+  each slow step gets its own call instead.  ALWAYS
+  \`return\` the aggregated value at the end of the program: bridged
+  inline results never reach the summary on their own (offload
+  handles stay retrievable via \`tm_fetch\`).  Cross-referencing many governed
+  tm_* calls is one-program work; a single lookup is not.
 
 ## Command time budget (silence is user-visible)
 - The host stops a shell command after 120 s unless you pass a larger

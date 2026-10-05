@@ -11,10 +11,14 @@ import assert from "node:assert"
 import * as fs from "node:fs"
 import * as os from "node:os"
 import * as path from "node:path"
+import { execFileSync } from "node:child_process"
+import { fileURLToPath } from "node:url"
 
+const repoRoot = path.dirname(fileURLToPath(import.meta.url))
 const bb = await import("./dist/blackboard.js")
 const plugin = (await import("./dist/index.js")).default
 const ep = await import("./dist/envprotect.js")
+const v2perm = await import("./dist/host/v2-permissions.js")
 
 /* ---------- 1. resolveTtlMs ---------- */
 assert.equal(bb.resolveTtlMs(), bb.DEFAULT_TTL_MS, "default = 5d")
@@ -330,23 +334,60 @@ for (const lit of ["footnotes", "==highlight==", "<hr>", "definition lists", ":s
 assert.ok(cfg2.agent["implementer"].prompt.includes("markdown\n  TABLE with stable\n  columns") || /TABLE with stable/.test(cfg2.agent["implementer"].prompt), "implementer: findings/reports use a table shape")
 assert.ok(cfg2.agent["implementer"].prompt.includes("`shell` with\n  `background:true`"), "implementer: the time budget names the host's own background shell for slow independent steps")
 /* The v1 cut ends at the prompt layer: a role may not be told to reach for a
- * tool this package no longer registers.  Every name below is retired — the
- * four in V1_ONLY_TOOLS (src/host/v2-permissions.ts, the one source) plus
- * `todowrite`, which a 2.x host never had — so its appearance in ANY injected
- * prompt or command template is exactly the defect this suite exists to catch.
+ * tool this package no longer registers.  The banned set is DERIVED from
+ * `V1_ONLY_TOOLS` (src/host/v2-permissions.ts, the one source — five names as
+ * of this writing, and a hand-written copy here is exactly how this suite once
+ * scanned four while five were retired) plus `todowrite`, which a 2.x host
+ * never had.  `task tool` is the v1 name for what v2 calls `subagent`, so it is
+ * banned by pattern, and BARE `task` / `bash` are deliberately NOT: they are
+ * ordinary prose in these prompts and a word-level ban would only manufacture
+ * red.  The scan runs on BOTH layers, because they are not the same text:
+ * `V2_TEXT` lives only in the projection, so a source-only scan cannot see a
+ * stale sentence that the fork table failed to rewrite — that is precisely how
+ * "via the Task tool" reached agents/team.md while this group stayed green.
  * Banned by assertion, not left to chance, because a stale sentence loads fine
  * and costs the round it points at.  And the batching red line must name the
  * tool that replaced it, or the mandate cannot be walked. */
-const RETIRED_TOOL_NAMES = ["tm_ptc_run", "tm_pty", "tm_read", "tm_grep", "tm_bash", "todowrite"]
+const RETIRED_TOOL_NAMES = [...v2perm.V1_ONLY_TOOLS, "todowrite"]
+const BANNED_RES = [
+  ...RETIRED_TOOL_NAMES.map((n) => new RegExp(n.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i")),
+  /task\s+tool/i,
+]
+/** Whitespace-folded + case-insensitive: the projection re-wraps every line. */
+const bannedHit = (text) => {
+  const flat = String(text ?? "").replace(/\s+/g, " ")
+  const hit = BANNED_RES.find((re) => re.test(flat))
+  return hit ? `/${hit.source}/i` : null
+}
 for (const [id, agent] of Object.entries(cfg2.agent)) {
-  for (const gone of RETIRED_TOOL_NAMES) {
-    assert.ok(!String(agent.prompt ?? "").includes(gone), `${id}: prompt never names the retired tool ${gone}`)
-  }
+  const hit = bannedHit(agent.prompt)
+  assert.ok(!hit, `${id}: prompt never names a retired tool (${hit ?? ""})`)
   assert.ok(String(agent.prompt ?? "").includes("execute"), `${id}: the batching mandate names the host's Code Mode tool`)
 }
 for (const [id, cmd] of Object.entries(cfg2.command)) {
-  for (const gone of RETIRED_TOOL_NAMES) {
-    assert.ok(!String(cmd.template ?? "").includes(gone), `${id}: command template never names the retired tool ${gone}`)
+  const hit = bannedHit(cmd.template)
+  assert.ok(!hit, `${id}: command template never names a retired tool (${hit ?? ""})`)
+}
+console.log("4d. the v2 projection ON DISK — a retired name may not survive the fork")
+{
+  const genRoot = fs.mkdtempSync(path.join(os.tmpdir(), "bb-gen-"))
+  try {
+    execFileSync(
+      process.execPath,
+      [path.join(repoRoot, "scripts", "gen-v2-config.mjs"), "--dir", genRoot],
+      { cwd: repoRoot, stdio: "pipe" },
+    )
+    const md = ["agents", "commands"].flatMap((sub) =>
+      fs.readdirSync(path.join(genRoot, sub)).map((f) => path.join(genRoot, sub, f)),
+    )
+    assert.equal(md.length, 12, "the generator wrote 6 roles + 6 commands (a vacuous scan is not a pass)")
+    for (const file of md) {
+      const hit = bannedHit(fs.readFileSync(file, "utf8"))
+      assert.ok(!hit, `${path.basename(file)}: the generated markdown on disk never names a retired tool (${hit ?? ""})`)
+    }
+    console.log("   OK (12 generated .md files scanned for the DERIVED retired set + `task tool`)")
+  } finally {
+    fs.rmSync(genRoot, { recursive: true, force: true, maxRetries: 3 })
   }
 }
 assert.ok(cfg2.agent["reviewer"].prompt.includes("backslash") || cfg2.agent["reviewer"].prompt.includes("\\("), "reviewer: the math delimiters that ACTUALLY render are named")
@@ -533,13 +574,16 @@ for (const expert of EXPERTS) {
   )
   assert.ok(
     cfg2.agent[expert].prompt.includes("Plan-time rule: the moment your plan lists ≥3") &&
-      cfg2.agent[expert].prompt.includes("your FIRST move is ONE `execute` (Code Mode) program"),
-    expert + ": the batch trigger is plan-time (plan lists ≥3 probes → FIRST move is ONE `execute` program)",
+      cfg2.agent[expert].prompt.includes("The native tools are NOT callable inside `execute`"),
+    expert + ": the batch trigger is plan-time and states the TRUE shape (native probes are parallel calls in one round, not an `execute` program)",
   )
+  assert.ok(cfg2.agent[expert].prompt.includes("PARALLEL tool"), expert + ": independent native probes are batched as parallel tool calls in one message")
+  assert.ok(cfg2.agent[expert].prompt.includes("typeof tools.read"), expert + ": the `typeof` false positive is named, so a role cannot trust it")
+  assert.ok(cfg2.agent[expert].prompt.includes("ITS CATALOG lists"), expert + ": `execute` is scoped to the tools the Code Mode catalog actually lists")
   assert.ok(cfg2.agent[expert].prompt.includes("read / grep / glob / shell alike"), expert + ": the batch trigger counts the host's own tool calls, not only tm_* ones")
   assert.ok(cfg2.agent[expert].prompt.includes("ONE compound `shell`"), expert + ": plain-shell batches prescribe one compound command, not N round-trips")
   assert.ok(cfg2.agent[expert].prompt.includes("aggregated value at the end of the program"), expert + ": the return-data rule (unreturned inline results are lost)")
-assert.ok(cfg2.agent["researcher"].prompt.includes("Recon batching (Code Mode first)"), "researcher: the Code-Mode-first recon section is present")
+assert.ok(cfg2.agent["researcher"].prompt.includes("Recon batching (parallel calls first)"), "researcher: the parallel-calls recon section is present")
 assert.ok(cfg2.agent["researcher"].prompt.includes("## Web lookups (two channels)"), "researcher: two-channel web policy (governed tools first, MCP fallback)")
 assert.ok(cfg2.agent["researcher"].prompt.includes("tm_search (open-ended lookups)"), "researcher: tm_search is the open-ended lookup front")
 assert.ok(cfg2.agent["researcher"].prompt.includes("engine:\"auto\" (the default)"), "researcher: tm_search auto fan-out is the documented default")
@@ -629,7 +673,7 @@ assert.ok(cfg2.agent["tester"].prompt.includes("## UI verification (tm_browser")
 assert.ok(cfg2.agent["tester"].prompt.includes("UI NOT VERIFIED"), "tester: honest-gap fallback kept alongside the browser grant")
 assert.ok(cfg2.agent["team"].prompt.includes("tm_memory search"), "lead: memory consulted during research phase")
 assert.ok(cfg2.agent["team"].prompt.includes("project layer first, global layer for cross-repo conventions"), "lead: memory layering (project layer first, global for cross-repo conventions)")
-assert.ok(cfg2.agent["team"].prompt.includes("Batch the recon in one `execute` program"), "lead: research-phase recon batched through the host's Code Mode")
+assert.ok(cfg2.agent["team"].prompt.includes("Batch the recon as parallel read / grep calls in one round"), "lead: research-phase recon batches as parallel native calls, not inside `execute`")
 }
 /* v1.4.6 fix (kept): fix-mode append contradiction stays dead, round files stay */
 assert.ok(!cfg2.agent["implementer"].prompt.includes("append to the same file"), "implementer: fix-mode append contradiction removed")

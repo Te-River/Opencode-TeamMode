@@ -125,7 +125,9 @@ const V2_TEXT = [
    * `background` needs no operator flag — the plugin sets it on every dispatch —
    * so the "pick the shape by rule" instruction is not a choice the model has.
    */
-  ["## Delegation — the host's task tool, and what you do while it runs", "## Delegation — the host's subagent tool, and what you do while it runs"],
+  /* The section heading says `subagent` in the SOURCE now (the v1 personality is
+   * gone, so nothing reads a v1 wording any more); the fork below still carries
+   * the sentences whose v1 shape differs in more than the tool name. */
   ["delegation goes through the host's `task` — governed, visible, killable.", "delegation goes through the host's `subagent` — governed, visible, killable."],
   ["you will keep following up while they run → `task { background: true }`: the", "you will keep following up while they run → `subagent { background: true }`: the"],
   ["`task`. Do not choose background when you would only park waiting for it.",
