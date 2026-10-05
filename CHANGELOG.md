@@ -9,6 +9,28 @@ registry saw 1.5.0 as the install-script fix release).
 
 ### Added
 
+- **Team now compacts at 75% of the context window — as plugin logic, not a machine's
+  config.** The host's `compaction` block (authoritative: `opencode.ai/config.json`
+  `$defs.Config.properties.compaction`) exposes only `auto`, `prune`, `tail_turns`,
+  `preserve_recent_tokens` and `reserved` — no percentage — and a 2.x plugin ctx has no
+  `config` domain at all (measured with a zero-token probe on 2.0.23: the domains are
+  `app location options agent aisdk command event experimental generate model provider
+  integration mcp permission plugin reference rpc skill storage tool vcs websearch
+  worktree session shell`). What 2.x does give is `ctx.session.compact({sessionID})`, so
+  `src/host/v2-compaction.ts` sits on `session.hook("context")` and admits a compaction
+  when the window crosses the threshold, using **the host's own accounting** read out of
+  the binary (`input+output+reasoning+cache.read+cache.write` over `limit.context`, the
+  model id taken from the same usage-bearing message). One admission per usage number per
+  session with a 60 s floor, because a ratio that does not drop must not become a
+  compaction loop. There is no estimated numerator: a payload without usage numbers is
+  counted `noUsage` and nothing fires — "we could not read it" is not "the window was
+  empty". Knobs: `TM_COMPACT_TRIGGER=off` hands the timing back to the host,
+  `TM_COMPACT_AT_PERCENT` (default 75, clamped to 5–95), `TM_COMPACT_MIN_MS` (default
+  60 000, capped at 600 000). Every outcome is counted (`checked/fired/confirmed/below/
+  deduped/noUsage/noLimit/conflicts/threw/foreignSkipped`) on the boot and shutdown rows,
+  and the capability row for `ctx.session.compact` is `ok` only after the host actually
+  accepted an admission — `fired` without `confirmed` stays `declared`.
+
 - **The lead can STEER a running child.** `tm_join` gained `steer` (+ optional
   `delivery: "steer"|"queue"`, default `steer`), `unread` and `unsend`, so the lead is no
   longer limited to waiting or killing: it can put guidance into a child's inbox and let the

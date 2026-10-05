@@ -20,6 +20,7 @@ export function makeFakeCtx({
   agents: seedAgents = [],
   tools: seedTools = [],
   sessionData = null,
+  models: seedModels = null,
 } = {}) {
   const registrations = []
   const hooks = new Map()
@@ -77,6 +78,11 @@ export function makeFakeCtx({
   const syntheticCalls = []
   const inboxListCalls = []
   const inboxCancelCalls = []
+  /** #39: the compaction admissions the fake actually received, and how many times the
+   *  catalog was listed. A test that only read the layer's own counters could not tell
+   *  "we asked the host to compact" from "we decided to and told nobody". */
+  const compactCalls = []
+  const modelListCalls = []
 
   /** Turn a seeded verdict into a host-shaped method: a function is called with the args
    *  (so a test can answer per-session), an Error throws, anything else is returned as-is.
@@ -146,6 +152,11 @@ export function makeFakeCtx({
             // published operation ids imply, and flat `session["inbox.list"]`), and
             // `inboxFlat` lets a test drive the fallback and pin which one answered.
             ...(has("prompt") ? { prompt: verdictMethod(sessionData.prompt, promptCalls) } : {}),
+            // #39 — `compact` is seeded ONLY when a test asks for it, for the same reason
+            // as `interrupt`: the 2.0.23 probe proved the seam exists (`compact({})` →
+            // Missing key at ["sessionID"]), but a fake that always had it would let the
+            // layer claim a host that has none.
+            ...(has("compact") ? { compact: verdictMethod(sessionData.compact, compactCalls) } : {}),
             ...(has("synthetic") ? { synthetic: verdictMethod(sessionData.synthetic, syntheticCalls) } : {}),
             ...(has("inbox") && sessionData.inbox && !sessionData.inboxFlat
               ? {
@@ -168,6 +179,16 @@ export function makeFakeCtx({
           }
         : { hook: mkHook("session") },
       shell: { hook: mkHook("shell") },
+      // `model.list()` measured on 2.0.23: `{location, data:[{id, modelID, providerID,
+      // …, limit:{context, output}}]}`. The shape below is that shape, because the early
+      // compaction layer reads `limit.context` as the denominator and a fake with a
+      // friendlier shape would test the reading, not the contract.
+      model: {
+        async list(opts = {}) {
+          modelListCalls.push({ ...(opts ?? {}) })
+          return { location: { directory }, data: seedModels ?? [] }
+        },
+      },
       storage: {
         _map: new Map(),
         async get(k) { return this._map.get(k) },
@@ -201,6 +222,9 @@ export function makeFakeCtx({
     syntheticCalls,
     inboxListCalls,
     inboxCancelCalls,
+    /** #39 — the compaction admissions and the catalog reads, with their args. */
+    compactCalls,
+    modelListCalls,
   }
 }
 

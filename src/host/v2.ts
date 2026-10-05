@@ -47,6 +47,7 @@ import { applyV2BrowserGate, browserGateSummary } from "./v2-browser-gate.js"
 import { seedWebfetchDomains } from "../tm/webfetch.js"
 import { v2CapabilityRows } from "./v2-capabilities.js"
 import { applyV2SessionLayer, removalPlan } from "./v2-session.js"
+import { applyV2EarlyCompaction, resolveCompactConfig } from "./v2-compaction.js"
 import { createStorageLedgerStore } from "../tm/ledger.js"
 import { createTeamScope } from "./v2-scope.js"
 import { bindV2Tool, type V2ToolBinding } from "./v2-tool.js"
@@ -594,6 +595,12 @@ export const v2Personality: V2Plugin = {
     }
 
     const session = await applyV2SessionLayer(ctx, { temperature, note, noteAgents: ["team"], plan, scope })
+    // Team's own early-compaction trigger. The host exposes no percentage knob (its
+    // `compaction` block is auto/prune/tail_turns/preserve_recent_tokens/reserved) and a
+    // 2.x plugin has no config domain at all, so "compact at 75% of the window" can only
+    // live here, in the package, enforced through `ctx.session.compact`.
+    const compactConfig = resolveCompactConfig(process.env)
+    const compaction = await applyV2EarlyCompaction(ctx, { config: compactConfig, scope })
     // Everything the matrix reports now exists, so the late-bound closure can be
     // pointed at the real observations.
     v2Matrix = () =>
@@ -620,6 +627,21 @@ export const v2Personality: V2Plugin = {
           refused: sessionReader.report.interruptRefused,
           unknown: sessionReader.report.interruptUnknown,
           error: sessionReader.report.interruptError,
+        },
+        // #39: the early-compaction seam's counters, read off the layer that calls it.
+        compact: {
+          enabled: compaction.report.enabled,
+          percent: compaction.report.percent,
+          checked: compaction.report.checked,
+          fired: compaction.report.fired,
+          confirmed: compaction.report.confirmed,
+          conflicts: compaction.report.conflicts,
+          threw: compaction.report.threw,
+          noLimit: compaction.report.noLimit,
+          source: compaction.report.lastSource,
+          lastPercent: compaction.report.lastPercent,
+          error: compaction.report.lastError,
+          wired: compaction.registrations.length > 0,
         },
         hasTodoSeam: typeof (ctx as { session?: { todo?: unknown } }).session?.todo === "function",
         hasAsk: typeof (ctx as { tool?: unknown }).tool === "function",
@@ -661,6 +683,13 @@ export const v2Personality: V2Plugin = {
       tools_removed: Object.entries(session.report.removed).map(([k, v]) => `${k}=${v}`).join(" "),
       note_pushed: session.report.notePushed,
       compaction_lines: session.report.compactionLines,
+      compact_enabled: compaction.report.enabled,
+      compact_at_percent: compaction.report.percent,
+      compact_checked: compaction.report.checked,
+      compact_fired: compaction.report.fired,
+      compact_confirmed: compaction.report.confirmed,
+      compact_source: compaction.report.lastSource,
+      compact_last_percent: compaction.report.lastPercent,
       scope_ours: scope.report.ours,
       scope_foreign: scope.report.foreign,
       scope_unknown: scope.report.unknown,
@@ -800,6 +829,24 @@ export const v2Personality: V2Plugin = {
           tools_removed: Object.entries(session.report.removed).map(([k, v]) => `${k}=${v}`).join(" "),
           note_pushed: session.report.notePushed,
           compaction_lines: session.report.compactionLines,
+          // Early compaction, counted per outcome so the claim is checkable: `fired` is
+          // what we admitted, `confirmed` what the host accepted, and a `no_limit` with no
+          // `fired` means we never found a denominator — not that the window was empty.
+          compact_enabled: compaction.report.enabled,
+          compact_at_percent: compaction.report.percent,
+          compact_checked: compaction.report.checked,
+          compact_fired: compaction.report.fired,
+          compact_confirmed: compaction.report.confirmed,
+          compact_below: compaction.report.below,
+          compact_deduped: compaction.report.deduped,
+          compact_no_usage: compaction.report.noUsage,
+          compact_no_limit: compaction.report.noLimit,
+          compact_conflicts: compaction.report.conflicts,
+          compact_threw: compaction.report.threw,
+          compact_foreign_skipped: compaction.report.foreignSkipped,
+          compact_source: compaction.report.lastSource,
+          compact_last_percent: compaction.report.lastPercent,
+          compact_error: compaction.report.lastError,
           // Accumulates for the whole process, so it can only be written at
           // teardown: this is the number that answers "did the feed stay alive, and
           // did the host rename the event types under us after the last upgrade?"

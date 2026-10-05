@@ -219,6 +219,27 @@ export interface V2SessionHooks {
 
 export interface V2SessionDomain {
   readonly hook: V2Hooks<V2SessionHooks>
+  /**
+   * Measured on 2.0.23 (zero-token probe): `compact({})` fails with
+   * `Missing key at ["sessionID"]` and a bogus id with `Session.NotFoundError`, so the
+   * seam is real and its required key is known. The handler behind it is
+   * `a.compact({sessionID, id, delivery})` and a duplicate input id surfaces as
+   * `Session.CompactionConflictError` — which is why the caller keeps one admission per
+   * usage number instead of firing per request.
+   */
+  readonly compact?: (input: { sessionID: string; id?: string; delivery?: string }) => Promise<unknown>
+  readonly [key: string]: unknown
+}
+
+/**
+ * `ctx.model.list({})` measured on 2.0.23: `{location, data: […]}` where an item carries
+ * `id, modelID, providerID, name, package, settings, capabilities, variants, time, cost,
+ * status, enabled, limit{context,output}`. The `limit.context` is the denominator the
+ * desktop's own usage meter reads, so the percent we compute means the same percent.
+ */
+export interface V2ModelDomain {
+  readonly list?: (options: unknown) => Promise<unknown>
+  readonly default?: (options?: unknown) => Promise<unknown>
   readonly [key: string]: unknown
 }
 
@@ -260,6 +281,7 @@ export interface V2Context {
   readonly agent?: V2AgentDomain
   readonly permission?: V2PermissionDomain
   readonly session?: V2SessionDomain
+  readonly model?: V2ModelDomain
   readonly shell?: V2ShellDomain
   readonly storage?: V2StorageDomain
   readonly event?: { readonly subscribe: () => AsyncIterable<V2Event> }
