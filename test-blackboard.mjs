@@ -110,45 +110,50 @@ assert.ok(bb.teamRootFor(nonGit).includes("opencode-team"), "non-git falls back 
 fs.rmSync(nonGit, { recursive: true, force: true })
 console.log("3. paths: OK (.git/opencode-team, tmpdir fallback)")
 
-/* ---------- 4. loader contract: server(input, options) -> config hook ---------- */
-const cfg = { $schema: "https://opencode.ai/config.json", plugin: [] }
+/* ---------- 4. loader contract: v2-only export + the definition surface ---------- */
+// 1.7.0 cut: the v1 personality is deleted, so there is no plugin.server() and no
+// v1 `config` hook to run. On 2.x the host receives what scripts/gen-v2-config.mjs
+// projects from these SAME dist modules, so the content contract below is pinned at
+// the source the generator actually reads — and the export shape is pinned as
+// v2-only, because a resurrected `server` would mean the cut was quietly undone.
+const { agents } = await import("./dist/agents.js")
+const { commands } = await import("./dist/commands.js")
+const { blackboardNote } = await import("./dist/host/note.js")
+const cfg = { agent: agents, command: commands }
+/* The board note is no longer appended to a prompt by a config hook: v2 pushes it
+ * into the system context for the lead only (pinned by test-v2-adapter's request
+ * layer group), so what this suite owns is the note's own content. */
+const note9 = blackboardNote("/board/root", 9)
 assert.equal(plugin.id, "team-mode", "display id")
-assert.equal(typeof plugin.server, "function", "v1 loader gate: server() present")
-// v1.1-v1.3 died exactly here: a plugin that shipped `setup` and no `server`
-// loads as NOTHING on the 1.18.x loader (it calls server() and only server()).
-// The v2 port adds `setup` on purpose — an OpenCode 2.x host reads it and
-// ignores `server` — so the invariant is no longer "never have a setup" but
-// "never a setup without a server": the dead-plugin failure stays impossible,
-// and the dual-personality export is allowed to exist.
-assert.equal(typeof plugin.setup, "function", "v2 host gate: setup() present alongside server()")
-/* the approval gate only arms for a client with a permission-reply path —
- * the v1 surface is postSessionIdPermissionsPermissionId (live-probed);
- * without it the config hook drops the R6 env ask face (dead-popup guard),
- * so the full ask-object contract below is pinned on a capable client */
-const capableClient = () => ({
-  app: { log() {} },
-  postSessionIdPermissionsPermissionId: () => Promise.resolve({ data: true }),
-})
-const hooks = await plugin.server({ directory: process.cwd(), project: process.cwd(), client: capableClient() }, { ttlDays: 9, envProtect: true })
-assert.equal(typeof hooks.config, "function", "server returns { config } hooks")
-await hooks.config(cfg)
+assert.equal(plugin.server, undefined, "the v1 entry point is GONE — this is the cut, not a refactor")
+// The failure this used to guard — a plugin exporting `setup` and no `server`
+// loading as NOTHING on the 1.18.x host — is now the product: 2.x is the only host
+// and `setup` is the only entry. So the invariant flipped to setup-present,
+// server-absent, and a re-added server() has to fail here rather than pass silently.
+assert.equal(typeof plugin.setup, "function", "v2 host gate: setup() is the only entry point")
+/* cfg2 was v1's second config-hook run (default TTL, no options). On 2.x there is
+ * nothing to re-run — the definitions ARE the definitions — so groups 5-7 below keep
+ * asserting prompt content against the same surface. That content is this suite's
+ * actual subject (the static-date guard, the Han-char scan, the reply skeleton, the
+ * ledger rule), and none of it depended on the loader, only on the handle to it. */
+const cfg2 = { agent: agents, command: commands }
 
 const lead = cfg.agent["team"]
 const leadPrompt = lead.prompt
-assert.ok(leadPrompt.includes("opencode-team"), "board root injected")
-assert.ok(leadPrompt.includes("idle for more than 9 days"), "custom TTL in note")
+assert.ok(note9.includes("/board/root"), "the board note carries the resolved root it was handed")
+assert.ok(note9.includes("idle for more than 9 days"), "…and the TTL the sweep promise names")
 assert.ok(leadPrompt.includes("Hybrid blackboard"), "hybrid blackboard protocol present")
-assert.ok(leadPrompt.includes("TodoList discipline"), "v1.2 todolist hard rule")
+assert.ok(leadPrompt.includes("TodoList discipline"), "ledger hard rule stays a prompt mandate")
 assert.ok(leadPrompt.includes("BLACKBOARD WRITE FAILED"), "lead fallback rule")
 assert.equal(lead.mode, "primary", "team visible in Desktop switcher")
 assert.ok(cfg.command["team-run"].template.includes("Approval gate"), "team-run template updated")
 assert.ok(cfg.command["team-plan"].agent === "architect", "command agent binding")
 
-/* v1 config shapes: prompt (string) + permission (object) */
+/* the definition shapes gen-v2-config.mjs projects into agents/*.md */
 for (const [name, a] of Object.entries(cfg.agent)) {
-  assert.equal(typeof a.prompt, "string", name + ": v1 prompt field set")
-  assert.equal(a.system, undefined, name + ": no stray v2 system field")
-  assert.ok(a.permission && typeof a.permission === "object", name + ": v1 permission object")
+  assert.equal(typeof a.prompt, "string", name + ": prompt is a string (the generator writes it as the file body)")
+  assert.equal(a.system, undefined, name + ": no stray system field — the body IS the prompt")
+  assert.ok(a.permission && typeof a.permission === "object", name + ": permission map present (becomes action/resource/effect triples)")
 }
 const EXPERTS = ["architect", "implementer", "reviewer", "tester", "researcher"]
 /* T2.1 whitelist (as revised by the T2.1 review): edit/write granted only
@@ -160,11 +165,13 @@ const EXPERTS = ["architect", "implementer", "reviewer", "tester", "researcher"]
  * oversized board artifacts. */
 const EDIT_GRANTED = ["implementer", "tester"]
 const BASH_GRANTED = ["implementer", "reviewer", "tester"]
-// Execution roles no longer get a bare `bash: "allow"`: the config hook
-// escalates it to a pattern object so the host confirmation dialog gates the
-// R6 env face + R2 danger face (default `*` stays allow — the T2.1 grant is
-// preserved, only dangerous shapes now ask).  Same builder the runtime uses.
-const BASH_ASK = ep.bashAskPatterns("strict")
+// v1 escalated the bash slot here to a pattern OBJECT so the host's dialog gated
+// the R6 env face + R2 danger face while the default `*` stayed allow. The v1
+// loader is cut; on 2.x the same protection is the guard's per-command classifier
+// plus one coarse `shell -> ask` triple when that hook is not installed (both
+// pinned by test-v2-adapter, the pattern builder itself by test-envprotect). So
+// the definition matrix carries the plain grant and asserting the ask-object here
+// would assert a shape the product no longer produces.
 for (const expert of EXPERTS) {
   const a = cfg.agent[expert]
   assert.equal(a.mode, "subagent", expert + " is subagent")
@@ -182,26 +189,21 @@ for (const expert of EXPERTS) {
     EDIT_GRANTED.includes(expert) ? "allow" : "deny",
     expert + " edit slot matches whitelist (WORKSPACE edits only where granted; the board has its own writer)",
   )
-  assert.deepStrictEqual(
+  assert.equal(
     a.permission.bash,
-    BASH_GRANTED.includes(expert) ? BASH_ASK : "deny",
-    expert + " bash slot matches execution-role matrix (ask-object on exec roles)",
+    BASH_GRANTED.includes(expert) ? "allow" : "deny",
+    expert + " bash slot matches the execution-role matrix (the ask escalation lives in the v2 permission layer now)",
   )
   assert.equal(a.permission["tm_*"], "allow", expert + " governed tm_* tools whitelisted")
   assert.equal(a.temperature, 0.2, expert + " low-temperature format discipline")
 }
 assert.equal(cfg.agent["architect"].permission.bash, "deny", "architect stays bash-denied")
-assert.deepStrictEqual(cfg.agent["team"].permission.bash, BASH_ASK, "lead bash escalated to the ask object (discovery-gate probes stay allow, dangerous shapes ask)")
-/* dead-popup guard (round-fix): with NO reply-capable client the gate cannot
- * arm, so the config hook drops the R6 env ask face (the R6 hook would
- * hard-throw every env read before such a dialog could ever be satisfied)
- * while the R2 danger face stays — its dialog is its own gate */
-const hooksNoGate = await plugin.server({ directory: process.cwd(), project: process.cwd() }, { ttlDays: 9, envProtect: true })
-const cfgNoGate = {}
-await hooksNoGate.config(cfgNoGate)
-assert.equal(cfgNoGate.agent.team.permission.bash["printenv *"], undefined, "no R6 env ask face while the gate cannot arm")
-assert.equal(cfgNoGate.agent.team.permission.bash["rm *"], "ask", "R2 danger face independent of gate arming")
-assert.equal(cfgNoGate.agent.team.permission.bash["*"], "allow", "T2.1 grant intact either way")
+assert.equal(cfg.agent["team"].permission.bash, "allow", "lead bash granted — the R6/R2 gate is the guard's job, not the definition's")
+/* dead-popup guard retired with the v1 config hook. The rule it protected (never
+ * promise a dialog that cannot arm) is alive on 2.x in a different place: the
+ * guard fails CLOSED with a v2-worded refusal instead of asking, and the R6/R2
+ * classification itself is pinned per command line in test-envprotect §7. */
+console.log("4b. dead-popup guard: SKIPPED — v1 config hook removed; 2.x fails closed (test-envprotect §7, test-v2-adapter consent group)")
 assert.equal(cfg.agent["team"].permission.edit, "allow", "lead edit allowed (<=10-line non-product edits)")
 assert.equal(cfg.agent["team"].permission.task, "allow", "lead task dispatch allowed")
 assert.deepEqual(cfg.agent["team"].permission.tm_webfetch, { "*": "ask" }, "lead: web channel carries the ask-map (out-of-allowlist targets pop the official dialog)")
@@ -216,37 +218,13 @@ assert.equal(cfg.agent["implementer"].permission.todowrite, "deny", "specialists
 assert.equal(Object.keys(cfg.agent).length, 6, "exactly 6 agents injected")
 assert.equal(Object.keys(cfg.command).length, 6, "exactly 6 commands injected")
 
-/* idempotence + user override respected */
-cfg.agent["reviewer"] = { description: "user's own", mode: "subagent", prompt: "mine" }
-const hooks2 = await plugin.server({ directory: process.cwd() }, undefined)
-await hooks2.config(cfg)
-assert.equal(cfg.agent["reviewer"].prompt, "mine", "existing user agent not clobbered")
-assert.ok(cfg.agent["team"].prompt.includes("idle for more than 9 days"), "already-injected entry kept")
-
-/* fresh config without options -> default 5d TTL */
-const cfg2 = {}
-const hooks3 = await plugin.server({ directory: process.cwd() }, undefined)
-await hooks3.config(cfg2)
-assert.ok(cfg2.agent["team"].prompt.includes("idle for more than 5 days"), "default TTL 5d without options")
-
-/* v1.4.5: Team default-agent promotion is opt-OUT again (defaultAgent:false disables) */
-assert.equal(cfg2.default_agent, "team", "no options -> team becomes the default agent")
-const cfg3 = { default_agent: "build" }
-const hooks4 = await plugin.server({ directory: process.cwd() }, undefined)
-await hooks4.config(cfg3)
-assert.equal(cfg3.default_agent, "team", "build default is replaced by the promotion")
-const cfgF = {}
-const hooksF = await plugin.server({ directory: process.cwd() }, { defaultAgent: false })
-await hooksF.config(cfgF)
-assert.ok(!("default_agent" in cfgF), "defaultAgent:false -> key must not be written")
-const cfgFB = { default_agent: "build" }
-const hooksFB = await plugin.server({ directory: process.cwd() }, { defaultAgent: false })
-await hooksFB.config(cfgFB)
-assert.equal(cfgFB.default_agent, "build", "defaultAgent:false keeps build default")
-const cfgU = { default_agent: "my-custom-agent" }
-const hooksU = await plugin.server({ directory: process.cwd() }, undefined)
-await hooksU.config(cfgU)
-assert.equal(cfgU.default_agent, "my-custom-agent", "explicit non-build default respected under promotion")
+/* v1's config-hook idempotence and default-agent promotion retired with the
+ * loader. The 2.x equivalents are real and pinned where they now live: the
+ * generator refuses files it did not write (marker check, --force to override) and
+ * `editor.default("team")` owns the default slot — test-v2-adapter's generation and
+ * default-slot groups. What stays here is this suite's own subject: the note. */
+assert.ok(blackboardNote("/board/root", 5).includes("idle for more than 5 days"), "default TTL 5d in the note the lead is handed")
+console.log("4c. default-agent promotion (v1 config hook): SKIPPED — 2.x promotion is editor.default(\"team\"), pinned by test-v2-adapter")
 
 /* v1.4.3 (kept): triage gate + user boundaries */
 assert.ok(leadPrompt.includes("Triage — classify before acting"), "lead: triage gate")
@@ -654,7 +632,7 @@ assert.ok(teamRun.includes("update AGENTS.md"), "team-run: docs sync step")
 assert.ok(teamRun.includes("TTL sweeper"), "team-run: TTL-only cleanup")
 assert.ok(cfg.command["team-review"].template.includes("Dimension"), "team-review: dimension selector")
 
-console.log("4. loader contract + v1 config injection: OK (server->config, 6 agents, 6 commands, override-safe)")
+console.log("4. loader contract + definition surface: OK (v2-only export, 6 agents, 6 commands, note TTL)")
 console.log("5. v1.4.7 contract: OK (routing, approval gate, skeleton, hybrid board, adaptive review, static verify)")
 console.log("6. opt-out default-agent promotion + triage/boundaries: OK")
 console.log("7. TTL-only reclamation + session-partitioned boards: OK")

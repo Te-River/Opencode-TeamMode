@@ -59,10 +59,10 @@ import { REPLY_CONTRACT, SHARED_RULES } from "./prompts/shared.js"
  *    web FALLBACK channel, granted ONLY to team + researcher; user-
  *    configured MCP/plugin tools (browser automation, search, fetchers)
  *    pass through the whitelist untouched and are the HIGH-priority channel;
- *  - "tm_*" covers the four governed read/search/exec tools (tm_read /
- *    tm_grep / tm_bash / tm_fetch); tm_webfetch and tm_ptc_run are explicit
- *    keys that override the wildcard per agent; the R6 env-protection hook
- *    aliases onto read/grep/bash unchanged, so narrowing the surface does
+ *  - "tm_*" covers the governed retrieval/memory tools (tm_read /
+ *    tm_grep / tm_bash / tm_fetch); tm_webfetch, tm_search and tm_browser are
+ *    explicit keys that override the wildcard per agent; the R6 env-protection
+ *    hook aliases onto read/grep/bash unchanged, so narrowing the surface does
  *    not weaken the anti-backdoor chain.
  *
  * T2.1 review revision (Critical fix): the built-in bash RETURNS for the
@@ -113,15 +113,6 @@ const PER_AGENT_TOOLS = ["edit", "write", "task", "bash", "todowrite", "question
  *  it is not a file tool, because it can neither overwrite nor leave the board. */
 const TM_TOOLS = ["tm_read", "tm_grep", "tm_bash", "tm_fetch", "tm_memory", "tm_stats", "tm_board_write"] as const
 
-/** M3: tm_ptc_run — explicit per-agent grant.  v1.5.4 revised the original
- *  M3 ruling (five specialists = allow, team = deny): ALL SIX agents now
- *  get `allow` (per user request, CHANGELOG 1.5.4), overriding the tm_*
- *  wildcard by explicit-key priority.  PTC remains a governed, read-only
- *  bridge — the full tm_* pipeline (P2/P3/R6/offload) runs on every
- *  bridged call, so the lead running batch programs is a convenience
- *  change, not a governance change. */
-const PTC_TOOL = "tm_ptc_run" as const
-
 const whitelist = (
   ...granted: Array<(typeof PER_AGENT_TOOLS)[number]>
 ): AgentPermission => {
@@ -146,11 +137,6 @@ const whitelist = (
   // host `task` children by id) and adopts leftovers from before the change.
   permission["tm_dispatch"] = "deny"
   permission["tm_join"] = "deny"
-  // tm_pty starts a real process, so it must pop the OFFICIAL dialog on
-  // every use: the WEB_ASK_MAP shape is what makes PermissionV2's findLast
-  // resolve to `ask` instead of swallowing the ask under the tm_* allow.
-  // Default deny; the lead gets the ask-map (applyDispatcherPermission).
-  permission["tm_pty"] = "deny"
   return permission
 }
 
@@ -162,13 +148,6 @@ const whitelist = (
 export function applyDispatcherPermission(permission: AgentPermission, isTeamLead: boolean): void {
   permission["tm_dispatch"] = "deny"
   permission["tm_join"] = isTeamLead ? "allow" : "deny"
-  permission["tm_pty"] = isTeamLead ? { ...WEB_ASK_MAP } : "deny"
-}
-
-/** Apply the tm_ptc_run grant to an agent's permission block.  All six
- *  agents get `allow` (overrides the tm_* wildcard for explicit key priority). */
-function applyPtcPermission(permission: AgentPermission, _isTeamLead: boolean): void {
-  permission[PTC_TOOL] = "allow"
 }
 
 /** Ask-map rules verified against the live host (1.18.30 asar probe):
@@ -208,7 +187,7 @@ const teamLead: AgentConfig = {
     "different expertise areas.",
   prompt: TEAM_LEAD_PROMPT,
   color: "#E879F9", // purple
-  // Whitelist: TM_TOOLS + tm_ptc_run + tm_webfetch/tm_search/tm_browser (the lead is
+  // Whitelist: TM_TOOLS + tm_webfetch/tm_search/tm_browser (the lead is
   // a network role) + task dispatch + edit (<=10-line non-product edits) +
   // write (board files) + bash (discovery-gate probes) + todowrite + question
   // (the lead's TodoList discipline and batched blocking questions are
@@ -320,18 +299,14 @@ for (const a of [architect, implementer, reviewer, tester, researcher]) {
   a.prompt = (a.prompt ?? "") + REPLY_CONTRACT + SHARED_RULES
 }
 
-/* tm_ptc_run permission — all six agents get allow (overrides the tm_*
- * wildcard; v1.5.4 revised the original team=deny ruling).  tm_webfetch —
- * ONLY team + researcher get allow (the two network roles).  Applied once
- * at module init. */
+/* tm_webfetch — ONLY team + researcher get allow (the two network roles).
+ * Applied once at module init. */
 if (teamLead.permission) {
-  applyPtcPermission(teamLead.permission, true)
   applyNetworkPermission(teamLead.permission, true)
   applyDispatcherPermission(teamLead.permission, true)
 }
 for (const a of [architect, implementer, reviewer, tester, researcher]) {
   if (a.permission) {
-    applyPtcPermission(a.permission, false)
     // tester: tm_browser only (UI verification); researcher: full web grant
     applyNetworkPermission(a.permission, a === researcher, a === tester)
     applyDispatcherPermission(a.permission, false)

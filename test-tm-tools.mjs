@@ -628,10 +628,30 @@ try {
   })
   delete process.env.TM_OFFLOAD_THRESHOLD_TEXT
   const ctx = { directory: root6 }
-  const readTool = runtime.tools.tm_read
-  const grepTool = runtime.tools.tm_grep
-  const bashTool = runtime.tools.tm_bash
   const fetchTool = runtime.tools.tm_fetch
+  // v1 retired the tm_read / tm_grep / tm_bash governed passthroughs.  The
+  // SHARED machinery they exercised (govern threshold offload + tm_fetch
+  // paging/auth + store degradation) stays under test, so these helpers drive
+  // the exact pipelines.govern seam those tools wrapped and return the identical
+  // handle text (ref / access_token / preview) that refOf/tokOf read back.
+  const READ_FIXTURES = {
+    "small.txt": smallPayload,
+    "small1999.txt": "a".repeat(7996),
+    "big2000.txt": "b".repeat(8000),
+    "big.json": jsonBig,
+  }
+  const offRead = (rt, content, contentType = "text", clue = "path=fixture") =>
+    tm.toToolResult(rt.pipelines.govern(rt.pipelines.nextStepId(), "tm_read", content, { contentType, clue }))
+  const offGrep = (rt, content, clue = "pattern=x") =>
+    tm.toToolResult(rt.pipelines.govern(rt.pipelines.nextStepId(), "tm_grep", content, { contentType: "text", clue }))
+  const readTool = {
+    execute: async (a) =>
+      offRead(runtime, READ_FIXTURES[String(a.path)] ?? "", String(a.path).endsWith(".json") ? "json" : "text", `path=${a.path}`),
+  }
+  const grepTool = {
+    execute: async (a) =>
+      offGrep(runtime, bigPayload, `pattern=${a.pattern}, 命中 2500 行, dir=${a.path ?? root6}`),
+  }
 
   // 6a. threshold boundary: 1999 tokens inline, == 2000 offloads — ALL
   // results ride the ToolResult contract {output: string} now (BUG#1)
@@ -705,7 +725,7 @@ try {
       client: fakeClient({ "x.txt": xPayload }),
       $: fake$Ok(""),
     })
-    const aOut = (await runtimeA.tools.tm_read.execute({ path: "x.txt" }, { directory: xproc })).output
+    const aOut = offRead(runtimeA, xPayload, "text", "path=x.txt").output
     assert.ok(aOut.includes("已卸载"), "process A offloads the payload")
     const aRef = refOf(aOut)
     const aTok = tokOf(aOut)
@@ -797,162 +817,60 @@ try {
   }
   console.log("6c. tm_fetch auth + structure: OK (cross-process survival, foreign store, tamper, missing, malformed, expired, escape, cap)")
 
-  // 6d. P2 scope through tm_read (incl. client envelope self-check)
-  {
-    const outside = await readTool.execute({ path: "../outside.txt" }, ctx)
-    assert.ok(outside.output.includes("phase=permission"), ".. escape -> permission")
-    assert.ok(outside.output.includes("P2"), "P2 boundary named")
-    const external = mktmp("ext")
-    fs.writeFileSync(path.join(external, "f.txt"), "x")
-    const externalRead = await readTool.execute({ path: path.join(external, "f.txt") }, ctx)
-    assert.ok(externalRead.output.includes("phase=permission"), "absolute outside -> permission")
-    // blackboard dir is inside the read scope (P2: 项目根+黑板+Trajectory)
-    const bbFile = path.join(runtime.store.blackboardRoot, "runs", "x.md")
-    fs.mkdirSync(path.dirname(bbFile), { recursive: true })
-    fs.writeFileSync(bbFile, "stored notes")
-    const bbRead = await readTool.execute({ path: bbFile }, ctx)
-    assert.ok(!bbRead.output.includes("失败"), "blackboard scope readable")
-    // client error envelope {ok:true, data:{error:{name,data:{message}}}} -> structured error
-    // ("absent.txt" EXISTS on disk so P2 realpath passes, but it is NOT a fixture
-    // key in the fake client, so the client emits the error envelope)
-    const missing = await readTool.execute({ path: "absent.txt" }, ctx)
-    assert.ok(missing.output.includes("[tm_read 失败 · phase=client]"), "envelope error phase (BUG#1 text)")
-    assert.ok(missing.output.includes("no absent.txt"), "envelope message surfaced")
-  }
-  console.log("6d. P2 scope + client envelope: OK (escape, extra scope, error envelope)")
+  // 6d. P2 scope through tm_read — RETIRED with the v1 personality (1.7.0 cut).
+  //  This group asserted tm_read's P2 path containment and the client error
+  //  envelope; the tool is gone (v2 governs the host's native read through
+  //  src/host/v2-offload.ts). The shared P2 containment helper (guard.ts
+  //  assertReadablePath) is still pinned by group 5; the v2 native-result
+  //  offload path is pinned by test-v2-adapter.
+  console.log("6d. P2 scope through tm_read: SKIPPED — tm_read retired with v1; P2 helper pinned by group 5, v2 offload by test-v2-adapter")
 
-  // 6e. R6 reuse: tm_* is NOT an R6 bypass (same source, in-tool layer)
-  {
-    const envRead = await readTool.execute({ path: ".env" }, ctx)
-    assert.ok(envRead.output.includes("phase=permission"), "tm_read .env blocked")
-    assert.ok(envRead.output.includes(ep.ENV_PROTECT_MESSAGE), "tm_read .env: R6 message")
-    assert.ok(envRead.output.includes("env-file-path"), "tm_read .env: category tag")
-    const exampleRead = await readTool.execute({ path: "small.txt" }, ctx)
-    assert.equal(exampleRead.output, smallPayload, "normal read unaffected (.env.example exemption lives in the matcher)")
-    const bashEnv = await bashTool.execute({ command: "printenv PATH" }, ctx)
-    assert.ok(bashEnv.output.includes("bash-env-command"), "tm_bash printenv blocked via R6")
-    const bashEnvFile = await bashTool.execute({ command: "cat .env" }, ctx)
-    assert.ok(bashEnvFile.output.includes("env-file-path"), "tm_bash cat .env blocked via R6")
-    const grepEnv = await grepTool.execute({ pattern: "*.env" }, ctx)
-    assert.ok(grepEnv.output.includes("env-file-path"), "tm_grep *.env pattern blocked via R6")
-  }
-  console.log("6e. R6 reuse in-tool: OK (tm_read/tm_grep/tm_bash env reads blocked, same source)")
 
-  // 6f. P3 allowlist through tm_bash (what R6 does not forbid must still be allowlisted)
-  {
-    const ok = await bashTool.execute({ command: "ls -la" }, ctx)
-    assert.ok(!ok.output.includes("失败"), "allowlisted ls executes")
-    const deny = await bashTool.execute({ command: "rm -rf x" }, ctx)
-    assert.ok(deny.output.includes("phase=permission"), "non-allowlisted denied")
-    assert.ok(deny.output.includes("白名单"), "deny message names the allowlist")
-    assert.ok(deny.output.includes("HUMAN"), "deny suggests HUMAN approval")
-    const redirect = await bashTool.execute({ command: "ls > out.txt" }, ctx)
-    assert.ok(redirect.output.includes("重定向"), "redirect denied")
-    const subst = await bashTool.execute({ command: "ls $(rm -rf x)" }, ctx)
-    assert.ok(subst.output.includes("命令替换"), "M1: command substitution denied in-tool")
-    const findDel = await bashTool.execute({ command: "find . -delete" }, ctx)
-    assert.ok(findDel.output.includes("find"), "find -delete denied")
-    const tailF = await bashTool.execute({ command: "tail -f app.log" }, ctx)
-    assert.ok(tailF.output.includes("挂起"), "tail -f denied")
-    const gcWait = await bashTool.execute({ command: "Get-Content app.log -Wait" }, ctx)
-    assert.ok(gcWait.output.includes("挂起"), "Get-Content -Wait denied")
-    // round-3: quoted pipe must survive the P3 head check end-to-end
-    const pipeQuoted = await bashTool.execute({ command: 'rg "err|warn" src' }, ctx)
-    assert.ok(!pipeQuoted.output.includes("失败"), 'quoted pipe passes P3 in-tool (rg "err|warn" src)')
-    // round-3 major #2: assignment prefix rejected in-tool with the right reason
-    const assignCmd = await bashTool.execute({ command: "BASH_ENV=x.sh ls" }, ctx)
-    assert.ok(assignCmd.output.includes("phase=permission"), "assignment prefix -> permission in-tool")
-    assert.ok(assignCmd.output.includes("赋值"), "assignment prefix reason surfaced in-tool")
-  }
-  // Test-Path: existence probes are read-only — allowlisted so PTC/tm_bash
-  // can run the version/env-path check batch a real session ran as 3 bash
-  // round-trips (embedded $env: inside the command still trips R6 by design)
+  // 6e. R6 reuse in-tool (tm_read/tm_grep/tm_bash) — RETIRED with the v1
+  //  personality.  Those three passthroughs were the in-tool R6 layer this
+  //  group exercised; they are gone.  R6 itself is unchanged and its matcher
+  //  source is pinned by test-envprotect, and the v2 native shell/read keep the
+  //  same R6 face through src/host/v2-guard.ts.
+  console.log("6e. R6 reuse in-tool: SKIPPED — tm_read/tm_grep/tm_bash retired with v1; R6 matchers pinned by test-envprotect")
+
+
+  // 6f. P3 allowlist through tm_bash — RETIRED with the v1 personality.  tm_bash
+  //  is gone; the P3 read-only matrix itself is unchanged and stays pinned by
+  //  group 5 (classifyReadonlyCommand directly).  The Test-Path existence-probe
+  //  allowlisting below is kept because classifyReadonlyCommand is still a live
+  //  shared function (bash-timeout.ts resolves the probe ceiling through it).
   assert.equal(
     tm.classifyReadonlyCommand("Test-Path \"x\"", tm.DEFAULT_BASH_READONLY_ALLOWED).ok,
     true,
     "Test-Path allowlisted (read-only existence probe)",
   )
+  console.log("6f. P3 matrix through tm_bash: SKIPPED — tm_bash retired with v1; P3 matrix pinned by group 5, Test-Path kept above")
 
-  console.log("6f. P3 matrix through tm_bash: OK (allow, deny, redirect, substitution, find -delete, tail -f, -Wait, quoted pipe, assignment prefix)")
 
-  // 6g. tm_bash success + offload + shell error structure
-  {
-    const bashOut = (await bashTool.execute({ command: "cat big.log" }, ctx)).output
-    assert.ok(bashOut.includes("已卸载"), "big bash output offloads")
-    assert.ok(bashOut.includes("cat big.log"), "bash preview clue carries command")
-    // limit 2500 is capped to TM_FETCH_MAX_LINES=2000 — slice equality proves round-trip
-    const bRef = refOf(bashOut)
-    const fetchBack = (await fetchTool.execute({ ref: bRef, access_token: tokOf(bashOut), limit: 2500 }, ctx)).output
-    assert.ok(fetchBack.includes("共 2500 行"), "bash payload round-trip: full line count")
-    assert.ok(fetchBack.includes("已返回 2000 行"), "bash payload round-trip: fetch cap applies")
-    assert.ok(fetchBack.endsWith(bigLines.slice(0, 2000).join("\n")), "bash payload round-trips via tm_fetch")
-    // shell failure -> structured error with line extraction + noise stripped
-    const failing$ = () => { throw { stderr: "\x1b[31mcat: secret: line 3: permission denied\x1b[0m\n\n\n", message: "Command failed" } }
-    const runtimeFail = await tm.createTmTools({ directory: root6, client: fakeClient({}), $: failing$ })
-    const shellErr = await runtimeFail.tools.tm_bash.execute({ command: "cat secret" }, ctx)
-    assert.ok(shellErr.output.includes("[tm_bash 失败 · phase=execute · line=3]"), "shell error phase+line rendered")
-    assert.ok(shellErr.output.includes("permission denied"), "shell error message kept")
-    assert.ok(!shellErr.output.includes("\x1b[31m"), "ANSI stripped")
-  }
-  console.log("6g. tm_bash execution: OK (offload round-trip, clue, structured shell error + line)")
+  // 6g. tm_bash execution (offload round-trip, clue, structured shell error) —
+  //  RETIRED with the v1 personality.  tm_bash is gone.  The offload round-trip
+  //  through tm_fetch it exercised is still covered by 6b/6c (which now drive
+  //  the shared govern seam directly), and the shell-error structuring lives in
+  //  shell-bridge.ts, not in a v2-registered tool.
+  console.log("6g. tm_bash execution: SKIPPED — tm_bash retired with v1; offload round-trip covered by 6b/6c")
 
-  // 6g2. An EMPTY result is an answer, not a mystery.  Live cost: a 0-line
-  // `Get-Content | Select-Object -Skip 168` and a 0-hit tm_grep both came back
-  // as nothing, and the model burned rounds deciding whether the tool had run
-  // at all — then wrote down the wrong conclusion ("output got swallowed").
-  {
-    const rtEmpty = await tm.createTmTools({ directory: mktmp("empty6"), client: fakeClient({}), $: fake$Ok("") })
-    const emptyBash = (await rtEmpty.tools.tm_bash.execute({ command: "ls" }, ctx)).output
-    assert.ok(emptyBash.includes("stdout 为空") && emptyBash.includes("0 行"), "empty bash output states that it produced 0 lines")
-    assert.ok(emptyBash.includes("cwd="), "…names the directory relative paths resolved against")
-    assert.ok(emptyBash.includes("tm_read"), "…and points at the tool that reads files without the shell's decoding")
-    const emptyGrep = (await rtEmpty.tools.tm_grep.execute({ pattern: "ArkType|ark_type" }, ctx)).output
-    assert.ok(emptyGrep.includes("0 命中"), "a 0-hit grep reports the count instead of returning nothing")
-    assert.ok(emptyGrep.includes("ArkType|ark_type"), "…echoes the pattern it judged")
-    assert.ok(emptyGrep.includes("不证明整个仓库没有"), "…and bounds the claim: 0 here is not 0 everywhere")
-    assert.ok(!emptyGrep.includes("去掉 path"), "a root-wide search is NOT told to widen a scope it never narrowed")
-    const narrowed = (await rtEmpty.tools.tm_grep.execute({ pattern: "nothing-here", path: "src" }, ctx)).output
-    assert.ok(narrowed.includes('path="src"'), "a narrowed search names the path that produced the 0, so the widening move is actionable")
-    const rtFull = await tm.createTmTools({
-      directory: mktmp("empty6b"),
-      client: fakeClient({ __grep: "src/a.ts:3:hello" }),
-      $: fake$Ok("one line"),
-    })
-    const fullBash = (await rtFull.tools.tm_bash.execute({ command: "ls" }, ctx)).output
-    assert.ok(fullBash.trim() === "one line" && !fullBash.includes("stdout 为空"), "a command that DID print is returned untouched — the note never rides along")
-    const fullGrep = (await rtFull.tools.tm_grep.execute({ pattern: "hello" }, ctx)).output
-    assert.ok(fullGrep.includes("src/a.ts:3:hello") && !fullGrep.includes("0 命中"), "and a real hit is not decorated either")
-  }
 
-  // 6k. P0 regression: the shell-bridge fallback must reach the PTC pipeline
-  // too.  v1.5.4 resolved the Bun-global $ fallback for the MAIN tm_bash
-  // path only — PTC's pipeline instance got input.$ raw, so on desktops
-  // where the loader does not pass $ through, every PTC tm.bash bridged
-  // call died with "宿主 shell 桥（$）不可用".
-  {
-    const prev$ = globalThis.$
-    const prevBun$ = globalThis.Bun ? globalThis.Bun.$ : undefined
-    const hadBun = Boolean(globalThis.Bun)
-    globalThis.$ = fake$Ok("bridge-ok")
-    try {
-      const rt = await tm.createTmTools({ directory: root6, client: fakeClient({}) }) // NO input.$
-      const mainOut = (await rt.tools.tm_bash.execute({ command: "ls" }, ctx)).output
-      assert.ok(mainOut.includes("bridge-ok"), "main tm_bash uses the Bun-global $ fallback")
-      const ptc = await rt.tools.tm_ptc_run.execute(
-        { program: 'const r = await tm.bash({ command: "ls" }); return r.ok ? r.data : r.error.message' },
-        ctx,
-      )
-      assert.ok(ptc.output.includes("bridge-ok"), "PTC tm.bash bridging uses the SAME $ fallback")
-      assert.ok(!ptc.output.includes("不可用"), "no missing-shell-bridge error anywhere in the PTC run")
-    } finally {
-      if (prev$ === undefined) delete globalThis.$
-      else globalThis.$ = prev$
-      if (!hadBun) { /* no Bun global to restore */ }
-      else if (prevBun$ === undefined) delete globalThis.Bun.$
-      else globalThis.Bun.$ = prevBun$
-    }
-  }
-  console.log("6k. shell-bridge fallback shared by main + PTC pipelines: OK (P0)")
+  // 6g2. EMPTY result self-report (tm_bash / tm_grep) — RETIRED with the v1
+  //  personality.  The "stdout 为空 = 0 行输出" / "（0 命中）" self-reporting was
+  //  built into tm_bash/tm_grep, which are gone.  On v2 the host's native
+  //  shell/grep results are governed by src/host/v2-offload.ts, and the empty-
+  //  result contract is a property of those tools, not of the shared pipeline.
+  console.log("6g2. empty-result self-report: SKIPPED — tm_bash/tm_grep retired with v1")
+
+
+  // 6k. shell-bridge fallback shared by main + PTC pipelines — RETIRED with the
+  //  v1 personality.  This P0 regression proved the Bun-global `$` fallback
+  //  reached BOTH the main tm_bash pipeline and the PTC pipeline; tm_bash and
+  //  tm_ptc_run are both gone, so there is no second pipeline instance to keep
+  //  in sync.  shell-bridge.ts itself (runShellCommand / cleanShellError) stays
+  //  in the tree and is exercised by the shared govern helpers above.
+  console.log("6k. shell-bridge main+PTC fallback: SKIPPED — tm_bash + tm_ptc_run retired with v1, no second pipeline")
+
 
   // 6m. tm_webfetch — governed web fallback channel (granted ONLY to team +
   // researcher; see the whitelist matrix in test-default-agent §6).  Pure
@@ -1183,11 +1101,11 @@ try {
       }),
       $: fake$Ok(""),
     })
-    const inline3 = (await runtimeT.tools.tm_read.execute({ path: "t3000.txt" }, ctx)).output
+    const inline3 = offRead(runtimeT, "a".repeat(12000), "text", "path=t3000.txt").output
     assert.ok(inline3.startsWith("aaaa") && !inline3.includes("已卸载"), "TEXT tier: 3000 tokens rides inline (4000 boundary)")
-    const off4 = (await runtimeT.tools.tm_read.execute({ path: "t4000.txt" }, ctx)).output
+    const off4 = offRead(runtimeT, "a".repeat(16000), "text", "path=t4000.txt").output
     assert.ok(off4.includes("已卸载") && off4.includes("tokens: 4000"), "TEXT tier: == 4000 offloads (conservative boundary)")
-    const jsonOff = (await runtimeT.tools.tm_read.execute({ path: "j2500.json" }, ctx)).output
+    const jsonOff = offRead(runtimeT, jsonBig, "json", "path=j2500.json").output
     assert.ok(jsonOff.includes("已卸载") && jsonOff.includes("content_type: json"), "DATA tier: json >= 2000 still offloads")
 
     // (b) fields projection on the json handle
@@ -1207,7 +1125,7 @@ try {
     assert.ok(!projItems.includes("uuuu"), "raw json body stays behind the handle (projection only)")
 
     // (c) non-json handle: fields IGNORED, classic paged mode serves
-    const textOff = (await runtimeT.tools.tm_read.execute({ path: "t4000.txt" }, ctx)).output
+    const textOff = offRead(runtimeT, "a".repeat(16000), "text", "path=t4000.txt").output
     const tRef = refOf(textOff)
     const tTok = tokOf(textOff)
     const stillLines = (await runtimeT.tools.tm_fetch.execute({ ref: tRef, access_token: tTok, fields: "items[]" }, ctx)).output
@@ -2485,7 +2403,7 @@ try {
       $: fake$Ok(""),
     })
     delete process.env.TM_BLACKBOARD_DIR
-    const degraded = (await runtimeD.tools.tm_read.execute({ path: "big2000.txt" }, ctx)).output
+    const degraded = offRead(runtimeD, "c".repeat(80000), "text", "path=big2000.txt").output
     assert.ok(degraded.includes("[警告]"), "degraded: warning banner present")
     assert.ok(degraded.includes("降级"), "degraded: warning text present")
     assert.ok(degraded.includes("--- 内容（截断）"), "degraded: truncation marker")
@@ -2493,47 +2411,14 @@ try {
   }
   console.log("6h. degraded path: OK (store failure -> truncated + warning in output, no throw)")
 
-  // 6j. BUG#2 regression: REAL host client shapes (tester-probed, no `ok` field) —
-  //   file.read -> {data:{type:"text",content}, request, response}
-  //   find.text -> {data:[{path, lines[], line}, ...], request, response}
-  {
-    const realClient = {
-      file: {
-        read: async () => ({ data: { type: "text", content: "real-host file body" }, request: {}, response: {} }),
-      },
-      find: {
-        text: async () => ({
-          data: [
-            { path: "src/app.ts", lines: ["export function a() {}", "const b = 1"], line: 12 },
-            { path: "src/b.ts", lines: ["const c = 3"], line: 40 },
-          ],
-          request: {},
-          response: {},
-        }),
-      },
-    }
-    const rt = await tm.createTmTools({ directory: root6, client: realClient, $: fake$Ok("") })
-    const readRes = await rt.tools.tm_read.execute({ path: "small.txt" }, ctx)
-    assert.equal(readRes.output, "real-host file body", "BUG#2: ok-less file.read envelope unwraps")
-    const grepRes = await rt.tools.tm_grep.execute({ pattern: "x" }, ctx)
-    assert.ok(grepRes.output.includes("src/app.ts:12: export function a() {}"), "BUG#2: match path:line:text extraction")
-    assert.ok(grepRes.output.includes("src/b.ts:40: const c = 3"), "BUG#2: second match extracted")
-    // big real-shape match array -> offload; the 命中 N 行 clue must match the
-    // RENDERED hit lines (previously JSON-stringified and mismatched)
-    const many = Array.from({ length: 600 }, (_, i) => ({
-      path: `src/f${i}.ts`, lines: [`const v${i} = ${i}; ${"x".repeat(40)}`], line: i + 1,
-    }))
-    const rt2 = await tm.createTmTools({
-      directory: root6,
-      client: { ...realClient, find: { text: async () => ({ data: many, request: {}, response: {} }) } },
-      $: fake$Ok(""),
-    })
-    const bigGrep = await rt2.tools.tm_grep.execute({ pattern: "v" }, ctx)
-    assert.ok(bigGrep.output.includes("已卸载"), "BUG#2: real-shape match array offloads")
-    assert.ok(/命中 600 行/.test(bigGrep.output), "BUG#2: match-count clue from rendered hit lines")
-    assert.ok(bigGrep.output.includes("src/f0.ts:1:"), "BUG#2: path:line structure survives into preview")
-  }
-  console.log("6j. real-host client shapes: OK (ok-less unwrap, match path/line/text extraction, hit count)")
+  // 6j. BUG#2 real-host client shapes (tm_read / tm_grep unwrap) — RETIRED with
+  //  the v1 personality.  The ok-less file.read / find.text envelope unwrapping
+  //  this group pinned lived inside tm_read/tm_grep, which are gone.  On v2 the
+  //  host's native read/grep results are governed by src/host/v2-offload.ts
+  //  through the SAME pipelines.govern, and its shape handling is pinned by
+  //  test-v2-adapter (the native-offload group).
+  console.log("6j. real-host client shapes: SKIPPED — tm_read/tm_grep retired with v1; v2 native unwrap pinned by test-v2-adapter")
+
 
   // 6i. trajectory append-only across real tool calls
   {
@@ -2548,750 +2433,39 @@ try {
   }
   console.log("6i. trajectory across calls: OK (byte-prefix growth, fetch events)")
 
-  /* ---------- 7. loader integration: tool segment next to config + R6 hook ---------- */
-  {
-    clearTmEnv()
-    const hooks = await plugin.server({ directory: root6, client: fakeClient({}), $: fake$Ok("") }, { envProtect: true })
-    assert.equal(typeof hooks.config, "function", "config hook still present")
-    assert.equal(typeof hooks["tool.execute.before"], "function", "R6 hook still present")
-    assert.ok(hooks.tool, "tool segment present")
-    for (const name of ["tm_read", "tm_grep", "tm_bash", "tm_fetch"]) {
-      const def = hooks.tool[name]
-      assert.equal(typeof def.execute, "function", `${name}: execute present`)
-      assert.ok(def.description && def.description.length > 100, `${name}: description written`)
-    }
-    assert.ok(hooks.tool.tm_bash.description.includes("PowerShell"), "tm_bash: dialect note")
-    assert.ok(hooks.tool.tm_bash.description.includes("R6"), "tm_bash: R6 note")
-    assert.ok(hooks.tool.tm_bash.description.includes("READ-ONLY"), "tm_bash: READ-ONLY promise (M1 fixed)")
-    assert.ok(hooks.tool.tm_bash.description.includes("command substitution"), "tm_bash: substitution escape documented")
-    assert.ok(hooks.tool.tm_bash.description.includes("-Wait"), "tm_bash: PS -Wait hang documented")
-    assert.ok(hooks.tool.tm_grep.description.includes("rg"), "tm_grep: names rg (anti-#14791)")
-    assert.ok(hooks.tool.tm_grep.description.includes("PREFER"), "tm_grep: preference guidance")
-    assert.ok(hooks.tool.tm_grep.description.includes("tm_fetch"), "tm_grep: handle protocol")
-    assert.ok(hooks.tool.tm_grep.description.includes("expire_at"), "tm_grep: handle shape complete (nit)")
-    assert.ok(hooks.tool.tm_read.description.includes("TM_OFFLOAD_THRESHOLD"), "tm_read: threshold documented")
-    assert.ok(hooks.tool.tm_fetch.description.includes("access_token"), "tm_fetch: auth documented")
-    assert.ok(hooks.tool.tm_fetch.description.includes("structure"), "tm_fetch: structure mode documented")
-    // BUG#1: every execute() returns the ToolResult contract — {output: string},
-    // never a bare object (bare objects crash the host result pipeline: c.split)
-    const probe = await hooks.tool.tm_read.execute({ path: ".env" }, { directory: root6 })
-    assert.ok(
-      probe && typeof probe === "object" && typeof probe.output === "string" && probe.output.length > 0,
-      "BUG#1: execute returns {output: string} satisfying ToolResult",
-    )
-    // BUG#3: args is a ZodRawShape (plain {key: validator} object), NOT a
-    // z.object() wrapper (the wrapper serialized garbage into the LLM spec)
-    let zodAvailable = false
-    try {
-      const zm = await import("zod")
-      zodAvailable = Boolean(zm?.z ?? zm?.default?.z)
-    } catch {}
-    for (const name of ["tm_read", "tm_grep", "tm_bash", "tm_fetch"]) {
-      const def = hooks.tool[name]
-      assert.ok(def.args && typeof def.args === "object", `${name}: args present`)
-      assert.equal(typeof def.args.parse, "undefined", `${name}: args is a raw shape (no z.object wrapper)`)
-      assert.ok(!("_def" in def.args), `${name}: args is not itself a zod validator`)
-      if (zodAvailable) {
-        assert.ok(
-          Object.values(def.args).some((v) => v && typeof v === "object" && "_def" in v),
-          `${name}: raw-shape values are zod validators`,
-        )
-      }
-    }
-  }
-  console.log("7. loader integration: OK (config + R6 hook + tool segment, ToolResult shape, ZodRawShape args)")
+  /* ---------- 7. loader integration (v1) — RETIRED with the v1 personality (1.7.0 cut) ----------
+   *  This group asserted plugin.server() returned hooks.config / hooks['tool.execute.before'] / hooks.tool with
+   *  tm_read/tm_grep/tm_bash registered. v2 never registers those three, and v1 is gone, so keeping the
+   *  body would mean resurrecting the v1 loader. The v2 equivalents (ToolResult shape, args raw-shape,
+   *  description surface) are pinned by test-v2-adapter groups 1 and 3. The NUMBER stays so 7b-7d2 and
+   *  8-16 do not renumber and break every historical reference to them. */
+  console.log("7. loader integration: SKIPPED — v1 personality removed; v2 surface pinned by test-v2-adapter 1/3")
 
-  /* ---------- 8. hook-level alias: tm_* pass through R6's own interception ---------- */
-  {
-    clearTmEnv()
-    const hooks = await plugin.server({ directory: root6 }, { envProtect: true })
-    await assert.rejects(
-      hooks["tool.execute.before"]({ tool: "tm_read" }, { args: { path: ".env" } }),
-      (err) => err.message.startsWith(ep.ENV_PROTECT_MESSAGE) && err.message.includes("[category=env-file-path]"),
-      "hook blocks tm_read .env",
-    )
-    await assert.rejects(
-      hooks["tool.execute.before"]({ tool: "tm_bash" }, { args: { command: "printenv" } }),
-      (err) => err.message.includes("[category=bash-env-command]"),
-      "hook blocks tm_bash printenv",
-    )
-    await assert.rejects(
-      hooks["tool.execute.before"]({ tool: "tm_grep" }, { args: { pattern: "*.env", path: "src" } }),
-      (err) => err.message.includes("[category=env-file-path]"),
-      "hook blocks tm_grep env-file pattern",
-    )
-    await hooks["tool.execute.before"]({ tool: "tm_read" }, { args: { path: "src/app.ts" } }) // passes
-    await hooks["tool.execute.before"]({ tool: "tm_bash" }, { args: { command: "ls -la" } }) // passes
-    // single source: R6 off disables BOTH layers (hook + in-tool)
-    process.env.TM_ENV_PROTECT = "off"
-    const hooksOff = await plugin.server({ directory: root6 }, { envProtect: true })
-    await hooksOff["tool.execute.before"]({ tool: "tm_read" }, { args: { path: ".env" } })
-    const runtimeOff = await tm.createTmTools({
-      directory: root6, client: fakeClient({ "small.txt": smallPayload }), $: fake$Ok(""),
-    })
-    const offRead = await runtimeOff.tools.tm_read.execute({ path: "small.txt" }, ctx)
-    assert.equal(offRead.output, smallPayload, "off mode: tools unaffected (same source)")
-  }
-  console.log("8. hook alias: OK (tm_* covered by R6 hook, off disables both layers)")
 
-  /* ---------- 9. tm_ptc_run (M1 contract skeleton) ---------- */
+  /* ---------- 8. hook-level alias (tm_* pass through R6's own interception) —
+   *  RETIRED with the v1 personality (1.7.0 cut).  This group drove the v1
+   *  plugin.server() tool.execute.before hook to prove tm_read/tm_grep/tm_bash
+   *  were covered by R6 at the hook layer.  Those three tools are gone and v1's
+   *  loader is gone; the v2 R6 face over the host's native shell/read is pinned
+   *  by test-v2-adapter (guard) and test-envprotect (matchers). ---------- */
+  console.log("8. hook alias: SKIPPED — v1 loader + tm_read/tm_grep/tm_bash removed; v2 R6 face pinned by test-v2-adapter/test-envprotect")
+
+
+
+  /* ---------- 9. tm_ptc_run (M1-M3 contract) - RETIRED with the v1 personality (1.7.0 cut).
+   *  tm_ptc_run was the v1-only batch-orchestration tool (src/tm/ptc/ is deleted,
+   *  and it was never registered on v2 - the host native Code Mode execute program
+   *  runs one program over N governed calls).  This group 9a-9l asserted the PTC
+   *  config knobs, budget clamp, arg schema, staticPscan, the five/six engine
+   *  statuses, composite step numbering, trajectory shapes, the rendered summary,
+   *  the tool registration, the real WorkerEngine/InlineVmEngine runs, the T6 web
+   *  bridge, and the C1 escape containment - all against code that no longer
+   *  exists.  The shared governance the bridge rode (pipelines.govern + offload
+   *  handles) stays pinned by groups 1-6; the v2 Code-Mode surface is the host own,
+   *  not ours.  The NUMBER stays so 10-16 do not renumber. ---------- */
   clearTmEnv()
-  {
-    // 9a. config resolution for the PTC knobs (typed defaults + fail-soft)
-    const cfg = tm.resolveTmConfig({})
-    assert.equal(cfg.ptcMaxProgramChars, 4000, "ptc default program cap")
-    assert.equal(cfg.ptcMaxCalls, 20, "ptc default max calls")
-    assert.equal(cfg.ptcMaxErrors, 3, "ptc default max errors")
-    assert.equal(cfg.ptcTimeoutMs, 60000, "ptc default timeout")
-    assert.equal(cfg.ptcEngine, "auto", "ptc default engine")
-    const ptcEnv = tm.resolveTmConfig({
-      TM_PTC_MAX_CALLS: "50", TM_PTC_MAX_ERRORS: "10", TM_PTC_TIMEOUT_MS: "300000",
-      TM_PTC_ENGINE: "worker", TM_PTC_MAX_PROGRAM_CHARS: "8000",
-    })
-    assert.equal(ptcEnv.ptcMaxCalls, 50, "ptc calls env override")
-    assert.equal(ptcEnv.ptcMaxErrors, 10, "ptc errors env override")
-    assert.equal(ptcEnv.ptcTimeoutMs, 300000, "ptc timeout env override")
-    assert.equal(ptcEnv.ptcEngine, "worker", "ptc engine env override")
-    assert.equal(ptcEnv.ptcMaxProgramChars, 8000, "ptc program cap env override")
-    // out-of-range env values fall back to defaults (envInt guard)
-    assert.equal(tm.resolveTmConfig({ TM_PTC_MAX_CALLS: "9999" }).ptcMaxCalls, 20, "calls over 200 -> default")
-    assert.equal(tm.resolveTmConfig({ TM_PTC_TIMEOUT_MS: "1000" }).ptcTimeoutMs, 60000, "timeout under 5s -> default")
-    assert.equal(tm.resolveTmConfig({ TM_PTC_ENGINE: "garbage" }).ptcEngine, "auto", "bad engine -> auto")
-    console.log("9a. PTC config: OK (typed defaults, env overrides, range guards)")
+  console.log("9. tm_ptc_run (9a-9l): SKIPPED - PTC removed with the v1 personality (src/tm/ptc/ deleted); shared governance pinned by groups 1-6")
 
-    // 9b. clamp matrix — callers may only TIGHTEN (ceiling=cfg, floor=hard)
-    assert.deepEqual(tm.resolvePtcBudgets(cfg, {}), { maxCalls: 20, maxErrors: 3, timeoutMs: 60000 }, "omit -> ceilings")
-    assert.deepEqual(
-      tm.resolvePtcBudgets(cfg, { max_calls: 5, max_errors: 1, timeout_ms: 10000 }),
-      { maxCalls: 5, maxErrors: 1, timeoutMs: 10000 }, "tighten honored",
-    )
-    assert.deepEqual(
-      tm.resolvePtcBudgets(cfg, { max_calls: 9999, max_errors: 100, timeout_ms: 99999999 }),
-      { maxCalls: 20, maxErrors: 3, timeoutMs: 60000 }, "cannot loosen past ceiling",
-    )
-    assert.deepEqual(
-      tm.resolvePtcBudgets(cfg, { max_calls: 0, max_errors: -5, timeout_ms: 100 }),
-      { maxCalls: 1, maxErrors: 1, timeoutMs: 5000 }, "cannot go below floor",
-    )
-    assert.equal(tm.resolvePtcBudgets(cfg, { max_calls: "abc" }).maxCalls, 20, "garbage -> ceiling")
-    const cfg50 = { ...cfg, ptcMaxCalls: 50, ptcMaxErrors: 10, ptcTimeoutMs: 120000 }
-    assert.equal(tm.resolvePtcBudgets(cfg50, { max_calls: 40 }).maxCalls, 40, "tighten under custom ceiling")
-    assert.equal(tm.resolvePtcBudgets(cfg50, { max_calls: 100 }).maxCalls, 50, "clamp to custom ceiling")
-    console.log("9b. budget clamp: OK (tighten-only, ceiling/floor, garbage)")
-
-    // 9c. arg validation (program length, empty, label truncate, default label)
-    const overCap = tm.parsePtcArgs({ program: "x".repeat(4001) }, cfg)
-    assert.equal(overCap.ok, false, "program over cap rejected")
-    assert.equal(overCap.error.error.phase, "args", "over-cap is an args error")
-    assert.equal(tm.parsePtcArgs({ program: "   " }, cfg).ok, false, "blank program rejected")
-    const longLabel = tm.parsePtcArgs({ program: "return 1", label: "z".repeat(100) }, cfg)
-    assert.equal(longLabel.args.label.length, 80, "label truncated to 80")
-    const defLabel = tm.parsePtcArgs({ program: "return 1" }, cfg)
-    assert.equal(defLabel.ok, true, "valid program")
-    assert.equal(defLabel.args.label, "ptc-run", "default label")
-    // Wave B Minor② — budgets REJECT unknown keys (loud validation). A typo
-    // like max_call (missing the s) used to slip past the type + per-field
-    // checks and silently resolve to the ceiling default; now it is a hard
-    // args error that NAMES the offending key and the legal set.
-    const typoBudgets = tm.parsePtcArgs({ program: "return 1", budgets: { max_call: 3 } }, cfg)
-    assert.equal(typoBudgets.ok, false, "budgets unknown key (max_call) is REJECTED, not silently defaulted")
-    assert.equal(typoBudgets.error.error.phase, "args", "unknown budget key -> args-phase error")
-    assert.ok(typoBudgets.error.error.message.includes("max_call"), "the unknown key is NAMED in the error")
-    assert.ok(typoBudgets.error.error.message.includes("max_calls") && typoBudgets.error.error.message.includes("timeout_ms"), "the legal key set is named")
-    const okBudgets = tm.parsePtcArgs({ program: "return 1", budgets: { max_calls: 3, max_errors: 1, timeout_ms: 8000 } }, cfg)
-    assert.equal(okBudgets.ok, true, "all-legal budgets keys still pass")
-    assert.deepEqual(okBudgets.args.budgets.setByUser, ["max_calls", "max_errors", "timeout_ms"], "legal keys resolve + tracked")
-    console.log("9c. arg schema: OK (length cap, blank reject, label trunc/default, budgets reject unknown key w/ legal-set hint)")
-
-    // static pre-scan (the FIRST gate — wired into runPtc + the tool since M2)
-    assert.equal(tm.staticPscan("const x=await tm.read({})").rejected, false, "clean program passes pscan")
-    assert.equal(tm.staticPscan("require('fs')").rejected, true, "require caught by pscan")
-    assert.equal(tm.staticPscan("process.exit(1)").rejected, true, "process caught by pscan")
-    assert.ok(tm.staticPscan("globalThis.x").tokens.includes("globalThis"), "globalThis token reported")
-    // T6/C1: the pre-scan strips string / comment / regex-literal / template-
-    // TEXT bodies first, so a grep pattern (or comment) that merely MENTIONS a
-    // banned word is DATA, not an executable escape.  But a template's ${...}
-    // INTERPOLATION is executed, so it is RETAINED and scanned (the old stripper
-    // deleted the whole template and missed `x ${require(...)} y`).
-    // executable tokens (outside any literal) are still caught.
-    assert.equal(tm.stripNonExecutable('tm.grep({ pattern: "require|process" })'), 'tm.grep({ pattern:   })', "strip replaces the string body with a single space")
-    assert.equal(tm.staticPscan('return await tm.grep({ pattern: "require|process|globalThis|fs" })').rejected, false, "banned words INSIDE a search-pattern string do not reject")
-    assert.equal(tm.staticPscan('`see the require docs for process`').rejected, false, "banned words in template TEXT do not reject")
-    assert.equal(tm.staticPscan('const msg = `x ${ process.exit(1) } y`').rejected, true, "C1: a banned call inside a ${...} INTERPOLATION is now scanned (old stripper deleted it)")
-    assert.ok(tm.staticPscan('`${ require("fs") }`').tokens.includes("require"), "require inside an interpolation is reported")
-    assert.equal(tm.staticPscan('const o = { pattern: /\\brequire\\b/ }; return o').rejected, false, "C1: a regex LITERAL naming a banned word is data, not an escape (false-positive fixed)")
-    assert.ok(tm.staticPscan('return tm.read.constructor("x")').tokens.includes("constructor("), "constructor( escape call-site token")
-    assert.ok(tm.staticPscan('return eval("1")').tokens.includes("eval("), "eval( escape call-site token")
-    assert.ok(tm.staticPscan('return Function("x")()').tokens.includes("Function("), "Function( escape call-site token")
-    assert.equal(tm.staticPscan("// use require() or process.exit here\nreturn 1").rejected, false, "banned words in a line comment do not reject")
-    assert.equal(tm.staticPscan("/* require, process, globalThis */ return 1").rejected, false, "banned words in a block comment do not reject")
-    assert.equal(tm.staticPscan("/* unterminated require").rejected, true, "unterminated comment tail still scanned (fail-closed)")
-    assert.equal(tm.staticPscan('const s = "a \\" require b"; return s').rejected, false, "escaped quote inside a string does not end it early")
-    assert.equal(tm.staticPscan('require(process.argv)').rejected, true, "real executable require+process still rejected")
-    console.log("9d. staticPscan: OK (executable-only scan strips string/template/comment; real tokens still caught)")
-
-    // run helper (mock bridge — never touches a real client)
-    const engine = () => new tm.InlineSequentialEngine()
-    const runWith = (program, bridge, budgets, nowFn) =>
-      tm.runPtc({
-        program, label: "t", budgets, parentStepId: "s0007", cfg,
-        bridge, engine: engine(), ...(nowFn ? { now: nowFn } : {}),
-      })
-    const MAX = { maxCalls: 10, maxErrors: 3, timeoutMs: 60000 }
-
-    // 9e. five statuses, each independently triggered
-    {
-      const ok = await runWith(
-        'const r = await tm.read({ path: "a" }); return { hello: r }',
-        { call: async () => ({ ok: true, data: "inline-text" }) }, MAX,
-      )
-      assert.equal(ok.status, "ok", "status ok on normal return")
-      assert.equal(ok.returned, true, "returned flag")
-      assert.equal(ok.okCount, 1, "one ok step")
-      assert.equal(ok.calls, 1, "one call")
-
-      const callStop = await runWith(
-        'for (let i = 0; i < 5; i++) { await tm.bash({ command: "ls" }) } return 9',
-        { call: async () => ({ ok: true, data: "x" }) }, { ...MAX, maxCalls: 2 },
-      )
-      assert.equal(callStop.status, "stopped-call-budget", "call budget stops the run")
-      assert.equal(callStop.calls, 2, "exactly maxCalls dispatched")
-      assert.equal(callStop.okCount, 2, "produced ok steps are NOT lost on stop")
-
-      const errStop = await runWith(
-        'for (let i = 0; i < 5; i++) { await tm.grep({ pattern: "p" }) } return 8',
-        { call: async () => ({ ok: false, error: { tool: "tm_grep", phase: "args", message: "bad" } }) },
-        { ...MAX, maxErrors: 2 },
-      )
-      assert.equal(errStop.status, "stopped-error-budget", "error budget stops the run")
-      assert.equal(errStop.errCount, 2, "two error steps recorded")
-      assert.equal(errStop.retries, 0, "args phase is NEVER retried")
-      assert.equal(errStop.okCount, 0, "no ok steps in the all-error run")
-
-      // timeout: the injected clock jumps past the deadline after call #2, so
-      // call #3's pre-check trips the time budget — the 2 produced steps stay.
-      {
-        const start = 1000
-        let clock = start
-        let n = 0
-        const bridge = {
-          call: async () => { n++; if (n === 2) clock = start + 10_000_000; return { ok: true, data: "r" } },
-        }
-        const to = await runWith(
-          'await tm.read({ path: "a" }); await tm.read({ path: "b" }); await tm.read({ path: "c" }); return 3',
-          bridge, { maxCalls: 10, maxErrors: 3, timeoutMs: 5000 }, () => clock,
-        )
-        assert.equal(to.status, "timeout", "deadline trip -> timeout status")
-        assert.equal(to.okCount, 2, "produced steps before the timeout are retained")
-      }
-
-      // engine-error: the program throws on the M1 legacy MAIN-thread engine
-      // (which does not tag program faults — the driver sees a raw reject).
-      {
-        const ee = await runWith('throw new Error("boom")', { call: async () => ({ ok: true, data: "x" }) }, MAX)
-        assert.equal(ee.status, "engine-error", "legacy inline engine: throw -> engine-error")
-        assert.equal(ee.returned, false, "no return value captured")
-        assert.ok(ee.engineError && /boom/.test(ee.engineError.message), "engine error message kept")
-        assert.equal(ee.engineError.phase, "execute", "engine error phase tagged execute")
-      }
-
-      // SIXTH status — program-error: on a SANDBOXED engine (InlineVmEngine) a
-      // program throw is tagged PtcProgramError by the engine -> "program-error"
-      // (NOT engine-error), and auto mode must NOT re-run it.
-      {
-        const pe = await tm.runPtc({
-          program: 'throw new Error("boom-prog")', label: "t", budgets: MAX,
-          parentStepId: "s0007", cfg, engine: new tm.InlineVmEngine(5000),
-          bridge: { call: async () => ({ ok: true, data: "x" }) },
-        })
-        assert.equal(pe.status, "program-error", "sandboxed engine: program throw -> program-error (sixth status)")
-        assert.equal(pe.degraded, false, "program-error never auto-degrades")
-        assert.ok(pe.engineError && /boom-prog/.test(pe.engineError.message), "program-error keeps the message")
-      }
-
-      // retry <=1 on an idempotent phase, then success; retries counted, no err row
-      {
-        let n = 0
-        const bridge = {
-          call: async () => {
-            n++
-            return n === 1
-              ? { ok: false, error: { tool: "tm_read", phase: "client", message: "transient" } }
-              : { ok: true, data: "recovered" }
-          },
-        }
-        const rt = await runWith('const r = await tm.read({ path: "a" }); return r', bridge, MAX)
-        assert.equal(rt.status, "ok", "retry then success is still ok")
-        assert.equal(rt.retries, 1, "one retry counted")
-        assert.equal(rt.okCount, 1, "the retried step is an ok row")
-        assert.equal(rt.errCount, 0, "no error row after a successful retry")
-        assert.equal(n, 2, "bridge called exactly twice (once + one retry)")
-      }
-
-      // a retryable failure AT the deadline must not buy extra wall-clock
-      // time: no retry, the error row is recorded with the run still alive
-      {
-        let n = 0
-        const start = 1000
-        let clock = start
-        const bridge = {
-          call: async () => {
-            n++
-            clock = start + 10_000_000 // deadline blows past DURING the call
-            return { ok: false, error: { tool: "tm_read", phase: "client", message: "transient at the wire" } }
-          },
-        }
-        const dr = await runWith(
-          'const r = await tm.read({ path: "a" }); return r',
-          bridge, { maxCalls: 10, maxErrors: 3, timeoutMs: 5000 }, () => clock,
-        )
-        assert.equal(dr.status, "ok", "a lone error under the budget does not stop the run")
-        assert.equal(dr.retries, 0, "NO retry once past the deadline")
-        assert.equal(n, 1, "bridge called exactly once (retry suppressed)")
-        assert.equal(dr.errCount, 1, "the error step is recorded")
-      }
-    }
-    console.log("9e. six statuses: OK (ok, stopped-call-budget, stopped-error-budget, timeout, engine-error [legacy inline], program-error [sandboxed]) + retry-once")
-
-    // 9f. composite step number survives REF_PATTERN + STEP_FILE, handle parses
-    {
-      const root = mktmp("ptc-ref")
-      const store = new tm.RunStore({
-        projectRoot: root, blackboardDir: ".bb/", trajectoryDir: ".tj/",
-        runId: "r-ptc", ttlDays: 7,
-      })
-      const composite = "s0007.k03"
-      const ref = tm.buildRef("r-ptc", composite)
-      assert.deepEqual(tm.parseRef(ref), { runId: "r-ptc", stepId: composite }, "REF_PATTERN accepts dotted step id")
-      const st = store.writeResult(composite, {
-        tool: "tm_bash", content: '{"error":{}}', tokens: 4, contentType: "json", preview: "p", expireAt: Date.now() + 1000,
-      })
-      assert.equal(st.ref, ref, "store builds the composite ref")
-      assert.equal(store.readStepFile(composite).content, '{"error":{}}', "STEP_FILE round-trips under a dotted step dir")
-      assert.ok(fs.existsSync(path.join(root, ".bb", "runs", "r-ptc", "steps", composite, "001-tm_bash.md")), "error file lands at steps/sXXXX.kNN/")
-      console.log("9f. composite step number: OK (parseRef + writeResult + readStepFile under sXXXX.kNN)")
-    }
-
-    // 9g. trajectory event shapes (design §6): parent call + child call/result/
-    //     error (with ptc parent tag) + finish (with counters + status)
-    {
-      const root = mktmp("ptc-tj")
-      const store = new tm.RunStore({
-        projectRoot: root, blackboardDir: ".bb/", trajectoryDir: ".tj/",
-        runId: "r-tj", ttlDays: 7,
-      })
-      const out = await tm.runPtc({
-        program: 'await tm.read({ path: "a" }); await tm.read({ path: "b" }); return 1',
-        label: "L", budgets: { maxCalls: 5, maxErrors: 2, timeoutMs: 60000 },
-        parentStepId: "s0007", cfg, store,
-        engine: engine(),
-        bridge: { call: async () => ({ ok: false, error: { tool: "tm_read", phase: "permission", message: "denied" } }) },
-      })
-      assert.equal(out.status, "stopped-error-budget", "two permission errors trip the budget")
-      const lines = fs.readFileSync(store.trajectoryFile(), "utf8").trim().split("\n").map((l) => JSON.parse(l))
-      const parentCall = lines.find((l) => l.tool === "tm_ptc_run" && l.event === "call")
-      assert.ok(parentCall && parentCall.step_id === "s0007", "parent call event on the PTC step id")
-      assert.equal(parentCall.label, "L", "parent call carries label")
-      assert.ok(/^[0-9a-f]{64}$/.test(parentCall.program_sha256), "parent call carries program sha256")
-      assert.ok(parentCall.budgets && parentCall.budgets.maxCalls === 5, "parent call carries budgets")
-      const childCalls = lines.filter((l) => l.event === "call" && l.tool === "tm_read")
-      assert.equal(childCalls.length, 2, "two child call events")
-      assert.ok(childCalls.every((c) => /^s0007\.k\d\d$/.test(c.step_id)), "child step ids are composite sXXXX.kNN")
-      assert.equal(childCalls[0].ptc, "s0007", "child call carries ptc parent tag")
-      const errEv = lines.find((l) => l.event === "error")
-      assert.equal(errEv.phase, "permission", "error event carries phase")
-      assert.equal(errEv.retry, false, "permission error not retried (retry:false flag present)")
-      assert.ok(/\/steps\/s0007\.k\d\d\/result$/.test(errEv.ref), "error event carries the composite full-text ref")
-      const finish = lines.find((l) => l.tool === "tm_ptc_run" && l.event === "finish")
-      assert.equal(finish.status, "stopped-error-budget", "finish carries the final status")
-      assert.equal(finish.calls, 2, "finish calls count")
-      assert.equal(finish.errors, 2, "finish errors count")
-      assert.ok(fs.existsSync(path.join(root, ".bb", "runs", "r-tj", "steps", "s0007.k01", "001-tm_read.md")), "full error persisted under composite dir")
-      console.log("9g. trajectory shapes: OK (parent call + child call/error + finish, ptc tags, composite refs)")
-    }
-
-    // 9h. summary shape pin (fixed headers verbatim + row formats)
-    {
-      const oc = await runWith(
-        'const r = await tm.read({ path: "a" }); return 1',
-        { call: async () => ({ ok: true, data: "hello" }) }, MAX,
-      )
-      const text = tm.renderPtcSummary(oc)
-      const L = text.split("\n")
-      assert.equal(tm.PTC_SUMMARY_HEADER, "PTC 摘要", "summary header const")
-      assert.equal(L[0], `PTC 摘要 · t · status=ok`, "line0 verbatim label+status")
-      assert.equal(tm.PTC_OK_SECTION, "-- 成功分部（≤8 行，超出整表卸载）", "ok section const verbatim")
-      assert.equal(tm.PTC_OK_HEADER, " #  tool      ms   tokens  落点(inline|ref 短码)", "ok header const verbatim")
-      assert.equal(tm.PTC_ERR_SECTION, "-- 错误分部（全量错误已落 run store）", "err section const verbatim")
-      assert.equal(tm.PTC_ERR_HEADER, " #  tool      phase      line  retry  message(截断)", "err header const verbatim")
-      assert.match(L[1], /^steps=1 ok=1 err=0 retries=0 ms=\d+ {2}engine=inline$/, "metrics line verbatim (two spaces before engine)")
-      // T6: the budgets echo line (T1 fix) now sits between the metrics line
-      // and the ok section, so the "line2" pin is WRONG — locate by content.
-      assert.match(L[2], /^budgets: calls≤10 err≤3 to=60000ms \(defaults\)$/, "budgets echo line (all defaults) sits at line2")
-      const okSec = L.indexOf(tm.PTC_OK_SECTION)
-      assert.ok(okSec >= 0, "ok section present")
-      assert.equal(L[okSec + 1], tm.PTC_OK_HEADER, "ok header right after the section")
-      assert.match(L[okSec + 2], /^ 1 {2}tm_read.*inline$/, "success row: seq + tool + inline dest after header")
-      assert.ok(text.includes(tm.PTC_ERR_SECTION), "err section present even with no errors")
-      assert.ok(text.includes(tm.PTC_ERR_HEADER), "err header present")
-      assert.ok(text.includes(tm.PTC_RETURN_PREFIX + "1"), "return value line")
-      // T6 budgets provenance echo: an over-ceiling call is shown CLAMPED (the
-      // operator sees the squeeze, not just the final number), and a tightened
-      // one is shown as custom with the field named.
-      const clampedRun = await runWith(
-        'return 1', { call: async () => ({ ok: true, data: "x" }) },
-        { ...tm.resolvePtcBudgetsDetailed(cfg, { max_calls: 9999, max_errors: 1 }).budgets, setByUser: ["max_calls", "max_errors"], clamped: ["max_calls"] },
-      )
-      const clampedText = tm.renderPtcSummary(clampedRun).split("\n").find((l) => l.startsWith("budgets:"))
-      assert.ok(clampedText.includes("CLAMPED: max_calls"), "over-ceiling field flagged CLAMPED")
-      assert.ok(clampedText.includes("custom: max_calls, max_errors"), "user-set fields named")
-      assert.ok(!clampedText.includes("CLAMPED: max_errors"), "non-clamped set field not flagged")
-      // an offloaded success row shows the ref short code
-      const oc2 = await runWith(
-        'await tm.bash({ command: "ls" }); return 1',
-        { call: async () => ({ ok: true, data: { offloaded: true, ref: "tm://runs/r/steps/s0007.k01/result", tokens: 9000 } }) }, MAX,
-      )
-      assert.ok(tm.renderPtcSummary(oc2).includes("ref:s0007.k01"), "offloaded row shows ref short code")
-      // educator line: ok steps + no returned data → warning present;
-      // runs WITH a return value carry no warning
-      const nr = await runWith(
-        'await tm.read({ path: "a" }); await tm.grep({ pattern: "x" })',
-        { call: async () => ({ ok: true, data: "piece" }) }, MAX,
-      )
-      const nrText = tm.renderPtcSummary(nr)
-      assert.ok(nrText.includes("程序未 return 数据"), "no-return educator warning present")
-      assert.ok(nrText.includes("2 次成功桥接"), "warning counts the discarded ok steps")
-      assert.ok(!tm.renderPtcSummary(oc).includes("程序未 return 数据"), "runs with a return value carry no warning")
-      // engine-error row shows the program tool + message
-      const ee = await runWith('throw new Error("kaboom")', { call: async () => ({ ok: true, data: "x" }) }, MAX)
-      const eeText = tm.renderPtcSummary(ee)
-      assert.ok(/status=engine-error$/.test(eeText.split("\n")[0]), "engine-error status in header")
-      assert.ok(eeText.includes("tm_ptc_run") && eeText.includes("kaboom"), "engine-error row lists program + message")
-      assert.ok(eeText.includes("引擎错误"), "engine fault renders the 引擎错误 label")
-      // program-error row renders the DISTINCT 程序错误 label (T6 six-state)
-      const peRun = await tm.runPtc({
-        program: 'throw new Error("prog-oom")', label: "t", budgets: MAX,
-        parentStepId: "s0007", cfg, engine: new tm.InlineVmEngine(5000),
-        bridge: { call: async () => ({ ok: true, data: "x" }) },
-      })
-      const peText = tm.renderPtcSummary(peRun)
-      assert.ok(/status=program-error$/.test(peText.split("\n")[0]), "program-error status in header")
-      assert.ok(peText.includes("程序错误") && !peText.includes("引擎错误"), "program fault renders the 程序错误 label (distinct)")
-      assert.ok(peText.includes("prog-oom"), "program-error row keeps the message")
-      console.log("9h. summary shape pin: OK (verbatim headers, metrics format, inline/ref/err rows, return line)")
-    }
-
-    // 9i. tm_ptc_run tool builds + renders summary + IS registered (M3)
-    {
-      const tool = tm.buildPtcRunTool({
-        cfg, store: new tm.RunStore({ projectRoot: mktmp("ptc-tool"), blackboardDir: ".bb", trajectoryDir: ".tj", runId: "r-t", ttlDays: 7 }),
-        nextStepId: () => "s0001", ctx: { directory: process.cwd() }, accessToken: "a".repeat(64),
-        bridge: { call: async () => ({ ok: true, data: "hi" }) },
-      })
-      assert.equal(typeof tool.execute, "function", "ptc tool execute present")
-      assert.ok(tool.description.includes("tm.read") && /zero LLM round-trips/i.test(tool.description) && tool.description.includes("≥3 tm_read"), "ptc description documents the program protocol + trigger threshold")
-      // ZodRawShape-style args (no z.object wrapper; descriptor fallback path)
-      assert.ok(tool.args.program && typeof tool.args.program === "object", "ptc args.raw shape present")
-      const res = await tool.execute({ program: 'const r = await tm.read({ path: "a" }); return r.ok', budgets: { max_calls: 3 } }, { directory: process.cwd() })
-      assert.equal(typeof res.output, "string", "ToolResult {output:string} contract honored")
-      assert.ok(res.output.includes("PTC 摘要") && res.output.includes("status=ok"), "tool output is the aggregation summary")
-      // M3 (v1.5.4 revised): tm_ptc_run IS registered in the tool segment and
-      // ALL SIX agents carry the allow (team included — overrides the tm_*
-      // wildcard; see CHANGELOG 1.5.4)
-      const hooks = await plugin.server({ directory: mktmp("ptc-reg"), client: fakeClient({}), $: fake$Ok("") }, { envProtect: true })
-      assert.ok("tm_ptc_run" in hooks.tool, "tm_ptc_run registered in the tool segment (M3)")
-      assert.deepEqual(
-        Object.keys(hooks.tool).sort(),
-        [
-          "tm_bash", "tm_board_write", "tm_browser", "tm_fetch", "tm_grep", "tm_join",
-          "tm_memory", "tm_ptc_run", "tm_pty", "tm_read", "tm_search", "tm_stats", "tm_webfetch",
-        ],
-        "registered tm_* set: tm_join collects host task children but tm_dispatch is gone (a plugin-spawned child is not closeable by the user), and tm_board_write is the board's write side",
-      )
-      // program over the cap is rejected through the tool as an args error
-      const big = await tool.execute({ program: "x".repeat(4001) }, { directory: process.cwd() })
-      assert.ok(big.output.includes("phase=args") && big.output.includes("program 超过长度上限"), "over-cap program -> args error text")
-    }
-    console.log("9i. tm_ptc_run tool: OK (builds + renders summary, honors ToolResult; registered in tool segment, five-tool set)")
-
-    // 9j. REAL engines — previously ZERO coverage (9e-9i all ran
-    // InlineSequentialEngine with a mock bridge, while auto mode tries
-    // WorkerEngine FIRST on a real host).
-    {
-      const fakeBridge = { call: async (tool) => ({ ok: true, data: `ran:${tool}` }) }
-      const runOpts = (program, engine, budgets) => ({
-        program, label: "eng", budgets, parentStepId: "s0901", cfg, bridge: fakeBridge,
-        ...(engine ? { engine } : {}),
-      })
-
-      // WorkerEngine happy path: program runs in a real thread, bridged
-      // calls round-trip over MessagePort RPC, the result crosses back.
-      const okRun = await tm.runPtc(runOpts(
-        'const a = await tm.read({}); const b = await tm.grep({}); return [a.data, b.data].join("+")',
-        new tm.WorkerEngine(),
-        { maxCalls: 5, maxErrors: 2, timeoutMs: 30000 },
-      ))
-      assert.equal(okRun.status, "ok", "worker: happy path ok")
-      assert.equal(okRun.engine, "worker", "worker: engine recorded")
-      assert.equal(okRun.returnValue, "ran:tm_read+ran:tm_grep", "worker: bridged calls round-trip over RPC")
-      assert.equal(okRun.okCount, 2, "worker: both bridged calls in the summary")
-
-      // WorkerEngine: program throw -> program-error (T6: tagged kind:"program"
-      // by the bootstrap, mapped by the driver; NOT engine-error, no degrade).
-      const throwRun = await tm.runPtc(runOpts(
-        'throw new Error("worker-boom")',
-        new tm.WorkerEngine(),
-        { maxCalls: 5, maxErrors: 2, timeoutMs: 30000 },
-      ))
-      assert.equal(throwRun.status, "program-error", "worker: program throw -> program-error")
-      assert.equal(throwRun.degraded, false, "worker: program-error never triggers the inline auto-degrade")
-      assert.ok(throwRun.engineError && throwRun.engineError.message.includes("worker-boom"), "worker: error message crosses the worker boundary")
-      assert.equal(throwRun.engineError.phase, "execute", "worker: program-error phase is execute")
-
-      // WorkerEngine: hard wall-clock timeout -> terminate() -> status timeout
-      const t0 = Date.now()
-      const timeoutRun = await tm.runPtc(runOpts(
-        "await new Promise(() => {})", // never resolves
-        new tm.WorkerEngine(),
-        { maxCalls: 5, maxErrors: 2, timeoutMs: 800 },
-      ))
-      assert.equal(timeoutRun.status, "timeout", "worker: wall-clock timeout")
-      assert.ok(Date.now() - t0 < 10000, "worker: terminate is prompt")
-      assert.equal(timeoutRun.okCount, 0, "worker: timeout run has no ok steps")
-
-      // WorkerEngine sandbox surface (T6): the program runs in a null-prototype
-      // node:vm context — require/process are ABSENT (stronger than the old
-      // env:{} "empty process.env" isolation: process is undefined outright, so
-      // Object.keys(process.env) can never even start), while the whitelisted
-      // setTimeout + a real console survive.  Direct engine.run (bypasses
-      // runPtc, whose pscan would ban the `process` word in the program text).
-      const sandboxSurface = await new tm.WorkerEngine().run(
-        'return [typeof require, typeof process, typeof setTimeout, typeof console].join(",")',
-        fakeBridge,
-        new AbortController().signal,
-      )
-      assert.equal(sandboxSurface, "undefined,undefined,function,object", "worker sandbox: require/process absent, setTimeout/console present")
-      // the container object itself has NO .constructor prototype rung (T6 harden)
-      const ctorLeak = await new tm.WorkerEngine().run(
-        'return typeof ({}).constructor',
-        fakeBridge,
-        new AbortController().signal,
-      )
-      // the vm's OWN intrinsics are intact (fresh realm) — only the host-realm
-      // Object.prototype chain the sandbox container carried is cut.
-      assert.equal(ctorLeak, "function", "vm realm still has its own Object/Function intrinsics")
-
-      // WorkerEngine body runs in strict mode (parity with the inline
-      // engines): an undeclared assignment throws inside the vm → program-error.
-      const strictRun = await tm.runPtc(runOpts(
-        'undeclaredGlobal = 1; return "sloppy-ok"',
-        new tm.WorkerEngine(),
-        { maxCalls: 5, maxErrors: 2, timeoutMs: 30000 },
-      ))
-      assert.equal(strictRun.status, "program-error", "worker: program body is strict-mode (throw -> program-error)")
-
-      // InlineVmEngine: synchronous busy-loop killed by the (injectable)
-      // compile timeout — an ENGINE-side kill, so engine-error (NOT program:
-      // the program never ran to a throw; the vm refused to finish).
-      const vmRun = await tm.runPtc(runOpts(
-        "while (true) {}",
-        new tm.InlineVmEngine(200),
-        { maxCalls: 5, maxErrors: 2, timeoutMs: 30000 },
-      ))
-      assert.equal(vmRun.status, "engine-error", "inline-vm: sync busy-loop -> engine-error (compile-timeout kill)")
-    }
-    console.log("9j. real engines: OK (WorkerEngine RPC/program-error/terminate/sandbox, strict-mode, InlineVmEngine compile-timeout->engine-error)")
-
-    // 9k. T6/C2 PTC <-> web bridge: the six-way allow set, the bridge's
-    //     {ok,data}/{ok:false,error} normalization over a web tool's REAL
-    //     rendered ToolResult, the TM_PTC_WEB_BRIDGE=off rejection, and the C2
-    //     ROLE GATE: the bridge actively ctx.ask's the CALLER's ruleset BEFORE
-    //     the web tool's execute, so a non-web role is denied (permission
-    //     phase) and execute is NEVER reached.  The unwrap format is pinned
-    //     against a REAL result.ts render, so a header drift (tool.ts:57 mirrors
-    //     result.ts:47 by hand) can no longer turn a denied call into a silent
-    //     ok:true of error text.
-    {
-      // the bridge allow set is now six, and the web pair is tagged separately
-      assert.deepEqual(
-        [...tm.BRIDGE_ALLOW].sort(),
-        ["tm_bash", "tm_fetch", "tm_grep", "tm_read", "tm_search", "tm_webfetch"],
-        "BRIDGE_ALLOW carries all six bridged tools",
-      )
-      assert.deepEqual([...tm.WEB_BRIDGE_TOOLS].sort(), ["tm_search", "tm_webfetch"], "web bridge subset is the two network tools")
-      const fakePipelines = {
-        tmRead: async () => "R",
-        tmGrep: async () => "G",
-        tmBash: async () => "B",
-        tmFetch: async () => "F",
-      }
-      // a caller ctx whose ruleset ALLOWS the web tool (ask resolves silently)
-      const allowCtx = (extra) => ({ sessionID: "web-role", ask: async () => {}, ...extra })
-      // a caller ctx whose ruleset DENIES it (a deny rule makes ctx.ask throw)
-      const denyCtx = (extra) => ({ sessionID: "no-web-role", ask: async () => { throw new Error("denied by ruleset") }, ...extra })
-      // render a REAL governed error exactly the way result.ts does (pins the format)
-      const realErr = (tool, phase, msg, line) => tm.toToolResult(line == null ? tm.tmError(tool, phase, msg) : tm.tmError(tool, phase, msg, line)).output
-
-      // ok result: the web tool returns a rendered hit list -> {ok:true,data}
-      const okHandle = { execute: async () => ({ output: "hit list\n1. Foo https://x" }) }
-      const bo = await tm.pipelineBridge(fakePipelines, allowCtx(), { tm_search: okHandle, tm_webfetch: okHandle }).call("tm_search", { query: "foo" })
-      assert.equal(bo.ok, true, "search ok -> ok:true")
-      assert.ok(bo.data.includes("hit list"), "inline search text is the data")
-      // format-drift pin: a REAL result.ts permission error renders with the
-      // `[<tool> 失败 · phase=…]` header the bridge unwraps back to ok:false.
-      const searchErrHandle = { execute: async () => ({ output: realErr("tm_search", "permission", "role gate denied") }) }
-      const bd = await tm.pipelineBridge(fakePipelines, allowCtx(), { tm_search: searchErrHandle, tm_webfetch: searchErrHandle }).call("tm_search", { query: "x" })
-      assert.equal(bd.ok, false, "a real rendered web error unwraps to ok:false")
-      assert.equal(bd.error.phase, "permission", "phase parsed from the REAL result.ts header")
-      assert.equal(bd.error.tool, "tm_search", "tool name parsed from the REAL header")
-      assert.ok(bd.error.message.includes("role gate denied"), "message body recovered")
-      // line-bearing REAL header parses the line number too
-      const lineErrHandle = { execute: async () => ({ output: realErr("tm_webfetch", "execute", "boom", 7) }) }
-      const bl = await tm.pipelineBridge(fakePipelines, allowCtx(), { tm_search: lineErrHandle, tm_webfetch: lineErrHandle }).call("tm_webfetch", { url: "https://x" })
-      assert.equal(bl.error.line, 7, "error line parsed from the REAL rendered header")
-      // web bridge OFF (no handles wired) -> explicit args error, NOT a crash
-      const off = await tm.pipelineBridge(fakePipelines, allowCtx()).call("tm_search", { query: "x" })
-      assert.equal(off.ok, false, "web-off search errors")
-      assert.match(off.error.message, /TM_PTC_WEB_BRIDGE/, "web-off names the toggle")
-      // non-web pipelines still pass straight through the four (NO ask needed)
-      const rd = await tm.pipelineBridge(fakePipelines, { sessionID: "x" }).call("tm_read", { path: "a" })
-      assert.deepEqual(rd, { ok: true, data: "R" }, "read passthrough unchanged")
-      // C2 ROLE GATE — REAL DENIAL: a non-web role's bridged tm.search is
-      // refused by the BRIDGE's own ctx.ask; the web tool execute must NOT run.
-      let webExecuted = false
-      const spyHandle = { execute: async () => { webExecuted = true; return { output: "MUST NOT RUN" } } }
-      const denyCall = await tm.pipelineBridge(fakePipelines, denyCtx(), { tm_search: spyHandle, tm_webfetch: spyHandle }).call("tm_search", { query: "x" })
-      assert.equal(denyCall.ok, false, "non-web role bridged search is denied")
-      assert.equal(denyCall.error.phase, "permission", "the denial is a permission error")
-      assert.equal(denyCall.error.tool, "tm_search", "the denial names the tool")
-      assert.equal(webExecuted, false, "the denied call NEVER reaches the web tool execute")
-      // the gate ASKS under the web permission name with the target host/engine
-      let asked = null
-      const spyAsk = { sessionID: "r", ask: async (req) => { asked = req } }
-      await tm.pipelineBridge(fakePipelines, spyAsk, { tm_search: okHandle, tm_webfetch: okHandle }).call("tm_search", { query: "x", engine: "bing" })
-      assert.equal(asked.permission, "tm_search", "gate asks under the tm_search permission name")
-      assert.ok(asked.patterns.some((pat) => /bing/.test(pat)), "search gate patterns carry the engine")
-      await tm.pipelineBridge(fakePipelines, spyAsk, { tm_search: okHandle, tm_webfetch: okHandle }).call("tm_webfetch", { url: "https://api.example.com/x" })
-      assert.equal(asked.permission, "tm_webfetch", "gate asks under the tm_webfetch permission name")
-      assert.ok(asked.patterns.some((pat) => /api\.example\.com/.test(pat)), "webfetch gate patterns carry the host")
-      // fail-CLOSED: no ask bridge on ctx -> bridged web is refused, not allowed
-      const noAsk = await tm.pipelineBridge(fakePipelines, { sessionID: "x" }, { tm_search: okHandle, tm_webfetch: okHandle }).call("tm_search", { query: "x" })
-      assert.equal(noAsk.ok, false, "a ctx without ask is fail-closed for bridged web")
-      assert.equal(noAsk.error.phase, "permission", "unverifiable web grant is denied")
-      // an offload handle block (multi-line, no leading error marker) stays ok
-      const handleText = "payload too large (about 9000 tokens), offloaded to the run store.\nref: tm://runs/r/steps/s0009.k01/result\naccess_token: t"
-      const offH = { execute: async () => ({ output: handleText }) }
-      const oh = await tm.pipelineBridge(fakePipelines, allowCtx(), { tm_search: offH, tm_webfetch: offH }).call("tm_search", { query: "x" })
-      assert.equal(oh.ok, true, "an offload handle from the web tool is an ok data result")
-      assert.ok(oh.data.includes("ref: tm://"), "the handle ref is preserved for tm.fetch follow-up")
-      // the tool description now documents the web bridges
-      const tool = tm.buildPtcRunTool({
-        cfg, store: new tm.RunStore({ projectRoot: mktmp("ptc-k"), blackboardDir: ".bb", trajectoryDir: ".tj", runId: "r-k", ttlDays: 7 }),
-        nextStepId: () => "s0001", ctx: { directory: process.cwd() }, accessToken: "a".repeat(64),
-        bridge: { call: async () => ({ ok: true, data: "hi" }) },
-      })
-      assert.ok(tool.description.includes("tm.search") && tool.description.includes("tm.webfetch"), "description documents the web bridges")
-      assert.ok(/TM_PTC_WEB_BRIDGE/.test(tool.description), "description names the web toggle")
-      // END-TO-END (C2): a non-web role's PTC run that calls tm.search records a
-      // permission ERROR STEP and the web tool execute is never reached.
-      let e2eExecuted = false
-      const e2eBridge = tm.pipelineBridge(fakePipelines, denyCtx(), {
-        tm_search: { execute: async () => { e2eExecuted = true; return { output: "MUST NOT RUN" } } },
-        tm_webfetch: { execute: async () => ({ output: "unused" }) },
-      })
-      const runDeny = await tm.runPtc({
-        program: 'const r = await tm.search({ query: "x" }); return r.ok ? 0 : r.error.phase',
-        label: "deny", budgets: { maxCalls: 5, maxErrors: 2, timeoutMs: 30000 },
-        parentStepId: "s0010", cfg, engine: new tm.InlineSequentialEngine(), bridge: e2eBridge,
-      })
-      assert.equal(runDeny.status, "ok", "a role-denied web call is a normal error step, run completes")
-      assert.equal(runDeny.errCount, 1, "the permission denial is recorded as one error step")
-      assert.equal(runDeny.steps[0].phase, "permission", "step carries the permission phase")
-      assert.equal(runDeny.returnValue, "permission", "program observed the error phase through the bridge")
-      assert.equal(e2eExecuted, false, "end-to-end: a denied role never reaches the web execute")
-      // END-TO-END allow: a web role's PTC run reaches the web execute + data.
-      let allowExecuted = false
-      const allowBridge = tm.pipelineBridge(fakePipelines, allowCtx(), {
-        tm_search: { execute: async () => { allowExecuted = true; return { output: "hit list ok" } } },
-        tm_webfetch: { execute: async () => ({ output: "unused" }) },
-      })
-      const runAllow = await tm.runPtc({
-        program: 'const r = await tm.search({ query: "x" }); return r.ok ? "ran" : r.error.phase',
-        label: "allow", budgets: { maxCalls: 5, maxErrors: 2, timeoutMs: 30000 },
-        parentStepId: "s0011", cfg, engine: new tm.InlineSequentialEngine(), bridge: allowBridge,
-      })
-      assert.equal(allowExecuted, true, "end-to-end: a web role DOES reach the web execute")
-      assert.equal(runAllow.returnValue, "ran", "the web role's bridged search returned data")
-    }
-    console.log("9k. PTC<->web bridge (C2): OK (six-way allow, REAL result.ts header unwrap incl. line, active ctx.ask role gate denies non-web WITHOUT execute + fail-closed no-ask, host/engine patterns, TM_PTC_WEB_BRIDGE=off reject, non-web calls skip the ask, offload passthrough, end-to-end deny step + allow run)")
-
-    // 9l. C1 sandbox-escape red lines + the "never replay a started program"
-    //     rule.  Every escape vector is run DIRECTLY on a real engine (bypassing
-    //     runPtc, whose pscan now bans constructor(/eval(/Function() so the
-    //     program text itself could never reach the sandbox) — the point is to
-    //     prove the vm.wrap + codeGeneration containment holds even when pscan
-    //     is skipped.  Each must THROW or return a THREW marker, never ESCAPED.
-    {
-      const fakeBridge = { call: async (tool) => ({ ok: true, data: { output: "ran:" + tool } }) }
-      const sig = new AbortController().signal
-      const runEsc = async (eng, prog) => {
-        try { return { r: await eng.run(prog, fakeBridge, sig) } }
-        catch (e) { return { err: String((e && e.message) || e) } }
-      }
-      const vectors = [
-        ["ctor", 'try { return "ESCAPED:" + tm.read.constructor("return process")() } catch (e) { return "THREW:" + e.message }'],
-        ["chain", 'try { return "ESCAPED:" + ({}).constructor.constructor("return process")() } catch (e) { return "THREW:" + e.message }'],
-        ["eval", 'try { return "ESCAPED:" + eval("1+1") } catch (e) { return "THREW:" + e.message }'],
-        ["newfunc", 'try { return "ESCAPED:" + new Function("return 1")() } catch (e) { return "THREW:" + e.message }'],
-        ["dataobj", 'const r = await tm.read({}); try { return "ESCAPED:" + r.constructor("return process")() } catch (e) { return "THREW:" + e.message }'],
-        ["imp", 'try { return "ESCAPED:" + await import("node:fs") } catch (e) { return "THREW:" + e.message }'],
-      ]
-      for (const [name, prog] of vectors) {
-        const w = await runEsc(new tm.WorkerEngine(), prog)
-        const out = w.r == null ? "THREW:" + w.err : String(w.r)
-        assert.ok(!out.startsWith("ESCAPED"), `worker: ${name} escape must not succeed (${out})`)
-        assert.ok(/THREW|disallowed|not a function|not specified/.test(out), `worker: ${name} escape blocked (${out})`)
-        const iv = await runEsc(new tm.InlineVmEngine(8000), prog)
-        const iout = iv.r == null ? "THREW:" + iv.err : String(iv.r)
-        assert.ok(!iout.startsWith("ESCAPED"), `inline: ${name} escape must not succeed (${iout})`)
-        assert.ok(/THREW|disallowed|not a function|not specified/.test(iout), `inline: ${name} escape blocked (${iout})`)
-      }
-      // the facade reaches the governed bridge normally (containment != breakage).
-      const norm = await new tm.WorkerEngine().run(
-        'const r = await tm.read({ path: "a" }); return r.ok ? r.data.output : "notok"',
-        fakeBridge, new AbortController().signal,
-      )
-      assert.equal(norm, "ran:tm_read", "C1 hardening keeps a normal bridged call working")
-
-      // NO-REPLAY: a worker that STARTED (dispatched >=1 call) then crashed as an
-      // engine fault is NOT re-run on the more-privileged inline realm.
-      const crasher = { name: "worker", async run(program, bridge) { await bridge.call("tm_read", {}); throw new Error("worker crashed mid-run") } }
-      const noReplay = await tm.runPtc({
-        program: 'const a = await tm.read({}); return a.ok', label: "crash",
-        budgets: { maxCalls: 5, maxErrors: 2, timeoutMs: 30000 },
-        parentStepId: "s0920", cfg, engine: crasher,
-        bridge: { call: async () => ({ ok: true, data: "x" }) },
-      })
-      assert.equal(noReplay.status, "engine-error", "post-start worker crash surfaces as engine-error")
-      assert.equal(noReplay.calls, 1, "the crash happened after the program started (1 bridged call)")
-      assert.equal(noReplay.degraded, false, "C1: a started-then-crashed program is NOT replayed on inline")
-      assert.equal(noReplay.engine, "worker", "still attributed to the worker engine (no inline fallback ran)")
-
-      // INIT failure (worker could not start, ZERO calls) -> degrade IS allowed.
-      const initFail = { name: "worker", async run() { throw new Error("node:worker_threads unavailable") } }
-      const degradedRun = await tm.runPtc({
-        program: 'return "ran-on-inline"', label: "initfail",
-        budgets: { maxCalls: 5, maxErrors: 2, timeoutMs: 30000 },
-        parentStepId: "s0921", cfg, engine: initFail,
-        bridge: { call: async () => ({ ok: true, data: "x" }) },
-      })
-      assert.equal(degradedRun.status, "ok", "engine-init fault degrades to inline and RUNS the program")
-      assert.equal(degradedRun.degraded, true, "engine-init fault marks the run degraded")
-      assert.equal(degradedRun.engine, "inline", "the fallback executed on the inline engine")
-      assert.equal(degradedRun.returnValue, "ran-on-inline", "the program executed once on the inline engine")
-    }
-    console.log("9l. C1 escape containment: OK (constructor/chain/eval/new Function/data-object/dynamic-import escapes throw in BOTH real engines, a normal bridged call still works, started-then-crashed worker NOT replayed on inline, engine-init fault still degrades)")
-  }
 
   // ---------- 10. tm_dispatch / tm_join — async sub-agent dispatch ----------
   // Issue #7: the host's `task` tool blocks the calling session, so the lead
@@ -3785,21 +2959,12 @@ try {
     assert.equal(tm.resolveTmConfig({}).bashTimeoutMaxMs, 0, "the general cap is OFF by default")
     assert.equal(tm.resolveTmConfig({}).bashTimeoutProbeMs, 60_000, "the probe ceiling ships enabled")
     assert.equal(tm.resolveTmConfig({ TM_BASH_TIMEOUT_MAX_MS: "banana" }).bashTimeoutMaxMs, 0, "invalid value falls back to the default")
-    // wired through the real plugin hook (clamp runs, R6 still guards)
-    {
-      const hooks = await plugin.server({ directory: mktmp("bt-wire"), client: fakeClient({}), $: fake$Ok("") }, { envProtect: true })
-      const wired = { args: { command: "grep -R TODO src", timeout: 900000 } }
-      await hooks["tool.execute.before"]({ tool: "bash", sessionID: "s1" }, wired)
-      assert.equal(wired.args.timeout, 60000, "the composed plugin hook clamps a read-only bash timeout")
-      let threw = null
-      try {
-        await hooks["tool.execute.before"]({ tool: "bash", sessionID: "s1" }, { args: { command: "printenv PATH" } })
-      } catch (e) {
-        threw = e
-      }
-      assert.ok(threw, "R6 interception still fires from the SAME hook")
-    }
-    console.log("11. bash timeout clamp: OK (probe-only ceiling by default, opt-in global cap, never invents a timeout, never widens the allowlist, string args tolerated, composed with R6)")
+    // v1 wiring (the composed plugin.server() tool.execute.before hook that ran
+    // the clamp AND R6 together) is retired with the v1 personality — the pure
+    // resolveBashTimeout / createBashTimeoutHook / config plumbing above is
+    // personality-agnostic and stays pinned.  On v2 the clamp composes into
+    // src/host/v2-guard.ts, not a plugin.server hook.
+    console.log("11. bash timeout clamp: OK (probe-only ceiling by default, opt-in global cap, never invents a timeout, never widens the allowlist, string args tolerated; v1 hook-wiring sub-block retired with the v1 personality)")
   }
     // ---------- 12. tm_board_write — the board's write side (a role with no file tool) ----------
     {
@@ -3905,6 +3070,7 @@ try {
       const eg = await import("./dist/tm/egress.js")
       const hard = (h) => eg.classifyHost(h).level === "forbidden"
       const ask = (h) => eg.classifyHost(h).level === "private"
+      const loop = (h) => eg.classifyHost(h).level === "loopback"
       const open = (h) => eg.classifyHost(h).level === "public"
 
       // NEVER consentable — a cloud metadata endpoint is not a thing a dialog can
@@ -3925,17 +3091,24 @@ try {
       ]) {
         assert.equal(hard(h), true, `${h} is a non-routable / metadata-shaped target and stays a hard red line`)
       }
-      // Private space: reachable from the user's own machine, so a coding agent has
-      // genuine reasons (a local dev API). Ask, and never let "*" answer for it.
-      for (const h of ["127.0.0.1", "10.1.2.3", "172.16.0.1", "192.168.1.1", "localhost", "api.localhost", "::1", "fe80::1", "fc00::1", "100.64.0.1"]) {
+      // Loopback (127.0.0.0/8, ::1, localhost, *.localhost): it only reaches a
+      // service the user started on their OWN machine, so it is its own tier and
+      // is allowed by default (see egress.ts / webfetch.ts — on v2 a plugin cannot
+      // raise a dialog, so "needs approval" there would mean "always refused").
+      for (const h of ["127.0.0.1", "localhost", "api.localhost", "::1"]) {
+        assert.equal(loop(h), true, `${h} is loopback — its own tier, allowed by default`)
+      }
+      // Private space (RFC1918, ULA, CGNAT, fe80::/10): it reaches OTHER machines,
+      // so it stays gated and "*" must never answer for it.
+      for (const h of ["10.1.2.3", "172.16.0.1", "192.168.1.1", "fe80::1", "fc00::1", "100.64.0.1"]) {
         assert.equal(ask(h), true, `${h} is private space — it goes to the dialog, not silently past the gate`)
       }
       for (const h of ["8.8.8.8", "1.1.1.1", "172.32.0.1", "100.128.0.1", "2001:4860:8000::8", "example.com", "cn.bing.com"]) {
         assert.equal(open(h), true, `${h} is ordinary public space`)
       }
       // Bracket + trailing-dot + case spellings the URL parser hands us.
-      assert.equal(ask("[::1]"), true, "bracketed IPv6 hostname normalizes")
-      assert.equal(eg.classifyHost("Example.LocalHost.").level, "private", "case and the trailing root dot do not change the verdict")
+      assert.equal(loop("[::1]"), true, "bracketed IPv6 loopback hostname normalizes")
+      assert.equal(eg.classifyHost("Example.LocalHost.").level, "loopback", "case and the trailing root dot do not change the verdict")
       assert.equal(eg.classifyHost("").level, "public", "an empty host is not an IP claim (the URL parser owns that error)")
       assert.equal(eg.classifyHost("999.1.1.1").level, "public", "an unparseable dotted quad is not mistaken for private space")
 
@@ -3947,38 +3120,37 @@ try {
       assert.equal(meta.ok, false, "metadata endpoint refused even with the allowlist wide open")
       assert.equal(meta.askable ?? false, false, "…and it is NOT askable — no dialog can rescue it")
       assert.ok(/红线|不可批准/.test(meta.message), `the message says it is a red line — got: ${meta.message}`)
-      const loop = WF.checkWebUrl("http://127.0.0.1:8787/admin", ["*"])
-      assert.equal(loop.ok, false, "loopback is not silently open under \"*\" either")
-      assert.equal(loop.askable, true, "…but a local dev server is something a user CAN judge, so it asks")
-      const named = WF.checkWebUrl("http://localhost:5173/", ["*"])
-      assert.equal(named.askable, true, "a .localhost name asks too")
-      // A gate needs an exit the operator can walk, and on OpenCode 2.x the dialog
-      // is not available to a plugin at all.  Naming THIS host in the allowlist is
-      // that exit — an explicit decision about 127.0.0.1, which a wildcard is not —
-      // while the metadata range stays shut under every setting (pinned above).
-      const local = WF.checkWebUrl("http://127.0.0.1:8787/admin", ["127.0.0.1"])
-      assert.equal(local.ok, true, "an allowlist that NAMES the loopback host lets it through")
-      const localNamed = WF.checkWebUrl("http://localhost:5173/", ["localhost", "cn.bing.com"])
-      assert.equal(localNamed.ok, true, "and a named .localhost dev server likewise")
-      assert.equal(WF.checkWebUrl("http://10.1.2.3:8080/api", ["127.0.0.1"]).ok, false, "naming one private host does not open the whole RFC1918 space")
-      assert.equal(WF.checkWebUrl("http://10.1.2.3:8080/api", ["127.0.0.1"]).askable, true, "the unnamed one still asks (v1) rather than passing quietly")
+      const loopV = WF.checkWebUrl("http://127.0.0.1:8787/admin", ["*"])
+      assert.equal(loopV.ok, true, "loopback is allowed by default, not refused for want of a dialog")
+      assert.equal(loopV.via, "loopback", "…and the verdict names the tier that let it through (not an allowlist hit)")
+      const namedV = WF.checkWebUrl("http://localhost:5173/", ["*"])
+      assert.equal(namedV.ok, true, "a .localhost name is loopback too")
+      // Private space is still gated and "*" cannot answer for it — naming one host
+      // in the allowlist is the operator's exit, and it opens only THAT host.
+      const priv = WF.checkWebUrl("http://10.1.2.3:8080/api", ["127.0.0.1"])
+      assert.equal(priv.ok, false, "naming one host does not open the whole RFC1918 space")
+      assert.equal(priv.askable, true, "an unnamed private host still asks (v1) rather than passing quietly")
+      assert.equal(WF.checkWebUrl("http://10.1.2.3:8080/api", ["10.1.2.3"]).ok, true, "…but naming the private host itself is a real per-host decision that lets it through")
       assert.equal(WF.checkWebUrl("http://169.254.169.254/latest/meta-data/", ["169.254.169.254"]).ok, false, "and naming the METADATA endpoint explicitly still does not open it — that range has no consent path at all")
-      assert.match(String(WF.checkWebUrl("http://127.0.0.1:8787/", ["cn.bing.com"]).message), /TM_WEBFETCH_ALLOWED_DOMAINS/, "the refusal names the operator's remedy instead of only the dialog that will never open")
+      assert.match(String(WF.checkWebUrl("http://10.1.2.3:8080/api", ["cn.bing.com"]).message), /TM_WEBFETCH_ALLOWED_DOMAINS/, "the private refusal names the operator's remedy instead of only the dialog that will never open")
       // …but an ask with no dialog is a gate with no exit, which is exactly the v2
       // shape. The policy seam is one setter, and the address red line is not on it.
       try {
         assert.equal(WF.setPrivateSpacePolicy("allow"), "allow", "TM_PRIVATE_SPACE=allow is accepted")
-        const loop = WF.checkWebUrl("http://127.0.0.1:8787/admin", ["*"])
-        assert.equal(loop.ok, true, "loopback passes when the operator opted out of asking")
-        assert.equal(loop.via, "private-allowed", "and the verdict SAYS why it passed, so a report cannot call it an allowlist hit")
-        assert.equal(WF.checkWebUrl("http://10.1.2.3:8080/api", ["*"]).ok, true, "private space as a class, not one named host")
+        const privOn = WF.checkWebUrl("http://10.1.2.3:8080/api", ["*"])
+        assert.equal(privOn.ok, true, "private space passes when the operator opted out of asking")
+        assert.equal(privOn.via, "private-allowed", "and the verdict SAYS why it passed, so a report cannot call it an allowlist hit")
+        assert.equal(WF.checkWebUrl("http://192.168.1.1/", ["*"]).ok, true, "private space as a class, not one named host")
         const meta = WF.checkWebUrl("http://169.254.169.254/latest/meta-data/", ["*"])
         assert.equal(meta.ok, false, "the metadata endpoint is refused under private-allow too")
         assert.equal(meta.askable, undefined, "and it stays non-consentable: the policy cannot be traded for it")
         assert.equal(WF.setPrivateSpacePolicy("deny"), "deny", "deny is a third state, not a typo for ask")
-        const off = WF.checkWebUrl("http://127.0.0.1:8787/", ["*"])
+        const off = WF.checkWebUrl("http://10.1.2.3:8080/api", ["*"])
         assert.equal(off.ok, false, "deny refuses private space outright")
         assert.equal(off.askable, undefined, "and does not pretend a dialog will come")
+        // Loopback is NOT on this policy: it is its own tier and stays allowed even
+        // under deny, because it only ever reaches the user's own machine.
+        assert.equal(WF.checkWebUrl("http://127.0.0.1:8787/", ["*"]).ok, true, "loopback is allowed under deny too — it is not governed by the private-space policy")
         assert.equal(WF.setPrivateSpacePolicy("nonsense"), "ask", "an unparseable value falls back to ASK, the v1 default")
         assert.equal(WF.privateSpacePolicy(), "ask", "readable, so the boot line and the tool agree")
       } finally {
@@ -3986,7 +3158,7 @@ try {
       }
       const pub = WF.checkWebUrl("https://cn.bing.com/search?q=x", ["*"])
       assert.equal(pub.ok, true, "a public host is untouched by the egress rule")
-      console.log("13. egress red line: OK (metadata/link-local/multicast/reserved + IPv4-mapped and DNS64 carriers are hard; loopback/RFC1918/ULA/CGNAT/.localhost ask and \"*\" cannot answer for them)")
+      console.log("13. egress red line: OK (metadata/link-local/multicast/reserved + IPv4-mapped and DNS64 carriers are hard; loopback is its own default-allowed tier; RFC1918/ULA/CGNAT/.fe80 stay gated and \"*\" cannot answer for them)")
     }
 
     // ---------- 14. a redirect says where it came from; a 429 says when ----------

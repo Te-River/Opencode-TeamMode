@@ -113,17 +113,6 @@ export interface TmConfig {
   /** tm_memory GLOBAL scope dir.  Empty = auto (~/.opencode-team/memories/global
    *  — user-level, follows the user across projects). */
   memoryGlobalDir: string
-  // ---- tm_ptc_run (M1 contract) — see design 02-architect-ptc-run-design §2/§4.3 ----
-  /** Hard cap on a PTC program source string length (chars). */
-  ptcMaxProgramChars: number
-  /** Ceiling for per-run bridge-call budget (callers may only tighten). */
-  ptcMaxCalls: number
-  /** Ceiling for per-run error budget (callers may only tighten). */
-  ptcMaxErrors: number
-  /** Ceiling for per-run wall-clock timeout in ms (callers may only tighten). */
-  ptcTimeoutMs: number
-  /** Engine selection: auto (worker→inline fallback) | worker | inline. */
-  ptcEngine: "auto" | "worker" | "inline"
 
   // ---- TeamMode upgrade P0 knobs (design 20260915 §② contract) ----
   // Declared HERE, consumed by their owning packages downstream (T1-T6);
@@ -211,15 +200,6 @@ export interface TmConfig {
    *  it is still on screen" class.  0 disables the reaper.  Consumed by
    *  browser.ts. */
   browserIdleCloseMs: number
-  /** Ceiling on concurrent tm_pty sessions this plugin started (issue #6's
-   *  async shell): each one is a real process the user approved, so the
-   *  count is bounded rather than left to the model's enthusiasm.
-   *  Consumed by pty.ts. */
-  ptyMax: number
-  /** tm_ptc_run web bridge: "on" (default) exposes tm.search/tm.webfetch
-   *  facades to PTC programs; "off" removes them from the bridge set.
-   *  Consumed by ptc/* (T6). */
-  ptcWebBridge: "on" | "off"
   /** TM_WEB_CACHE_TTL_SEC (default 300; 0 disables) — how long a governed
    *  fetch body may be re-served for the SAME URL.  The web channel is the
    *  slowest thing the team does and the most duplicated (lead + researcher
@@ -292,11 +272,6 @@ export const TM_CONFIG_DEFAULTS = {
   blackboardDir: "",
   trajectoryDir: "",
   blackboardTtlDays: 7,
-  ptcMaxProgramChars: 4000,
-  ptcMaxCalls: 20,
-  ptcMaxErrors: 3,
-  ptcTimeoutMs: 60000,
-  ptcEngine: "auto",
   // ---- P0 upgrade knobs (see TmConfig doc comments for ownership) ----
   memorySessionTtlMin: 240,
   memoryMaxEntries: 200,
@@ -321,8 +296,6 @@ export const TM_CONFIG_DEFAULTS = {
   browserAskEval: "on",
   browserImageMaxBytes: 400_000,
   browserIdleCloseMs: 180_000,
-  ptyMax: 4,
-  ptcWebBridge: "on",
   webCacheTtlSec: 300,
   joinMaxWaitMs: 60_000,
   boardMaxChars: 200_000,
@@ -337,14 +310,6 @@ export const TM_CONFIG_DEFAULTS = {
   // needs the host's 120 s default.  Both are ms; 0 = off.
   bashTimeoutMaxMs: 0,
   bashTimeoutProbeMs: 60_000,
-} as const
-
-/** Inclusive ceilings/floors for the PTC budgets (design §4.3). */
-export const PTC_BUDGET_BOUNDS = {
-  maxCalls: { min: 1, max: 200 },
-  maxErrors: { min: 1, max: 50 },
-  timeoutMs: { min: 5000, max: 600000 },
-  programChars: { min: 200, max: 200000 },
 } as const
 
 type EnvLike = Record<string, string | undefined>
@@ -439,11 +404,6 @@ export function resolveTmConfig(env: EnvLike = process.env): TmConfig {
     webfetchAllowedDomains:
       parseAllowlistEnv(env.TM_WEBFETCH_ALLOWED_DOMAINS) ?? [...DEFAULT_WEBFETCH_DOMAINS],
     memoryGlobalDir: envStr(env, "TM_MEMORY_GLOBAL_DIR", ""),
-    ptcMaxProgramChars: envInt(env, "TM_PTC_MAX_PROGRAM_CHARS", TM_CONFIG_DEFAULTS.ptcMaxProgramChars, PTC_BUDGET_BOUNDS.programChars.min, PTC_BUDGET_BOUNDS.programChars.max),
-    ptcMaxCalls: envInt(env, "TM_PTC_MAX_CALLS", TM_CONFIG_DEFAULTS.ptcMaxCalls, PTC_BUDGET_BOUNDS.maxCalls.min, PTC_BUDGET_BOUNDS.maxCalls.max),
-    ptcMaxErrors: envInt(env, "TM_PTC_MAX_ERRORS", TM_CONFIG_DEFAULTS.ptcMaxErrors, PTC_BUDGET_BOUNDS.maxErrors.min, PTC_BUDGET_BOUNDS.maxErrors.max),
-    ptcTimeoutMs: envInt(env, "TM_PTC_TIMEOUT_MS", TM_CONFIG_DEFAULTS.ptcTimeoutMs, PTC_BUDGET_BOUNDS.timeoutMs.min, PTC_BUDGET_BOUNDS.timeoutMs.max),
-    ptcEngine: resolveEngine(env.TM_PTC_ENGINE),
     // ---- P0 upgrade knobs (fail-soft like the rest: invalid -> default) ----
     memorySessionTtlMin: envInt(env, "TM_MEMORY_SESSION_TTL_MIN", TM_CONFIG_DEFAULTS.memorySessionTtlMin, 1, 100_000),
     memoryMaxEntries: envInt(env, "TM_MEMORY_MAX_ENTRIES", TM_CONFIG_DEFAULTS.memoryMaxEntries, 1, 100_000),
@@ -462,8 +422,6 @@ export function resolveTmConfig(env: EnvLike = process.env): TmConfig {
     browserAskEval: resolveOnOff(env.TM_BROWSER_ASK_EVAL),
     browserImageMaxBytes: envInt(env, "TM_BROWSER_IMAGE_MAX_BYTES", TM_CONFIG_DEFAULTS.browserImageMaxBytes, 10_000, 5_000_000),
     browserIdleCloseMs: envInt(env, "TM_BROWSER_IDLE_MS", TM_CONFIG_DEFAULTS.browserIdleCloseMs, 0, 3_600_000),
-    ptyMax: envInt(env, "TM_PTY_MAX", TM_CONFIG_DEFAULTS.ptyMax, 1, 16),
-    ptcWebBridge: resolveOnOff(env.TM_PTC_WEB_BRIDGE),
     webCacheTtlSec: envInt(env, "TM_WEB_CACHE_TTL_SEC", TM_CONFIG_DEFAULTS.webCacheTtlSec, 0, 86_400),
     joinMaxWaitMs: envInt(env, "TM_JOIN_MAX_WAIT_MS", TM_CONFIG_DEFAULTS.joinMaxWaitMs, 0, 600_000),
     boardMaxChars: envInt(env, "TM_BOARD_MAX_CHARS", TM_CONFIG_DEFAULTS.boardMaxChars, 1_000, 2_000_000),
@@ -474,11 +432,6 @@ export function resolveTmConfig(env: EnvLike = process.env): TmConfig {
     bashTimeoutMaxMs: envInt(env, "TM_BASH_TIMEOUT_MAX_MS", TM_CONFIG_DEFAULTS.bashTimeoutMaxMs, 0, 3_600_000),
     bashTimeoutProbeMs: envInt(env, "TM_BASH_TIMEOUT_PROBE_MS", TM_CONFIG_DEFAULTS.bashTimeoutProbeMs, 0, 600_000),
   }
-}
-
-function resolveEngine(raw: unknown): "auto" | "worker" | "inline" {
-  const v = typeof raw === "string" ? raw.trim().toLowerCase() : ""
-  return v === "worker" || v === "inline" ? v : "auto"
 }
 
 /** TM_BROWSER_ENGINE — anything not exactly "cdp-legacy" resolves to the

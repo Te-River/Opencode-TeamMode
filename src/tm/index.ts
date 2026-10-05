@@ -9,9 +9,9 @@
  *
  * It generates the run identity (run id + store-persisted HMAC key), resolves
  * the env config, sweeps expired run payloads (startup-only TTL reclamation)
- * and assembles the governed tool surface (tm_read / tm_grep / tm_bash /
- * tm_fetch + tm_memory / tm_search / tm_webfetch / tm_browser / tm_ptc_run;
- * T0.4-verified shape: `{ tool: { tm_read: { description, args,
+ * and assembles the governed tool surface (tm_fetch + tm_memory / tm_search /
+ * tm_webfetch / tm_browser / tm_join / tm_stats / tm_board_write / tm_ledger;
+ * T0.4-verified shape: `{ tool: { tm_fetch: { description, args,
  * execute(args, ctx) } } }`).
  */
 
@@ -31,8 +31,7 @@ import { hmacToken, loadOrCreateHandleKey, newRunId } from "./refs.js"
 import { RunStore } from "./store.js"
 import { buildTmTools } from "./tools.js"
 import { buildPipelines } from "./pipelines.js"
-import { buildPtcArgsSchema, buildWebfetchArgsSchema, buildMemoryArgsSchema, buildBrowserArgsSchema, buildSearchArgsSchema, buildBoardArgsSchema } from "./args-schema.js"
-import { buildPtcRunTool } from "./ptc/index.js"
+import { buildWebfetchArgsSchema, buildMemoryArgsSchema, buildBrowserArgsSchema, buildSearchArgsSchema, buildBoardArgsSchema } from "./args-schema.js"
 import { buildStatsTool } from "./stats.js"
 import { buildBoardWriteTool } from "./board.js"
 import { buildLedgerTool } from "./ledger.js"
@@ -86,9 +85,6 @@ export {
 import { buildTmMemoryTool } from "./memory.js"
 import { buildTmBrowserTool } from "./browser.js"
 import { buildDispatchTools } from "./dispatch.js"
-import { buildTmPtyTool } from "./pty.js"
-export { ptyCommandLine, ptyCommandBlocked, ptyVerdictLine } from "./pty.js"
-export type { PtyRecord, PtyDeps } from "./pty.js"
 export {
   buildDispatchTools,
   DISPATCH_TARGETS,
@@ -391,8 +387,8 @@ export async function createTmTools(
   // Startup-only TTL reclamation for expired run payloads — the sole cleanup
   // path for the tm store (mirrors blackboard.ts's sweeper philosophy).
   store.sweepExpired()
-  // ONE URL cache for the whole web channel — tm_webfetch, tm_search's engine
-  // legs and the PTC bridge all read it, so a page fetched once in a round is
+  // ONE URL cache for the whole web channel — tm_webfetch and tm_search's engine
+  // legs both read it, so a page fetched once in a round is
   // never paid for twice.  Lives beside the run store (under .git in AUTO
   // mode, never in the user's working tree) and OUTSIDE `runs/`, which is all
   // sweepExpired() ever deletes.
@@ -405,10 +401,9 @@ export async function createTmTools(
   const expireAt = Date.now() + cfg.blackboardTtlDays * 24 * 60 * 60 * 1000
   // Bun shell ($): try input.$ first (T0.4② verified), then Bun globals
   // (desktop loader may not pass $ through; Bun exposes it globally).
-  // Resolved ONCE and shared by the main pipelines AND the PTC pipeline
-  // instance below — v1.5.4 added the fallback to the main path only, so
-  // PTC's tm.bash bridging died with "宿主 shell 桥（$）不可用" on desktops
-  // where input.$ is absent.
+  // Resolved ONCE and handed to the main pipelines' deps (the tm_bash
+  // governed passthrough that consumed it was v1-only and is gone; the seam
+  // stays so a future governed shell can reuse the same resolution).
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const shellBridge: unknown = input?.$ ?? (globalThis as any).$ ?? (globalThis as any).Bun?.$
   const deps = {
@@ -465,64 +460,9 @@ export async function createTmTools(
     notify: opts.notify,
   })
   tools.tm_browser = browserTool
-  // M3: build tm_ptc_run using a separate pipeline instance (governance
-  // reused verbatim).  Its step counter starts at s0001 again — the
-  // "ptc-" stepPrefix namespaces its step ids so offloaded payloads can
-  // never collide with same-numbered main-pipeline steps in the shared
-  // run store (refs ignore seq, so a collision would corrupt tm_fetch).
-  const ptcDeps = {
-    client: input?.client,
-    $: shellBridge,
-    cfg,
-    store,
-    runId,
-    hmacKey,
-    accessToken,
-    expireAt,
-    mode,
-    extra,
-    stepPrefix: "ptc-",
-    workspaceDir: directory,
-  }
-  const ptcPipelines = buildPipelines(ptcDeps)
-  // T6 web bridge: when TM_PTC_WEB_BRIDGE=on, PTC's tm.search / tm.webfetch
-  // run SECONDARY tm_search / tm_webfetch instances over the SAME "ptc-"
-  // pipeline, so their step ids stay namespaced.  They are NOT registered on
-  // the host tool surface here (the main `tools.tm_search` / `tools.tm_webfetch`
-  // already are) — they exist only as the bridge's call targets.  Role gating
-  // is automatic: each bridged call is executed with the CALLER's per-execute
-  // ctx (see buildPtcRunTool.makeBridge), so the host's permission.asked runs
-  // against the calling agent's own ruleset and a non-web role is denied.
-  const ptcWebTools =
-    cfg.ptcWebBridge === "on"
-      ? {
-          tm_search: buildTmSearchTool({
-            pipelines: ptcPipelines,
-            cfg,
-            args: await buildSearchArgsSchema(),
-            cache: webCache,
-          }),
-          tm_webfetch: buildTmWebfetchTool({
-            pipelines: ptcPipelines,
-            cfg,
-            args: await buildWebfetchArgsSchema(),
-            cache: webCache,
-          }),
-        }
-      : undefined
-  const ptcTool = buildPtcRunTool({
-    cfg,
-    store,
-    nextStepId: ptcPipelines.nextStepId,
-    // assembly-time ctx is only the directory fallback; the bridge re-binds
-    // to the real per-execute ctx inside execute(rawArgs, callCtx).
-    ctx: { directory },
-    accessToken,
-    args: await buildPtcArgsSchema(),
-    pipelines: ptcPipelines,
-    webTools: ptcWebTools,
-  })
-  tools.tm_ptc_run = ptcTool
+  // (tm_ptc_run was the v1-only batch-orchestration tool; the v2 host's native
+  // Code Mode `execute` runs one program over N governed calls, so it is gone
+  // with the v1 personality — no secondary "ptc-" pipeline is built here.)
   // tm_join — the collect side of sub-agent work (see src/tm/dispatch.ts for
   // the whole story).  tm_dispatch is NOT registered: a plugin-spawned child is
   // a session the user can neither open from a card nor stop from the UI, so
@@ -545,11 +485,9 @@ export async function createTmTools(
     sessionReaderReport: opts.sessionReaderReport,
   })
   tools.tm_join = dispatch.tm_join
-  // tm_pty — non-blocking command execution on the host's own terminal
-  // sessions (issue #6: three serial 120 s test suites are minutes of dead
-  // air inside one bash call).  Every start passes the R6 classifier AND the
-  // official dialog, so this is an async lever, not a bypass channel.
-  tools.tm_pty = buildTmPtyTool({ client: input?.client, pipelines, mode, max: cfg.ptyMax })
+  // (tm_pty — async command execution on host PTY sessions — was v1-only: the
+  // v2 plugin ctx exposes no client.pty seam, so it registered nothing there
+  // and is gone with the v1 personality.)
   // tm_stats — the plugin reads its OWN trajectory back (throughput numbers +
   // the host-capability matrix).  This is what makes "Team is faster" a claim
   // with a number behind it instead of a vibe, and what names the surface an
@@ -632,7 +570,7 @@ export {
 export { buildTmTools } from "./tools.js"
 export { buildPipelines } from "./pipelines.js"
 export type { TmDeps, TmPipelines } from "./pipelines.js"
-export { buildPtcArgsSchema, buildWebfetchArgsSchema, buildSearchArgsSchema } from "./args-schema.js"
+export { buildWebfetchArgsSchema, buildSearchArgsSchema } from "./args-schema.js"
 export { toToolResult, HANDLE_INVALID_MESSAGE, tmError } from "./result.js"
 export type { TmPhase } from "./result.js"
 export { runShellCommand, spawnShellFallback, cleanShellError } from "./shell-bridge.js"
@@ -658,60 +596,6 @@ export {
   renderWikiResults,
 } from "./search.js"
 
-// ---------- tm_ptc_run ----------
-// Built here with its own pipeline instance (governance reused verbatim;
-// step counter is independent — store handles any step-id overlap via
-// tool-name-prefixed files) and MERGED into the registered `tools` map
-// below, so all five tools ship in the `tool` segment.
-export {
-  BRIDGE_ALLOW,
-  InlineSequentialEngine,
-  InlineVmEngine,
-  WorkerEngine,
-  PTC_LABEL_MAX,
-  PTC_STATUS_VALUES,
-  PtcProgramError,
-  PtcStopSignal,
-  RETRYABLE_PHASES,
-  PTC_SUMMARY_HEADER,
-  PTC_OK_SECTION,
-  PTC_OK_HEADER,
-  PTC_ERR_SECTION,
-  PTC_ERR_HEADER,
-  PTC_RETURN_PREFIX,
-  PTC_ERRORFULL_PREFIX,
-  buildPtcRunTool,
-  createGateBridge,
-  parsePtcArgs,
-  pipelineBridge,
-  renderPtcSummary,
-  resolvePtcBudgets,
-  resolvePtcBudgetsDetailed,
-  runPtc,
-  selectEngine,
-  staticPscan,
-} from "./ptc/index.js"
-// T6 additions pulled straight from their submodules so ptc/index.ts (a
-// frozen re-export facade, owned by the PTC split) is not edited: the
-// literal-strip helper the pre-scan uses + the web-bridge tool subset.
-export { stripNonExecutable } from "./ptc/pscan.js"
-export { WEB_BRIDGE_TOOLS } from "./ptc/contract.js"
-export type {
-  PtcStatus,
-  PtcEngine,
-  PtcEngineName,
-  PtcEngineRunOpts,
-  PtcBridge,
-  PtcCallResult,
-  PtcErrorBody,
-  PtcRunRequest,
-  PtcRpcRequest,
-  PtcRpcResponse,
-  PtcRpcAbort,
-  PtcEngineMessage,
-  PtcBudgets,
-  PtcBudgetResolution,
-  PtcStepRecord,
-  PtcRunOutcome,
-  RunPtcOptions,
-} from "./ptc/index.js"
+// (tm_ptc_run and its engine/bridge/type re-exports lived here; the tool is
+// v1-only and shipped away with the v1 personality, so nothing re-exports
+// ./ptc/ anymore.)

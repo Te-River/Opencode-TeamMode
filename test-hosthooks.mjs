@@ -151,178 +151,33 @@ console.log("hosthooks. tool.definition / chat.params / compaction / shell.env /
   console.log("  4. shell.env: NO_COLOR/TERM only + explicit allowlist, never clobbers, never leaks the parent env")
 }
 
-/* ---------- 5. tm_pty: the governance gate (this is the bypass risk) ------ */
-{
-  const { ptyCommandLine, ptyCommandBlocked } = tm
-  eq(ptyCommandLine("npm", ["test", "--", "x"]), "npm test -- x", "command line joins argv for the dialog")
-  eq(ptyCommandBlocked("npm test", "standard"), null, "a plain test run is not a blocked shape")
-  ok(ptyCommandBlocked("printenv PATH", "standard"), "the R6 env face is refused here too (not a side channel)")
-  ok(ptyCommandBlocked("git push origin main", "standard"), "the R2 danger face is refused (push stays in built-in bash)")
-  ok(ptyCommandBlocked("rm -rf /", "standard"), "destructive shapes refused")
-  ok(ptyCommandBlocked("npm install left-pad", "standard"), "package install refused (its dialog lives in built-in bash)")
-  ok(ptyCommandBlocked("", "standard"), "an empty command is refused")
-  ok(ptyCommandBlocked("echo $(whoami)", "standard"), "command substitution never reaches a spawn")
+/* ---------- 5. tm_pty governance gate — RETIRED with the v1 personality (1.7.0 cut).
+ *  tm_pty was v1-only: the v2 plugin ctx exposes no client.pty seam, so it
+ *  registered nothing there and src/tm/pty.ts is deleted (ptyCommandLine /
+ *  ptyCommandBlocked / runtime.tools.tm_pty are all gone).  The R6/R2 classifier
+ *  it reused is pinned by test-envprotect, and the async-shell replacement on v2
+ *  is the host's native `shell {background:true}` (src/host/v2-guard.ts), not our
+ *  tool.  The NUMBER stays so 7-10 do not renumber. ---------- */
+console.log("  5. tm_pty governance gate: SKIPPED — tm_pty removed with the v1 personality (src/tm/pty.ts deleted)")
 
-  const runtime = await tm.createTmTools({ directory: mktmp("pty-none"), client: {}, $: () => ({ text: async () => "" }) })
-  const noApi = await runtime.tools.tm_pty.execute({ action: "start", command: "npm", args: ["test"] }, { directory: "/tmp", sessionID: "s1" })
-  ok(String(noApi.output).includes("client.pty") && String(noApi.output).includes("tm_ptc_run"), "a host without client.pty degrades with alternatives")
+/* ---------- 6. tm_pty concurrency cap + tool-segment registration — RETIRED with
+ *  the v1 personality for the same reason.  Its plugin.server() registration
+ *  check is the v1 loader; the v2 tool-surface registration is pinned by
+ *  test-v2-adapter (the retirement group: tm_pty registers nothing). ---------- */
+console.log("  6. tm_pty cap + registration: SKIPPED — tm_pty removed with the v1 personality; v2 surface pinned by test-v2-adapter")
 
-  const calls = { create: [], remove: [], get: [] }
-  const client = {
-    app: { log: async () => {} },
-    pty: {
-      create: async (o) => (calls.create.push(o), { ok: true, data: { id: "pty_1", pid: 4242, status: "running" } }),
-      get: async (o) => (calls.get.push(o), { ok: true, data: { id: "pty_1", pid: 4242, status: "running" } }),
-      remove: async (o) => (calls.remove.push(o), { ok: true, data: true }),
-    },
-  }
-  const rt = await tm.createTmTools({ directory: mktmp("pty-ok"), client, $: () => ({ text: async () => "" }) })
-  const P = rt.tools.tm_pty
 
-  const noAsk = await P.execute({ action: "start", command: "npm", args: ["test"] }, { directory: "/tmp", sessionID: "s1" })
-  ok(String(noAsk.output).includes("宿主无法弹出确认窗口"), "NO ask bridge -> refused (fail closed)")
-  eq(calls.create.length, 0, "and nothing was spawned")
+/* ---------- 7. capability probe — RETIRED with the v1 personality (1.7.0 cut).
+ *  createCapabilityProbe (the static SEAMS list classified by watching hooks and
+ *  events) was the v1 host-capability observer and was removed from
+ *  src/capabilities.ts with the rest of v1; capabilities.ts now holds only the
+ *  shared row contract + renderer.  The v2 rows are built from live observation
+ *  in src/host/v2-capabilities.ts and their classification (missing / declared /
+ *  not-seen / ok / unverified, the one-shot toast, the table render) is pinned by
+ *  test-v2-adapter.  The renderer itself (renderCapabilityMatrix) is exercised by
+ *  group 8 below through tm_stats. ---------- */
+console.log("  7. capability probe: SKIPPED — v1 createCapabilityProbe removed; v2 rows pinned by test-v2-adapter, renderer by group 8")
 
-  const denied = await P.execute(
-    { action: "start", command: "npm", args: ["test"] },
-    { directory: "/tmp", sessionID: "s1", ask: async () => { throw new Error("user said no") } },
-  )
-  ok(String(denied.output).includes("用户未批准"), "a rejected dialog is honoured")
-  eq(calls.create.length, 0, "still nothing spawned")
-
-  let asked = null
-  const started = await P.execute(
-    { action: "start", command: "npm", args: ["test"], cwd: "/work", log: "/tmp/t.log" },
-    { directory: "/tmp", sessionID: "s1", ask: async (req) => ((asked = req), undefined) },
-  )
-  ok(String(started.output).includes("已启动（非阻塞）") && String(started.output).includes("pty_1"), "approved -> the session id comes back at once")
-  eq(asked.permission, "tm_pty", "the ask names tm_pty so the {" + '"*"' + ":\"ask\"} rule decides it")
-  eq(asked.patterns, ["npm test"], "the dialog shows the EXACT command line, not a wildcard")
-  eq(calls.create[0].body.command, "npm", "pty.create gets command + argv separately (no shell string to reinterpret)")
-  eq(calls.create[0].body.args, ["test"], "argv preserved")
-  eq(calls.create[0].body.cwd, "/work", "cwd honoured")
-  ok(String(started.output).includes("/tmp/t.log"), "the log path is echoed so the agent knows where evidence will be")
-  ok(String(started.output).includes("不会把输出送回"), "and the no-transcript limit is stated up front")
-
-  const status = await P.execute({ action: "status", id: "pty_1" }, { directory: "/tmp", sessionID: "s1" })
-  ok(String(status.output).includes("running"), "status reports the host's state")
-  ok(String(status.output).includes("pid 4242"), "with the pid")
-  const listed = await P.execute({ action: "list" }, { directory: "/tmp", sessionID: "s1" })
-  ok(String(listed.output).includes("pty_1"), "list shows what this plugin started")
-  const foreignKill = await P.execute({ action: "kill", id: "pty_other" }, { directory: "/tmp", sessionID: "s1" })
-  ok(String(foreignKill.output).includes("不是本插件启动的"), "a session we did not start is not ours to kill")
-  eq(calls.remove.length, 0, "no remove call for a foreign id")
-  const killed = await P.execute({ action: "kill", id: "pty_1" }, { directory: "/tmp", sessionID: "s1" })
-  ok(String(killed.output).includes("已停止会话 pty_1"), "our own session can be stopped")
-  eq(calls.remove[0].path.id, "pty_1", "remove targeted by id")
-  const afterKill = await P.execute({ action: "status", id: "pty_1" }, { directory: "/tmp", sessionID: "s1" })
-  ok(!String(afterKill.output).includes("运行中"), "a killed session stops reporting as running")
-
-  const bad = await P.execute({ action: "start", command: "npm\nrm -rf /" }, { directory: "/tmp", sessionID: "s1", ask: async () => undefined })
-  ok(String(bad.output).includes("单条程序名"), "a multi-line command is refused at the args layer")
-  ok(String(P.execute ? "" : "").length === 0, "sanity: tool surface present")
-  const unknownAction = await P.execute({ action: "nope" }, { directory: "/tmp", sessionID: "s1" })
-  ok(String(unknownAction.output).includes("start|status|list|kill"), "an unknown action names the real ones")
-  await rt.dispose()
-  await runtime.dispose()
-  console.log("  5. tm_pty: R6-classified THEN official dialog THEN spawn; no bridge/no approval = nothing runs; only our own ids are killable")
-}
-
-/* ---------- 6. concurrency cap + registration on the tool surface -------- */
-{
-  const created = []
-  const client = {
-    app: { log: async () => {} },
-    pty: {
-      create: async (o) => (created.push(o), { ok: true, data: { id: "pty_" + created.length, pid: 100 + created.length, status: "running" } }),
-      get: async () => ({ ok: true, data: { status: "running" } }),
-      remove: async () => ({ ok: true, data: true }),
-    },
-  }
-  const rt = await tm.createTmTools({ directory: mktmp("pty-cap"), client, $: () => ({ text: async () => "" }) })
-  const ctx = { directory: "/tmp", sessionID: "s1", ask: async () => undefined }
-  for (let i = 0; i < 4; i++) ok(!(await rt.tools.tm_pty.execute({ action: "start", command: "sleep", args: ["1"] }, ctx)).output.includes("并发上限"), `start #${i + 1} within the cap`)
-  const fifth = await rt.tools.tm_pty.execute({ action: "start", command: "sleep", args: ["1"] }, ctx)
-  ok(String(fifth.output).includes("并发上限 4"), "the 5th concurrent session is refused before the dialog")
-  eq(created.length, 4, "and no process was created for it")
-  ok("tm_pty" in (await plugin.server({ directory: mktmp("pty-reg"), client, $: () => ({ text: async () => "" }) }, {})).tool, "tm_pty registered on the tool segment")
-  await rt.dispose()
-  console.log("  6. tm_pty: capped at TM_PTY_MAX concurrent sessions, refusal happens before any dialog")
-}
-
-/* ---------- 7. capability probe: an upgrade must be NAMED, not worked around */
-{
-  const { createCapabilityProbe, renderCapabilityMatrix } = await import("./dist/capabilities.js")
-  const { askFnOf, setAskBridgeObserver } = await import("./dist/tm/perm-ask.js")
-  const state = (rows, seam) => rows.find((r) => r.seam === seam)?.state
-
-  // A STRIPPED host: no pty namespace, no async session API.
-  const toasts = []
-  const traj = []
-  const crippled = createCapabilityProbe({
-    client: { session: { create: async () => {} }, tui: {} },
-    hasShellBridge: false,
-    hasPermissionReply: false,
-    trajectory: (e) => traj.push(e),
-    notify: (m) => toasts.push(m),
-  })
-  const cRows = crippled.snapshot()
-  eq(state(cRows, "client.pty.create"), "missing", "no pty namespace -> tm_pty's seam reads 缺失")
-  eq(state(cRows, "client.session.messages"), "missing", "no transcript endpoint -> tm_join cannot collect anything, and the row says 缺失 (the lead still has the host's own task)")
-  eq(state(cRows, "client.session.children"), "missing", "the restart-recovery seam is its OWN row (losing it must not look like losing dispatch)")
-  eq(state(cRows, "input.$ (shell bridge)"), "missing", "no host shell bridge -> tm_bash falls back to spawn, and says so")
-  eq(state(cRows, "hook tool.definition"), "not-seen", "an un-fired hook is 待观察, NOT a break — the distinction is the whole point")
-  eq(state(cRows, "ToolResult.attachments"), "unverified", "we can emit attachments but never observe them painted: 需人眼, no false 已验证")
-  const report = crippled.report()
-  ok(report.missing.some((s) => s.includes("pty")), "report() lists the missing seams")
-  eq(toasts.length, 1, "a REQUIRED seam missing raises exactly one toast")
-  ok(toasts[0].includes("tm_pty") && toasts[0].includes("tm_stats"), "the toast names what broke and where to look")
-  eq(traj.length, 1, "one trajectory line per process (a repeated report never re-notifies)")
-  crippled.report()
-  eq(toasts.length, 1, "report() is one-shot — no toast spam across the session")
-  ok(renderCapabilityMatrix(cRows).includes("| 宿主接口 | 影响的能力 | 状态 |"), "the matrix is a markdown TABLE (the host renders tables fast)")
-  ok(renderCapabilityMatrix(cRows).includes("✗ 缺失"), "a missing row is visibly 缺失 in the table")
-
-  // A HEALTHY host, progressively observed.
-  const quiet = []
-  const probe = createCapabilityProbe({
-    client: {
-      session: {
-        create: async () => {}, promptAsync: async () => {}, messages: async () => {},
-        status: async () => {}, abort: async () => {}, children: async () => {},
-      },
-      pty: { create: async () => {}, list: async () => {}, get: async () => {}, remove: async () => {} },
-      permission: { reply: async () => {} },
-      tui: { showToast: async () => {} },
-    },
-    hasShellBridge: true,
-    hasPermissionReply: true,
-    notify: (m) => quiet.push(m),
-  })
-  const h0 = probe.snapshot()
-  eq(state(h0, "client.pty.create"), "declared", "present but unused -> 存在未用 (not 已验证: existence is not evidence)")
-  eq(state(h0, "ToolContext.ask"), "not-seen", "the ask bridge cannot be judged until a tool sees a real ctx")
-  eq(quiet.length, 0, "a healthy host raises no toast")
-  probe.observeHook("tool.definition")
-  probe.observeEvent("permission.asked")
-  probe.observeAskBridge(true)
-  const h1 = probe.snapshot()
-  eq(state(h1, "hook tool.definition"), "ok", "the host CALLED our hook -> 已验证")
-  eq(state(h1, "event permission.asked"), "ok", "the dialog event actually arrives -> 已验证")
-  eq(state(h1, "ToolContext.ask"), "ok", "a tool ctx carrying ask() -> the web/pty consent path is live")
-  eq(
-    probe.missingRequired().length,
-    0,
-    "nothing required is missing on the shipped host surface",
-  )
-  // the observer seam is wired at the ONLY place that can see a real ctx
-  const seen = []
-  setAskBridgeObserver((present) => seen.push(present))
-  askFnOf({ ask: async () => {} })
-  askFnOf({})
-  setAskBridgeObserver(null)
-  eq(seen, [true, false], "every askFnOf() lookup reports what it found, present or not")
-}
 
 /* ---------- 8. tm_stats: the throughput claim, with a number behind it ---- */
 {
@@ -467,11 +322,16 @@ console.log("hosthooks. tool.definition / chat.params / compaction / shell.env /
   // fallback for a non-git workspace is a SHARED tmpdir path)
   const trajDir = mktmp("stats-traj")
   process.env.TM_TRAJECTORY_DIR = trajDir
-  const { createCapabilityProbe } = await import("./dist/capabilities.js")
-  const liveProbe = createCapabilityProbe({ client: {}, hasShellBridge: false, hasPermissionReply: false })
+  // The v1 createCapabilityProbe is gone (group 7); tm_stats renders whatever
+  // `capabilities()` hands it, so a stub row set exercises the SAME renderer path
+  // (missing / not-seen badges, the 宿主能力矩阵 heading, the capabilities:false trim).
+  const stubRows = [
+    { seam: "client.session.messages", feature: "tm_join 收集子会话正文", state: "missing", evidence: "static" },
+    { seam: "hook tool.definition", feature: "bash/task 描述增强", state: "not-seen", evidence: "hook" },
+  ]
   const rt = await tm.createTmTools(
     { directory: mktmp("stats-tool"), client: {}, $: () => ({}) },
-    { capabilities: () => liveProbe.snapshot() },
+    { capabilities: () => stubRows },
   )
   // The runtime now writes a boot record of its own (handle_key: which signing
   // key this store uses, so "why did every handle die" is answerable), which
@@ -516,8 +376,7 @@ console.log("hosthooks. tool.definition / chat.params / compaction / shell.env /
   ok(!recap.output.includes("undefined") && !recap.output.includes("NaN"), "the recap renders no placeholder")
   await rt.dispose()
   delete process.env.TM_TRAJECTORY_DIR
-  console.log("  7. capability probe: missing vs declared vs not-seen vs unverified, one-shot toast, table render, ask-bridge observer")
-  console.log("  8. tm_stats: token saving + dispatch overlap + governance counts, over a real trajectory store")
+  console.log("  8. tm_stats: token saving + dispatch overlap + governance counts, over a real trajectory store (capability matrix via a stub row set — the v1 probe is retired)")
 }
 
 /* ---------- 9. plan B: the host's background task, governed by us ---------- */

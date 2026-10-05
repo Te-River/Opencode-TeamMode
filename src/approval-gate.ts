@@ -38,7 +38,7 @@
  * Hard rules (HUMAN-approved):
  *   - the plugin NEVER self-allows: `reply` is fixed to "reject".  The only
  *     way a gated command runs is a human approving the dialog;
- *   - on `TM_ENV_PROTECT=off` the gate is not armed (index.ts decides);
+ *   - on `TM_ENV_PROTECT=off` the gate is not armed (the caller decides);
  *   - deferral is SESSION-SCOPED (canDefer): only sessions registered as
  *     carrying our injected ask set may have env reads passed through —
  *     registration comes from an exec-role user prompt (the live-proven
@@ -47,20 +47,19 @@
  *     event.  Stock build/plan sessions never register, so the global R6
  *     hook keeps hard-throwing there — closing the R6 bypass the global
  *     `isArmed()` deferral allowed;
- *   - if the SDK reply FAILS (network/host — including the v1
+ *   - if the SDK reply FAILS (network/host — including the SDK's
  *     `throwOnError:false` envelope resolving with `{ error }`), we cannot
  *     close the dialog, so the gate flips itself permanently "degraded" —
  *     the R6 hook stops deferring env reads and hard-throws them again
  *     (fail-closed), and the event is audited "degraded".
  *
- * SDK surface (probed live on 1.18.x): the plugin's `input.client` is the v1
- * `OpencodeClient`, which has NO `permission` namespace and NO list/create
- * endpoint; the reply path is the top-level
+ * SDK surface (probed live): the host client may carry NO `permission`
+ * namespace and NO list/create endpoint; the reply path is the top-level
  * `postSessionIdPermissionsPermissionId({ path: { id: sessionID,
  * permissionID }, body: { response } })`.  `client.permission.reply` /
  * `client.permission.list` are still tried first so a richer host build is
- * supported, but on v1 they are simply absent and the poll fallback is a
- * no-op (events are the sole pending signal there).
+ * supported, but when they are absent the poll fallback is a no-op (events
+ * are the sole pending signal).
  */
 
 import type { PermissionEvent } from "./types.js"
@@ -167,7 +166,7 @@ export interface ApprovalGateDeps {
   now?: () => number
   /** Best-effort attention hook — fired on EVERY permission.asked (all
    *  dialogs: bash R2/R6 asks AND the tm_* ctx.ask web dialogs) so a user
-   *  not staring at the screen learns a confirmation is waiting.  index.ts
+   *  not staring at the screen learns a confirmation is waiting.  The caller
    *  wires this to the host's `tui.showToast`.  Never throws into the gate. */
   notify?: (message: string) => void
 }
@@ -175,7 +174,7 @@ export interface ApprovalGateDeps {
 export interface ApprovalGate {
   /** Handle one host event (permission.asked/updated / permission.replied). */
   handleEvent(event: PermissionEvent): void
-  /** Start the poll fallback (no-op on v1 where no list endpoint exists). */
+  /** Start the poll fallback (no-op when the host has no list endpoint). */
   start(): void
   /** Stop the poll + every pending timer. */
   dispose(): void
@@ -243,7 +242,7 @@ function auditAsk(client: unknown, tool: string, category: string, verdict: stri
 }
 
 /**
- * v1 SDK default is `throwOnError:false` (types/sdk.gen contract): an HTTP
+ * The SDK default is `throwOnError:false` (types/sdk.gen contract): an HTTP
  * failure — e.g. a 4xx on an already-closed permission id — RESOLVES with an
  * `{ error }` envelope instead of rejecting.  Unwrapping it into a throw is
  * what makes the Layer-3 degraded flip actually fire on the real host.
@@ -252,7 +251,7 @@ function unwrapSdkEnvelope(res: unknown): unknown {
   if (res && typeof res === "object" && "error" in res) {
     const err = (res as { error?: unknown }).error
     if (err) {
-      // Carry the HTTP status ONTO the thrown error.  On the real v1 host the
+      // Carry the HTTP status ONTO the thrown error.  On the real host the
       // status sits at `res.response.status` (NOT on the error body), and
       // `classifyReplyFailure` needs it to tell a benign 404 (dialog already
       // closed — the D4 late-reply race) from a shape-bug 400 / a transport
@@ -269,8 +268,8 @@ function unwrapSdkEnvelope(res: unknown): unknown {
 /**
  * Non-privacy diagnostic appended to a `degraded` audit verdict: the error
  * CLASS name and host status code only — never message text, request params
- * or paths (privacy red line).  Handles both thrown Errors and v1 envelope
- * bodies (`{ error: { name, status | status_code } }`); the name passes an
+ * or paths (privacy red line).  Handles both thrown Errors and `{error}`
+ * envelope bodies (`{ error: { name, status | status_code } }`); the name passes an
  * identifier whitelist so hostile/echoed text can never ride into the log.
  */
 function errorDiagnostic(err: unknown): string {
@@ -505,7 +504,7 @@ export function createApprovalGate(deps: ApprovalGateDeps): ApprovalGate {
     let failClass: ReplyFailureClass | null = null
     try {
       if (reply) {
-        // unwrapSdkEnvelope inside `reply` turns the v1 {error} envelope into a
+        // unwrapSdkEnvelope inside `reply` turns the SDK `{error}` envelope into a
         // throw (carrying the hoisted HTTP status); a rejecting transport
         // lands in the same catch.
         await reply(rec.sid, id)
@@ -712,8 +711,8 @@ export function createApprovalGate(deps: ApprovalGateDeps): ApprovalGate {
       else if (type === "permission.replied") onReplied(props)
     },
     start(): void {
-      // v1 has no list endpoint (`list` is null) — events are the only
-      // pending signal there, so start() is a deliberate no-op on v1.
+      // When the host has no list endpoint (`list` is null), events are the
+      // only pending signal, so start() is a deliberate no-op.
       if (!list || !armed) return
       schedulePoll()
     },

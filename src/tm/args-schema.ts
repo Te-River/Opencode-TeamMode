@@ -50,9 +50,6 @@ async function buildArgsSchemas(): Promise<Record<string, Record<string, unknown
   const z = await loadZod()
   if (!z) {
     return {
-      tm_read: describe(null, null, "path: string (required)"),
-      tm_grep: describe(null, null, "pattern: string (required), path: string (optional)"),
-      tm_bash: describe(null, null, "command: string (required, read-only allowlisted)"),
       tm_fetch: describe(null, null, "ref: string (required), access_token: string, offset: int, limit: int, mode: lines|structure, fields: dot-path (json handle projection)"),
     }
   }
@@ -77,30 +74,6 @@ async function buildArgsSchemas(): Promise<Record<string, Record<string, unknown
   }
   // RAW SHAPES — no zz.object() wrapper (BUG#3).
   return {
-    tm_read: {
-      path: zz
-        .string()
-        .describe(
-          "File path, relative to the project root (or absolute within it). Env files (.env, *.env, .bashrc family) are rejected — same R6 source as the built-in read.",
-        ),
-    },
-    tm_grep: {
-      pattern: zz.string().describe("Regex to search (ripgrep syntax)."),
-      // describe-LAST on every optional chain — zod v4 drops a description
-      // applied before .optional() when the shape is serialized (see
-      // buildMemoryArgsSchema); a required field's describe stays first.
-      path: zz
-        .string()
-        .optional()
-        .describe("Optional directory scope, relative to the project root."),
-    },
-    tm_bash: {
-      command: zz
-        .string()
-        .describe(
-          "Read-only shell command (allowlisted heads only). bash on POSIX, PowerShell-like on Windows.",
-        ),
-    },
     tm_fetch: {
       ref: zz
         .string()
@@ -136,73 +109,6 @@ async function buildArgsSchemas(): Promise<Record<string, Record<string, unknown
 }
 
 export { buildArgsSchemas }
-
-/**
- * tm_ptc_run args — same ZodRawShape treatment (BUG#3 class): a raw shape
- * when zod is available, descriptors otherwise.  Kept separate from
- * buildArgsSchemas because buildPtcRunTool is sync; tm/index awaits this
- * once and passes the result in as `deps.args`.
- */
-export async function buildPtcArgsSchema(): Promise<Record<string, unknown>> {
-  const z = await loadZod()
-  if (!z) {
-    return {
-      program: { descriptor: "program: string (required, async fn body, ≤TM_PTC_MAX_PROGRAM_CHARS)" },
-      label: { descriptor: "label: string (optional, ≤80 chars)" },
-      budgets: { descriptor: "budgets: { max_calls?, max_errors?, timeout_ms? } (optional, tighten-only; any other key is rejected)" },
-    }
-  }
-  const zz = z as unknown as {
-    string: () => {
-      optional: () => { describe: (d: string) => unknown }
-      describe: (d: string) => unknown
-    }
-    number: () => {
-      int: () => {
-        min: (n: number) => {
-          optional: () => { describe: (d: string) => unknown }
-          describe: (d: string) => unknown
-        }
-      }
-    }
-    object: (shape: Record<string, unknown>) => {
-      strict: () => {
-        optional: () => { describe: (d: string) => unknown }
-        describe: (d: string) => unknown
-      }
-      optional: () => { describe: (d: string) => unknown }
-      describe: (d: string) => unknown
-    }
-  }
-  return {
-    program: zz
-      .string()
-      .describe(
-        "Async function body. Available: tm.read(args), tm.grep(args), tm.bash(args), tm.fetch(args) — each returns {ok:true, data} or {ok:false, error:{tool,phase,line?,message}}. `return` a value for the aggregation summary.",
-      ),
-    // Wave B Minor③: zod v4 DROPS a description set before .optional() when
-    // the shape is serialized, so every optional chain here is describe-LAST
-    // (matches buildMemoryArgsSchema / buildBrowserArgsSchema).
-    label: zz.string().optional().describe("Optional run label (≤80 chars)."),
-    // Fix batch T1: an EXPLICIT zod object — z.any() let host-side arg
-    // handling mangle the budgets value so parsePtcArgs never saw it and
-    // the caller's budgets silently fell back to the defaults.
-    // Wave B Minor②: .strict() rejects unknown budget keys (a typo like
-    // max_call silently read as an omitted default before — now it fails
-    // loudly).  parsePtcArgs enforces the same at the runtime layer.
-    budgets: zz
-      .object({
-        max_calls: zz.number().int().min(1).optional().describe("Max bridged tm_* calls (tighten-only)."),
-        max_errors: zz.number().int().min(1).optional().describe("Max failed bridged calls (tighten-only)."),
-        timeout_ms: zz.number().int().min(1).optional().describe("Wall-clock budget in ms (floor 5000, tighten-only)."),
-      })
-      .strict()
-      .optional()
-      .describe(
-        "Optional budgets object { max_calls?, max_errors?, timeout_ms? } — tighten-only, clamped to the TM_PTC_* ceilings. Unknown keys are rejected.",
-      ),
-  }
-}
 
 /**
  * tm_webfetch args — same ZodRawShape treatment (BUG#3 class); descriptor

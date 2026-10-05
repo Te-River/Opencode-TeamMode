@@ -1,10 +1,10 @@
 /**
- * The v2 personality: `Plugin.define({id, setup(ctx)})`.
+ * The v2 personality: `Plugin.define({id, setup(ctx)})` — the only personality
+ * since 1.7.0 (v1 support was removed).
  *
  * `Plugin.define` in @opencode/plugin@2.0.16 is literally `plugin => plugin`,
  * so this module exports the plain object and the v2 SDK never becomes a
- * runtime dependency — which is what keeps the dual-personality package
- * installable by a v1 user who cannot resolve that package at all.
+ * runtime dependency.
  *
  * Scope of this file (milestone M2): build the governed runtime on a
  * filesystem-backed client shim, register the tm_* tools through
@@ -13,17 +13,14 @@
  * session hooks / compaction / description appends (#93), or the browser
  * (#95). Those need this seam proven live first.
  *
- * Two v1 behaviors do not carry over, and both absences are stated rather than
- * discovered later:
+ * Two host limits are stated rather than discovered later:
  *  - creating agents: `AgentEditor` has no `add`, so the six roles must come
  *    from the user's config (the installer writes `agents/*.md`).
- *  - the conservative default-agent promotion: v1 read `cfg.default_agent` and
- *    only filled it when empty or "build".  v2 exposes `default(id)` with NO
- *    getter, so "only if the user did not choose" is not expressible — the
- *    choice is between never promoting and promoting every boot.  The user's
- *    standing instruction (2026-09-25) is that Team is ALWAYS the default, so
- *    this promotes unconditionally; `defaultAgent: false` in the plugin options
- *    opts out, exactly as on v1.
+ *  - the default-agent promotion: `default(id)` has NO getter, so "only if the
+ *    user did not choose" is not expressible — the choice is between never
+ *    promoting and promoting every boot.  The user's standing instruction
+ *    (2026-09-25) is that Team is ALWAYS the default, so this promotes
+ *    unconditionally; `defaultAgent: false` in the plugin options opts out.
  *
  * The official confirmation dialog is absent as well, and for a different
  * reason: probed on the live host, a plugin has no way to raise one.
@@ -99,11 +96,11 @@ export const v2Personality: V2Plugin = {
     const envProtectExtra = parseExtraDeny(process.env.TM_ENV_PROTECT_EXTRA_DENY)
 
     // ---------- the v2 network policy: no domain gate, IP red line only ----------
-    // The user's standing instruction for v2 (2026-09-25): do not block network
-    // access at all EXCEPT sensitive and internal addresses.  v1's 22-host seed list
-    // existed because v1 could open the host's official per-request dialog; on v2 a
-    // plugin cannot raise one, so an allowlist became a set of pages the agent can
-    // never see and no one can approve -- a gate with no door.  `"*"` therefore
+    // The user's standing instruction (2026-09-25): do not block network
+    // access at all EXCEPT sensitive and internal addresses.  A plugin cannot
+    // raise the host's official per-request dialog, so an allowlist would be a
+    // set of pages the agent can never see and no one can approve -- a gate with
+    // no door.  `"*"` therefore
     // replaces the DEFAULT here, and what still holds absolutely is `checkWebUrl`'s
     // address policy underneath it: link-local / metadata / reserved ranges are a hard
     // deny no config can open (and were never consentable), and private space
@@ -111,9 +108,9 @@ export const v2Personality: V2Plugin = {
     // tools, which have no dialog to ask with, and opened only by the host's own
     // `effect:"ask"` for the native tools.  IPv4-mapped and DNS64 spellings are
     // unwrapped before that check, so the notation is not a way around it.
-    // An explicit TM_WEBFETCH_ALLOWED_DOMAINS always wins; this only changes which
-    // default applies, and it is resolved from a COPY of the env so the v1
-    // personality in the same process is untouched.
+    // An explicit TM_WEBFETCH_ALLOWED_DOMAINS always wins; this only changes
+    // which default applies, and it is resolved from a COPY of the env so the
+    // process env itself is untouched.
     const v2Env: Record<string, string | undefined> = { ...process.env }
     if (!String(v2Env.TM_WEBFETCH_ALLOWED_DOMAINS ?? "").trim()) v2Env.TM_WEBFETCH_ALLOWED_DOMAINS = "*"
     // The DOMAIN gate is off on this personality (see the note above): 2.x gives a
@@ -155,10 +152,10 @@ export const v2Personality: V2Plugin = {
     // `tools_in_request` (what the assembled request actually carried).
     const v2CodeModeDirect = /^(1|true|yes|on|direct)$/i.test(String(v2Env.TM_V2_CODEMODE ?? "").trim())
 
-    // No SDK client in the v1 sense.  v1's `client` carried `file.read`, `find.text`,
-    // `session.*` and `pty.*`; the v2 plugin ctx has no such object, and the fs shim
-    // that used to stand in for the first two went away with `tm_read`/`tm_grep` (the
-    // native tools, governed at `execute.after`, are the file ladder now).
+    // No SDK client.  The v2 plugin ctx carries no `file.read` / `find.text` /
+    // `session.*` / `pty.*` object, and the fs shim that used to stand in for the
+    // first two went away with `tm_read`/`tm_grep` (the native tools, governed at
+    // `execute.after`, are the file ladder now).
     // What IS bridged is the one thing the collect path cannot be honest without:
     // `tm_join` must be able to check whether a named session id is really the
     // caller's child, and a live 2.0.16 run proved that without it the tool reports
@@ -195,13 +192,12 @@ export const v2Personality: V2Plugin = {
 
     // ---------- register the governed tools ----------
     const entries = Object.entries(tmRuntime.tools as Record<string, ToolDefinition>)
-    // v1 keeps tm_ptc_run; v2 does not register it.  The host's own `execute`
-    // (Code Mode) already runs "one program, N governed calls, zero round-trips,
-    // only the aggregate entering the context", and a live session showed our
+    // The retired tools are not registered.  The host's own `execute` (Code
+    // Mode) already runs "one program, N governed calls, zero round-trips, only
+    // the aggregate entering the context", and a live session showed our
     // governed results still come back offloaded through it — so shipping a
     // second batch runner would hand the model two tools for one job.  The
-    // module stays in the tree because the frozen v1 personality needs it, and
-    // the prompts the v2 config files carry are forked by gen-v2-config.mjs.
+    // prompts the config files carry are forked by gen-v2-config.mjs.
     const V2_UNREGISTERED = V1_ONLY_TOOLS
     const bindings: V2ToolBinding[] = []
     const derived: string[] = []
@@ -224,11 +220,11 @@ export const v2Personality: V2Plugin = {
     // shape, so name the tools and say how they were obtained.
     const retired = entries.map(([name]) => name).filter((n) => V2_UNREGISTERED.has(n))
     if (retired.length) {
-      // Deliberate absences are said, not silently missing: an agent that reads a
-      // v1 document and finds no `tm_read` needs to learn from the boot log that
-      // this is the design, not a failed install.
+      // Deliberate absences are said, not silently missing: an agent that looks
+      // for `tm_read` needs to learn from the boot log that this is the design,
+      // not a failed install.
       notes.push(
-        `v2 不注册 ${retired.join("/")} —— 同一件工作交给宿主自己的 read/grep/shell/execute（结果照样被 execute.after 治理），v1 保留这些别名`,
+        `不注册 ${retired.join("/")} —— 同一件工作交给宿主自己的 read/grep/shell/execute（结果照样被 execute.after 治理）`,
       )
     }
     if (derived.length) {
@@ -427,7 +423,7 @@ export const v2Personality: V2Plugin = {
     const escalateShellAsk =
       envProtectMode !== "off" && needsCoarseShellAsk(process.env, guards.installed)
     // Team is ALWAYS the default (the user's standing instruction — see the
-    // header for why this cannot be the conservative v1 form).  `default()` on
+    // header for why there is no conservative form).  `default()` on
     // an agent that does not exist would just make the host fall back to build
     // silently, so it is gated on the role actually being present, and the
     // refusal to promote is reported rather than hidden.
@@ -449,10 +445,10 @@ export const v2Personality: V2Plugin = {
               { escalateShellAsk, agentName: id },
             )
             for (const u of unmapped) unmappedActions.add(u)
-            // `V1_ONLY_TOOLS` is passed as the reclaim set: a triple naming an
-            // action this personality never registers can only have come from an
-            // earlier boot, and a permission rule for a tool the host has never
-            // heard of reads as a capability the user granted.
+            // `V1_ONLY_TOOLS` is passed as the reclaim set: a triple naming a
+            // retired action can only have come from an earlier boot, and a
+            // permission rule for a tool the host has never heard of reads as a
+            // capability the user granted.
             const merged = mergeTriples((existing as V2AgentInfo).permissions, triples, V1_ONLY_TOOLS)
             if (merged.changed) editor.update(id, (a) => { a.permissions = merged.triples })
           }
@@ -556,14 +552,13 @@ export const v2Personality: V2Plugin = {
     // ---------- the request layer ----------
     // The whitelist was only ever a DENY, which stops a call but leaves the
     // tool's description in every request.  Here it becomes a request-level
-    // removal, and the two things v1 baked into the team prompt (the resolved
-    // board root) or into the agent config (temperature) ride the request
+    // removal, and the resolved board root and the temperature ride the request
     // instead — a v2 agent is a config FILE and cannot carry a per-workspace
     // path, and `temperature` is a legacy agent field the runner no longer
-    // sends.  This also starts the blackboard TTL sweeper, which v1 owns and v2
-    // otherwise silently lacked: the note promises a sweep, so shipping it
-    // without the sweeper would be the exact overstated claim this product is
-    // built to refuse.
+    // sends.  This also starts the blackboard TTL sweeper, which this
+    // personality otherwise silently lacked: the note promises a sweep, so
+    // shipping it without the sweeper would be the exact overstated claim this
+    // product is built to refuse.
     const ttlMs = resolveTtlMs(options as never)
     const ttlDays = Math.round(ttlMs / (24 * 60 * 60 * 1000)) || DEFAULT_TTL_DAYS
     const note = blackboardNote(startBlackboardMaintenance(directory, ttlMs), ttlDays)
@@ -635,12 +630,11 @@ export const v2Personality: V2Plugin = {
     if (!session.registrations.length) {
       notes.push("ctx.session.hook 不存在：工具面裁剪、温度、黑板根目录三项请求层治理都没装上")
     }
-    // v1 handed the plugin a host `event` hook and pumped every session.idle /
-    // session.error / session.status into the child registry.  This personality had
-    // no subscription at all (#8), so a child that settled two seconds after the
-    // dispatch stayed "running" for the whole wait budget and `tm_join` reported a
-    // state it had never observed — goal #6's failure shape, and a bug rather than
-    // a limitation now that `ctx.event.subscribe()` is measured to work.
+    // This personality had no event subscription at all (#8), so a child that
+    // settled two seconds after the dispatch stayed "running" for the whole wait
+    // budget and `tm_join` reported a state it had never observed — goal #6's
+    // failure shape, and a bug rather than a limitation now that
+    // `ctx.event.subscribe()` is measured to work.
     const feed = await applyV2EventFeed(ctx, { onEvent: (ev) => tmRuntime.observeDispatchEvent(ev) })
     if (!feed.report.active) {
       notes.push(`事件流没接通（${feed.report.stopped ?? "原因未知"}）：tm_join 的结算检测只剩等待预算内的轮询，子代理结算了也要等到超时才报告`)
@@ -758,9 +752,9 @@ export const v2Personality: V2Plugin = {
       /* the trajectory is an extra here, never a reason to fail the boot */
     }
 
-    // A v1 user reading their own logs would otherwise conclude the plugin was
-    // silently broken: these two facts are the visible difference between the
-    // personalities.
+    // A user reading their own logs would otherwise conclude the plugin was
+    // silently broken: these facts are the visible difference between a working
+    // install and a silent one.
     // A2: three states, ONE definition.  The sentence that used to live here —
     // `配置里缺角色：…` — asserted a fact about files from a snapshot that is blind by
     // construction (`ctx.agent.transform` receives the agent set from before the
@@ -871,7 +865,7 @@ export const v2Personality: V2Plugin = {
           /* a host that already tore down its own registry has nothing left to free */
         }
       }
-      // tm_browser owns a child process — teardown waits on v1 and must wait here too.
+      // tm_browser owns a child process — teardown must await it.
       await tmRuntime.dispose()
     }
   },

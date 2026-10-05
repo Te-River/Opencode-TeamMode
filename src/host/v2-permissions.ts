@@ -1,11 +1,11 @@
 /**
- * v1's flat permission map -> v2's ordered `{action, resource, effect}` rules.
+ * The agent permission matrix -> v2's ordered `{action, resource, effect}` rules.
  *
- * v1 expressed an agent's whitelist as an object keyed by tool name, with two
+ * The matrix expresses a whitelist as an object keyed by tool name, with two
  * tricks the v2 schema cannot hold: a value may be an OBJECT of
  * pattern->effect (the bash escalation that made the host's official dialog
- * fire for the R6/R2 faces), and `"tm_*"` was a literal wildcard KEY that
- * matched our whole tool family.  v2 takes only flat triples, so:
+ * fire for the R6/R2 faces), and `"tm_*"` is a literal wildcard KEY that
+ * matches our whole tool family.  v2 takes only flat triples, so:
  *
  *  - a plain `tool: "allow"|"deny"|"ask"` becomes `{action: tool, resource:"*", effect}`;
  *  - an escalation object becomes ONE `ask` triple for that action — the object
@@ -30,9 +30,10 @@ export interface PermissionTriple {
 const EFFECTS = new Set<string>(["allow", "deny", "ask"])
 
 /**
- * v1 named its built-in tools differently.  Measured against the live v2
- * surface (probed `session.context.tools`: edit glob grep question read shell
- * skill subagent webfetch websearch write, plus patch/browser_*):
+ * The matrix names three built-in tools differently from the host's v2 tool
+ * ids.  Measured against the live v2 surface (probed `session.context.tools`:
+ * edit glob grep question read shell skill subagent webfetch websearch write,
+ * plus patch/browser_*):
  *
  *   bash → shell · task → subagent · apply_patch → patch
  *
@@ -48,28 +49,28 @@ export const V2_ACTION_NAMES: Readonly<Record<string, string>> = {
 }
 
 /**
- * Tools the v1 personality registers and the v2 one does NOT — the host's own
- * `execute` (Code Mode) already covers `tm_ptc_run` on v2 (proved against a live
+ * RETIRED TOOLS — names the v1 personality used to register and this package
+ * no longer ships.  v1 support was removed in 1.7.0, so these are historical
+ * names; the set survives because it still has three live jobs:
+ *
+ *  - `v2.ts` skips them when registering, so a stale build or a future re-add
+ *    cannot slip one back onto the tool surface;
+ *  - `triplesFromAgentPermission` drops any permission rule naming one, and
+ *    `mergeTriples` reclaims such a rule from an upgraded config — an `allow`
+ *    for an action the host has never heard of claims a capability that does
+ *    not exist;
+ *  - `scripts/gen-v2-config.mjs` drops their triples from the generated
+ *    markdown for the same reason.
+ *
+ * Why each left: `tm_ptc_run` because the host's own Code Mode does the job
+ * (one program, N governed calls, zero round-trips, proved against a live
  * session: parallel governed calls, results still offloaded through handles).
- *
- * This is the single source for that fact: `v2.ts` skips them when registering,
- * and `scripts/gen-v2-config.mjs` drops their permission triples, because an
- * `allow` for an action the host has never heard of claims a capability that
- * does not exist.
- */
-/**
- * Tools v1 keeps and v2 does not register.
- *
- * `tm_ptc_run` left because the host's own Code Mode does the job.  The other
- * three left for the opposite reason: on v2 the NATIVE read/grep/shell are the
- * better tools (paged reads, image/PDF attachment, background shell, and — since
- * 1.7.0's offload layer — they are now governed too, measured at 12,902 tokens
- * arriving as a 78-token preview).  Retiring them is only safe in that order,
- * which is why the governance moved to `execute.after` FIRST and this list is the
- * step that follows it, not the one that precedes it.
- *
- * v1 keeps all three: its `tool.execute.before` can rewrite arguments but not
- * results, so deleting them there would delete offload itself.
+ * `tm_read`/`tm_grep`/`tm_bash` because the NATIVE read/grep/shell are the
+ * better tools (paged reads, image/PDF attachment, background shell, and —
+ * since the offload layer — they are governed too, measured at 12,902 tokens
+ * arriving as a 78-token preview).  Retiring them was only safe in that order,
+ * which is why the governance moved to `execute.after` FIRST and this list is
+ * the step that follows it, not the one that precedes it.
  */
 export const V1_ONLY_TOOLS: ReadonlySet<string> = new Set([
   "tm_ptc_run",
@@ -80,7 +81,7 @@ export const V1_ONLY_TOOLS: ReadonlySet<string> = new Set([
    * `tm_pty` executes on the host's OWN terminal sessions through `client.pty.*`,
    * and the v2 plugin context has no pty domain at all — so registering it meant
    * shipping a tool whose every start answers "宿主 pty 接口不可用". A tool that
-   * cannot work is the overstated claim, not the fallback. v1 keeps it.
+   * cannot work is the overstated claim, not the fallback.
    * Revisit only when #28 measures the native `shell` background round-trip
    (what returns, how output is retrieved, how it is cancelled); if the host's own
    * background shell covers it, this stays retired and the prompt says `shell`.
@@ -89,16 +90,16 @@ export const V1_ONLY_TOOLS: ReadonlySet<string> = new Set([
 ])
 
 /**
- * The v2 file/shell ladder runs through the host's own tools, so the triples that
+ * The file/shell ladder runs through the host's own tools, so the triples that
  * DENY them must not be projected: v2-session.ts deletes every literal-`deny`
  * action from the request, and denying `read` while `tm_read` is unregistered
  * would leave a role with no way to open a file at all.  This is a translation
- * decision, not an edit to src/agents.ts — v1's matrix keeps its denies and the
- * two personalities' ladders genuinely differ now.
+ * decision, not an edit to src/agents.ts — the matrix keeps its denies and the
+ * ladder is applied at translation time.
  *
  * Both halves have to agree, so the SAME set is consulted by `toolsToRemove()` in
  * v2-session.ts; this constant is the one source.  Letting the native file tools
- * back in does not lower a red line: v1's P2 scope ("stay inside the project +
+ * back in does not lower a red line: the P2 scope ("stay inside the project +
  * the store dirs") is the host's own `external_directory` permission action on v2,
  * observed live answering `effect:"ask"` with a `permission.asked` behind it — a
  * real dialog where our code used to hard-throw.  The two red lines the host does
@@ -116,26 +117,26 @@ function normalizeEffect(value: unknown): PermissionEffect | null {
 
 export interface TranslateOptions {
   /**
-   * With R6 on, v1 escalated `bash` to a pattern object so the host's OFFICIAL
-   * dialog fired.  A plugin cannot raise a dialog on v2 (probed) — but the host
-   * does honor an `ask` EFFECT it evaluates itself, so escalating the mapped
-   * `shell` action to `ask` is the closest honest equivalent: the human is
-   * asked, just per command rather than per pattern.  #94 refines the
+   * With R6 on, the matrix escalates `bash` to a pattern object so the host's
+   * OFFICIAL dialog fires.  A plugin cannot raise a dialog on v2 (probed) — but
+   * the host does honor an `ask` EFFECT it evaluates itself, so escalating the
+   * mapped `shell` action to `ask` is the closest honest equivalent: the human
+   * is asked, just per command rather than per pattern.  #94 refines the
    * per-pattern half through `permission.hook("evaluate")`.
    */
   escalateShellAsk?: boolean
   /**
-   * Which role these triples are for.  Needed for the ONE tool that exists only on this
-   * personality: `tm_ledger` is not in the v1 permission map (v1 has the host's
-   * `todowrite`), so nothing would ever name it, and an unruled action is the host's
-   * default rather than our stated rule.  The lead's list is the lead's: `allow` for it,
-   * `deny` for the five specialists, which also makes the runtime gate
-   * (`onlyAgent: "team"`) visible in the config the user can read.
+   * Which role these triples are for.  Needed for the ONE tool the matrix does
+   * not name: `tm_ledger` is not in the permission map, so nothing would ever
+   * name it, and an unruled action is the host's default rather than our stated
+   * rule.  The lead's list is the lead's: `allow` for it, `deny` for the five
+   * specialists, which also makes the runtime gate (`onlyAgent: "team"`)
+   * visible in the config the user can read.
    */
   agentName?: string
 }
 
-/** The v1 `permission` block, as loosely as the host hands it to us. */
+/** The agent `permission` block, as loosely as the config hands it to us. */
 export function triplesFromAgentPermission(
   permission: Record<string, unknown> | undefined | null,
   options: TranslateOptions = {},
@@ -143,13 +144,13 @@ export function triplesFromAgentPermission(
   const triples: PermissionTriple[] = []
   const unmapped: string[] = []
   if (!permission || typeof permission !== "object") return { triples, unmapped }
-  for (const [v1Action, value] of Object.entries(permission)) {
-    if (!v1Action) continue
-    if (V2_ONLY_ACTIONS.has(v1Action)) {
-      unmapped.push(v1Action)
+  for (const [matrixAction, value] of Object.entries(permission)) {
+    if (!matrixAction) continue
+    if (V2_ONLY_ACTIONS.has(matrixAction)) {
+      unmapped.push(matrixAction)
       continue
     }
-    const action = V2_ACTION_NAMES[v1Action] ?? v1Action
+    const action = V2_ACTION_NAMES[matrixAction] ?? matrixAction
     // A rule for an action v2 never registers claims a capability that does not
     // exist, and `permission.evaluate` cannot even see it to enforce it.  One
     // source for the decision: this is the same set v2.ts skips when registering
@@ -206,7 +207,7 @@ export function triplesFromAgentPermission(
  * it).  Idempotent: running it twice changes nothing.
  *
  * `drop` is the reclaim path for an upgrade: a rule naming an action this
- * personality never registers (a v1-only tool) can only have come from us, and
+ * package never registers (a retired tool) can only have come from us, and
  * leaving it behind would keep claiming a capability the host does not have.
  */
 export function mergeTriples(

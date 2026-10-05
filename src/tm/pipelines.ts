@@ -1,11 +1,12 @@
 /**
- * tm layer — the four governed pipelines (T1.2 + T1.3 + T1.4).  Split out of
- * the former tools.ts hub; behavior unchanged.  Assembly lives in tools.ts.
+ * tm layer — the shared governance pipeline + tm_fetch retrieval.  Split out of
+ * the former tools.ts hub.  Assembly lives in tools.ts.
  *
- *   tm_read  — governed passthrough of client.file.read  (T0.4-verified API)
- *   tm_grep  — governed passthrough of client.find.text  (T0.4-verified API)
- *   tm_bash  — read-only allowlisted shell via the host `$` bridge
  *   tm_fetch — paged/structured retrieval of offloaded payloads (handles)
+ *
+ * (tm_read / tm_grep / tm_bash were the v1-only governed passthroughs and are
+ * gone with the v1 personality: on v2 the host's native read / grep / shell are
+ * governed by src/host/v2-offload.ts through the SAME `govern` seam below.)
  *
  * Shared governance (every tool): threshold offload (per content class:
  * TM_OFFLOAD_THRESHOLD_TEXT for markdown/text/log prose,
@@ -17,22 +18,17 @@
  */
 
 import type * as crypto from "node:crypto"
-import type { Stats } from "node:fs"
-import { stat as fsStat } from "node:fs/promises"
-import { ENV_PROTECT_MESSAGE, classifyBashCommand, classifyPathFields, type EnvProtectMode } from "../envprotect.js"
+import type { EnvProtectMode } from "../envprotect.js"
 import { estimateTokens, shouldOffload, shorten, type TmConfig } from "./config.js"
 import { isExpired, parseRef as parseTmRef, verifyToken } from "./refs.js"
 import type { RunStore } from "./store.js"
 import {
   buildPreview,
   buildStructureSummary,
-  contentTypeForPath,
   detectContentType,
 } from "./preview.js"
-import { assertReadablePath, classifyReadonlyCommand } from "./guard.js"
 import { HANDLE_INVALID_MESSAGE, tmError } from "./result.js"
-import { extractText, unwrapClientResult } from "./client-unwrap.js"
-import { cleanShellError, runShellCommand } from "./shell-bridge.js"
+import { cleanShellError } from "./shell-bridge.js"
 
 // ---------- args coercion (pipelines are runtime-defensive) ------------------
 
@@ -83,15 +79,6 @@ export interface TmDeps {
 interface GovernOptions {
   contentType: ReturnType<typeof detectContentType>
   clue?: string
-}
-
-/** Best-effort stat — null when the path does not exist / cannot resolve. */
-async function statOrNull(p: string): Promise<Stats | null> {
-  try {
-    return await fsStat(p)
-  } catch {
-    return null
-  }
 }
 
 /**
@@ -269,166 +256,6 @@ export function buildPipelines(deps: TmDeps) {
     }
   }
 
-  // ---------- tm_read ----------
-
-  async function tmRead(rawArgs: Record<string, unknown>, ctx: unknown): Promise<unknown> {
-    const tool = "tm_read"
-    try {
-      const args = rawArgs ?? {}
-      const requested = strArg(args.path).trim()
-      if (!requested) return tmError(tool, "args", "缺少 path 参数")
-      // R6 reuse — same matcher source as the global hook (anti-backdoor).
-      const r6 = classifyPathFields(args, deps.mode, deps.extra)
-      if (r6) return tmError(tool, "permission", `${ENV_PROTECT_MESSAGE} [category=${r6}]`)
-      const stepId = nextStepId()
-      store.appendTrajectory({ tool, step_id: stepId, event: "call" })
-      const scope = assertReadablePath(ctxDir(ctx), requested, [
-        store.blackboardRoot,
-        store.trajectoryRoot,
-      ])
-      if (!scope.ok) return tmError(tool, "permission", scope.message)
-      // m2 (fix batch): a DIRECTORY path reaches the host client as a raw
-      // 500 ("Unexpected server error. Check server logs") — pre-flight the
-      // stat so the agent gets a structured, actionable error instead.
-      const dirStat = await statOrNull(scope.abs)
-      if (dirStat?.isDirectory()) {
-        return tmError(tool, "execute", `路径是一个目录，不可读取: ${shorten(scope.abs, 200)}`)
-      }
-      const client = deps.client as { file?: { read?: (req: unknown) => unknown } } | null | undefined
-      if (!client || typeof client.file?.read !== "function") {
-        return tmError(tool, "client", "宿主 client 不可用（client.file.read 缺失）")
-      }
-      // METHOD call (property-access site keeps the SDK `this` binding) —
-      // a fetched-and-unbound call dies synchronously on the real host
-      // (same P0 class as the approval-gate reply bug; §7-style mocks pin it)
-      const res = await client.file.read({
-        query: { path: scope.abs, directory: ctxDir(ctx) },
-      })
-      const unwrapped = unwrapClientResult(res)
-      if (!unwrapped.ok) return tmError(tool, "client", unwrapped.message)
-      const content = extractText(unwrapped.data)
-      return govern(stepId, tool, content, {
-        contentType: detectContentType(content, contentTypeForPath(scope.abs)),
-        clue: `path=${shorten(scope.abs, 120)}`,
-      })
-    } catch (err) {
-      const info = cleanShellError(err)
-      return tmError(tool, "execute", info.message, info.line)
-    }
-  }
-
-  // ---------- tm_grep ----------
-
-  async function tmGrep(rawArgs: Record<string, unknown>, ctx: unknown): Promise<unknown> {
-    const tool = "tm_grep"
-    try {
-      const args = rawArgs ?? {}
-      const pattern = strArg(args.pattern).trim()
-      if (!pattern) return tmError(tool, "args", "缺少 pattern 参数")
-      const r6 = classifyPathFields(args, deps.mode, deps.extra)
-      if (r6) return tmError(tool, "permission", `${ENV_PROTECT_MESSAGE} [category=${r6}]`)
-      const stepId = nextStepId()
-      store.appendTrajectory({ tool, step_id: stepId, event: "call" })
-      let scopeDir = ctxDir(ctx)
-      const requested = strArg(args.path).trim()
-      if (requested) {
-        const scope = assertReadablePath(ctxDir(ctx), requested, [
-          store.blackboardRoot,
-          store.trajectoryRoot,
-        ])
-        if (!scope.ok) return tmError(tool, "permission", scope.message)
-        // m2 (fix batch, defensive): a FILE as the grep scope hits the host
-        // client as a raw 500 — reject with a clear structured error before
-        // the client call.
-        const scopeStat = await statOrNull(scope.abs)
-        if (scopeStat?.isFile()) {
-          return tmError(tool, "execute", `路径不是一个目录，不可作为 grep 范围: ${shorten(scope.abs, 200)}`)
-        }
-        scopeDir = scope.abs
-      }
-      const client = deps.client as { find?: { text?: (req: unknown) => unknown } } | null | undefined
-      if (!client || typeof client.find?.text !== "function") {
-        return tmError(tool, "client", "宿主 client 不可用（client.find.text 缺失）")
-      }
-      // METHOD call — see the tm_read note above (unbound SDK call = dead)
-      const res = await client.find.text({
-        query: { pattern, directory: scopeDir },
-      })
-      const unwrapped = unwrapClientResult(res)
-      if (!unwrapped.ok) return tmError(tool, "client", unwrapped.message)
-      const content = extractText(unwrapped.data)
-      const matchLines = content ? content.split(/\r?\n/).filter((l) => l.trim()).length : 0
-      if (!matchLines) {
-        // A bare empty result reads as "the search is broken", and the agent
-        // then re-runs it a wider way or concludes the opposite of the truth
-        // (live: a 0-hit search the model called a tool failure).  0 is an
-        // ANSWER, so print it as one — with the scope it applies to.
-        // …and a widening hint ONLY when the caller narrowed it — telling a
-        // root-wide search to drop `path` is noise that costs a round.
-        const scopeNote = requested
-          ? `\n本次范围由 path="${shorten(requested, 80)}" 限定——要搜整个工作区就去掉 path 再试一次。`
-          : ""
-        return govern(stepId, tool, `（0 命中）pattern="${pattern}" · 范围=${shorten(scopeDir, 120)}${scopeNote}\n这只表示"在该目录及其子目录里没有匹配"，不证明整个仓库没有：这是正则，换写法常能救回来（[Aa]rk 同时命中 Ark/ark），或直接 tm_read 读你怀疑的那个文件。`, {
-          contentType: "text",
-          clue: `pattern=${shorten(pattern, 60)}, 命中 0 行, dir=${shorten(scopeDir, 80)}`,
-        })
-      }
-      return govern(stepId, tool, content, {
-        contentType: detectContentType(content),
-        clue: `pattern=${shorten(pattern, 60)}, 命中 ${matchLines} 行, dir=${shorten(scopeDir, 80)}`,
-      })
-    } catch (err) {
-      const info = cleanShellError(err)
-      return tmError(tool, "execute", info.message, info.line)
-    }
-  }
-
-  // ---------- tm_bash ----------
-
-  async function tmBash(rawArgs: Record<string, unknown>, ctx: unknown): Promise<unknown> {
-    const tool = "tm_bash"
-    try {
-      const args = rawArgs ?? {}
-      const command = strArg(args.command).trim()
-      if (!command) return tmError(tool, "args", "缺少 command 参数")
-      // Layer 1 — R6 (forbidden set, same source as the built-in bash hook).
-      const r6 = classifyBashCommand(command, deps.mode, deps.extra)
-      if (r6) return tmError(tool, "permission", `${ENV_PROTECT_MESSAGE} [category=${r6}]`)
-      // Layer 2 — P3 allowlist (permitted set, read-only).
-      const verdict = classifyReadonlyCommand(command, cfg.bashReadonlyAllowed)
-      if (!verdict.ok) {
-        return tmError(
-          tool,
-          "permission",
-          `${verdict.reason ?? "命令被拒绝"}。${verdict.suggestion ?? ""}`.trim(),
-        )
-      }
-      const stepId = nextStepId()
-      store.appendTrajectory({ tool, step_id: stepId, event: "call" })
-      // T3 (fix batch): pin the command to the workspace root — the spawn
-      // fallback inherits the HOST process cwd without it (user HOME on
-      // the desktop sidecar), so relative paths resolved outside the
-      // workspace all session.
-      const cwd = ctxDir(ctx)
-      const output = await runShellCommand(deps.$, command, cwd)
-      // Empty stdout used to come back as an empty result — indistinguishable
-      // from "the tool never ran", so the model re-issued the command or
-      // concluded the tool was broken (live: a `-Skip 168` on a file PowerShell
-      // decodes as 168 lines, where the honest answer is "0 行输出").
-      const text =
-        output.trim() === ""
-          ? `（命令执行完成，stdout 为空 = 0 行输出 · cwd=${shorten(cwd, 120)}）\n空输出是命令给出的答案，不是工具失败。若你预期有内容：先核对相对路径是按上面的 cwd 解析的；读文件内容请用 tm_read——Windows PowerShell 5.1 的默认解码口径与 tm_read/tm_grep 不一致，含中文的 UTF-8 文件在它眼里行数可能更少，按行取片段时这会直接骗到你。`
-          : output
-      return govern(stepId, tool, text, {
-        contentType: detectContentType(text),
-        clue: `cmd=${shorten(command, 60)}, dir=${shorten(cwd, 80)}`,
-      })
-    } catch (err) {
-      const info = cleanShellError(err)
-      return tmError(tool, "execute", info.message, info.line)
-    }
-  }
-
   // ---------- tm_fetch ----------
 
   async function tmFetch(rawArgs: Record<string, unknown>, _ctx: unknown): Promise<unknown> {
@@ -548,8 +375,10 @@ export function buildPipelines(deps: TmDeps) {
     }
   }
 
-  return { nextStepId, govern, tmRead, tmGrep, tmBash, tmFetch, store }
+  return { nextStepId, govern, tmFetch, store }
 }
 
-/** The four governed pipelines + shared step-counter/govern (PTC bridge seam). */
+/** The shared governance seam + tm_fetch retrieval (v2 native-offload + every
+ *  governed tool's offload path call `govern`; PTC's separate instance is gone
+ *  with the v1 personality). */
 export type TmPipelines = ReturnType<typeof buildPipelines>

@@ -221,134 +221,15 @@ assert.equal(ep.inspectToolCall("bash", { command: "env" }, "off"), null, "off: 
 assert.equal(ep.inspectToolCall("read", { filePath: ".env" }, "off"), null, "off: read passes")
 console.log("5. inspectToolCall: OK (filePath/path/pattern/include, scope boundary, extra-deny, off)")
 
-/* ---------- 6. loader integration + env-var wiring + audit ---------- */
+/* ---------- 6. loader integration + env-var wiring + audit — RETIRED with the
+ *  v1 personality (1.7.0 cut).  This group drove plugin.server() to prove the
+ *  R6 hook installed next to config, wired the env knobs, and wrote the privacy
+ *  red-line audit.  plugin.server is gone; the R6 CLASSIFICATION it exercised is
+ *  unchanged and stays pinned by groups 3-5 (the pure matchers + inspectToolCall),
+ *  and the audit/hook wiring on v2 lives in src/host/v2-guard.ts (pinned by
+ *  test-v2-adapter).  The NUMBER stays so 7 does not renumber. ---------- */
+console.log("6. loader integration: SKIPPED — v1 plugin.server removed; R6 matchers pinned by groups 3-5, v2 hook wiring by test-v2-adapter")
 
-const callHook = (hooks, tool, args) => hooks["tool.execute.before"]({ tool }, { args })
-// Class-method form ON PURPOSE: the real SDK's app.log depends on `this`
-// bound to the app object, so this mock rejects any unbound/destructured
-// call — the exact regression shape of the old destructured audit call.
-const auditClient = () => {
-  const calls = []
-  const client = {
-    app: {
-      log(req) {
-        if (this !== client.app) throw new TypeError("audit log lost its this binding")
-        calls.push(req)
-      },
-    },
-  }
-  return { calls, client }
-}
-
-// negative control: prove the mock really enforces `this` binding, so the
-// audit assertions below cannot pass against a destructured implementation
-{
-  const { client, calls } = auditClient()
-  const { log } = client.app
-  assert.throws(() => log({ body: {} }), /this binding/, "mock rejects unbound log calls")
-  assert.equal(calls.length, 0, "unbound call recorded nothing")
-}
-
-let tmpRoot = ""
-try {
-  tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), "envp-test-"))
-
-  // 6a. default (no TM_ENV_PROTECT) -> strict; hook installed next to config
-  delete process.env.TM_ENV_PROTECT
-  delete process.env.TM_ENV_PROTECT_EXTRA_DENY
-  {
-    const a = auditClient()
-    const hooks = await plugin.server({ directory: tmpRoot, client: a.client }, { envProtect: true })
-    assert.equal(typeof hooks.config, "function", "config hook still present")
-    assert.equal(typeof hooks["tool.execute.before"], "function", "R6 hook installed")
-    await callHook(hooks, "bash", { command: "echo hello" })
-    assert.equal(a.calls.length, 0, "no audit on pass-through")
-    await assert.rejects(
-      callHook(hooks, "bash", { command: "printenv PATH" }),
-      (err) => err.message.startsWith(ep.ENV_PROTECT_MESSAGE)
-        && err.message.includes("[category=bash-env-command]"),
-      "default mode strict: printenv blocked with structured message",
-    )
-    assert.equal(a.calls.length, 1, "audit written on block")
-  }
-
-  // 6b. audit shape + privacy red line: tool name + category ONLY
-  {
-    const a = auditClient()
-    const hooks = await plugin.server({ directory: tmpRoot, client: a.client }, { envProtect: true })
-    await assert.rejects(callHook(hooks, "bash", { command: "cat .env && more" }))
-    assert.equal(a.calls.length, 1, "one audit entry")
-    const entry = a.calls[0]
-    assert.equal(entry.body.level, "warn", "audit level warn")
-    assert.equal(entry.body.service, "team-mode-env-protect", "audit service id")
-    assert.equal(entry.body.message, "team-mode-env-protect :: bash :: env-file-path",
-      "audit message = service :: tool :: category (file sinks drop the service field)")
-    // privacy red line: never the command text, path, or any value
-    assert.ok(!entry.body.message.includes(".env"), "audit must not contain the path")
-    assert.ok(!entry.body.message.includes("cat"), "audit must not contain the command")
-    assert.ok(!entry.body.message.includes("more"), "audit must not contain command tail")
-  }
-
-  // 6c. TM_ENV_PROTECT=standard: explicit env cmds + env files blocked,
-  // $VAR expansion allowed
-  process.env.TM_ENV_PROTECT = "standard"
-  {
-    const hooks = await plugin.server({ directory: tmpRoot }, { envProtect: true })
-    await assert.rejects(callHook(hooks, "bash", { command: "printenv" }), undefined, "standard blocks printenv")
-    await assert.rejects(callHook(hooks, "read", { filePath: ".env" }), undefined, "standard blocks .env read")
-    await callHook(hooks, "bash", { command: "echo $HOME" })
-    await callHook(hooks, "bash", { command: "echo ${HOME}" })
-  }
-
-  // 6d. TM_ENV_PROTECT=off: hook installed, everything passes, no audit
-  process.env.TM_ENV_PROTECT = "off"
-  {
-    const a = auditClient()
-    const hooks = await plugin.server({ directory: tmpRoot, client: a.client }, { envProtect: true })
-    assert.equal(typeof hooks["tool.execute.before"], "function", "off: hook still installed")
-    await callHook(hooks, "bash", { command: "env" })
-    await callHook(hooks, "read", { filePath: ".env" })
-    assert.equal(a.calls.length, 0, "off: no audit entries")
-  }
-
-  // 6e. invalid mode value fails closed into strict
-  process.env.TM_ENV_PROTECT = "loose"
-  {
-    const hooks = await plugin.server({ directory: tmpRoot }, { envProtect: true })
-    await assert.rejects(callHook(hooks, "bash", { command: "echo $HOME" }), undefined, "typo mode -> strict expansion block")
-  }
-
-  // 6f. TM_ENV_PROTECT_EXTRA_DENY applies in standard mode (all non-off modes)
-  process.env.TM_ENV_PROTECT = "standard"
-  process.env.TM_ENV_PROTECT_EXTRA_DENY = "TOPSECRET\\w*"
-  {
-    const hooks = await plugin.server({ directory: tmpRoot }, { envProtect: true })
-    await assert.rejects(
-      callHook(hooks, "bash", { command: "echo TOPSECRET_value" }),
-      (err) => err.message.includes("[category=extra-deny]"),
-      "extra-deny fires in standard mode",
-    )
-    await assert.rejects(callHook(hooks, "read", { filePath: "TOPSECRET.txt" }), undefined, "extra-deny on read path")
-  }
-
-  // 6g. audit endpoint failure must never turn a block into a pass-through
-  {
-    const failing = { app: { log() { return Promise.reject(new Error("log endpoint down")) } } }
-    const hooks = await plugin.server({ directory: tmpRoot, client: failing }, { envProtect: true })
-    await assert.rejects(
-      callHook(hooks, "bash", { command: "printenv" }),
-      (err) => err.message.startsWith(ep.ENV_PROTECT_MESSAGE),
-      "block still thrown when audit fails",
-    )
-  }
-} finally {
-  // cleanup must run even when an assertion above throws, or the process
-  // environment leaks TM_ENV_PROTECT into whatever runs next in-process
-  if (tmpRoot) fs.rmSync(tmpRoot, { recursive: true, force: true })
-  delete process.env.TM_ENV_PROTECT
-  delete process.env.TM_ENV_PROTECT_EXTRA_DENY
-}
-console.log("6. loader integration: OK (hook installed, env wiring, off passthrough, fail-closed, audit shape + privacy, audit-failure resilience)")
 
 /* ---------- 7. unified approval gate (R6 env face + R2 danger face) ---------- */
 // FIX ROUND: fixtures now pin the REAL host shapes captured live on 1.18.29
@@ -959,142 +840,23 @@ console.log("6. loader integration: OK (hook installed, env wiring, off passthro
     await assert.rejects(hook3({ tool: "bash", sessionID: "ses-once" }, { args: { command: "echo $HOME" } }), /bash-env-expansion/, "once session: inexpressible form still hard-blocks")
   }
 
-  // 7i. end-to-end through server(): gate + real-host event routing +
-  // session registration via message.updated (the live pre-tool channel)
-  {
-    const root7 = fs.mkdtempSync(path.join(os.tmpdir(), "envp-gate-"))
-    try {
-      delete process.env.TM_ENV_PROTECT
-      // this-requiring host mocks (anti-unbind teeth, cf. 7f): an unbound
-      // SDK call inside the gate would throw inside these mocks — and the
-      // capableLogs assertion below proves the bound audit path is live
-      const capableLogs = []
-      const capableApp = {
-        log(req) {
-          if (this !== capableApp) throw new TypeError("SDK app.log called unbound (this lost)")
-          capableLogs.push(String(req?.body?.message ?? ""))
-        },
-      }
-      const capable = {
-        app: capableApp,
-        postSessionIdPermissionsPermissionId() {
-          if (this !== capable) throw new TypeError("SDK reply endpoint called unbound (this lost)")
-          return Promise.resolve({ data: true })
-        },
-      }
-      const hooks = await plugin.server({ directory: root7, client: capable }, { envProtect: true })
-      assert.equal(typeof hooks.event, "function", "event hook wired when the gate is armed")
-      assert.equal(typeof hooks["chat.message"], "function", "chat.message registration hook wired")
-      assert.equal(typeof hooks.dispose, "function", "dispose hook wired")
-      await hooks.config({}) // the loader runs config() before any prompt
-      // (a) exec-role user message registers BEFORE the session's first tool
-      await hooks.event({ event: { type: "message.updated", properties: { info: { id: "m1", sessionID: "ses-msg", role: "user", agent: "implementer", time: { created: 1 } } } } })
-      await hooks["tool.execute.before"]({ tool: "bash", sessionID: "ses-msg" }, { args: { command: "printenv PATH" } }) // deferred, no throw
-      // (b) an env-classified asked event registers on its own
-      await hooks.event({ event: { type: "permission.asked", properties: { id: "per-b", sessionID: "ses-ask", permission: "bash", patterns: ["printenv PATH"], metadata: { command: "printenv PATH" } } } })
-      await hooks["tool.execute.before"]({ tool: "bash", sessionID: "ses-ask" }, { args: { command: "Get-ChildItem env:PATH" } }) // deferred
-      assert.ok(
-        capableLogs.some((l) => l.endsWith(":: bash :: env :: ask")),
-        "asked audit reaches app.log through the full plugin wiring (SDK binding survives end-to-end)",
-      )
-      // (c) chat.message route
-      await hooks["chat.message"]({ sessionID: "ses-chat", agent: "tester" }, { message: {}, parts: [] })
-      await hooks["tool.execute.before"]({ tool: "bash", sessionID: "ses-chat" }, { args: { command: "set" } }) // deferred
-      // (d) STOCK agent prompt never registers -> hard throw (C1 closed)
-      await hooks.event({ event: { type: "message.updated", properties: { info: { id: "m2", sessionID: "ses-stock", role: "user", agent: "build", time: { created: 1 } } } } })
-      await assert.rejects(
-        hooks["tool.execute.before"]({ tool: "bash", sessionID: "ses-stock" }, { args: { command: "printenv PATH" } }),
-        /category=bash-env-command/,
-        "stock build session: expressible env read still hard-throws (no dialog behind it)",
-      )
-      // (d2) MIXED-agent session: an exec prompt registers, a LATER stock
-      // prompt in the SAME session revokes.  The verified host passes
-      // {tool, sessionID, callID} with NO agent to tool.execute.before
-      // (desktop binary), so the per-turn agent signal can only ride
-      // message.updated — without revocation the once-registered session
-      // stayed deferrable forever (stale window = silent env reads).
-      await hooks.event({ event: { type: "message.updated", properties: { info: { id: "m3", sessionID: "ses-mixed", role: "user", agent: "implementer", time: { created: 1 } } } } })
-      await hooks["tool.execute.before"]({ tool: "bash", sessionID: "ses-mixed" }, { args: { command: "printenv PATH" } }) // deferred while exec
-      await hooks.event({ event: { type: "message.updated", properties: { info: { id: "m4", sessionID: "ses-mixed", role: "user", agent: "build", time: { created: 2 } } } } })
-      await assert.rejects(
-        hooks["tool.execute.before"]({ tool: "bash", sessionID: "ses-mixed" }, { args: { command: "printenv PATH" } }),
-        /category=bash-env-command/,
-        "stock prompt in the same session revokes the stale deferral window",
-      )
-      await hooks.event({ event: { type: "message.updated", properties: { info: { id: "m5", sessionID: "ses-mixed", role: "user", agent: "reviewer", time: { created: 3 } } } } })
-      await hooks["tool.execute.before"]({ tool: "bash", sessionID: "ses-mixed" }, { args: { command: "printenv PATH" } }) // exec prompt re-registers
-      // (e) danger-only asked does NOT register env deferral
-      await hooks.event({ event: { type: "permission.asked", properties: { id: "per-d", sessionID: "ses-danger", permission: "bash", patterns: ["rm gone.txt"], metadata: { command: "rm gone.txt" } } } })
-      await assert.rejects(
-        hooks["tool.execute.before"]({ tool: "bash", sessionID: "ses-danger" }, { args: { command: "printenv" } }),
-        /category=bash-env-command/,
-        "an rm dialog proves nothing about env asks — stays hard",
-      )
-      // inexpressible + tm_bash unaffected by any registration
-      await assert.rejects(hooks["tool.execute.before"]({ tool: "bash", sessionID: "ses-msg" }, { args: { command: "cat .env" } }), /env-file-path/, "capable client still hard-blocks inexpressible env reads")
-      await assert.rejects(hooks["tool.execute.before"]({ tool: "tm_bash", sessionID: "ses-msg" }, { args: { command: "printenv" } }), /bash-env-command/, "tm_bash stays hard with a capable client")
-      // chat.message route revokes symmetrically: a stock agent prompt in the
-      // same session drops the earlier tester registration
-      await hooks["chat.message"]({ sessionID: "ses-chat", agent: "build" }, { message: {}, parts: [] })
-      await assert.rejects(
-        hooks["tool.execute.before"]({ tool: "bash", sessionID: "ses-chat" }, { args: { command: "set" } }),
-        /category=bash-env-command/,
-        "stock agent via chat.message revokes the earlier tester registration",
-      )
-      // (f) an UNREGISTERED ask type (message.part.updated) must not throw
-      await hooks.event({ event: { type: "message.part.updated", properties: { part: { id: "pp" } } } })
-      hooks.dispose()
-      // mode=off + capable client -> no gate armed: env reads pass (R6 off) and nothing is timed
-      process.env.TM_ENV_PROTECT = "off"
-      let offReplies = 0
-      const offApp = { log() { if (this !== offApp) throw new TypeError("SDK app.log called unbound (this lost)") } }
-      const capableOff = {
-        app: offApp,
-        postSessionIdPermissionsPermissionId() {
-          if (this !== capableOff) throw new TypeError("SDK reply endpoint called unbound (this lost)")
-          offReplies++
-          return Promise.resolve({ data: true })
-        },
-      }
-      const hooksOff = await plugin.server({ directory: root7, client: capableOff }, { envProtect: true })
-      await hooksOff.event({ event: { type: "permission.asked", properties: { id: "z", sessionID: "s", permission: "bash", patterns: ["printenv PATH"], metadata: { command: "printenv PATH" } } } })
-      await hooksOff["tool.execute.before"]({ tool: "bash", sessionID: "s" }, { args: { command: "printenv" } }) // off -> passes, un-timed
-      assert.equal(offReplies, 0, "off mode arms no timer (no auto-reject fires)")
-      hooksOff.dispose()
-    } finally {
-      fs.rmSync(root7, { recursive: true, force: true })
-      delete process.env.TM_ENV_PROTECT
-    }
-  }
+  // 7i. end-to-end through server() (gate + real-host event routing + session
+  // registration via message.updated) - RETIRED with the v1 personality (1.7.0
+  // cut).  This drove plugin.server() to wire the composed R6+gate hook and the
+  // event/chat.message/dispose routes.  plugin.server is gone.  The approval-gate
+  // MODULE itself (createApprovalGate: asked/replied shapes, session-wide cancel,
+  // ghost tombstones, scoped deferral registry, timeout parse, never self-allow,
+  // SDK error-envelope fail-closed) is personality-agnostic and stays pinned by the
+  // pure 7a-7h blocks above; the v2 hook wiring lives in src/host/v2-guard.ts
+  // (pinned by test-v2-adapter).  The NUMBER stays so 7j does not move.
+  console.log("  7i. end-to-end through server(): SKIPPED - v1 plugin.server removed; gate module pinned by 7a-7h, v2 wiring by test-v2-adapter")
 
-  // 7i2. dead-popup guard (round-fix item 7): with NO reply-capable client
-  // the gate cannot arm -> the config hook omits the R6 env ask face (every
-  // env read would hard-throw behind an unsatisfiable dialog), keeps R2.
-  {
-    const root7b = fs.mkdtempSync(path.join(os.tmpdir(), "envp-nogate-"))
-    try {
-      delete process.env.TM_ENV_PROTECT
-      const hooksNo = await plugin.server({ directory: root7b, client: { app: { log() {} } } }, { envProtect: true })
-      const cfgNo = {}
-      await hooksNo.config(cfgNo)
-      const bashNo = cfgNo.agent.team.permission.bash
-      assert.equal(bashNo["*"], "allow", "no-gate host still keeps the T2.1 grant")
-      assert.equal(bashNo["printenv *"], undefined, "no R6 env ask face while the gate cannot arm")
-      assert.equal(bashNo["Get-ChildItem env:*"], undefined, "PS drive face off too")
-      assert.equal(bashNo["rm *"], "ask", "R2 danger face independent of the gate")
-      // and deferral is impossible: expressible env reads hard-throw
-      await assert.rejects(
-        hooksNo["tool.execute.before"]({ tool: "bash", sessionID: "s" }, { args: { command: "printenv PATH" } }),
-        /category=bash-env-command/,
-        "un-armed host: expressible env read still hard-throws",
-      )
-      assert.equal(typeof hooksNo["chat.message"], "function", "registration hook harmless without a gate")
-      await hooksNo["chat.message"]({ sessionID: "s", agent: "tester" }, { message: {}, parts: [] }) // no crash
-      hooksNo.dispose()
-    } finally {
-      fs.rmSync(root7b, { recursive: true, force: true })
-    }
-  }
+  // 7i2. dead-popup guard via plugin.server() - RETIRED with the v1 personality
+  // for the same reason (it drove the v1 config hook to assert the R6 env ask face
+  // is omitted when the gate cannot arm).  The never-self-allow / dead-popup
+  // invariant is a property of the gate + config-surgery, pinned elsewhere.
+  console.log("  7i2. dead-popup guard via server(): SKIPPED - v1 plugin.server removed")
+
 
   // 7j. tm_bash rejection guidance now points at the official-dialog path
   {
