@@ -43,6 +43,7 @@
  */
 
 import type { HostEvent, ToolDefinition, ToolResult } from "../types.js"
+import { sameAgent } from "../identity.js"
 import { tmError, toToolResult } from "./result.js"
 import { unwrapClientResult, type Unwrapped } from "./client-unwrap.js"
 import { detectContentType } from "./preview.js"
@@ -114,7 +115,7 @@ export function hostChildRecord(
 export interface DispatchDeps {
   client: unknown
   pipelines: TmPipelines
-  /** The lead agent's name as injected by agents.ts (keyed "team"). */
+  /** The lead agent's name as injected by agents.ts (keyed "Team"). */
   leadAgent?: string
   targets?: readonly string[]
   /** Let the approval gate register the child session so a sub-agent's own
@@ -778,7 +779,7 @@ export function buildDispatchTools(deps: DispatchDeps): {
   /** v2 seam: is any child still open? Gates the per-request completion scan. */
   hasOpen: () => boolean
 } {
-  const leadAgent = deps.leadAgent ?? "team"
+  const leadAgent = deps.leadAgent ?? "Team"
   const targets = deps.targets ?? DISPATCH_TARGETS
   const maxWaitMs = deps.maxWaitMs ?? 60_000
   const now = deps.now ?? (() => Date.now())
@@ -1053,7 +1054,7 @@ export function buildDispatchTools(deps: DispatchDeps): {
         const args = (rawArgs ?? {}) as Record<string, unknown>
         const c = (ctx ?? {}) as { agent?: unknown; sessionID?: unknown; directory?: unknown }
         const caller = String(c.agent ?? "").trim()
-        if (caller && caller !== leadAgent) {
+        if (caller && !sameAgent(caller, leadAgent)) {
           return toToolResult(tmError(tool, "governance", `只有 ${leadAgent} 能收集派发结果。`))
         }
         const parent = String(c.sessionID ?? "").trim()

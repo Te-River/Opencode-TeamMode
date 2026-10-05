@@ -19,6 +19,8 @@
  * because it may fail closed on the whole agent.
  */
 
+import { isLeadAgent } from "../identity.js"
+
 export type PermissionEffect = "allow" | "deny" | "ask"
 
 export interface PermissionTriple {
@@ -130,7 +132,7 @@ export interface TranslateOptions {
    * not name: `tm_ledger` is not in the permission map, so nothing would ever
    * name it, and an unruled action is the host's default rather than our stated
    * rule.  The lead's list is the lead's: `allow` for it, `deny` for the five
-   * specialists, which also makes the runtime gate (`onlyAgent: "team"`)
+   * specialists, which also makes the runtime gate (`onlyAgent: "Team"`)
    * visible in the config the user can read.
    */
   agentName?: string
@@ -192,7 +194,7 @@ export function triplesFromAgentPermission(
     }
   }
   if (options.agentName) {
-    const ledgerEffect = options.agentName === "team" ? "allow" : "deny"
+    const ledgerEffect = isLeadAgent(options.agentName) ? "allow" : "deny"
     if (!triples.some((x) => x.action === "tm_ledger")) {
       triples.push({ action: "tm_ledger", resource: "*", effect: ledgerEffect })
     }

@@ -26,6 +26,8 @@
  * left `agent` off that event.
  */
 
+import { normalizeAgentName } from "../identity.js"
+
 export type ScopeVerdict = "ours" | "foreign" | "unknown"
 
 export interface V2ScopeReport {
@@ -49,19 +51,25 @@ export interface TeamScope {
 }
 
 export function createTeamScope(names: Iterable<string>): TeamScope {
-  const set = new Set([...names].map(String))
+  // #38: normalize every name to lower case so `team` and `Team` are the same
+  // role.  The set is the canonical (normalized) form; lookups normalize too.
+  const set = new Set([...names].map(normalizeAgentName).filter(Boolean))
   const bySession = new Map<string, string>()
   const report: V2ScopeReport = { ours: 0, foreign: 0, unknown: 0 }
   const scope: TeamScope = {
     names: set,
-    isOurs: (agent) => typeof agent === "string" && set.has(agent),
+    isOurs: (agent) => {
+      const n = normalizeAgentName(agent)
+      return n !== "" && set.has(n)
+    },
     learn(agent, sessionID) {
       if (typeof sessionID !== "string" || !sessionID) return
-      if (typeof agent === "string" && set.has(agent)) bySession.set(sessionID, agent)
+      const n = normalizeAgentName(agent)
+      if (n !== "" && set.has(n)) bySession.set(sessionID, n)
     },
     decide(event) {
-      const agent = event?.agent
-      if (typeof agent === "string" && agent) return set.has(agent) ? "ours" : "foreign"
+      const n = normalizeAgentName(event?.agent)
+      if (n !== "") return set.has(n) ? "ours" : "foreign"
       const sid = event?.sessionID
       if (typeof sid === "string" && bySession.has(sid)) return "ours"
       return "unknown"

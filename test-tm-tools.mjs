@@ -2608,7 +2608,7 @@ try {
       assert.ok(!("tm_dispatch" in surface.tools), "tm_dispatch is NOT registered — the model cannot call what does not exist")
       assert.ok("tm_join" in surface.tools, "tm_join stays: host background results are pulled back through it")
       const denied = await surface.tools.tm_join.execute({}, { agent: "implementer", sessionID: "s", ask: async () => "once" })
-      assert.ok(denied.output.includes("只有 team"), "tm_join keeps the lead-only runtime lock (the second lock is agents.ts denying it)")
+      assert.ok(denied.output.includes("只有 Team"), "tm_join keeps the lead-only runtime lock (the second lock is agents.ts denying it)")
       await surface.dispose()
 
       // tm_stats counts calls from `event:"call"`, and tm_join only ever wrote

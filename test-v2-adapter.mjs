@@ -68,6 +68,11 @@ const textOf = (res) =>
 
 // ── 1-5: one full boot, then inspect it ─────────────────────────────────────
 const ws = workspace("boot")
+// #38: the runtime default-agent check reads the GLOBAL config dir.  Point it at
+// an empty temp dir so the suite never reads the developer's real
+// ~/.config/opencode (hermetic — and no warning from a real config leaks into
+// these assertions).  The dedicated group below overrides it per case.
+process.env.OPENCODE_CONFIG_DIR = workspace("cfg")
 fs.writeFileSync(path.join(ws, "sample.txt"), "hello from the v2 adapter test\nsecond line with NEEDLE\n")
 
 const sixAgents = Object.keys(agents).map((id) => ({ id, name: id, permissions: [] }))
@@ -157,8 +162,8 @@ console.log(`   OK (${registered.length} tools, parameter surfaces translated)`)
 console.log("1b. Team owns the default slot")
 assert.equal(
   fake.agents.__default,
-  "team",
-  "editor.default('team') runs on every boot — v2 has no getter, so 'only if the user left it alone' is not expressible and the standing instruction wins",
+  "Team",
+  "editor.default('Team') runs on every boot — v2 has no getter, so 'only if the user left it alone' is not expressible and the standing instruction wins",
 )
 const optedOut = makeFakeCtx({ directory: ws, agents: sixAgents, options: { defaultAgent: false } })
 const oo = await withCapturedConsole(() => plugin.setup(optedOut.ctx))
@@ -210,7 +215,7 @@ assert.equal(
     agents: [{ id: "build", name: "build" }, { id: "plan", name: "plan" }],
   })
   const b = await withCapturedConsole(() => plugin.setup(builtinOnly.ctx))
-  assert.equal(builtinOnly.agents.__default, "team", "the promotion is still attempted against a host whose editor lacks our roles")
+  assert.equal(builtinOnly.agents.__default, "Team", "the promotion is still attempted against a host whose editor lacks our roles")
   const line = (b.warns ?? []).join(" ") + (b.errors ?? []).join(" ")
   assert.ok(/无法核验/.test(line) && /default_agent/.test(line), "…and says out loud that it could not be verified, pointing at the installer key that does work")
   assert.ok(!/Team 已经是默认/.test(line), "no all-clear is printed for an unobserved promotion")
@@ -232,11 +237,11 @@ console.log("3. the retirement: the ladder moves to the native tools, both halve
 // translation projected those denies, a v2 role would end up with NO file access
 // at all — a retirement that strands the user rather than shifting the door.
 // Both layers have to agree, and both are pinned here.
-const teamLadder = fake.agents.get("team").permissions.filter((p) => ["read", "grep", "glob"].includes(p.action))
+const teamLadder = fake.agents.get("Team").permissions.filter((p) => ["read", "grep", "glob"].includes(p.action))
 assert.deepEqual(teamLadder.map((p) => p.action), [], "no deny for read/grep/glob is projected into the v2 config")
 for (const gone of ["tm_read", "tm_grep", "tm_bash"]) {
   assert.equal(
-    fake.agents.get("team").permissions.filter((p) => p.action === gone).length,
+    fake.agents.get("Team").permissions.filter((p) => p.action === gone).length,
     0,
     `${gone} has no permission triple either — a rule for an action the host never registers claims a capability that does not exist`,
   )
@@ -383,7 +388,7 @@ for (const [url, why] of [
 console.log("   OK (public hosts unpoliced by default, metadata and private space refused with a real exit or an honest dead end, loopback served, no promise of a dialog that cannot open)")
 
 console.log("5. permission triples, user rules, idempotency")
-const team = fake.agents.get("team")
+const team = fake.agents.get("Team")
 const find = (a) => team.permissions.filter((p) => p.action === a)
 assert.ok(find("tm_join").some((p) => p.effect === "allow" && p.resource === "*"), "the whitelist reaches v2 as triples")
 assert.ok(find("shell").some((p) => p.effect === "allow"), "v1 `bash` is emitted under v2's action name `shell`")
@@ -393,7 +398,7 @@ assert.ok(
   fake.agents.get("researcher").permissions.some((p) => p.action === "subagent" && p.effect === "deny"),
   "and the no-specialist-delegation deny survives the translation",
 )
-assert.ok(find("websearch").some((p) => p.effect === agents.team.permission.websearch), "the matrix decides a network action, not a stray config line (the user's value is replaced by what our whitelist says)")
+assert.ok(find("websearch").some((p) => p.effect === agents.Team.permission.websearch), "the matrix decides a network action, not a stray config line (the user's value is replaced by what our whitelist says)")
 // The host's 45 browser tools share ONE permission action (`browser`) and never
 // appear in the direct tool surface, so the request-layer `browser_*` deletion
 // alone left a role that is DENIED tm_browser able to browse from inside `execute`
@@ -411,7 +416,7 @@ assert.equal(
 // no v1 permission map — which meant nothing named it, and an unruled action is the
 // host's default rather than our stated rule. The lead's list is the lead's.
 assert.ok(
-  fake.agents.get("team").permissions.some((p) => p.action === "tm_ledger" && p.effect === "allow"),
+  fake.agents.get("Team").permissions.some((p) => p.action === "tm_ledger" && p.effect === "allow"),
   "the lead is explicitly allowed its own ledger tool",
 )
 assert.ok(
@@ -429,7 +434,7 @@ assert.ok(
 )
 const before = JSON.stringify(team.permissions)
 const reboot = await withCapturedConsole(() => plugin.setup(fake.ctx))
-assert.equal(JSON.stringify(fake.agents.get("team").permissions), before, "booting again on an already-normalized config adds no duplicate (the host DOES reload plugins)")
+assert.equal(JSON.stringify(fake.agents.get("Team").permissions), before, "booting again on an already-normalized config adds no duplicate (the host DOES reload plugins)")
 await reboot.value?.()
 
 const wsR6 = workspace("r6")
@@ -440,7 +445,7 @@ delete process.env.TM_R6_FINE_ASK
 process.env.TM_ENV_PROTECT = "on"
 const r6 = await withCapturedConsole(() => plugin.setup(r6Fake.ctx))
 process.env.TM_ENV_PROTECT = prevEnv
-const r6Team = r6Fake.agents.get("team")
+const r6Team = r6Fake.agents.get("Team")
 // The classifier is in charge by default now (a live host proved
 // permission.evaluate fires for shell), so the config must NOT blanket-ask every
 // command — that would mask the very hook the evidence was gathered for.
@@ -460,7 +465,7 @@ const r6Coarse = await withCapturedConsole(() => plugin.setup(r6Fake.ctx))
 process.env.TM_ENV_PROTECT = prevEnv
 delete process.env.TM_R6_FINE_ASK
 assert.ok(
-  r6Fake.agents.get("team").permissions.some((p) => p.action === "shell" && p.effect === "ask"),
+  r6Fake.agents.get("Team").permissions.some((p) => p.action === "shell" && p.effect === "ask"),
   "TM_R6_FINE_ASK=off is the explicit way back: shell escalates to `ask` and the host opens its dialog",
 )
 assert.ok(
@@ -475,7 +480,7 @@ process.env.TM_ENV_PROTECT = "on"
 const r6NoHook = await withCapturedConsole(() => plugin.setup(noHook.ctx))
 process.env.TM_ENV_PROTECT = prevEnv
 assert.ok(
-  noHook.agents.get("team").permissions.some((p) => p.action === "shell" && p.effect === "ask"),
+  noHook.agents.get("Team").permissions.some((p) => p.action === "shell" && p.effect === "ask"),
   "a host with no permission.hook falls back to coarse REGARDLESS of the knob — fail-closed",
 )
 assert.ok(
@@ -527,7 +532,7 @@ assert.ok(
 // is that an unverified promotion is SAID, not hidden.
 assert.equal(
   bare.agents.__default,
-  "team",
+  "Team",
   "the promotion is attempted even against an editor that has not merged the config roles",
 )
 assert.ok(
@@ -1035,7 +1040,7 @@ assert.deepEqual(
   `every /team-* command is projected (got ${cmdFiles.join(",")})`,
 )
 
-const teamMd = fs.readFileSync(path.join(genRoot, "agents", "team.md"), "utf8")
+const teamMd = fs.readFileSync(path.join(genRoot, "agents", "Team.md"), "utf8")
 const archMd = fs.readFileSync(path.join(genRoot, "agents", "architect.md"), "utf8")
 assert.match(teamMd, /^mode: "primary"$/m, "the lead is selectable as a primary agent")
 assert.match(archMd, /^mode: "subagent"$/m, "the specialists are subagent-mode")
@@ -1058,10 +1063,10 @@ assert.ok(
 )
 
 assert.match(gen(), /已是最新/, "re-running writes nothing (the installer may run it on every update)")
-fs.writeFileSync(path.join(genRoot, "agents", "team.md"), "# my own team agent\n", "utf8")
+fs.writeFileSync(path.join(genRoot, "agents", "Team.md"), "# my own team agent\n", "utf8")
 assert.match(gen(), /不是我生成的文件/, "a hand-written agents/team.md is refused, never clobbered")
 assert.equal(
-  fs.readFileSync(path.join(genRoot, "agents", "team.md"), "utf8"),
+  fs.readFileSync(path.join(genRoot, "agents", "Team.md"), "utf8"),
   "# my own team agent\n",
   "and its bytes are untouched",
 )
@@ -1072,7 +1077,7 @@ assert.equal(
 // Restore the generated lead file first: the case above left a hand-written stub in
 // place precisely to prove the generator refuses to clobber it, and the delegation
 // mandate lives only in the lead — asserting against that stub would test the stub.
-fs.rmSync(path.join(genRoot, "agents", "team.md"), { force: true })
+fs.rmSync(path.join(genRoot, "agents", "Team.md"), { force: true })
 gen()
 const allRoles = agentFiles.map((f) => fs.readFileSync(path.join(genRoot, "agents", f), "utf8")).join("\n")
 assert.ok(!allRoles.includes("tm_ptc_run"), "no v2 role is told to call a tool v2 does not register")
@@ -1102,7 +1107,7 @@ assert.ok(allRoles.includes("## Recon batching (parallel calls first)"), "and so
 // to "create a todo list" has no named tool to do it with, and the statuses are a
 // different enum than the host's.  A rule with no verb is the rule that quietly
 // stops being followed.
-const leadMd = fs.readFileSync(path.join(genRoot, "agents", "team.md"), "utf8")
+const leadMd = fs.readFileSync(path.join(genRoot, "agents", "Team.md"), "utf8")
 assert.ok(leadMd.includes("`tm_ledger`"), "the v2 lead's LEDGER rule names the tool that holds the list")
 assert.ok(!/todo list|TodoList|in_progress/.test(leadMd), "and never names todowrite's vocabulary, which this host does not have")
 console.log("   OK (12 files, modes + triples projected, idempotent, foreign files respected, prompt forked)")
@@ -2764,6 +2769,80 @@ console.log("20. R6's file-path face is back on 2.x — the native read/write/ed
   for (const r of g.registrations) await r.dispose()
 }
 console.log("   OK (R6 file-path face live on 2.x: .env / rc family denied with no consent path, .env.example and ordinary paths untouched, grep patterns not mistaken for paths, foreign sessions skipped and counted)")
+
+console.log("21. the lead id is `Team`, and identity is case-insensitive (#38)")
+{
+  // (a) the pure normalizer — the ONE definition every call site routes through
+  const { normalizeAgentName, isLeadAgent, sameAgent } = await import("./dist/identity.js")
+  assert.equal(normalizeAgentName("Team"), "team", "normalize lower-cases")
+  assert.equal(normalizeAgentName("  TEAM "), "team", "…and trims")
+  assert.equal(normalizeAgentName(undefined), "", "a non-string is empty, never a match")
+  assert.ok(isLeadAgent("Team") && isLeadAgent("team") && isLeadAgent("TEAM"), "all three spellings are the lead")
+  assert.ok(!isLeadAgent("architect"), "a specialist is not the lead")
+  assert.ok(sameAgent("team", "Team"), "sameAgent ignores case")
+  assert.ok(!sameAgent("", ""), "empty never matches empty")
+
+  // (b) the lead lock on tm_join accepts BOTH spellings — the regression pin that
+  // makes the rename transparent to an existing install / session / `--agent team`.
+  const leadT = await byName.tm_join.execute({}, { agent: "Team", sessionID: "ses_leadT" })
+  const leadL = await byName.tm_join.execute({}, { agent: "team", sessionID: "ses_leadL" })
+  assert.ok(!textOf(leadT).includes("能收集派发结果"), "tm_join accepts the new spelling `Team`")
+  assert.ok(!textOf(leadL).includes("能收集派发结果"), "…and still accepts the old spelling `team`")
+  const spec = await byName.tm_join.execute({}, { agent: "architect", sessionID: "ses_spec" })
+  assert.ok(textOf(spec).includes("能收集派发结果"), "a specialist is still refused the collect side")
+
+  // (c) tm_ledger: lead allow (both spellings), five specialists deny
+  const ledT = await byName.tm_ledger.execute({ action: "add", text: "x" }, { agent: "Team", sessionID: "ses_ledT" })
+  const ledL = await byName.tm_ledger.execute({ action: "add", text: "x" }, { agent: "team", sessionID: "ses_ledL" })
+  assert.ok(!textOf(ledT).includes("只有领队"), "tm_ledger allows `Team`")
+  assert.ok(!textOf(ledL).includes("只有领队"), "…and `team`")
+  for (const who of ["architect", "implementer", "reviewer", "tester", "researcher"]) {
+    const r = await byName.tm_ledger.execute({ action: "add", text: "x" }, { agent: who, sessionID: "ses_" + who })
+    assert.ok(textOf(r).includes("只有领队"), `tm_ledger denies ${who}`)
+  }
+
+  // (d) the generator emits agents/Team.md and binds the lead command to `Team`
+  const genRoot38 = workspace("gen38")
+  execFileSync(process.execPath, [GEN, "--dir", genRoot38], { encoding: "utf8" })
+  assert.ok(fs.existsSync(path.join(genRoot38, "agents", "Team.md")), "the generator writes agents/Team.md")
+  // Windows is case-insensitive, so existsSync("team.md") is true for Team.md —
+  // the meaningful check is the NAME the directory actually stores.
+  assert.ok(fs.readdirSync(path.join(genRoot38, "agents")).includes("Team.md"), "…and the stored name is `Team.md`")
+  assert.ok(!fs.readdirSync(path.join(genRoot38, "agents")).includes("team.md"), "…not a lowercase team.md")
+  const runMd = fs.readFileSync(path.join(genRoot38, "commands", "team-run.md"), "utf8")
+  assert.match(runMd, /^agent: "Team"$/m, "the lead command binds to `Team`")
+
+  // (e) the runtime fallback: a default_agent naming a missing role warns; a good
+  // config does not; a broken config never throws.
+  const { checkDefaultAgentRole } = await import("./dist/host/v2-default-agent.js")
+  const cfgDir = workspace("cfg38")
+  fs.mkdirSync(path.join(cfgDir, "agents"), { recursive: true })
+  fs.writeFileSync(path.join(cfgDir, "agents", "Team.md"), "---\n---\n", "utf8")
+  fs.writeFileSync(path.join(cfgDir, "opencode.jsonc"), '{\n  // a comment\n  "default_agent": "Team",\n  "secret": "TOKEN-abc"\n}\n', "utf8")
+  assert.equal(checkDefaultAgentRole({ configDir: cfgDir }).state, "ok", "a default_agent whose role file exists is ok")
+  fs.writeFileSync(path.join(cfgDir, "opencode.jsonc"), '{\n  "default_agent": "Ghost"\n}\n', "utf8")
+  const miss = checkDefaultAgentRole({ configDir: cfgDir })
+  assert.equal(miss.state, "missing-role", "a default_agent with no role file is missing-role")
+  assert.equal(miss.defaultAgent, "Ghost", "…and names the role")
+  fs.writeFileSync(path.join(cfgDir, "opencode.jsonc"), "{ this is not json", "utf8")
+  assert.equal(checkDefaultAgentRole({ configDir: cfgDir }).state, "unreadable", "a broken config is a counted state, never a throw")
+  assert.equal(checkDefaultAgentRole({ configDir: workspace("cfg38-empty") }).state, "no-config", "no config file is its own state")
+
+  // (f) the warning reaches the server log through setup, and carries no config content
+  const prevCfg = process.env.OPENCODE_CONFIG_DIR
+  process.env.OPENCODE_CONFIG_DIR = cfgDir
+  fs.writeFileSync(path.join(cfgDir, "opencode.jsonc"), '{\n  "default_agent": "Ghost",\n  "secret": "TOKEN-abc"\n}\n', "utf8")
+  const warnFake = makeFakeCtx({ directory: ws, agents: sixAgents })
+  const w = await withCapturedConsole(() => plugin.setup(warnFake.ctx))
+  const warnText = (w.warns ?? []).join("\n")
+  assert.ok(/default_agent="Ghost"/.test(warnText), "the missing-role warning names the role")
+  assert.ok(/静默退回 build/.test(warnText), "…and says the host falls back to build silently")
+  assert.ok(/install\.ps1|install\.sh/.test(warnText), "…and gives the exit (re-run the installer)")
+  assert.ok(!warnText.includes("TOKEN-abc"), "the warning never prints config content")
+  await w.value?.()
+  process.env.OPENCODE_CONFIG_DIR = prevCfg
+}
+console.log("   OK (identity is case-insensitive end to end; the generator emits Team.md; the default-agent fallback warns without leaking config)")
 
 // B5: the group count is DERIVED from the numbered group headers this file
 // actually printed, never hand-written — the last hand-written number was

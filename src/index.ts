@@ -24,7 +24,14 @@ import type { V2Plugin } from "./host/v2-types.js"
 import { v2Personality } from "./host/v2.js"
 
 const plugin: V2Plugin = {
-  id: "team-mode",
+  // #45: the DISPLAY id — what the host's plugin list shows.  It is the npm
+  // package name so the user sees the package they installed, not a bare
+  // "team-mode".  This is deliberately NOT the same string as our storage and
+  // audit names: `team-mode/ledger/` (src/tm/ledger.ts) and
+  // `team-mode-env-protect` (src/envprotect/patterns.ts) are DATA keys, and
+  // renaming them would orphan every existing ledger and audit trail.  Display
+  // id and storage/audit naming are two different things on purpose.
+  id: "@te-river/opencode-team-mode",
   // read by an OpenCode 2.x host; `Plugin.define` is the identity function, so
   // handing over the plain {id, setup} pair IS the definition — no v2 SDK at
   // runtime.

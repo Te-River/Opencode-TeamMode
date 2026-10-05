@@ -295,7 +295,7 @@ install_v2() {
   # ── 3. verify the twelve files actually arrived (the generator printing a
   #        path is the claim; the file on disk is the evidence) ───────────────
   local roles_missing="" cmds_missing=""
-  for role in team architect implementer reviewer tester researcher; do
+  for role in Team architect implementer reviewer tester researcher; do
     if [ -f "${cfg_dir}/agents/${role}.md" ]; then
       echo "✔  role    ${role}"
     else
@@ -325,10 +325,10 @@ install_v2() {
   fi
 
   # ── 4. default_agent, LAST, and read back ─────────────────────────────────
-  echo "↻  Setting default_agent = team (last, because the roles are on disk now) ..."
-  if ! node "${node_js}" "${cfg}" default-agent team; then
+  echo "↻  Setting default_agent = Team (last, because the roles are on disk now) ..."
+  if ! node "${node_js}" "${cfg}" default-agent Team; then
     echo "!  Could not set default_agent. Add it by hand at the top level of ${cfg}:"
-    echo "     \"default_agent\": \"team\""
+    echo "     \"default_agent\": \"Team\""
     exit 1
   fi
 
@@ -340,7 +340,7 @@ install_v2() {
   echo "   roles    : 6/6 files under ${cfg_dir}/agents/"
   echo "   commands : ${cmd_count:-0}/6 found under ${cfg_dir}/commands/team-*.md (a hand-written"
   echo "              file the generator refused to overwrite would show short here)"
-  echo "   default  : default_agent = team, read back from ${cfg}"
+  echo "   default  : default_agent = Team, read back from ${cfg}"
   echo "   env vars : NONE needed. OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS is a 1.18.x"
   echo "              workaround; on 2.x sub-agents are background natively and the plugin"
   echo "              forces background:true on every dispatch, so setting it changes"

@@ -128,8 +128,24 @@ const cfg = { agent: agents, command: commands }
  * into the system context for the lead only (pinned by test-v2-adapter's request
  * layer group), so what this suite owns is the note's own content. */
 const note9 = blackboardNote("/board/root", 9)
-assert.equal(plugin.id, "team-mode", "display id")
+assert.equal(plugin.id, "@te-river/opencode-team-mode", "display id — the host plugin list shows the npm package name (#45)")
 assert.equal(plugin.server, undefined, "the v1 entry point is GONE — this is the cut, not a refactor")
+/* #45: the plugin's DISPLAY id is the npm name, but the storage/audit names are
+ * DATA keys and must stay the old literals — renaming them would orphan every
+ * existing ledger and audit trail.  This pin exists so a future "replace all
+ * team-mode" sweep fails HERE instead of silently breaking data. */
+{
+  const ledgerSrc = fs.readFileSync(path.join(repoRoot, "src", "tm", "ledger.ts"), "utf8")
+  assert.ok(
+    ledgerSrc.includes('"team-mode/ledger/"'),
+    "the ledger storage prefix stays team-mode/ledger/ — renaming it orphans every existing list",
+  )
+  const patternsSrc = fs.readFileSync(path.join(repoRoot, "src", "envprotect", "patterns.ts"), "utf8")
+  assert.ok(
+    patternsSrc.includes('"team-mode-env-protect"'),
+    "the audit service name stays team-mode-env-protect — it is a data key, not a display name",
+  )
+}
 // The failure this used to guard — a plugin exporting `setup` and no `server`
 // loading as NOTHING on the 1.18.x host — is now the product: 2.x is the only host
 // and `setup` is the only entry. So the invariant flipped to setup-present,
@@ -142,7 +158,7 @@ assert.equal(typeof plugin.setup, "function", "v2 host gate: setup() is the only
  * ledger rule), and none of it depended on the loader, only on the handle to it. */
 const cfg2 = { agent: agents, command: commands }
 
-const lead = cfg.agent["team"]
+const lead = cfg.agent["Team"]
 const leadPrompt = lead.prompt
 assert.ok(note9.includes("/board/root"), "the board note carries the resolved root it was handed")
 assert.ok(note9.includes("idle for more than 9 days"), "…and the TTL the sweep promise names")
@@ -202,22 +218,22 @@ for (const expert of EXPERTS) {
   assert.equal(a.temperature, 0.2, expert + " low-temperature format discipline")
 }
 assert.equal(cfg.agent["architect"].permission.bash, "deny", "architect stays bash-denied")
-assert.equal(cfg.agent["team"].permission.bash, "allow", "lead bash granted — the R6/R2 gate is the guard's job, not the definition's")
+assert.equal(cfg.agent["Team"].permission.bash, "allow", "lead bash granted — the R6/R2 gate is the guard's job, not the definition's")
 /* dead-popup guard retired with the v1 config hook. The rule it protected (never
  * promise a dialog that cannot arm) is alive on 2.x in a different place: the
  * guard fails CLOSED with a v2-worded refusal instead of asking, and the R6/R2
  * classification itself is pinned per command line in test-envprotect §7. */
 console.log("4b. dead-popup guard: SKIPPED — v1 config hook removed; 2.x fails closed (test-envprotect §7, test-v2-adapter consent group)")
-assert.equal(cfg.agent["team"].permission.edit, "allow", "lead edit allowed (<=10-line non-product edits)")
-assert.equal(cfg.agent["team"].permission.task, "allow", "lead task dispatch allowed")
-assert.deepEqual(cfg.agent["team"].permission.tm_webfetch, { "*": "ask" }, "lead: web channel carries the ask-map (out-of-allowlist targets pop the official dialog)")
+assert.equal(cfg.agent["Team"].permission.edit, "allow", "lead edit allowed (<=10-line non-product edits)")
+assert.equal(cfg.agent["Team"].permission.task, "allow", "lead task dispatch allowed")
+assert.deepEqual(cfg.agent["Team"].permission.tm_webfetch, { "*": "ask" }, "lead: web channel carries the ask-map (out-of-allowlist targets pop the official dialog)")
 assert.equal(cfg.agent["implementer"].permission.tm_webfetch, "deny", "implementer is NOT a network role")
 assert.deepEqual(cfg.agent["researcher"].permission.tm_webfetch, { "*": "ask" }, "researcher: web channel carries the ask-map")
-assert.deepEqual(cfg.agent["team"].permission.tm_browser, { "*": "ask" }, "lead: browser carries the ask-map")
+assert.deepEqual(cfg.agent["Team"].permission.tm_browser, { "*": "ask" }, "lead: browser carries the ask-map")
 assert.equal(cfg.agent["implementer"].permission.tm_browser, "deny", "implementer is NOT a network role (browser)")
 assert.equal(cfg.agent["implementer"].permission.tm_memory, "allow", "memory store: all roles (not a network channel)")
-assert.equal(cfg.agent["team"].permission.tm_ledger, undefined, "the ledger is NOT named in the matrix — v2-permissions grants tm_ledger by role name, so a second source of truth here would drift")
-assert.equal(cfg.agent["team"].permission.question, "allow", "lead: question granted (batched blocking questions)")
+assert.equal(cfg.agent["Team"].permission.tm_ledger, undefined, "the ledger is NOT named in the matrix — v2-permissions grants tm_ledger by role name, so a second source of truth here would drift")
+assert.equal(cfg.agent["Team"].permission.question, "allow", "lead: question granted (batched blocking questions)")
 assert.equal(cfg.agent["implementer"].permission.question, "deny", "specialists: question denied (lead-only)")
 assert.equal(Object.keys(cfg.agent).length, 6, "exactly 6 agents injected")
 assert.equal(Object.keys(cfg.command).length, 6, "exactly 6 commands injected")
@@ -225,7 +241,7 @@ assert.equal(Object.keys(cfg.command).length, 6, "exactly 6 commands injected")
 /* v1's config-hook idempotence and default-agent promotion retired with the
  * loader. The 2.x equivalents are real and pinned where they now live: the
  * generator refuses files it did not write (marker check, --force to override) and
- * `editor.default("team")` owns the default slot — test-v2-adapter's generation and
+ * `editor.default("Team")` owns the default slot — test-v2-adapter's generation and
  * default-slot groups. What stays here is this suite's own subject: the note. */
 assert.ok(blackboardNote("/board/root", 5).includes("idle for more than 5 days"), "default TTL 5d in the note the lead is handed")
 console.log("4c. default-agent promotion (v1 config hook): SKIPPED — 2.x promotion is editor.default(\"team\"), pinned by test-v2-adapter")
@@ -667,13 +683,13 @@ assert.ok(cfg2.agent["implementer"].prompt.includes("never a 120-second command"
 assert.ok(cfg2.agent["implementer"].prompt.includes("Never wait inside a command"), "implementer: no sleep/polling inside a bash command")
 assert.ok(cfg2.agent["researcher"].prompt.includes("registry.npmjs.org/-/v1/search"), "researcher: npm search endpoint documented")
 assert.ok(cfg2.agent["researcher"].prompt.includes("mobile.moegirl.org.cn"), "researcher: seeded web hosts documented")
-assert.ok(cfg2.agent["team"].prompt.includes("tm_search"), "lead: governed search front referenced")
-assert.ok(cfg2.agent["team"].prompt.includes("tm_webfetch"), "lead: governed web fallback referenced")
+assert.ok(cfg2.agent["Team"].prompt.includes("tm_search"), "lead: governed search front referenced")
+assert.ok(cfg2.agent["Team"].prompt.includes("tm_webfetch"), "lead: governed web fallback referenced")
 assert.ok(cfg2.agent["tester"].prompt.includes("## UI verification (tm_browser"), "tester: governed UI verification section present")
 assert.ok(cfg2.agent["tester"].prompt.includes("UI NOT VERIFIED"), "tester: honest-gap fallback kept alongside the browser grant")
-assert.ok(cfg2.agent["team"].prompt.includes("tm_memory search"), "lead: memory consulted during research phase")
-assert.ok(cfg2.agent["team"].prompt.includes("project layer first, global layer for cross-repo conventions"), "lead: memory layering (project layer first, global for cross-repo conventions)")
-assert.ok(cfg2.agent["team"].prompt.includes("Batch the recon as parallel read / grep calls in one round"), "lead: research-phase recon batches as parallel native calls, not inside `execute`")
+assert.ok(cfg2.agent["Team"].prompt.includes("tm_memory search"), "lead: memory consulted during research phase")
+assert.ok(cfg2.agent["Team"].prompt.includes("project layer first, global layer for cross-repo conventions"), "lead: memory layering (project layer first, global for cross-repo conventions)")
+assert.ok(cfg2.agent["Team"].prompt.includes("Batch the recon as parallel read / grep calls in one round"), "lead: research-phase recon batches as parallel native calls, not inside `execute`")
 }
 /* v1.4.6 fix (kept): fix-mode append contradiction stays dead, round files stay */
 assert.ok(!cfg2.agent["implementer"].prompt.includes("append to the same file"), "implementer: fix-mode append contradiction removed")
@@ -708,8 +724,8 @@ console.log("7. TTL-only reclamation + session-partitioned boards: OK")
 // corrupt a file the way the rule describes.
 {
   const { agents } = await import("./dist/agents.js")
-  const lead = agents.team.prompt
-  const specialists = Object.entries(agents).filter(([id]) => id !== "team")
+  const lead = agents.Team.prompt
+  const specialists = Object.entries(agents).filter(([id]) => id !== "Team")
   assert.match(lead, /Docs and business context are maintained with the file write\/edit tool/,
     "the lead carries the rule for the record it owns")
   assert.match(lead, /never by\s+a generated throwaway script/, "and names the forbidden mechanism")
@@ -733,7 +749,7 @@ console.log("7. TTL-only reclamation + session-partitioned boards: OK")
 // and stopped). The lead prompt must therefore own the collection rule explicitly.
 {
   const { agents } = await import("./dist/agents.js")
-  const lead = agents.team.prompt
+  const lead = agents.Team.prompt
   assert.match(lead, /The host's ack is advice for the general case, not for yours/,
     "the lead is told the host's ack is not the rule for its own task")
   assert.match(lead, /ending the turn is a broken delivery/, "and why: the user re-prompts for work already dispatched")
@@ -773,7 +789,7 @@ console.log("\n8. board-write call shape (A5) + write-capable wording (A8)")
   }
   // The v1 statement is not polluted: the tool-call shape is still what a role
   // with a top-level tm_board_write is told to use.
-  for (const [id, raw] of texts.filter(([id]) => id !== "team")) {
+  for (const [id, raw] of texts.filter(([id]) => id !== "Team")) {
     assert.match(raw.replace(/\s+/g, " "), /`tm_board_write \{ task, topic, content/,
       `${id}: the plain tool-call shape is still the primary instruction`)
   }

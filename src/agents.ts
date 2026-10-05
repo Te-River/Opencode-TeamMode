@@ -337,7 +337,11 @@ for (const a of [architect, implementer, reviewer, tester, researcher]) {
 /* ------------------------------------------------------------------ */
 
 export const agents: Record<string, AgentConfig> = {
-  "team": teamLead,
+  // #38: the id is `Team` (capital T) so the desktop picker — which renders
+  // `Agent.Info.name`, and a config-file role's name IS its id — shows "Team"
+  // instead of "team".  Identity comparisons are case-insensitive (src/identity.ts),
+  // so an old `team` config / session / `--agent team` still resolves to this role.
+  "Team": teamLead,
   architect,
   implementer,
   reviewer,

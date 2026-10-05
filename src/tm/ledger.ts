@@ -27,6 +27,7 @@
  */
 
 import type { ToolDefinition, ToolResult } from "../types.js"
+import { sameAgent } from "../identity.js"
 import { tmError, toToolResult } from "./result.js"
 
 export const LEDGER_STATUSES = ["open", "doing", "done", "blocked"] as const
@@ -286,7 +287,7 @@ export function buildLedgerTool(deps: LedgerToolDeps): ToolDefinition {
     args: LEDGER_ARGS,
     execute: async (rawArgs, ctx): Promise<ToolResult> => {
       const c = (ctx ?? {}) as { sessionID?: unknown; agent?: unknown }
-      if (deps.onlyAgent && String(c.agent ?? "") !== deps.onlyAgent) {
+      if (deps.onlyAgent && !sameAgent(c.agent, deps.onlyAgent)) {
         return toToolResult(
           tmError(
             tool,

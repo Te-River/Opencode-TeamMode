@@ -301,7 +301,7 @@ function Install-V2 {
         #        a path is the claim; the file on disk is the evidence) ────────
         $rolesMissing = @()
         $cmdsMissing = @()
-        foreach ($role in @("team", "architect", "implementer", "reviewer", "tester", "researcher")) {
+        foreach ($role in @("Team", "architect", "implementer", "reviewer", "tester", "researcher")) {
             if (Test-Path (Join-Path $cfgDir "agents\$role.md")) {
                 Write-Host "✔  role    $role" -ForegroundColor Green
             } else {
@@ -330,11 +330,11 @@ function Install-V2 {
         }
 
         # ── 4. default_agent, LAST, and read back ───────────────────────────
-        Write-Host "↻  Setting default_agent = team (last, because the roles are on disk now) ..." -ForegroundColor Yellow
-        Invoke-NodeHelper @($surgery, $cfgFile, "default-agent", "team")
+        Write-Host "↻  Setting default_agent = Team (last, because the roles are on disk now) ..." -ForegroundColor Yellow
+        Invoke-NodeHelper @($surgery, $cfgFile, "default-agent", "Team")
         if ($LASTEXITCODE -ne 0) {
             Write-Host "!  Could not set default_agent. Add it by hand at the top level of $cfgFile :" -ForegroundColor Yellow
-            Write-Host '     "default_agent": "team"' -ForegroundColor Yellow
+            Write-Host '     "default_agent": "Team"' -ForegroundColor Yellow
             exit 1
         }
     # No scratch file to clean: the surgery is the shipped scripts\lib\config-surgery.cjs,
@@ -349,7 +349,7 @@ function Install-V2 {
     Write-Host "   roles    : 6/6 files under $(Join-Path $cfgDir 'agents')" -ForegroundColor DarkGray
     Write-Host "   commands : $cmdCount/6 found under $(Join-Path $cfgDir 'commands\team-*.md') (a hand-" -ForegroundColor DarkGray
     Write-Host "              written file the generator refused to overwrite shows short here)" -ForegroundColor DarkGray
-    Write-Host "   default  : default_agent = team, read back from $cfgFile" -ForegroundColor DarkGray
+    Write-Host "   default  : default_agent = Team, read back from $cfgFile" -ForegroundColor DarkGray
     Write-Host "   env vars : NONE needed. $bgFlag is a 1.18.x workaround; on 2.x" -ForegroundColor DarkGray
     Write-Host "              sub-agents are background natively and the plugin forces" -ForegroundColor DarkGray
     Write-Host "              background:true on every dispatch, so setting it changes nothing" -ForegroundColor DarkGray

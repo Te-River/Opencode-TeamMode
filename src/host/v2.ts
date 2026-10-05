@@ -29,6 +29,7 @@
  */
 
 import { agents } from "../agents.js"
+import { normalizeAgentName } from "../identity.js"
 import { DEFAULT_TTL_DAYS, resolveTtlMs, startBlackboardMaintenance } from "../blackboard.js"
 import { parseExtraDeny, resolveEnvProtectMode } from "../envprotect.js"
 import { createTmTools } from "../tm/index.js"
@@ -48,6 +49,7 @@ import { seedWebfetchDomains } from "../tm/webfetch.js"
 import { v2CapabilityRows } from "./v2-capabilities.js"
 import { applyV2SessionLayer, removalPlan } from "./v2-session.js"
 import { applyV2EarlyCompaction, resolveCompactConfig } from "./v2-compaction.js"
+import { checkDefaultAgentRole, globalConfigDir, type DefaultAgentCheck } from "./v2-default-agent.js"
 import { createStorageLedgerStore } from "../tm/ledger.js"
 import { createTeamScope } from "./v2-scope.js"
 import { bindV2Tool, type V2ToolBinding } from "./v2-tool.js"
@@ -73,7 +75,10 @@ function directoryOf(ctx: V2Context): string {
 }
 
 export const v2Personality: V2Plugin = {
-  id: "team-mode",
+  // #45: the display id (host plugin list) — the npm package name.  NOT the
+  // storage/audit names (`team-mode/selfcheck`, `team-mode/ledger/`,
+  // `team-mode-env-protect`), which stay put so existing data is not orphaned.
+  id: "@te-river/opencode-team-mode",
 
   async setup(ctx: V2Context) {
     if (!ctx || typeof ctx.tool?.transform !== "function") {
@@ -85,6 +90,24 @@ export const v2Personality: V2Plugin = {
     }
 
     const directory = directoryOf(ctx)
+    // ---------- #38 runtime fallback: is the configured default role on disk? ----------
+    // The plugin cannot see config-directory roles through ctx.agent (probed: the
+    // editor snapshot holds only the 7 built-ins), so a `default_agent` naming a
+    // missing role would make the host fall back to `build` SILENTLY.  Reading the
+    // global config from disk is the only way to say so.  Never throws, never
+    // affects startup, and prints only the role name + the file path it looked for.
+    let defaultAgentCheck: DefaultAgentCheck = { state: "no-config" }
+    try {
+      defaultAgentCheck = checkDefaultAgentRole({ configDir: globalConfigDir() })
+    } catch {
+      defaultAgentCheck = { state: "unreadable" }
+    }
+    if (defaultAgentCheck.state === "missing-role") {
+      console.warn(
+        `[team-mode] 全局配置的 default_agent="${defaultAgentCheck.defaultAgent}" 指向的角色文件不存在（${defaultAgentCheck.roleFile}）：` +
+          "宿主会静默退回 build，会话不再是 Team。重跑 scripts/install.ps1（Windows）或 scripts/install.sh 修复。",
+      )
+    }
     // ---------- Team-scope isolation (#22, the user's requirement 2026-09-25) ----------
     // Every v2 hook fires for EVERY agent on this host.  This one object is what
     // each layer asks before it mutates a request, a result, or a permission —
@@ -481,7 +504,7 @@ export const v2Personality: V2Plugin = {
             if (merged.changed) editor.update(id, (a) => { a.permissions = merged.triples })
           }
           if (promoteTeamDefault) {
-            // `editor.get("team")` returning nothing is NOT evidence the host does
+            // `editor.get("Team")` returning nothing is NOT evidence the host does
             // not know the role — the live run is literally executing as `team` while
             // this snapshot lists only the 7 built-ins, so the transform receives the
             // agent set from BEFORE the config directory merged.  Gating the
@@ -490,12 +513,12 @@ export const v2Personality: V2Plugin = {
             // the AFTER view is what gets recorded.
             let ok = true
             try {
-              editor.default("team")
+              editor.default("Team")
             } catch {
               ok = false
             }
             defaultPromoted = ok
-            defaultPostCheck = editor.get?.("team") ? "present-after" : "absent-after"
+            defaultPostCheck = editor.get?.("Team") ? "present-after" : "absent-after"
           }
           // Recorded HERE, at the moment of observation.  The host defers this
           // callback (a live boot reached the trajectory line with
@@ -537,7 +560,7 @@ export const v2Personality: V2Plugin = {
                 try {
                   return (editor.list?.() ?? [])
                     .map((a: { id?: string }) => String(a?.id ?? "?"))
-                    .filter((n: string) => wantedIds.includes(n) || n === "build" || n === "plan")
+                    .filter((n: string) => wantedIds.some((w) => normalizeAgentName(w) === normalizeAgentName(n)) || n === "build" || n === "plan")
                     .join(" ")
                 } catch {
                   return "list-threw"
@@ -553,7 +576,7 @@ export const v2Personality: V2Plugin = {
       notes.push("ctx.agent.transform 不存在，角色权限矩阵未规范化")
     }
     if (defaultPromoted === false) {
-      notes.push("Team 没有成为默认：editor.default(\"team\") 抛错了")
+      notes.push("Team 没有成为默认：editor.default(\"Team\") 抛错了")
     } else if (defaultPromoted && defaultPostCheck !== "present-after") {
       // Measured on a live 2.0.16 standalone boot: the call is accepted, `team` is
       // absent from the editor before AND after, and `default_agent` in
@@ -621,7 +644,7 @@ export const v2Personality: V2Plugin = {
       }
     }
 
-    const session = await applyV2SessionLayer(ctx, { temperature, note, noteAgents: ["team"], plan, scope })
+    const session = await applyV2SessionLayer(ctx, { temperature, note, noteAgents: ["Team"], plan, scope })
     // Team's own early-compaction trigger. The host exposes no percentage knob (its
     // `compaction` block is auto/prune/tail_turns/preserve_recent_tokens/reserved) and a
     // 2.x plugin has no config domain at all, so "compact at 75% of the window" can only
@@ -714,7 +737,7 @@ export const v2Personality: V2Plugin = {
     resolvedAgentIds = () => {
       const ids = new Set<string>(probe.report.agentsSeen)
       for (const id of Object.keys(session.report.removed)) ids.add(id)
-      return [...ids].filter((id) => wantedIds.includes(id)).sort()
+      return [...ids].filter((id) => wantedIds.some((w) => normalizeAgentName(w) === normalizeAgentName(id))).sort()
     }
     observationCounters = (source) => ({
       counters_at: source,
@@ -828,6 +851,11 @@ export const v2Personality: V2Plugin = {
         request_temperature: temperature === false ? "off" : temperature,
         request_removed_plan: removedPlanSizes,
         board_ttl_days: ttlDays,
+        // #38: the runtime fallback's verdict — "ok" / "missing-role" / "no-default"
+        // / "no-config" / "unreadable".  `default_agent_missing` names the role only
+        // when one is actually missing, so a clean boot prints an empty string.
+        default_agent_check: defaultAgentCheck.state,
+        default_agent_missing: defaultAgentCheck.state === "missing-role" ? defaultAgentCheck.defaultAgent ?? "" : "",
         env_protect: envProtectMode,
         note: notes.join(" · "),
       })

@@ -21,6 +21,7 @@
  */
 
 import { V2_LADDER_ACTIONS } from "./v2-permissions.js"
+import { normalizeAgentName } from "../identity.js"
 import type { V2Registration, V2SessionContext, V2Context } from "./v2-types.js"
 
 /**
@@ -111,12 +112,14 @@ export function toolsToRemove(permission: Record<string, unknown> | undefined | 
   return [...new Set(names)]
 }
 
-/** Built once per agent id so the hook body stays a set lookup on a hot path. */
+/** Built once per agent id so the hook body stays a set lookup on a hot path.
+ *  #38: keys are normalized (lower case) so a host reporting `team` and a config
+ *  declaring `Team` resolve to the same plan entry. */
 export function removalPlan(
   agents: Record<string, { permission?: Record<string, unknown> }>,
 ): Map<string, Set<string>> {
   const plan = new Map<string, Set<string>>()
-  for (const [id, cfg] of Object.entries(agents)) plan.set(id, new Set(toolsToRemove(cfg?.permission)))
+  for (const [id, cfg] of Object.entries(agents)) plan.set(normalizeAgentName(id), new Set(toolsToRemove(cfg?.permission)))
   return plan
 }
 
@@ -181,13 +184,16 @@ export async function applyV2SessionLayer(
   registrations.push(
     await session.hook("context", (event: V2SessionContext) => {
       const agent = String(event?.agent ?? "")
+      // #38: the plan and the report are keyed by the NORMALIZED name, so a host
+      // reporting `team` and a config declaring `Team` hit the same entry.
+      const agentKey = normalizeAgentName(agent)
       // Anything below this line MUTATES the outgoing request.  On a host where
       // one plugin serves every agent, an unguarded write here would set a build
       // session's temperature, push our board note into a plan session's system
       // prompt, and delete tools the user's own config granted (#22).
       if (input.scope && input.scope.count(input.scope.decide(event)) !== "ours") return
       input.scope?.learn(agent, (event as { sessionID?: unknown }).sessionID)
-      const denied = input.plan.get(agent)
+      const denied = input.plan.get(agentKey)
       if (denied?.size && event.tools && typeof event.tools === "object") {
         let cut = 0
         for (const name of Object.keys(event.tools)) {
@@ -195,7 +201,7 @@ export async function applyV2SessionLayer(
           delete event.tools[name]
           cut++
         }
-        if (cut) report.removed[agent] = (report.removed[agent] ?? 0) + cut
+        if (cut) report.removed[agentKey] = (report.removed[agentKey] ?? 0) + cut
       }
       // The observation that settles the delivery question: whatever is left in the
       // request's own tool map is what the model can call directly. A `tm_*` name
@@ -215,7 +221,7 @@ export async function applyV2SessionLayer(
         if (event.options.temperature === undefined) event.options.temperature = input.temperature
       }
 
-      if (input.note && input.noteAgents.includes(agent) && Array.isArray(event.system)) {
+      if (input.note && input.noteAgents.some((n) => normalizeAgentName(n) === agentKey) && Array.isArray(event.system)) {
         // The hook runs before EVERY model call; if the host reuses the array,
         // an unguarded push would repeat the note until it crowds out the work.
         const already = event.system.some(
