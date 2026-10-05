@@ -565,7 +565,11 @@ await fake.hook("session.context").fire(arch)
 const archLeft = Object.keys(arch.tools)
 for (const gone of [
   "list", "edit", "write", "shell", "webfetch", "websearch", "question",
-  "todowrite", "subagent", "browser_navigate", "browser_tabs_list",
+  // `todowrite` is deliberately NOT in this list any more: the matrix no longer
+  // names a built-in this host does not register (the retired name would be a
+  // phantom rule), and the lead's ledger monopoly is held by the `tm_ledger`
+  // deny asserted in group 4, not by a deny on a tool that does not exist.
+  "subagent", "browser_navigate", "browser_tabs_list",
   "tm_webfetch", "tm_search", "tm_browser", "tm_join", "tm_ledger",
 ]) {
   assert.ok(!archLeft.includes(gone), `architect is not even OFFERED ${gone} (v1 left its description in every request)`)
@@ -592,7 +596,7 @@ await fake.hook("session.context").fire(lead)
 const leadLeft = Object.keys(lead.tools)
 assert.ok(leadLeft.includes("subagent"), "the lead keeps the dispatch lever")
 assert.ok(leadLeft.includes("tm_ledger"), "the lead keeps the list it is mandated to keep — v2 has no todowrite to lean on")
-assert.ok(leadLeft.includes("question") && leadLeft.includes("todowrite"), "and the todo/blocking-question grants its prompt mandates need")
+assert.ok(leadLeft.includes("question"), "and the blocking-question grant its prompt mandate needs (the ledger grant lives in the tm_ledger triple, group 4)")
 assert.ok(leadLeft.includes("browser_navigate"), "a network role keeps the host's browser catalog")
 assert.ok(leadLeft.includes("tm_webfetch") && leadLeft.includes("tm_browser"), "granted with an ask-map, so still offered")
 assert.ok(leadLeft.includes("read") && leadLeft.includes("shell"), "the lead reads and runs through the native tools — its v1 aliases are retired, not missed")

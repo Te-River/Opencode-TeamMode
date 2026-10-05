@@ -38,6 +38,7 @@ import {
   TESTER_PROMPT,
 } from "./prompts/specialists.js"
 import { REPLY_CONTRACT, SHARED_RULES } from "./prompts/shared.js"
+import { V1_ONLY_TOOLS } from "./host/v2-permissions.js"
 
 /* ------------------------------------------------------------------ */
 /*  Tool whitelist builder (Phase 2 / T2.1, G2 ruling "方案甲")        */
@@ -53,23 +54,23 @@ import { REPLY_CONTRACT, SHARED_RULES } from "./prompts/shared.js"
  *
  * G2 rulings baked in:
  *  - glob/list never enter the whitelist — file enumeration goes through
- *    tm_bash (ls / dir / Get-ChildItem);
+ *    the host's own glob / shell;
  *  - the built-in webfetch/websearch tools stay removed — the governed
  *    tm_webfetch (domain-allowlisted, threshold-offloaded) is the sanctioned
  *    web FALLBACK channel, granted ONLY to team + researcher; user-
  *    configured MCP/plugin tools (browser automation, search, fetchers)
  *    pass through the whitelist untouched and are the HIGH-priority channel;
- *  - "tm_*" covers the governed retrieval/memory tools (tm_read /
- *    tm_grep / tm_bash / tm_fetch); tm_webfetch, tm_search and tm_browser are
- *    explicit keys that override the wildcard per agent; the R6 env-protection
- *    hook aliases onto read/grep/bash unchanged, so narrowing the surface does
- *    not weaken the anti-backdoor chain.
+ *  - "tm_*" covers the governed retrieval/memory tools this package still
+ *    registers (tm_fetch / tm_memory / tm_stats / tm_board_write); tm_webfetch,
+ *    tm_search and tm_browser are explicit keys that override the wildcard per
+ *    agent; the R6 env-protection hook aliases onto the native shell unchanged,
+ *    so narrowing the surface does not weaken the anti-backdoor chain.
  *
- * T2.1 review revision (Critical fix): the built-in bash RETURNS for the
+ * T2.1 review revision (Critical fix): the built-in shell RETURNS for the
  * execution roles (team / implementer / reviewer / tester).  G2 only ruled
- * that glob/list enumeration goes through tm_bash — it never ruled away
- * command execution, and tm_bash is a read-only allowlist that cannot run
- * npm test / tsc / --help probes.  R6 keeps governing bash's env surface
+ * that glob/list enumeration goes through the governed channel — it never ruled
+ * away command execution, and a read-only allowlist cannot run
+ * npm test / tsc / --help probes.  R6 keeps governing the shell's env surface
  * through the envprotect hook, independently of this matrix.
  */
 const NEVER_ALLOWED = [
@@ -80,29 +81,41 @@ const NEVER_ALLOWED = [
   "apply_patch",
   "webfetch",
   "websearch",
-  "todowrite",
   "lsp",
   "skill",
   "question",
 ] as const
 
-/** Built-ins granted per agent; every one NOT granted is denied.  task,
- *  todowrite and question are LEAD-ONLY grants (see the whitelist calls
+/** Built-ins granted per agent; every one NOT granted is denied.  task and
+ *  question are LEAD-ONLY grants (see the whitelist calls
  *  below): only the lead dispatches — specialists spawning sub-agents is
  *  the nesting the T3 task-reclaim closed (architect and reviewer lost
  *  "task"; the matrix deny is zero-bypass, live-verified T0.4③).  The
- *  lead's prompt MANDATES a todo list ("your state memory is the todo
+ *  lead's prompt MANDATES a ledger ("your state memory is the todo
  *  list") and batched blocking questions — denying those tools to the lead
  *  made the prompt unfulfillable; specialists answer through the lead
- *  (STATUS: blocked), never interrupt the user directly. */
-const PER_AGENT_TOOLS = ["edit", "write", "task", "bash", "todowrite", "question"] as const
+ *  (STATUS: blocked), never interrupt the user directly.
+ *
+ *  The ledger is NOT named here: this host registers no todo-writing built-in,
+ *  and the tool that holds the list is `tm_ledger`, whose allow/deny triples
+ *  `src/host/v2-permissions.ts` derives from the ROLE NAME (team → allow,
+ *  the five specialists → deny).  Naming a tool the matrix cannot grant would
+ *  be a second source of truth for a retired name — `V1_ONLY_TOOLS` there is
+ *  the one list of what is gone. */
+const PER_AGENT_TOOLS = ["edit", "write", "task", "bash", "question"] as const
 
-/** The governed tools, named explicitly next to the "tm_*" wildcard
- *  (belt-and-braces: the explicit allows survive even if a host ever
- *  stops expanding the wildcard).  tm_memory is the project memory store —
- *  not a network channel, available to all six agents.  tm_stats reads this
- *  plugin's own trajectory (no network, no shell, no secrets) so any role can
- *  answer "what did we spend" — and after a host upgrade, "what broke". */
+/** The governed tools this package still registers, named explicitly next to
+ *  the "tm_*" wildcard (belt-and-braces: the explicit allows survive even if a
+ *  host ever stops expanding the wildcard).  tm_memory is the project memory
+ *  store — not a network channel, available to all six agents.  tm_stats reads
+ *  this plugin's own trajectory (no network, no shell, no secrets) so any role
+ *  can answer "what did we spend" — and after a host upgrade, "what broke".
+ *
+ *  The list is PRUNED by `V1_ONLY_TOOLS` (src/host/v2-permissions.ts), the one
+ *  source of truth for retired names: a `allow` key for a tool we no longer
+ *  register claims a capability the host has never heard of, and the file
+ *  ladder (read / grep / shell) plus the host's own `execute` cover what the
+ *  retired trio used to. */
 /** tm_board_write is in this set on purpose.  The blackboard is the ONLY
  *  oversized-deliverable channel, and two roles (architect, researcher) carry no
  *  write/edit/bash — `whitelist()` grants them no built-in at all, only the
@@ -111,7 +124,12 @@ const PER_AGENT_TOOLS = ["edit", "write", "task", "bash", "todowrite", "question
  *  becoming a wall of text was un-followable exactly where it mattered.  A
  *  governed writer scoped to <board-root>/<session>/<task>/ is the small fix;
  *  it is not a file tool, because it can neither overwrite nor leave the board. */
-const TM_TOOLS = ["tm_read", "tm_grep", "tm_bash", "tm_fetch", "tm_memory", "tm_stats", "tm_board_write"] as const
+const TM_TOOLS = [
+  "tm_fetch",
+  "tm_memory",
+  "tm_stats",
+  "tm_board_write",
+].filter((name) => !V1_ONLY_TOOLS.has(name))
 
 const whitelist = (
   ...granted: Array<(typeof PER_AGENT_TOOLS)[number]>
@@ -188,11 +206,12 @@ const teamLead: AgentConfig = {
   prompt: TEAM_LEAD_PROMPT,
   color: "#E879F9", // purple
   // Whitelist: TM_TOOLS + tm_webfetch/tm_search/tm_browser (the lead is
-  // a network role) + task dispatch + edit (<=10-line non-product edits) +
-  // write (board files) + bash (discovery-gate probes) + todowrite + question
-  // (the lead's TodoList discipline and batched blocking questions are
-  // prompt mandates — they need their tools).
-  permission: whitelist("task", "edit", "write", "bash", "todowrite", "question"),
+  // a network role) + subagent dispatch + edit (<=10-line non-product edits) +
+  // write (board files) + shell (discovery-gate probes) + question
+  // (the lead's ledger discipline and batched blocking questions are
+  // prompt mandates — they need their tools).  The ledger itself is
+  // `tm_ledger`, allowed for this role by name in the permission layer.
+  permission: whitelist("task", "edit", "write", "bash", "question"),
   temperature: 0.2,
 }
 

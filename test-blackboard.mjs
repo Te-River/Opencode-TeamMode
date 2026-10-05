@@ -212,9 +212,9 @@ assert.deepEqual(cfg.agent["researcher"].permission.tm_webfetch, { "*": "ask" },
 assert.deepEqual(cfg.agent["team"].permission.tm_browser, { "*": "ask" }, "lead: browser carries the ask-map")
 assert.equal(cfg.agent["implementer"].permission.tm_browser, "deny", "implementer is NOT a network role (browser)")
 assert.equal(cfg.agent["implementer"].permission.tm_memory, "allow", "memory store: all roles (not a network channel)")
-assert.equal(cfg.agent["team"].permission.todowrite, "allow", "lead: todowrite granted (TodoList discipline is a prompt mandate)")
+assert.equal(cfg.agent["team"].permission.tm_ledger, undefined, "the ledger is NOT named in the matrix — v2-permissions grants tm_ledger by role name, so a second source of truth here would drift")
 assert.equal(cfg.agent["team"].permission.question, "allow", "lead: question granted (batched blocking questions)")
-assert.equal(cfg.agent["implementer"].permission.todowrite, "deny", "specialists: todowrite denied (lead-only)")
+assert.equal(cfg.agent["implementer"].permission.question, "deny", "specialists: question denied (lead-only)")
 assert.equal(Object.keys(cfg.agent).length, 6, "exactly 6 agents injected")
 assert.equal(Object.keys(cfg.command).length, 6, "exactly 6 commands injected")
 
@@ -261,7 +261,7 @@ assert.ok(leadPrompt.includes("Write a SELF-CONTAINED brief"), "lead: dispatch b
 assert.ok(leadPrompt.includes("quick / standard /"), "lead: the brief carries an expected thoroughness level")
 assert.ok(leadPrompt.includes("While they run, keep working — on lead work only"), "lead: the leader works during the wait, and only on lead work")
 assert.ok(leadPrompt.includes("Do NOT pull big payloads into your\n  own context while waiting"), "lead: leader context discipline — delegated bulk stays delegated")
-assert.ok(leadPrompt.includes("Slow shell work is parallel too"), "lead: tm_pty is named as the shell-side parallel lever")
+assert.ok(leadPrompt.includes("Slow shell work is parallel too"), "lead: the background shell is named as the shell-side parallel lever")
 assert.ok(leadPrompt.includes("Collect with **tm_join**"), "lead: tm_join is the collection path")
 assert.ok(leadPrompt.includes("Never end a turn with a child still uncollected"), "lead: no orphaned children at end of turn")
 assert.ok(leadPrompt.includes("cancel: true"), "lead: a runaway child is abortable")
@@ -312,7 +312,7 @@ assert.ok(cfg2.agent["implementer"].prompt.includes("Multi-part briefs"), "imple
 assert.ok(cfg2.agent["tester"].prompt.includes("not done: <part>"), "tester: an unfinished part must be named, not dropped")
 assert.ok(leadPrompt.includes("already available,"), "lead: 'already available, use it' is stated as the better outcome")
 assert.ok(leadPrompt.includes("The team exists to be FASTER"), "lead: throughput is the justification for the team")
-assert.ok(leadPrompt.includes("Slow shell work is parallel too"), "lead: slow independent shell steps go to tm_pty, not one chained bash call")
+assert.ok(leadPrompt.includes("Slow shell work is parallel too"), "lead: slow independent shell steps go to the host's background shell, not one chained call")
 assert.ok(cfg2.agent["implementer"].prompt.includes("Presentation (the host renders Markdown"), "implementer: presentation-shape section present")
 // The renderer's supported set was MEASURED on the host, not inferred from
 // CommonMark — and the first version of this section got it backwards in both
@@ -328,7 +328,27 @@ for (const lit of ["footnotes", "==highlight==", "<hr>", "definition lists", ":s
   assert.ok(cfg2.agent["implementer"].prompt.includes(lit), `implementer: the unsupported-shape list names ${lit}`)
 }
 assert.ok(cfg2.agent["implementer"].prompt.includes("markdown\n  TABLE with stable\n  columns") || /TABLE with stable/.test(cfg2.agent["implementer"].prompt), "implementer: findings/reports use a table shape")
-assert.ok(cfg2.agent["implementer"].prompt.includes("tm_pty"), "implementer: tm_pty mentioned in the time budget")
+assert.ok(cfg2.agent["implementer"].prompt.includes("`shell` with\n  `background:true`"), "implementer: the time budget names the host's own background shell for slow independent steps")
+/* The v1 cut ends at the prompt layer: a role may not be told to reach for a
+ * tool this package no longer registers.  Every name below is retired — the
+ * four in V1_ONLY_TOOLS (src/host/v2-permissions.ts, the one source) plus
+ * `todowrite`, which a 2.x host never had — so its appearance in ANY injected
+ * prompt or command template is exactly the defect this suite exists to catch.
+ * Banned by assertion, not left to chance, because a stale sentence loads fine
+ * and costs the round it points at.  And the batching red line must name the
+ * tool that replaced it, or the mandate cannot be walked. */
+const RETIRED_TOOL_NAMES = ["tm_ptc_run", "tm_pty", "tm_read", "tm_grep", "tm_bash", "todowrite"]
+for (const [id, agent] of Object.entries(cfg2.agent)) {
+  for (const gone of RETIRED_TOOL_NAMES) {
+    assert.ok(!String(agent.prompt ?? "").includes(gone), `${id}: prompt never names the retired tool ${gone}`)
+  }
+  assert.ok(String(agent.prompt ?? "").includes("execute"), `${id}: the batching mandate names the host's Code Mode tool`)
+}
+for (const [id, cmd] of Object.entries(cfg2.command)) {
+  for (const gone of RETIRED_TOOL_NAMES) {
+    assert.ok(!String(cmd.template ?? "").includes(gone), `${id}: command template never names the retired tool ${gone}`)
+  }
+}
 assert.ok(cfg2.agent["reviewer"].prompt.includes("backslash") || cfg2.agent["reviewer"].prompt.includes("\\("), "reviewer: the math delimiters that ACTUALLY render are named")
 assert.ok(leadPrompt.includes("## Output shape (the host renders Markdown"), "lead: presentation discipline present")
 assert.ok(leadPrompt.includes("```mermaid``` diagrams, which this host draws"), "lead: mermaid offered, per the measurement")
@@ -469,8 +489,8 @@ for (const expert of EXPERTS) {
   const lang = cfg2.agent[expert].prompt.slice(cfg2.agent[expert].prompt.indexOf("## Reply language"))
   assert.ok(/verbatim/i.test(lang.split("## ")[1] ?? ""), expert + ": quoted tool strings stay verbatim (evidence precision survives translation)")
 
-  assert.ok(cfg2.agent[expert].prompt.includes("All file reads / searches / enumeration go through tm_read / tm_grep / tm_bash"), expert + ": removed-tools rule routes reads/search/enumeration to tm_*")
-  assert.ok(cfg2.agent[expert].prompt.includes("removed from the tool surface"), expert + ": anti-retry warning for removed built-ins")
+  assert.ok(cfg2.agent[expert].prompt.includes("File reads / searches / enumeration go through the built-in read / grep /\nglob tools"), expert + ": the file ladder routes reads/search/enumeration to the host's own tools")
+  assert.ok(cfg2.agent[expert].prompt.includes("they ARE the governed path"), expert + ": the native ladder is stated as governed, not as an ungoverned fallback")
   assert.ok(cfg2.agent[expert].prompt.includes("## Project conventions"), expert + ": README conventions rule")
   assert.ok(cfg2.agent[expert].prompt.includes("## Repo hygiene (temp files)"), expert + ": repo hygiene rule present")
   assert.ok(cfg2.agent[expert].prompt.includes("DELETED before you report done"), expert + ": scratch/temp files deleted before done (repo never polluted)")
@@ -513,13 +533,13 @@ for (const expert of EXPERTS) {
   )
   assert.ok(
     cfg2.agent[expert].prompt.includes("Plan-time rule: the moment your plan lists ≥3") &&
-      cfg2.agent[expert].prompt.includes("your FIRST move is ONE tm_ptc_run program"),
-    expert + ": PTC trigger is plan-time (plan lists ≥3 probes → FIRST move is ONE tm_ptc_run program)",
+      cfg2.agent[expert].prompt.includes("your FIRST move is ONE `execute` (Code Mode) program"),
+    expert + ": the batch trigger is plan-time (plan lists ≥3 probes → FIRST move is ONE `execute` program)",
   )
-  assert.ok(cfg2.agent[expert].prompt.includes("OR built-in bash alike"), expert + ": PTC trigger counts built-in bash chains, not just tm_* calls")
-  assert.ok(cfg2.agent[expert].prompt.includes("ONE compound built-in bash command"), expert + ": plain-shell batches prescribe one compound command, not N round-trips")
-  assert.ok(cfg2.agent[expert].prompt.includes("aggregated value at the end of the program"), expert + ": PTC return-data rule (unreturned inline results are lost)")
-assert.ok(cfg2.agent["researcher"].prompt.includes("Recon batching (PTC-first)"), "researcher: PTC-first recon section present")
+  assert.ok(cfg2.agent[expert].prompt.includes("read / grep / glob / shell alike"), expert + ": the batch trigger counts the host's own tool calls, not only tm_* ones")
+  assert.ok(cfg2.agent[expert].prompt.includes("ONE compound `shell`"), expert + ": plain-shell batches prescribe one compound command, not N round-trips")
+  assert.ok(cfg2.agent[expert].prompt.includes("aggregated value at the end of the program"), expert + ": the return-data rule (unreturned inline results are lost)")
+assert.ok(cfg2.agent["researcher"].prompt.includes("Recon batching (Code Mode first)"), "researcher: the Code-Mode-first recon section is present")
 assert.ok(cfg2.agent["researcher"].prompt.includes("## Web lookups (two channels)"), "researcher: two-channel web policy (governed tools first, MCP fallback)")
 assert.ok(cfg2.agent["researcher"].prompt.includes("tm_search (open-ended lookups)"), "researcher: tm_search is the open-ended lookup front")
 assert.ok(cfg2.agent["researcher"].prompt.includes("engine:\"auto\" (the default)"), "researcher: tm_search auto fan-out is the documented default")
@@ -609,7 +629,7 @@ assert.ok(cfg2.agent["tester"].prompt.includes("## UI verification (tm_browser")
 assert.ok(cfg2.agent["tester"].prompt.includes("UI NOT VERIFIED"), "tester: honest-gap fallback kept alongside the browser grant")
 assert.ok(cfg2.agent["team"].prompt.includes("tm_memory search"), "lead: memory consulted during research phase")
 assert.ok(cfg2.agent["team"].prompt.includes("project layer first, global layer for cross-repo conventions"), "lead: memory layering (project layer first, global for cross-repo conventions)")
-assert.ok(cfg2.agent["team"].prompt.includes("Batch the recon in one tm_ptc_run program"), "lead: research-phase recon batched via PTC")
+assert.ok(cfg2.agent["team"].prompt.includes("Batch the recon in one `execute` program"), "lead: research-phase recon batched through the host's Code Mode")
 }
 /* v1.4.6 fix (kept): fix-mode append contradiction stays dead, round files stay */
 assert.ok(!cfg2.agent["implementer"].prompt.includes("append to the same file"), "implementer: fix-mode append contradiction removed")

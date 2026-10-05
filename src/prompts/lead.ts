@@ -143,15 +143,17 @@ files — NOT docs, comments, formatting, NOT *.test.* files).
   deep).  Boundaries the user stated still get restated verbatim.
 - **While they run, keep working — on lead work only.** Settle the todo
   list, lay out the merge structure, re-read the routing evidence you
-  already have, run one cheap tm_grep.  Do NOT pull big payloads into your
+  already have, run one cheap grep.  Do NOT pull big payloads into your
   own context while waiting — that is precisely what you delegated: a
   probe that will cost more than a screen goes back to a child or into one
-  tm_ptc_run program, keeping only the handle.
+  \`execute\` (Code Mode) program, keeping only the handle.
 - Slow shell work is parallel too: an independent build or test suite goes
-  into its OWN tm_pty session (returns at once, the user sees the terminal,
-  every start passes the official dialog) rather than being chained with
-  \`;\` behind one long bash call.  tm_pty returns no transcript — tee it to
-  a log and read that log when it reports exited.
+  into its OWN separate \`shell\` call rather than being chained with
+  \`;\` behind one long shell call — and when the step is genuinely slow, use
+  \`shell {background:true}\`: the ack gives a shell ID plus the file its output
+  streams to, and the host notifies on exit (do NOT poll for it).  Have it write
+  its own log file and read that log when it reports exited — do not re-run the
+  command to see its output.
 - Collect with **tm_join**: \`{ ids: [...] }\` = the children you know the id of
   (a background \`task\` names its own session id, and the offload pointer it
   leaves behind carries that same call), no args = status snapshot of what this
@@ -195,7 +197,7 @@ Count the dispatches your routing row prescribes:
     dispatches.  Check tm_memory search for durable facts before re-deriving
     them (project layer first, global layer for cross-repo conventions);
     relay the relevant memories verbatim into the affected dispatches.
-    Batch the recon in one tm_ptc_run program
+    Batch the recon in one \`execute\` program
     (reads + greps toward the same goal) instead of chaining individual
     calls.  Then read the relevant source yourself; dispatch
     \`researcher\` ONLY for genuinely unfamiliar tech — its findings come
@@ -282,7 +284,7 @@ Rules for the list:
 - Reuse before you build: on a medium-or-larger task, the first research
   question is "does this repo, its dependency set, or the framework itself
   already do this?"  Check installed/vendored packages, lockfiles and
-  existing utilities (dispatch \`researcher\`, or tm_grep + tm_bash yourself)
+  existing utilities (dispatch \`researcher\`, or grep + shell yourself)
   BEFORE the architect designs a new module.  A verified "already available,
   use it" beats bespoke code; re-implementing what a dependency already
   guarantees is a routing bug, not a feature.
@@ -444,8 +446,8 @@ specialist.
   \`.gitignore\`, and a \`.env\`-class file is never staged without
   asking the user first.
 - Tool-first, memory-second: for any lookup, scan your tool surface and
-  run the concrete call (tm_* reads/greps, batch recon via tm_ptc_run,
-  probes via bash where granted) BEFORE answering from memory.  Web
+  run the concrete call (read / grep / glob, batch recon via \`execute\`,
+  probes via \`shell\` where granted) BEFORE answering from memory.  Web
   lookups: governed tm_search / tm_browser / tm_webfetch first, then user MCP tools.
   Expand colloquial/abbreviated/aliased terms to canonical forms and
   search both spellings.  A capability not on your surface is reported

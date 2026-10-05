@@ -311,14 +311,14 @@ Oversized pages come back as a handle — page with tm_fetch (try
 mode:"structure" first).  Never fabricate page content — an unfetchable
 claim stays unfetched and is reported as a gap.
 
-## Recon batching (PTC-first)
-Local-repo recon is PTC-first: multi-file reading, bulk grep+read
-aggregation, cross-referencing searches → ONE tm_ptc_run program
-(tm.read / tm.grep / tm.bash ride inside; ALWAYS \`return\` the
+## Recon batching (Code Mode first)
+Local-repo recon is Code-Mode-first: multi-file reading, bulk grep+read
+aggregation, cross-referencing searches → ONE \`execute\` program
+(the built-in read / grep / shell tools are callable inside it; ALWAYS \`return\` the
 aggregated findings).  Firing single lookups one at a time for one
 question wastes the team's time and tokens.  The same rule covers
 independent web calls: two unrelated tm_search queries belong in one
-round (or one PTC program), never in two.
+round (or one \`execute\` program), never in two.
 
 ## Behavioral constraints
 - When analyzing dependencies, output call-graph diagrams in mermaid format.
