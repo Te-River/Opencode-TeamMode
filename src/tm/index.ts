@@ -7,7 +7,7 @@
  *   const tm = await createTmTools(input)
  *   return { config, "tool.execute.before", tool: tm.tools }
  *
- * It generates the run identity (run id + process-random HMAC key), resolves
+ * It generates the run identity (run id + store-persisted HMAC key), resolves
  * the env config, sweeps expired run payloads (startup-only TTL reclamation)
  * and assembles the governed tool surface (tm_read / tm_grep / tm_bash /
  * tm_fetch + tm_memory / tm_search / tm_webfetch / tm_browser / tm_ptc_run;
@@ -27,7 +27,7 @@ import {
   type EnvProtectMode,
 } from "../envprotect.js"
 import { resolveTmConfig, type TmConfig } from "./config.js"
-import { hmacToken, newRunId } from "./refs.js"
+import { hmacToken, loadOrCreateHandleKey, newRunId } from "./refs.js"
 import { RunStore } from "./store.js"
 import { buildTmTools } from "./tools.js"
 import { buildPipelines } from "./pipelines.js"
@@ -303,8 +303,6 @@ export async function createTmTools(
       ? input.directory
       : process.cwd()
   const runId = newRunId()
-  const hmacKey = crypto.randomBytes(32)
-  const accessToken = hmacToken(hmacKey, runId)
   // Store roots — AUTO default resolves git-aware: under <repo>/.git, so
   // the payload/trajectory stores never pollute the user's working tree
   // (user projects never had .blackboard/.trajectory gitignore entries).
@@ -373,6 +371,22 @@ export async function createTmTools(
     trajectoryDir: cfg.trajectoryDir || path.join(storeBase, "trajectory"),
     runId,
     ttlDays: cfg.blackboardTtlDays,
+  })
+  // Handle-signing key — PERSISTED at the store root so an offload handle
+  // outlives the plugin process that issued it (the payload is on disk; the
+  // old per-process random key made every handle die with its process, which
+  // a live session hit the moment a command reloaded the plugin).  `wx`
+  // makes first creation race-safe; a corrupt/unreadable file falls back to
+  // the old ephemeral key and the trajectory records which one happened —
+  // never a silent "all handles dead".
+  const handleKey = loadOrCreateHandleKey(storeBase)
+  const hmacKey = handleKey.key
+  const accessToken = hmacToken(hmacKey, runId)
+  store.appendTrajectory({
+    tool: "host",
+    event: "handle_key",
+    source: handleKey.source,
+    ...(handleKey.reason ? { reason: handleKey.reason } : {}),
   })
   // Startup-only TTL reclamation for expired run payloads — the sole cleanup
   // path for the tm store (mirrors blackboard.ts's sweeper philosophy).
@@ -594,10 +608,12 @@ export {
   buildRef,
   hmacToken,
   isExpired,
+  loadOrCreateHandleKey,
   newRunId,
   parseRef,
   REF_PATTERN,
   verifyToken,
+  HANDLE_KEY_FILE,
 } from "./refs.js"
 export { RunStore, USAGE_JSONL_RELPATH } from "./store.js"
 export {

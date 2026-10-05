@@ -207,6 +207,32 @@ try {
   }
   console.log("2. newRunId + hmac/verify + parseRef + isExpired: OK (sign, tamper, cross-run, grammar)")
 
+  /* ---------- 2b. persisted handle key (cross-process handle survival) ---------- */
+  {
+    const dir = mktmp("key")
+    const first = tm.loadOrCreateHandleKey(dir)
+    assert.equal(first.source, "persisted", "first boot creates the key at the store root")
+    assert.equal(first.key.length, 32, "key = 32 random bytes")
+    const second = tm.loadOrCreateHandleKey(dir)
+    assert.equal(second.source, "persisted", "second boot reads the key back")
+    assert.ok(first.key.equals(second.key), "same key across boots (never overwritten)")
+    // a pre-seeded key wins — the wx path must not clobber an existing key
+    const dir2 = mktmp("key2")
+    const seeded = Buffer.from("s".repeat(32))
+    fs.writeFileSync(path.join(dir2, tm.HANDLE_KEY_FILE), seeded)
+    const readBack = tm.loadOrCreateHandleKey(dir2)
+    assert.ok(readBack.key.equals(seeded), "existing key read back byte-exact")
+    // corrupt file -> ephemeral fallback WITH a reason (never silent)
+    const dir3 = mktmp("key3")
+    fs.writeFileSync(path.join(dir3, tm.HANDLE_KEY_FILE), "short")
+    const corrupt = tm.loadOrCreateHandleKey(dir3)
+    assert.equal(corrupt.source, "ephemeral", "corrupt key file -> ephemeral fallback")
+    assert.ok(corrupt.reason, "fallback carries a reason")
+    assert.equal(corrupt.key.length, 32, "fallback key still 32 bytes")
+    assert.equal(fs.readFileSync(path.join(dir3, tm.HANDLE_KEY_FILE), "utf8"), "short", "corrupt file left untouched (no clobber)")
+  }
+  console.log("2b. persisted handle key: OK (create-once wx, read-back, corrupt -> ephemeral + reason)")
+
   /* ---------- 3. run store: layout, index.jsonl, append-only trajectory, sweep ---------- */
   {
     const root = mktmp("store")
@@ -658,42 +684,106 @@ try {
   }
   console.log("6b. offload + tm_fetch paging: OK (pages, hints incl. next offset, fragment auth, no negative remaining)")
 
-  // 6c. fetch auth: cross-run, tampered, missing, malformed, expired + structure
+  // 6c. fetch auth: cross-process survival, foreign store, tampered, missing,
+  // malformed, expired, path-escape + structure
   {
     const handleOut = (await readTool.execute({ path: "big2000.txt" }, ctx)).output
     const hRef = refOf(handleOut)
     const hTok = tokOf(handleOut)
     const res = (await fetchTool.execute({ ref: hRef, access_token: hTok }, ctx)).output
     assert.ok(res.includes("已返回 1 行"), "sanity: single-line payload fetches")
-    // cross-run rejection
-    const runtime2 = await tm.createTmTools({ directory: mktmp("run2"), client: fakeClient({}), $: fake$Ok("") })
+    // CORE (this fix): cross-process handle survival.  Two runtimes over the
+    // SAME workspace = two plugin processes (same store root + persisted key,
+    // different run ids).  A handle issued by the first must fetch in the
+    // second — the payload is on disk and the key outlives the process.
+    const xproc = mktmp("xproc")
+    fs.mkdirSync(path.join(xproc, ".git"), { recursive: true }) // deterministic store root
+    const xPayload = "b".repeat(20000) // 5000 tokens > 4000 text threshold -> offloads
+    fs.writeFileSync(path.join(xproc, "x.txt"), xPayload)
+    const runtimeA = await tm.createTmTools({
+      directory: xproc,
+      client: fakeClient({ "x.txt": xPayload }),
+      $: fake$Ok(""),
+    })
+    const aOut = (await runtimeA.tools.tm_read.execute({ path: "x.txt" }, { directory: xproc })).output
+    assert.ok(aOut.includes("已卸载"), "process A offloads the payload")
+    const aRef = refOf(aOut)
+    const aTok = tokOf(aOut)
+    const runtimeB = await tm.createTmTools({ directory: xproc, client: fakeClient({}), $: fake$Ok("") })
+    assert.notEqual(runtimeB.runId, runtimeA.runId, "second runtime = a different run id (simulated restart)")
+    const crossProc = (await runtimeB.tools.tm_fetch.execute({ ref: aRef, access_token: aTok }, { directory: xproc })).output
+    assert.ok(crossProc.includes("已返回 1 行"), "cross-process: pre-restart handle fetches")
+    assert.ok(crossProc.includes(xPayload), "cross-process: FULL payload content returned")
+    // the key file lives at the store root, is 32 bytes, both boots recorded
+    // source=persisted, and the key itself never reaches the trajectory/reply
+    const keyFile = path.join(xproc, ".git", "opencode-team", tm.HANDLE_KEY_FILE)
+    assert.ok(fs.existsSync(keyFile), "handle key persisted at the store root")
+    const keyBytes = fs.readFileSync(keyFile)
+    assert.equal(keyBytes.length, 32, "persisted key = 32 bytes")
+    const keyHex = keyBytes.toString("hex")
+    for (const rt of [runtimeA, runtimeB]) {
+      const tj = fs.readFileSync(rt.store.trajectoryFile(), "utf8")
+      assert.ok(tj.includes('"event":"handle_key"') && tj.includes('"source":"persisted"'), "key source recorded as persisted")
+      assert.ok(!tj.includes(keyHex), "R6: key material never in the trajectory")
+    }
+    assert.ok(!crossProc.includes(keyHex), "R6: key material never in a tool reply")
+    // foreign WORKSPACE (different store root -> different key): refused
+    const run2 = mktmp("run2")
+    fs.mkdirSync(path.join(run2, ".git"), { recursive: true }) // deterministic store root
+    const runtime2 = await tm.createTmTools({ directory: run2, client: fakeClient({}), $: fake$Ok("") })
     const cross = (await runtime2.tools.tm_fetch.execute({ ref: hRef, access_token: hTok }, { directory: root6 })).output
-    assert.ok(cross.includes("[tm_fetch 失败 · phase=permission]"), "cross-run: structured error rendered as text (BUG#1)")
-    assert.ok(cross.includes("run 不匹配"), "cross-run: run mismatch reason")
-    assert.ok(cross.includes(tm.HANDLE_INVALID_MESSAGE), "cross-run: spec message")
+    assert.ok(cross.includes("[tm_fetch 失败 · phase=permission]"), "foreign store: structured error rendered as text (BUG#1)")
+    assert.ok(cross.includes("token 校验失败"), "foreign store: token signed by another store's key is refused")
+    assert.ok(!cross.includes("run 不匹配"), "the removed run-mismatch reason is gone")
+    assert.ok(cross.includes(tm.HANDLE_INVALID_MESSAGE), "foreign store: spec message")
     // tampered token
     const tampered = hTok.slice(0, -1) + (hTok.endsWith("0") ? "1" : "0")
     const bad = (await fetchTool.execute({ ref: hRef, access_token: tampered }, ctx)).output
     assert.ok(bad.includes("token 校验失败"), "tampered token rejected")
+    assert.ok(!bad.includes("找不到载荷文件"), "tampered does not borrow the other reason")
     // omitted token = THIS run's token (a real session re-typed the same 64
     // hex chars into every call; it is a run constant, not a per-handle secret)
     const omitted = (await fetchTool.execute({ ref: hRef }, ctx)).output
     assert.ok(!omitted.includes("phase=args") && !omitted.includes("phase=permission"), "omitted access_token resolves against the current run")
     assert.ok(omitted.includes("已返回"), "and the payload is served")
     const crossNoTok = (await runtime2.tools.tm_fetch.execute({ ref: hRef }, { directory: root6 })).output
-    assert.ok(crossNoTok.includes("run 不匹配"), "the SAME omission on another run is still refused — the default never widens authority")
+    assert.ok(crossNoTok.includes("token 校验失败"), "the SAME omission on a foreign store is still refused — the default never widens authority")
     // malformed ref
     const malformed = (await fetchTool.execute({ ref: "file:///etc/passwd", access_token: hTok }, ctx)).output
     assert.ok(malformed.includes("ref 格式无效"), "malformed ref rejected")
-    // expired: forge an expired index entry (last append wins), then fetch
+    // the three refusal reasons stay mutually distinguishable
+    // (a) missing payload: valid token, nonexistent step in a real run
+    const missingRef = `tm://runs/${runtime.runId}/steps/s9999/result`
+    const missing = (await fetchTool.execute({ ref: missingRef, access_token: hTok }, ctx)).output
+    assert.ok(missing.includes("找不到载荷文件"), "missing payload -> 找不到载荷文件")
+    assert.ok(missing.includes(tm.HANDLE_INVALID_MESSAGE), "missing payload carries the spec message (which now names the TTL sweep as the only reaper)")
+    assert.ok(!missing.includes("token 校验失败"), "missing payload does not borrow the other reason")
+    // (b) nonexistent RUN: a token signed for that run verifies (it proves
+    // key-holder issuance), then the payload check refuses
+    const ghostRun = "r-19700101-000000-abcdef"
+    const ghostTok = tm.hmacToken(keyBytes, ghostRun)
+    const ghost = (await runtimeB.tools.tm_fetch.execute({ ref: `tm://runs/${ghostRun}/steps/s0001/result`, access_token: ghostTok }, { directory: xproc })).output
+    assert.ok(ghost.includes("找不到载荷文件"), "nonexistent run -> 载荷已清理")
+    // (c) path-escape ref: `..` segments must resolve to nothing, not escape
+    const escTok = tm.hmacToken(keyBytes, "..")
+    const esc = (await runtimeB.tools.tm_fetch.execute({ ref: "tm://runs/../steps/../result", access_token: escTok }, { directory: xproc })).output
+    assert.ok(esc.includes("找不到载荷文件"), "path-escape ref resolves to nothing (no traversal)")
+    // (d) past its TTL but the FILE is still there: SERVED, with the note.
+    // User's semantic call (2026-10-05): a handle lives exactly as long as its
+    // payload file does — `expire_at` is information, never a refusal.  Refusing
+    // bytes that are sitting right there is the "offloaded it and cannot get it
+    // back" failure this whole pipeline exists to prevent.
     const idxFile = path.join(runtime.store.blackboardRoot, "runs", runtime.runId, "index.jsonl")
     const idxLines = fs.readFileSync(idxFile, "utf8").trim().split("\n")
     const last = JSON.parse(idxLines[idxLines.length - 1])
     last.expire_at = 1 // 1970
     fs.writeFileSync(idxFile, [...idxLines.slice(0, -1), JSON.stringify(last)].join("\n") + "\n")
     const expired = (await fetchTool.execute({ ref: last.ref, access_token: hTok }, ctx)).output
-    assert.ok(expired.includes("已过期"), "expired handle rejected")
-    assert.ok(expired.includes(tm.HANDLE_INVALID_MESSAGE), "expired: spec message")
+    assert.ok(!expired.includes("phase=permission"), "a past-TTL handle is NOT refused while its payload exists")
+    assert.ok(expired.includes("已返回") || expired.includes("已到末尾"), "…it is served like any other handle")
+    assert.ok(expired.includes("已过 TTL 时点"), "…and the reply says the payload is past its TTL window")
+    assert.ok(expired.includes("ttl_expired"), "…with the machine-readable flag, so a caller can act on it")
+    assert.ok(!expired.includes("token 校验失败") && !expired.includes("找不到载荷文件"), "…and it borrows neither refusal reason")
     // structure mode on a JSON payload (~100-token key tree)
     const jsonOut = (await readTool.execute({ path: "big.json" }, ctx)).output
     assert.ok(jsonOut.includes("content_type: json"), "json content type from extension")
@@ -705,7 +795,7 @@ try {
     const capped = (await fetchTool.execute({ ref: refOf(gOut), access_token: tokOf(gOut), limit: 999999 }, ctx)).output
     assert.ok(capped.includes("已返回 2000 行"), "limit capped at TM_FETCH_MAX_LINES")
   }
-  console.log("6c. tm_fetch auth + structure: OK (cross-run, tamper, missing, malformed, expired, cap)")
+  console.log("6c. tm_fetch auth + structure: OK (cross-process survival, foreign store, tamper, missing, malformed, expired, escape, cap)")
 
   // 6d. P2 scope through tm_read (incl. client envelope self-check)
   {

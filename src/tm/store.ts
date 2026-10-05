@@ -30,6 +30,10 @@ export const USAGE_JSONL_RELPATH = "usage.jsonl"
 /** Offloaded result files follow `{seq:03d}-{tool}.md` inside a step dir. */
 const STEP_FILE = /^\d{3}-[\w.-]+\.md$/
 
+/** One safe path segment — run ids / step ids are plugin-generated, and a
+ *  handle's ref is model-supplied, so `..`/separators must never join a path. */
+const SAFE_SEGMENT = /^[A-Za-z0-9._-]+$/
+
 export interface OffloadMeta {
   tool: string
   content: string
@@ -161,10 +165,30 @@ export class RunStore {
     }
   }
 
-  /** Latest index entry for a ref (last append wins), or null. */
-  findIndexEntry(ref: string): IndexEntry | null {
+  /**
+   * Resolve a run directory under THIS store's blackboard root, refusing
+   * anything that could escape it.  A handle's ref carries its OWN run id
+   * (tm_fetch verifies the token against that id), so the read path must
+   * accept a foreign run — but only one that stays under `runs/`: `..`,
+   * separators and absolute shapes resolve to null instead of a path.
+   */
+  private runDirFor(runId: string): string | null {
+    if (!SAFE_SEGMENT.test(runId) || runId === "." || runId === "..") return null
+    const runsRoot = path.resolve(this.blackboardRoot, "runs")
+    const dir = path.resolve(runsRoot, runId)
+    if (dir !== runsRoot && !dir.startsWith(runsRoot + path.sep)) return null
+    return dir
+  }
+
+  /** Latest index entry for a ref (last append wins), or null.  `runId`
+   *  defaults to this store's own run; tm_fetch passes the run named in the
+   *  handle's ref, so a handle issued before a process restart still finds
+   *  its expiry entry. */
+  findIndexEntry(ref: string, runId: string = this._runId): IndexEntry | null {
+    const dir = this.runDirFor(runId)
+    if (!dir) return null
     try {
-      const text = fs.readFileSync(this.indexFile(), "utf8")
+      const text = fs.readFileSync(path.join(dir, "index.jsonl"), "utf8")
       let found: IndexEntry | null = null
       for (const line of text.split(/\r?\n/)) {
         if (!line.trim()) continue
@@ -182,14 +206,18 @@ export class RunStore {
   }
 
   /** Read the offloaded payload file of a step; null when gone/unreadable.
-   *  With multiple seq files in one step (defensive re-entry), the LATEST
-   *  seq wins — consistent with findIndexEntry's last-append-wins. */
-  readStepFile(stepId: string): { content: string } | null {
+   *  `runId` defaults to this store's own run; tm_fetch passes the run named
+   *  in the handle's ref (cross-process retrieval).  With multiple seq files
+   *  in one step (defensive re-entry), the LATEST seq wins — consistent with
+   *  findIndexEntry's last-append-wins. */
+  readStepFile(stepId: string, runId: string = this._runId): { content: string } | null {
+    const dir = this.runDirFor(runId)
+    if (!dir || !SAFE_SEGMENT.test(stepId) || stepId === "." || stepId === "..") return null
     try {
-      const dir = path.join(this.stepsRoot(), stepId)
-      const files = fs.readdirSync(dir).filter((f) => STEP_FILE.test(f)).sort()
+      const stepDir = path.join(dir, "steps", stepId)
+      const files = fs.readdirSync(stepDir).filter((f) => STEP_FILE.test(f)).sort()
       if (files.length === 0) return null
-      return { content: fs.readFileSync(path.join(dir, files[files.length - 1]), "utf8") }
+      return { content: fs.readFileSync(path.join(stepDir, files[files.length - 1]), "utf8") }
     } catch {
       return null
     }

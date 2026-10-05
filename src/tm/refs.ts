@@ -3,16 +3,23 @@
  *
  * A handle is {ref, access_token, expire_at}:
  *   - ref          = tm://runs/{run_id}/steps/{step_id}/result
- *   - access_token = HMAC-SHA256(process-start random key, run_id)
+ *   - access_token = HMAC-SHA256(store-persisted key, run_id)
  *     (may also ride the ref as a `#<hex>` fragment — tm_fetch accepts both)
  *   - expire_at    = creation time + TM_BLACKBOARD_TTL (default 7 days)
  *
- * The key lives only in process memory; a model can carry a handle around
- * but cannot forge one for another run, and a handle from an earlier
- * process is dead the moment that process ends (new key, new run id).
+ * The key is PERSISTED at the store root (`.handle-key`, 32 random bytes,
+ * created once with the `wx` flag so two first-boot processes cannot clobber
+ * each other).  A model can carry a handle around but cannot forge one for
+ * another run, and — because the payload is on disk and the key outlives the
+ * process — a handle issued before a plugin restart is still fetchable
+ * afterwards.  A corrupt/unreadable key file falls back to the old
+ * per-process random key, and the caller records that in the trajectory
+ * (never a silent "all handles dead").
  */
 
 import * as crypto from "node:crypto"
+import * as fs from "node:fs"
+import * as path from "node:path"
 
 /** Compact run id: `r-<yyyyMMdd-HHmmss>-<6 hex>` (generated once per server()). */
 export function newRunId(now: Date = new Date()): string {
@@ -67,4 +74,47 @@ export function isExpired(expireAt: unknown, now: number = Date.now()): boolean 
   const t = Number(expireAt)
   if (!Number.isFinite(t)) return true
   return now > t
+}
+
+/** File name of the persisted handle-signing key, at the store root. */
+export const HANDLE_KEY_FILE = ".handle-key"
+
+export interface HandleKeyResult {
+  key: Buffer
+  /** `persisted` = created at / read back from the store root; `ephemeral` = per-process fallback. */
+  source: "persisted" | "ephemeral"
+  /** Why the persisted key was unusable (an errno code or "corrupt" — never key material). */
+  reason?: string
+}
+
+/**
+ * Load the store's handle-signing key, creating it on first boot.
+ *
+ * `wx` is the concurrency guard: two processes starting together both try to
+ * create, exactly one wins, the loser reads the winner's key back — an
+ * existing key is NEVER overwritten (overwriting would invalidate every
+ * handle the other process just issued).  Any failure (unwritable dir,
+ * unreadable/corrupt file) degrades to a per-process random key with a
+ * machine-readable reason; the caller must surface `source` in the
+ * trajectory so the degradation is visible instead of silently killing
+ * every cross-process handle.
+ */
+export function loadOrCreateHandleKey(dir: string): HandleKeyResult {
+  const file = path.join(dir, HANDLE_KEY_FILE)
+  try {
+    fs.mkdirSync(dir, { recursive: true })
+    const fresh = crypto.randomBytes(32)
+    try {
+      fs.writeFileSync(file, fresh, { flag: "wx", mode: 0o600 })
+      return { key: fresh, source: "persisted" }
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException)?.code !== "EEXIST") throw err
+    }
+    const existing = fs.readFileSync(file)
+    if (existing.length === 32) return { key: existing, source: "persisted" }
+    return { key: crypto.randomBytes(32), source: "ephemeral", reason: "corrupt" }
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException)?.code
+    return { key: crypto.randomBytes(32), source: "ephemeral", reason: code || "io" }
+  }
 }

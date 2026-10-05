@@ -473,6 +473,12 @@ console.log("hosthooks. tool.definition / chat.params / compaction / shell.env /
     { directory: mktmp("stats-tool"), client: {}, $: () => ({}) },
     { capabilities: () => liveProbe.snapshot() },
   )
+  // The runtime now writes a boot record of its own (handle_key: which signing
+  // key this store uses, so "why did every handle die" is answerable), which
+  // means "nothing has run yet" no longer describes a live runtime.  Manufacture
+  // the empty store instead of dropping the assertion: the branch under test is
+  // the RENDERER's empty case, and it must still refuse to print a table of zeros.
+  fs.rmSync(path.join(trajDir, "runs"), { recursive: true, force: true })
   const empty = await rt.tools.tm_stats.execute({}, { agent: "team" })
   ok(empty.output.includes("trajectory 目录为空"), "before anything runs, the tool says so instead of printing zeros")
   rt.pipelines.store.appendTrajectory({ tool: "tm_read", step_id: "s1", event: "call" })

@@ -25,7 +25,7 @@ export function tmError(tool: string, phase: TmPhase, message: string, line?: nu
 }
 
 /** Fixed invalid-handle message (spec-pinned wording for tm_fetch). */
-export const HANDLE_INVALID_MESSAGE = "载荷已清理或 run 不匹配，建议重跑原工具。"
+export const HANDLE_INVALID_MESSAGE = "载荷文件已被 TTL 清扫，重跑原工具即可重新卸载（句柄寿命等于载荷文件寿命，过期时间只作提示、不作拒绝）。"
 
 export function isTmErrorBody(res: unknown): res is TmErrorBody {
   return Boolean(res) && typeof res === "object" && "error" in (res as Record<string, unknown>)
@@ -53,7 +53,8 @@ export function toToolResult(res: unknown): ToolResult {
     return {
       output: [
         `ref: ${String(o.ref)}`,
-        `mode: structure | total_lines: ${String(o.total_lines)}${o.expire_at != null ? ` | expire_at: ${String(o.expire_at)}` : ""}`,
+        `mode: structure | total_lines: ${String(o.total_lines)}${o.expire_at != null ? ` | expire_at: ${String(o.expire_at)}` : ""}${o.ttl_expired ? " | ttl_expired: true" : ""}`,
+        ...(o.ttl_expired ? [String(o.ttl_note ?? "已过 TTL 时点：下一次清扫可能回收此载荷。")] : []),
         "结构摘要:",
         String(o.summary ?? ""),
       ].join("\n"),
@@ -62,7 +63,7 @@ export function toToolResult(res: unknown): ToolResult {
   // tm_fetch lines page — hint already carries total/returned/remaining/next offset
   if (o.mode === "lines") {
     return {
-      output: `ref: ${String(o.ref)}\n${String(o.hint ?? "")}\n--- 内容 ---\n${String(o.content ?? "")}`,
+      output: `ref: ${String(o.ref)}${o.ttl_expired ? " | ttl_expired: true" : ""}\n${String(o.hint ?? "")}\n--- 内容 ---\n${String(o.content ?? "")}`,
     }
   }
   // offload handle — the model's ONLY window onto ref + token + preview

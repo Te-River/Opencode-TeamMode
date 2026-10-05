@@ -53,7 +53,8 @@ export interface TmDeps {
   cfg: TmConfig
   store: RunStore
   runId: string
-  /** Process-random HMAC key — used to VERIFY handle tokens in tm_fetch. */
+  /** Store-persisted HMAC key — used to VERIFY handle tokens in tm_fetch.
+   *  Persisted at the store root so a handle survives a plugin restart. */
   hmacKey: crypto.BinaryLike
   accessToken: string
   expireAt: number
@@ -442,36 +443,35 @@ export function buildPipelines(deps: TmDeps) {
       }
       let token = strArg(args.access_token).trim()
       if (!token && parsed.token) token = parsed.token
-      // A handle's token is a RUN constant, not a per-handle secret (auth is
-      // `runId === this run && verifyToken`, below, unchanged).  A real
+      // A handle's token is a RUN constant, not a per-handle secret.  A real
       // session was observed re-typing the same 64 hex chars into every
       // tm_fetch and every PTC program — ~70 output tokens a pop and a typo
-      // waiting to happen — so an omitted token means "this run's".  A ref
-      // from another run still fails the run check exactly as before.
+      // waiting to happen — so an omitted token means "this run's".  On a
+      // ref from another run the default cannot verify (it is HMAC over a
+      // different run id), so the omission never widens authority.
       if (!token) token = deps.accessToken
       if (!token) return tmError(tool, "args", "缺少 access_token（offload 句柄中携带）")
-      // Auth: run must match the current run AND the token must verify.
-      let reason: string
-      if (parsed.runId !== deps.runId) {
-        reason = "run 不匹配"
-      } else if (!verifyToken(deps.hmacKey, deps.runId, token)) {
-        reason = "token 校验失败"
-      } else {
-        reason = ""
+      // Auth: the token is HMAC(key, runId) — verifying it against the ref's
+      // OWN run id proves the handle was issued by a process holding this
+      // store's key.  The old `parsed.runId !== deps.runId` gate is gone: it
+      // tied a handle's life to its issuing process, so every offload died
+      // the moment the plugin restarted even though the payload was still on
+      // disk (live: a command that reloaded the plugin, then tm_fetch).
+      if (!verifyToken(deps.hmacKey, parsed.runId, token)) {
+        return tmError(tool, "permission", `句柄校验失败（token 校验失败）。${HANDLE_INVALID_MESSAGE}`)
       }
-      if (reason) {
-        return tmError(tool, "permission", `句柄校验失败（${reason}）。${HANDLE_INVALID_MESSAGE}`)
-      }
-      const entry = store.findIndexEntry(ref)
+      // The payload is read from the run the REF names, not from this process's
+      // run — that is what makes a pre-restart handle fetchable.
+      const entry = store.findIndexEntry(ref, parsed.runId)
       const now = Date.now()
-      if (entry && isExpired(entry.expire_at, now)) {
-        return tmError(
-          tool,
-          "permission",
-          `句柄已过期（expire_at=${entry.expire_at}）。${HANDLE_INVALID_MESSAGE}`,
-        )
-      }
-      const loaded = store.readStepFile(parsed.stepId)
+      // User's semantic call (2026-10-05): a handle lives exactly as long as its
+      // payload FILE does.  `expire_at` is INFORMATION, never a reason to refuse —
+      // refusing a fetch of bytes that are sitting right there is the very
+      // "offloaded it and cannot get it back" failure this pipeline exists to
+      // prevent.  The TTL sweep is the only reaper, so past `expire_at` the reply
+      // says so and urges aggregating now, while the payload is still readable.
+      const ttlPast = entry ? isExpired(entry.expire_at, now) : false
+      const loaded = store.readStepFile(parsed.stepId, parsed.runId)
       if (!loaded) {
         return tmError(tool, "store", `找不到载荷文件。${HANDLE_INVALID_MESSAGE}`)
       }
@@ -511,6 +511,9 @@ export function buildPipelines(deps: TmDeps) {
           total_lines: lines.length,
           summary: buildStructureSummary(loaded.content, entry?.content_type ?? "text"),
           expire_at: entry?.expire_at ?? null,
+          ...(ttlPast
+            ? { ttl_expired: true, ttl_note: "已过 TTL 时点：下一次清扫可能回收此载荷，本轮请尽快聚合，别继续分页。" }
+            : {}),
         }
       }
       let offset = intArg(args.offset, 0)
@@ -531,9 +534,12 @@ export function buildPipelines(deps: TmDeps) {
         remaining_lines: remaining,
         next_offset: remaining > 0 ? offset + slice.length : null,
         hint:
-          remaining > 0
+          (remaining > 0
             ? `共 ${lines.length} 行，已返回 ${slice.length} 行（offset=${offset}），剩余 ${remaining} 行；继续取回用 offset=${offset + slice.length}；先聚合再决定是否翻页。`
-            : `共 ${lines.length} 行，已返回 ${slice.length} 行（offset=${offset}），已到末尾。`,
+            : `共 ${lines.length} 行，已返回 ${slice.length} 行（offset=${offset}），已到末尾。`) +
+          (ttlPast ? " 注意：此载荷已过 TTL 时点，下一次清扫可能回收它——本轮请尽快聚合，别继续翻页。" : ""),
+        expire_at: entry?.expire_at ?? null,
+        ...(ttlPast ? { ttl_expired: true } : {}),
         content: slice.join("\n"),
       }
     } catch (err) {
