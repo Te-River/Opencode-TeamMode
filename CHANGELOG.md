@@ -67,6 +67,103 @@ registry saw 1.5.0 as the install-script fix release).
   `session["inbox.list"]` spellings were tried and recorded). A documented route is not a
   delivered seam, and the tool now says which one it found.
 
+### Changed
+
+- **The lead role is `Team`.** The desktop picker renders `Agent.Info.name`, and for a
+  config-file role that name is the id verbatim (`default:(n)=>({id:n, name:nv.make(n)})`);
+  `Config.Agent` has no `name` key, and `ctx.agent.list()` shows only the 7 built-ins
+  (`agent.get({agentID:"team"})` → `Agent not found: team`), so a plugin can neither set a
+  display name nor see the roles it asks about. The id was the only lever. Identity is now
+  normalised in one place (`src/identity.ts`) and six former exact-equality checks go through
+  it — scope `isOurs`/`learn`/`decide`, the permission-triple generator, the request layer's
+  removal plan and note targets, `tm_join`'s lead lock, `tm_ledger`'s lead-only gate, the boot's
+  `wantedIds` filter — so `team`, `Team` and `TEAM` are all the lead and an existing install or
+  an in-flight session is not broken by the rename. The installers write `default_agent: "Team"`
+  and migrate the old value (exercised: `default_agent rewritten (was team)` / `read back: Team`).
+  The `agents_default` trajectory field keeps its lower-case value — it is a measurement, not a label.
+- **The declared plugin id is `@te-river/opencode-team-mode`**, which is what `Plugin.Info`
+  shows in the host's plugin list. The storage prefix `team-mode/ledger/`, the audit service name
+  `team-mode-env-protect`, the `[team-mode]` log prefix and the `vendor/team-mode` path are
+  deliberately unchanged: renaming the ledger prefix would orphan every ledger already written,
+  and a new assertion pins that split.
+- **The prompts now describe the batching 2.x can actually do.** They taught the opposite (that
+  native `read`/`grep`/`shell` are callable inside `execute`) — reproduced on 2.0.23:
+  `tools["read"]` → `Unknown tool 'read'`, `tools["shell"]` → `Unknown tool 'shell'`, while
+  `typeof` still reports `function`. Independent native probes now go out as parallel tool calls
+  in one round, and `execute` is described as one program over the tools its catalog lists. The
+  evidence red lines were kept: never re-run a step to watch it pass again, one compound `shell`
+  is for cheap probes only, slow steps each get their own call, efficiency never buys itself out
+  of the evidence rule.
+- **`V2_TEXT` pruned from 54 entries to 27** — every key whose source sentence the prompt rewrite
+  removed was deleted (a key that stops matching throws at build time, by design), and the
+  surviving forks are only wording that genuinely differs on 2.x.
+
+### Removed
+
+- **All OpenCode 1.18.x support** (the 1.7.0 line, user decision). `src/host/v1.ts`, the
+  `{id, server, setup}` barrel, the `config` hook that injected agents and commands, and every
+  tool only that host registered: `tm_ptc_run` with its nine-module PTC subsystem, `tm_pty`, and
+  the `tm_read` / `tm_grep` / `tm_bash` pipelines. `src/agents.ts` no longer grants them and the
+  role prompts may not name them — `test-blackboard` bans
+  `tm_ptc_run|tm_pty|tm_read|tm_grep|tm_bash|todowrite` from every role prompt, every command
+  template AND the generated markdown on disk, matched case-insensitively over collapsed
+  whitespace, with the banned set derived from `V1_ONLY_TOOLS` rather than a second hand-written
+  list. `todowrite` left the permission matrix: 2.x has no such built-in, and the ledger is
+  `tm_ledger`.
+- **Modules that outlived the cut** (no src consumer left): `src/tool-coerce.ts` (2.x
+  `applyV2BackgroundForce` already covers `background:"True"`, so it was a duplicate, not a lost
+  protection), `src/approval-gate.ts` (a 2.x plugin cannot raise the host dialog, so an
+  unanswered-ask timer had nothing to time out on), `src/host-hooks.ts` (only `COMPACTION_CONTEXT`
+  survived, now defined where 2.x uses it) and `src/tm/bash-timeout.ts` (behaviour ported, see
+  Fixed). `src/capabilities.ts` was **not** deleted — `renderCapabilityMatrix` is called from
+  `src/tm/stats.ts`, and the first pass of this cleanup had it wrongly on the delete list.
+- **Consequence of the gate removal**: `TM_ASK_TIMEOUT_MIN` / `TM_ASK_TIMEOUT_FLOOR_MIN` are now
+  orphaned knobs and `perm-ask.ts`'s `setAskWaitMs` has no caller. Recorded rather than quietly
+  left in place.
+
+### Fixed
+
+- **The shell timeout clamp is back** (issue #6). v1 enforced it in a composed
+  `tool.execute.before` hook, so the v1 cut silently dropped it: a model that passes a timeout at
+  all passes `120000+` for a `Get-ChildItem`, and three serialised probes cost minutes of dead
+  air. `applyV2ShellTimeoutClamp` rides `tool.hook("execute.before")` and keeps every part of the
+  original discipline — it clamps only a number the model volunteered, never invents one, applies
+  the probe ceiling only to a command `classifyReadonlyCommand` accepts, leaves the command text
+  alone, is Team-scoped, and swallows its own failures into a counted verdict. Counted as
+  `shell_timeout_seen/clamped/foreign_skipped/threw` and written as its own `timeout-clamp`
+  trajectory line, because a clamp nobody can see reads as the tool killing a probe for no reason.
+- **Loopback is served** by the governed web tools (`127/8`, `::1`, `.localhost` became their own
+  egress level). On 2.x a plugin cannot raise a dialog, so "needs approval" was really "always
+  refused" and a local dev server was unreachable through every governed tool. RFC1918 / ULA /
+  CGNAT / IPv6 link-local still require `TM_PRIVATE_SPACE=allow` — those reach other machines —
+  and metadata / link-local / reserved stay non-consentable.
+- **The generator reclaims role files it wrote and no longer emits**, which the `team` → `Team`
+  rename made load-bearing: on a case-sensitive filesystem the stale `agents/team.md` survives
+  beside `Team.md` and the host loads two Team roles, while on Windows the two names are one file
+  and the bug is invisible. File identity is decided by `statSync` `dev`+`ino` (measured on this
+  machine: the two spellings return the same inode, while `realpathSync` echoes the spelling it was
+  handed and therefore disagrees with itself); an undecidable identity means **keep and report**,
+  and after any deletion the keep set is re-checked — a vanished target aborts the run with a
+  non-zero exit, because a destroyed role file must never look like a successful install. Only
+  files carrying the generator's own MARKER are eligible; a hand-written file is kept and reported.
+- **Importing the generator no longer executes it.** A test that imported it wrote twelve files
+  into the real `~/.config/opencode`; `main()` is now guarded by `argv[1]`, verified by comparing
+  the installed role files' mtimes before and after a full `npm test` run.
+
+### Security
+
+- **v2 had no env-FILE path face at all.** `permission.evaluate` classified only the address
+  (webfetch/websearch) and the shell command line, so a Team role could `read` a `.env` outright
+  while AGENTS.md said R6 covers "reading the environment **or an env file**". The gap predates
+  the v1 cut — `createEnvProtectHook` was v1-only and 2.x never called it — but the claim was
+  still false. `pathGuard` now denies `read / write / edit / glob / grep` whose resource is an
+  env-file path, with no consent path offered (2.x gives a plugin no dialog, and "please approve"
+  would mean waiting for a window that never opens). Verified against the compiled module, not
+  only assertions: `.env`, `.env.local`, `.env.production`, `src/.env`, `.bashrc`, `.zshrc`,
+  `.profile`, a `*.env` grep include and a `**/.env` glob all deny, while `src/.env.example`,
+  `README.md`, `package.json`, a bare `TODO` pattern, `process.env` and `src/env.ts` are
+  untouched — a false denial here would itself have been the regression.
+
 ## [1.6.2] - 2026-10-04
 
 > **What this release does and does not claim.** The stop seam is wired to the host's documented

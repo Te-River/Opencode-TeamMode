@@ -1,7 +1,7 @@
 # Opencode-TeamMode — Agent Guide
 
 ## What this is
-OpenCode Desktop plugin that ships a multi-agent team (6 agents, 6 commands). On OpenCode 1.18.x the plugin injects those agents and commands into the config itself; on OpenCode 2.x a plugin **cannot create an agent at all**, so the same six roles reach the host as config files the installer writes. Published as `@te-river/opencode-team-mode` on npm.
+OpenCode Desktop plugin that ships a multi-agent team (6 agents, 6 commands) for **OpenCode 2.x only**. A 2.x plugin **cannot create an agent at all**, so the six roles reach the host as config files the installer writes. The 1.18.x personality was removed in full for the 1.7.0 line: the package exports `{id, setup}` and nothing else. Published as `@te-river/opencode-team-mode` on npm — which is also the plugin's declared display id since the identity rename below.
 
 ## Glossary (repo shorthand)
 
@@ -42,27 +42,33 @@ a change that renames one of them in prose but not in code makes the two disagre
 The goals above say *what* is promised; this says *how the code is arranged to keep the
 promise* and what the load-bearing rules are. Read this before adding a layer.
 
-### 1. One package, two personalities, chosen by the host
+### 1. One personality, and what the host contract forces
 
-`index.js` → `dist/index.js` exports `{ id, server, setup }`: `server` is the frozen 1.18.x
-personality, `setup` is the 2.x one. This is not elegance, it is the host's contract — a 2.x
-loader accepts a default export shaped `{id, effect}` **or** `{id, setup}` and rejects
-anything else (measured: 1.6.0, which exports only `server`, fails to load on 2.x with
-"Missing key at ["default"]["setup"]"), while a 1.18.x host ignores `setup` entirely. So one
-package must carry both, and the v1 personality is **frozen**: a change to v2 may not move
-one observable behaviour in `src/host/v1.ts`.
+`index.js` → `dist/index.js` exports `{ id: "@te-river/opencode-team-mode", setup }`. The 1.18.x
+personality (`src/host/v1.ts`) and everything only it registered were **deleted** for the 1.7.0
+line: `tm_ptc_run`, `tm_read`, `tm_grep`, `tm_bash`, `tm_pty`, the composed
+`tool.execute.before` slot, and the `config` hook that injected agents and commands. What
+survives is what 2.x actually gives a plugin, and every rule below is written against that
+alone. The historical reason the package once carried two exports (a 2.x loader accepts
+`{id, effect}` **or** `{id, setup}` and rejects anything else, while 1.18.x ignored `setup`) is
+now only a note: there is no host we support that reads `server`.
 
-Differences between the two are **declared, not discovered**: `V1_ONLY_TOOLS`
-(`v2-permissions.ts`) is the single source for what v2 does not register (`tm_ptc_run`,
-`tm_read`, `tm_grep`, `tm_bash`, `tm_pty`), and three places derive from it — `v2.ts` skips
-them, `gen-v2-config.mjs` drops their permission triples (an `allow` for an action the host
-never registered claims a capability that does not exist), and `V2_TEXT` rewrites every
-prompt sentence that named them. `V2_TEXT` does NOT live in `v2-permissions.ts` — it is the
-table at `scripts/gen-v2-config.mjs:109` (that permissions file holds `V1_ONLY_TOOLS` and
-`V2_LADDER_ACTIONS` only), so a search for it there comes back empty by design.
-**A `V2_TEXT` key that stops matching throws at build
-time** — that is the mechanism keeping a v2 model from being told about a tool v2 has no
-idea what to do with.
+Declared vs stored identity are two different things. The declared id is what `Plugin.Info`
+shows in the host's plugin list, so it carries the npm name; the storage prefix
+`team-mode/ledger/`, the audit service name `team-mode-env-protect`, the `[team-mode]` log
+prefix and the `vendor/team-mode` install path are deliberately **unchanged**, because renaming
+the ledger prefix would orphan every ledger already written. A test pins that split.
+
+`V1_ONLY_TOOLS` (`v2-permissions.ts`) stays the single source for the names 2.x does not
+register, and two places still derive from it — `gen-v2-config.mjs` drops their permission
+triples (an `allow` for an action the host never registered claims a capability that does not
+exist) and `test-blackboard.mjs` bans them from every role prompt and generated markdown file.
+`V2_TEXT` (the table at `scripts/gen-v2-config.mjs:109`, not in the permissions file — a search
+there comes back empty by design) survived the cut with **27 of its 54 entries**: it now forks
+only wording that genuinely differs on 2.x (`task` → `subagent`, the domain gate, board wording,
+`TodoList` → `tm_ledger`, the `browser_*` catalog). The entries whose source sentences the
+prompt rewrite removed were deleted, because **a `V2_TEXT` key that stops matching throws at
+build time** — that is the mechanism, not an obstacle to route around.
 
 ### 2. The v2 layer stack, and the one question each layer answers
 
@@ -275,6 +281,7 @@ re-deriving any of this, and append findings there (dated, with an evidence tag)
   `failed to check plugin update … Package is not installed`, because the host's own update
   check cannot see a package it did not install there. Same root cause, different face: the
   copy you are actually running is the one `entrypoint=` names.
+- **The lead role is `Team`, and identity is normalised, not matched.** The desktop picker renders `Agent.Info.name`, and for a config-file role that name is the id verbatim (`default:(n)=>({id:n, name:nv.make(n)})`), while `Config.Agent` has no `name` key and `ctx.agent.list()` shows only the 7 built-ins (`agent.get({agentID:"team"})` → `Agent not found: team`) — so a plugin can neither set a display name nor see the roles it is asking about. The only lever was the id: the lead role is `Team`. `src/identity.ts` is the ONE place that normalises agent names, and six former exact-equality checks go through it (scope isOurs/learn/decide, the permission triple generator, the request layer's removal plan and note targets, `tm_join`'s lead lock, `tm_ledger`'s lead-only gate, the boot's wantedIds filter), so `team`, `Team` and `TEAM` are all the lead and an existing install or an in-flight session is not broken by the rename. `agents_default` in the trajectory keeps the lower-case value (pinned by test-hosthooks) — that field is a measurement, not a label.
 - **Context compaction is a plugin decision, not a config key.** 2.x gives a plugin no
   `config` domain and its `compaction` block exposes no percentage, so Team enforces the
   threshold itself through `ctx.session.compact` — see the `v2-compaction.ts` row in the
@@ -473,8 +480,8 @@ a fenced one, which is why a raw `|` in a reply means the agent fenced the table
 ## Development rules
 - **Do not bump version or publish** unless explicitly asked
 - **Every release from 1.6.0 on ships a signed git tag AND a GitHub Release** (standing instruction, 2026-09-25; the repo had zero releases before it). Order is fixed: CHANGELOG date → `npm publish` → `git tag -s vX.Y.Z` + `git push --follow-tags` → `gh release create vX.Y.Z --notes-file <that CHANGELOG section>` → re-run `scripts/install.ps1`. Never `--generate-notes`: dumping commit titles next to the CHANGELOG gives the same version two contradictory public descriptions. A tag and a release are the parts you cannot quietly take back, so they come after the user's explicit "发".
-- **Version lines: 1.6.0 (published 2026-09-25) is the LAST v1-only release; every OpenCode-v2-based release continues from 1.7.0** (user decision, 2026-09-25). So the v2 port (`Plugin.define` dual-personality export — see the v2 section of the project memory and `docs/` for the hook map) lands as 1.7.0, and 1.7.x/1.8.x stay v2-capable. Do not spend a version number on a v1-only refinement after 1.7.0 exists. **Measured 2026-09-30, the plan and the artifact disagree, and the rule above has NOT been met:** npm `/latest` is `1.6.1`, tag `v1.6.1` is annotated, and `1.6.1` is the version that carries the `setup` (v2) personality — `registry.npmjs.org` reports `shasum: cd5f1dda…`, `fileCount: 321`. So a v2-capable release shipped as 1.6.x, not 1.7.0, and 44 further commits after that publish still call themselves `1.6.1` with no version bump. This line records the drift; it does not authorise a bump, a re-tag or a publish (that is the user's call, and `Do not bump version or publish unless explicitly asked` outranks the tidiness argument). Read the two statements as what they are: the 1.7.0 rule is the plan, `1.6.1` is what the host actually loaded. ── **During the port the v1 personality is frozen: `src/host/v1.ts` may not change behaviour at all** — a move must be provable as a move (de-indent diff empty) and `npm test` must stay 8/8 with the same output; if a v1 assertion goes red because of a "harmless" refactor, the refactor is wrong.
-- **Unified approval gate (R6 + R2)**: dangerous operations (delete / git push+commit / network fetch / package install+publish / process+system / privilege commands) and wildcard-expressible env reads are gated by the host's OFFICIAL confirmation dialog with a hard timeout -- `TM_ASK_TIMEOUT_MIN` (default 1 min) then auto-REJECT; the plugin NEVER self-allows (only rejects). Deferral to the dialog is per-session (`canDefer(sessionID)`: only sessions registered via exec-role prompts or env-faced asks; stock sessions keep the hard throw) and byte-exact on the defer side. Wildcards-inexpressible shapes and the whole `tm_*` channel keep the code-level hard throw. Host "always" replies generalize far beyond the command (observed `Get-ChildItem env:PATH` -> `Get-ChildItem *`) -- the READMEs tell users to prefer "once". The timeout carries a hard 1-minute floor (`MIN_ASK_TIMEOUT_MIN` = 1, tunable via `TM_ASK_TIMEOUT_FLOOR_MIN`): short values are safe because a reply that races the auto-reject is classified benign `already-closed` (closed request -> host 404, no degrade flip) and a late user reply only audits as `late-<verdict>` -- the observed ~120 s is the host->plugin event-bus *delivery* lag, not click-resolution latency. Do not weaken either path without an approved spec.
+- **Version lines: 1.6.0 (published 2026-09-25) is the LAST v1-only release; every OpenCode-v2-based release continues from 1.7.0** (user decision, 2026-09-25). So the v2 port (`Plugin.define` dual-personality export — see the v2 section of the project memory and `docs/` for the hook map) lands as 1.7.0, and 1.7.x/1.8.x stay v2-capable. Do not spend a version number on a v1-only refinement after 1.7.0 exists. **Measured 2026-09-30, the plan and the artifact disagree, and the rule above has NOT been met:** npm `/latest` is `1.6.1`, tag `v1.6.1` is annotated, and `1.6.1` is the version that carries the `setup` (v2) personality — `registry.npmjs.org` reports `shasum: cd5f1dda…`, `fileCount: 321`. So a v2-capable release shipped as 1.6.x, not 1.7.0, and 44 further commits after that publish still call themselves `1.6.1` with no version bump. This line records the drift; it does not authorise a bump, a re-tag or a publish (that is the user's call, and `Do not bump version or publish unless explicitly asked` outranks the tidiness argument). Read the two statements as what they are: the 1.7.0 rule is the plan, `1.6.1` is what the host actually loaded. ── **The v1 personality has since been deleted outright** (the 1.7.0 cut, commits `26209fa` onward): `src/host/v1.ts` no longer exists, so the freeze clause that once said "a change to v2 may not move one observable behaviour in v1" is closed history rather than a live rule. The oracle it leaned on — `npm test` staying 8/8 — still is one.
+- **R6 / R2 on 2.x: the dialog is gone, so the guard is the enforcement.** The v1 `approval-gate.ts` (host dialog + `TM_ASK_TIMEOUT_MIN` auto-reject + per-session `canDefer` deferral) was **deleted** in `7f6a660`: a 2.x plugin cannot raise the host's dialog at all, so an "ask then time out" design had nothing to time out on. What enforces the faces now is `permission.hook("evaluate")` in `src/host/v2-guard.ts`, which only ever makes a rule **stricter**: `shell` per command line via `shellGuard` (R2 danger face → `ask`, R6 env face → `ask`), file paths via `pathGuard` (env-file → **`deny`**, #44), and every network tool via `webGuard` (address red lines → `deny`). The plugin still never self-allows — it can only reject — and the classes with no consent path (metadata / link-local / reserved, env-file paths, the R6 scheme lines) stay refused under every setting. `TM_ASK_TIMEOUT_MIN` / `TM_ASK_TIMEOUT_FLOOR_MIN` are **orphaned knobs** now: their only consumer was the deleted gate, and `perm-ask.ts`'s `setAskWaitMs` has no caller. Say so rather than leaving a knob that does nothing.
 - **R6 privacy red line**: the env-protection audit log (`team-mode-env-protect`) records ONLY tool name + pattern category + approval verdict (`ask` / `allowed-once` / `allowed-always` / `rejected` / `timeout-rejected` / `degraded` / `already-closed` / `rejected-shape-bug` / `late-<verdict>`) -- never command text, paths, variable names or values; never weaken the interception patterns without an approved spec
 - Commit messages: `feat(scope): ...` / `fix(scope): ...` / `docs(scope): ...`
 - CHANGELOG.md: Keep a Changelog style; git-only changes go under `[Unreleased]`
