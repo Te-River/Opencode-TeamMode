@@ -17,19 +17,35 @@ registry saw 1.5.0 as the install-script fix release).
   `app location options agent aisdk command event experimental generate model provider
   integration mcp permission plugin reference rpc skill storage tool vcs websearch
   worktree session shell`). What 2.x does give is `ctx.session.compact({sessionID})`, so
-  `src/host/v2-compaction.ts` sits on `session.hook("context")` and admits a compaction
-  when the window crosses the threshold, using **the host's own accounting** read out of
-  the binary (`input+output+reasoning+cache.read+cache.write` over `limit.context`, the
-  model id taken from the same usage-bearing message). One admission per usage number per
-  session with a 60 s floor, because a ratio that does not drop must not become a
-  compaction loop. There is no estimated numerator: a payload without usage numbers is
-  counted `noUsage` and nothing fires — "we could not read it" is not "the window was
-  empty". Knobs: `TM_COMPACT_TRIGGER=off` hands the timing back to the host,
-  `TM_COMPACT_AT_PERCENT` (default 75, clamped to 5–95), `TM_COMPACT_MIN_MS` (default
-  60 000, capped at 600 000). Every outcome is counted (`checked/fired/confirmed/below/
-  deduped/noUsage/noLimit/conflicts/threw/foreignSkipped`) on the boot and shutdown rows,
-  and the capability row for `ctx.session.compact` is `ok` only after the host actually
-  accepted an admission — `fired` without `confirmed` stays `declared`.
+  `src/host/v2-compaction.ts` admits a compaction once the window crosses the threshold.
+- **Where the number comes from was measured, and the first answer was wrong.** The first
+  version read usage off `session.hook("context")`'s messages; a live 2.0.23 turn disproved
+  that — on the second request of a session, with three messages including an assistant one,
+  the payload still carried no usage (`measured source=no_usage messages=3`, run
+  `r-20261005-235343-114738`). The host publishes usage on the **event feed** instead
+  (binary: `jq = rt({type:"session.usage.updated", schema:{…cost, tokens}})`, and our own
+  trajectory counts that event 440 times in one desktop session), so the event is the
+  primary source and the message read survives only as a fallback. The denominator is
+  `limit.context` from `ctx.model.list()`, keyed by the providerID+modelID the session
+  record carries. No number anywhere → counted `no_usage`/`no_limit`, never guessed.
+  An event carries no agent, so the layer acts only on sessions the request layer already
+  proved are ours — a stranger's usage event is counted and dropped.
+- **Live-verified end to end on 2.0.23**: two turns of an explicit probe session at
+  `TM_COMPACT_AT_PERCENT=5` produced `admit percent=10 used=104008 limit=1000000
+  source=event` → `confirmed` (run `r-20261005-235940-0d1651`), then `admit percent=26
+  used=259923` → `confirmed` (run `r-20261005-235957-0a1f3c`). The line says `confirmed`
+  because the host accepted the admission; `fired` alone would only have been our intent.
+  One admission per usage number per session with a 60 s floor, because a ratio that does
+  not drop must not become a compaction loop. Knobs: `TM_COMPACT_TRIGGER=off` hands the
+  timing back to the host, `TM_COMPACT_AT_PERCENT` (default 75, clamped to 5–95),
+  `TM_COMPACT_MIN_MS` (default 60 000, capped at 600 000). Every outcome is counted
+  (`checked/usageSeen/fired/confirmed/below/deduped/noUsage/noLimit/conflicts/threw/
+  foreignSkipped`) on the boot and shutdown rows AND on its own `v2-compact` trajectory
+  line — the counters alone ride rows a CLI run never produces (`v2-shutdown` needs
+  dispose, `v2-surface` is throttled), so without the per-event line the feature is
+  invisible in exactly the runs people use to check it. The capability row for
+  `ctx.session.compact` is `ok` only after the host actually accepted an admission —
+  `fired` without `confirmed` stays `declared`.
 
 - **The lead can STEER a running child.** `tm_join` gained `steer` (+ optional
   `delivery: "steer"|"queue"`, default `steer`), `unread` and `unsend`, so the lead is no

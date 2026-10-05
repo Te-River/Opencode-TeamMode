@@ -600,7 +600,20 @@ export const v2Personality: V2Plugin = {
     // 2.x plugin has no config domain at all, so "compact at 75% of the window" can only
     // live here, in the package, enforced through `ctx.session.compact`.
     const compactConfig = resolveCompactConfig(process.env)
-    const compaction = await applyV2EarlyCompaction(ctx, { config: compactConfig, scope })
+    const compaction = await applyV2EarlyCompaction(ctx, {
+      config: compactConfig,
+      scope,
+      // Every outcome gets its OWN trajectory line: the counters ride rows a CLI run
+      // never produces (`v2-shutdown` needs dispose, `v2-surface` is throttled), so
+      // without this the feature would be invisible in exactly the runs used to check it.
+      onEvent: (row) => {
+        try {
+          tmRuntime.pipelines.store.appendTrajectory({ tool: "host", step_id: "v2-compact", event: "compaction", api: 2, ...row })
+        } catch {
+          /* a diagnostic that cannot be written never breaks the request it describes */
+        }
+      },
+    })
     // Everything the matrix reports now exists, so the late-bound closure can be
     // pointed at the real observations.
     v2Matrix = () =>
@@ -657,7 +670,13 @@ export const v2Personality: V2Plugin = {
     // budget and `tm_join` reported a state it had never observed — goal #6's
     // failure shape, and a bug rather than a limitation now that
     // `ctx.event.subscribe()` is measured to work.
-    const feed = await applyV2EventFeed(ctx, { onEvent: (ev) => tmRuntime.observeDispatchEvent(ev) })
+    const feed = await applyV2EventFeed(ctx, {
+      onEvent: (ev) => tmRuntime.observeDispatchEvent(ev),
+      // #39: the host publishes usage ONLY on the event feed (measured: the context hook's
+      // messages carry no tokens, while session.usage.updated fires hundreds of times), so
+      // the early-compaction layer is fed from here rather than from a second subscription.
+      onUsage: (data) => compaction.observeUsage(data),
+    })
     if (!feed.report.active) {
       notes.push(`事件流没接通（${feed.report.stopped ?? "原因未知"}）：tm_join 的结算检测只剩等待预算内的轮询，子代理结算了也要等到超时才报告`)
     }
@@ -686,6 +705,9 @@ export const v2Personality: V2Plugin = {
       compact_enabled: compaction.report.enabled,
       compact_at_percent: compaction.report.percent,
       compact_checked: compaction.report.checked,
+      compact_usage_seen: compaction.report.usageSeen,
+      compact_usage_events: compaction.report.usageEvents,
+      compact_event_decided: compaction.report.eventDecided,
       compact_fired: compaction.report.fired,
       compact_confirmed: compaction.report.confirmed,
       compact_source: compaction.report.lastSource,
@@ -835,6 +857,9 @@ export const v2Personality: V2Plugin = {
           compact_enabled: compaction.report.enabled,
           compact_at_percent: compaction.report.percent,
           compact_checked: compaction.report.checked,
+          compact_usage_seen: compaction.report.usageSeen,
+          compact_usage_events: compaction.report.usageEvents,
+          compact_event_decided: compaction.report.eventDecided,
           compact_fired: compaction.report.fired,
           compact_confirmed: compaction.report.confirmed,
           compact_below: compaction.report.below,
