@@ -215,6 +215,17 @@ opencode reload
 The second command is not optional after an upgrade: the role files carry the prompts, and
 a new release may have changed them. Re-running is cheap — unchanged files are skipped.
 
+**Prefer the installer for an upgrade: `scripts/install.ps1` / `install.sh`, re-run.** It is the
+only path that carries migrations. The installer recognises our own entry whatever its spelling
+(`@te-river/opencode-team-mode`, a pinned version, or a `vendor/team-mode` path — one regex,
+`scripts/lib/config-surgery.cjs`), so it **replaces** it instead of appending a second one; two
+entries load the plugin twice, and the host's dedupe matches only an identical string. It then
+rewrites `default_agent` and **reads the value back from disk**. That matters because
+`default_agent` naming a role that does not exist is not an error: the host falls back to
+`build` silently, and the session simply stops being Team. If you upgrade by hand
+(`plugin update` + the generator) and a release ever renames a role, re-run the installer
+before concluding the install is broken.
+
 ### Uninstalling
 
 1. Remove the plugin entry (`opencode plugin remove @te-river/opencode-team-mode`).
@@ -406,6 +417,14 @@ opencode reload
 
 第二条命令在升级之后不是可选项：角色文件里装的是提示词，新版本可能改过。重跑很便宜——没变
 的文件会被跳过。
+
+**升级请优先走安装器：重跑 `scripts/install.ps1` / `install.sh`。** 它是唯一带迁移的路径。安装器
+认得出"我们自己的那一条"无论它写成什么样子（`@te-river/opencode-team-mode`、钉死的版本号、或
+`vendor/team-mode` 路径——同一个正则，在 `scripts/lib/config-surgery.cjs` 里），所以它是**替换**而不是
+再追加一条；追加成两条会让插件被装载两次，而宿主的去重只认完全相同的字符串。之后它会重写
+`default_agent` 并**从磁盘回读**。这条要紧是因为：`default_agent` 指向一个不存在的角色**不算错误**——
+宿主会静默退回 `build`，会话就此不再是 Team。如果你手工升级（`plugin update` + 生成器），而某个版本
+改过角色名，请先重跑安装器，再下结论说装坏了。
 
 ### 卸载
 
