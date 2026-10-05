@@ -2700,6 +2700,71 @@ console.log("19. the shell timeout clamp came back to 2.x — the same lever, th
 }
 console.log("   OK (issue #6 restored on 2.x: only a volunteered number, only inside the read-only allowlist, never on a foreign session, never throwing into the hook, and every clamp reported)")
 
+console.log("20. R6's file-path face is back on 2.x — the native read/write/edit/glob/grep tools cannot read an env file (#44)")
+{
+  const { applyV2PermissionGuards, pathGuard } = await import("./dist/host/v2-guard.js")
+  const { createTeamScope } = await import("./dist/host/v2-scope.js")
+
+  // (a) the pure classifier matrix — no hook, no host
+  assert.equal(pathGuard("read", ["src/.env"], "audit")?.effect, "deny", "a read of .env is denied")
+  assert.equal(pathGuard("read", ["src/.env"], "audit")?.why, "env-file-path", "…and names the rule")
+  assert.ok(!pathGuard("read", ["src/.env"], "audit")?.message?.includes("批准"), "a red line offers no consent path — v2 cannot raise a dialog")
+  for (const p of [".env", ".env.local", ".env.production", "src/.env", "~/.bashrc", ".zshrc", ".profile"]) {
+    assert.equal(pathGuard("read", [p], "audit")?.effect, "deny", `${p} is an env file`)
+  }
+  assert.equal(pathGuard("read", [".env.example"], "audit"), null, ".env.example is a checked-in template — blocking it is a regression")
+  assert.equal(pathGuard("read", ["src/index.ts"], "audit"), null, "an ordinary source path is untouched")
+  assert.equal(pathGuard("read", ["README.md"], "audit"), null, "…and so is a doc")
+  assert.equal(pathGuard("read", ["package.json"], "audit"), null, "…and a manifest")
+  assert.equal(pathGuard("grep", ["*.env"], "audit")?.effect, "deny", "a glob include selecting env files is denied")
+  assert.equal(pathGuard("grep", ["TODO"], "audit"), null, "an ordinary grep pattern is NOT mistaken for a path")
+  assert.equal(pathGuard("grep", ["process.env"], "audit"), null, "a code identifier is not a file path")
+  assert.equal(pathGuard("read", ["src/.env"], "off"), null, "R6 off classifies nothing")
+  assert.equal(pathGuard("patch", ["src/.env"], "audit"), null, "patch is not in the covered set — its resource shape is unobserved, so it is not guessed at")
+
+  // (b) the hook, on the fake host
+  const f = makeFakeCtx({ directory: ws, agents: [] })
+  const scope = createTeamScope(["team", "architect", "implementer", "reviewer", "tester", "researcher"])
+  const g = await applyV2PermissionGuards(f.ctx, { envProtectMode: "audit", scope })
+  const fire = (ev) => f.hook("permission.evaluate").fire(ev)
+
+  const readEnv = { sessionID: "ses_1", agent: "team", action: "read", resources: ["src/.env"], effect: "allow" }
+  await fire(readEnv)
+  assert.equal(readEnv.effect, "deny", "the hook flips a native read of .env")
+  assert.ok(!String(readEnv.message).includes("批准"), "and the message offers no consent path")
+
+  const example = { sessionID: "ses_1", agent: "team", action: "read", resources: [".env.example"], effect: "allow" }
+  await fire(example)
+  assert.equal(example.effect, "allow", ".env.example stays readable — the anti-false-positive core")
+
+  const src = { sessionID: "ses_1", agent: "team", action: "read", resources: ["src/index.ts"], effect: "allow" }
+  await fire(src)
+  assert.equal(src.effect, "allow", "an ordinary source file is left exactly as the host decided")
+  const doc = { sessionID: "ses_1", agent: "team", action: "read", resources: ["README.md"], effect: "allow" }
+  await fire(doc)
+  assert.equal(doc.effect, "allow", "…and a doc")
+
+  const grepEnv = { sessionID: "ses_1", agent: "team", action: "grep", resources: ["*.env"], effect: "allow" }
+  await fire(grepEnv)
+  assert.equal(grepEnv.effect, "deny", "a grep include selecting env files is denied")
+  const grepPlain = { sessionID: "ses_1", agent: "team", action: "grep", resources: ["TODO"], effect: "allow" }
+  await fire(grepPlain)
+  assert.equal(grepPlain.effect, "allow", "a plain grep pattern is untouched")
+
+  const alreadyDenied = { sessionID: "ses_1", agent: "team", action: "read", resources: ["src/.env"], effect: "deny" }
+  await fire(alreadyDenied)
+  assert.equal(alreadyDenied.effect, "deny", "a host that already denied keeps its decision — the guard only ever gets stricter")
+
+  const foreign = { sessionID: "ses_build", agent: "build", action: "read", resources: ["src/.env"], effect: "allow" }
+  await fire(foreign)
+  assert.equal(foreign.effect, "allow", "a build session's read is not ours to flip (#22)")
+  assert.equal(g.report.foreignSkipped, 1, "…and the skip is counted")
+  assert.ok(g.report.envFileDenied >= 3, "the file-path denials are counted for v2-surface / v2-shutdown")
+
+  for (const r of g.registrations) await r.dispose()
+}
+console.log("   OK (R6 file-path face live on 2.x: .env / rc family denied with no consent path, .env.example and ordinary paths untouched, grep patterns not mistaken for paths, foreign sessions skipped and counted)")
+
 // B5: the group count is DERIVED from the numbered group headers this file
 // actually printed, never hand-written — the last hand-written number was
 // already stale while the file had more.  The self-scan reads THIS file by its

@@ -108,6 +108,42 @@ export function webGuard(resources: readonly string[]): GuardDecision | null {
   return null
 }
 
+/** File tools whose path-class resources are scanned for env files.  `patch` is
+ *  deliberately absent: its resource shape has not been observed on a live host,
+ *  and guessing at a shape is how a guard either misses or misfires. */
+const PATH_GUARD_ACTIONS = new Set(["read", "write", "edit", "glob", "grep"])
+
+/**
+ * R6's FILE-PATH face.  v1 enforced this in a `tool.execute.before` hook factory
+ * (`createEnvProtectHook`) that was deleted with the v1 personality; v2 never
+ * picked it up, so a Team role could read `.env` through the native `read` tool
+ * while the docs claimed R6 covered "the environment or an env file".  The same
+ * classifier now rides `permission.hook("evaluate")`, whose `resources` carry the
+ * concrete path (live: `action:"read"` reaches evaluate with the real path).
+ *
+ * `isEnvFilePath` is the shared matcher and is already pattern-aware: it strips
+ * glob asterisks (so a `*.env` include is caught), cuts URL query tails, and
+ * refuses code identifiers like `process.env` — so an ordinary grep pattern
+ * (`TODO`) is never mistaken for a path.  `.env.example` and friends are
+ * checked-in templates and pass (see `ENV_TEMPLATE_SUFFIX`).
+ *
+ * A RED LINE, not a gate: v2 cannot raise a dialog, so there is no consent path
+ * to name — telling the agent to "ask for approval" would be a window that never
+ * appears.
+ */
+export function pathGuard(action: string, resources: readonly string[], mode: EnvProtectMode): GuardDecision | null {
+  if (mode === "off") return null
+  if (!PATH_GUARD_ACTIONS.has(action)) return null
+  for (const raw of resources) {
+    const text = String(raw ?? "")
+    if (!text) continue
+    if (isEnvFilePath(text)) {
+      return { effect: "deny", why: "env-file-path", message: "R6 红线：这个路径指向环境文件（.env / shell rc 家族），不授权、不弹窗。" }
+    }
+  }
+  return null
+}
+
 /** R6's env face and R2's danger face, per command line. */
 export function shellGuard(command: string | undefined, mode: EnvProtectMode): GuardDecision | null {
   const text = String(command ?? "").trim()
@@ -133,6 +169,10 @@ export interface GuardReport {
   /** evaluations skipped because the session belongs to a non-Team agent (#22) —
    *  the number that tells the user how much of this floor is not ours to hold */
   foreignSkipped: number
+  /** file-path evaluations the R6 classifier flagged as an env file (read /
+   *  write / edit / glob / grep) — the evidence that the file-path face is
+   *  actually live, not just installed */
+  envFileDenied: number
 }
 
 export interface BackgroundForceReport {
@@ -185,7 +225,7 @@ export async function applyV2PermissionGuards(
   ctx: V2Context,
   opts: { envProtectMode: EnvProtectMode; scope?: TeamScope },
 ): Promise<{ registrations: V2Registration[]; report: GuardReport; installed: boolean }> {
-  const report: GuardReport = { seen: 0, byAction: {}, strictened: 0, denied: 0, shellMatched: 0, foreignSkipped: 0 }
+  const report: GuardReport = { seen: 0, byAction: {}, strictened: 0, denied: 0, shellMatched: 0, foreignSkipped: 0, envFileDenied: 0 }
   const permission = ctx.permission
   if (!permission || typeof permission.hook !== "function") {
     return { registrations: [], report, installed: false }
@@ -211,10 +251,11 @@ export async function applyV2PermissionGuards(
           ? webGuard(resources)
           : action === "shell"
             ? shellGuard(resources[0], opts.envProtectMode)
-            : null
+            : pathGuard(action, resources, opts.envProtectMode)
       if (!decision) return
 
       if (action === "shell") report.shellMatched++
+      if (decision.why === "env-file-path") report.envFileDenied++
       // Only ever stricter.  A host that already decided to ask or deny keeps
       // that decision — our classifier is a floor, not an override of the user.
       if (rank[decision.effect] <= rank[event.effect ?? "allow"]) return

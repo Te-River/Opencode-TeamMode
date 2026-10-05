@@ -71,7 +71,7 @@ idea what to do with.
 | scope | `v2-scope.ts` | (no hook) | "is this session one of ours?" — the single answer every writer asks before touching anything |
 | permissions | `v2-permissions.ts` | config triples at boot | what each of the six roles may `allow`/`ask`/`deny`, overriding a user rule only on actions we name |
 | request layer | `v2-session.ts` | `session.hook("context")`, `session.hook("compaction")` | delete denied tools from the assembled request, carry `temperature` 0.2, publish the board root to the lead, push the compaction survival list, start the TTL sweeper |
-| guard | `v2-guard.ts` | `permission.hook("evaluate")`, `tool.hook("execute.before")` | the address red line for every network tool, R6's per-command classification, and forcing every `subagent` call into the background |
+| guard | `v2-guard.ts` | `permission.hook("evaluate")`, `tool.hook("execute.before")` | the address red line for every network tool, R6's per-command classification, R6's env-FILE path face (`pathGuard`, #44), the shell timeout clamp (issue #6, ported in #43), and forcing every `subagent` call into the background |
 | JIT governance | `v2-offload.ts` | `tool.hook("execute.after")` | does this result belong in the context window at all — for the HOST's tools, not just ours |
 | child registry | `v2-subagent.ts` | `execute.before` + `after` | which child session did this dispatch create, so `tm_join` can report on work it did not create |
 | event feed | `v2-events.ts` | `ctx.event.subscribe()` | did this child settle — forwarding only whitelisted event NAMES, counting the ones it did not recognise |
@@ -132,7 +132,12 @@ domain gate is off by default there — a gate with no door is not a gate. Below
 sit the classes no config opens: cloud-metadata / link-local / multicast / reserved /
 benchmarking ranges are refused with no consent path, IPv4-mapped and DNS64 carriers
 unwrapped first so changing notation is not a bypass, and private space stays refused
-through our tools. R6's env-file rule is likewise hard. A gate must have an exit the user
+through our tools. R6's env-file rule is likewise hard — and it is enforced **on** v2 only since task #44:
+`permission.hook("evaluate")` gained `pathGuard`, which denies `read / write / edit / glob / grep`
+whose resource is an env-file path (`guard_envfile_denied` counts it). Before that the v2 port
+classified only the shell command line, so a Team role could `read` a `.env` outright while this
+file claimed otherwise. Templates stay readable (`ENV_TEMPLATE_SUFFIX` = `example|sample|template|dist`,
+`src/envprotect/path-classify.ts`). A gate must have an exit the user
 can walk through; a red line must not.
 
 ### 7. Determinism over model discretion

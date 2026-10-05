@@ -112,7 +112,9 @@ export function v2CapabilityRows(i: Inputs): CapabilityRow[] {
       feature: "egress 红线（元数据/链路本地/私网）套到宿主原生 webfetch · 按命令行判定的 R6",
       state: i.guardsInstalled ? (i.probe.report.evaluations > 0 ? "ok" : "declared") : "missing",
       evidence: "hook",
-      note: i.probe.report.evaluations > 0 ? `看到 ${i.probe.report.evaluations} 次评估，动作：${i.probe.report.actions.join(" ") || "无"}` : i.guardsInstalled ? "挂上了但还没被调用过" : undefined,
+      note: i.guardsInstalled
+        ? `${i.probe.report.evaluations > 0 ? `看到 ${i.probe.report.evaluations} 次评估，动作：${i.probe.report.actions.join(" ") || "无"}` : "挂上了但还没被调用过"} · R6 现覆盖文件路径面（read/write/edit/glob/grep 的 .env / rc 家族）`
+        : undefined,
     },
     {
       seam: "工具 ctx.ask（宿主官方确认框）",
