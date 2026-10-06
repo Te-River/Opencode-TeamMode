@@ -119,7 +119,6 @@ export interface TmStats {
     /** waits that followed a wait that settled nothing — the anti-pattern. */
     repeatWaits: number
   }
-  ptc: { runs: number; calls: number; errors: number; retries: number; sumMs: number }
   governance: {
     clampedTimeouts: number
     clampSavedMs: number
@@ -151,7 +150,6 @@ export function summarizeEvents(events: readonly TrajEvent[]): TmStats {
     window: { runs: 0, events: events.length, wallMs: 0 },
     tools: [],
     dispatch: { starts: 0, settled: 0, failed: 0, adopted: 0, claims: 0, cancelled: 0, sumMs: 0, maxMs: 0, overlapSavedMs: 0, waitMs: 0, waits: 0, repeatWaits: 0 },
-    ptc: { runs: 0, calls: 0, errors: 0, retries: 0, sumMs: 0 },
     governance: { clampedTimeouts: 0, clampSavedMs: 0, offloadDegraded: 0, webCacheHits: 0 },
     boot: [],
   }
@@ -237,13 +235,6 @@ export function summarizeEvents(events: readonly TrajEvent[]): TmStats {
       stats.dispatch.waitMs += num(e.waited_ms)
       stats.dispatch.waits++
       if (e.repeat === true) stats.dispatch.repeatWaits++
-    }
-    if (tool === "tm_ptc_run" && ev === "finish") {
-      stats.ptc.runs++
-      stats.ptc.calls += num(e.calls)
-      stats.ptc.errors += num(e.errors)
-      stats.ptc.retries += num(e.retries)
-      stats.ptc.sumMs += num(e.ms)
     }
     if (ev === "cache_hit") stats.governance.webCacheHits++
     // v1 labelled the row by its tool name `bash`; on v2 the host's own id is
@@ -589,15 +580,13 @@ export function renderStats(
     }
   }
 
-  const p = stats.ptc
   const g = stats.governance
   out.push(
     "",
-    "### 一次程序 N 次调用（tm_ptc_run）与治理面",
+    "### 治理面",
     "",
     "| 指标 | 值 |",
     "|---|---|",
-    `| PTC 程序 / 内部调用 / 重试 / 错误 | ${p.runs} / ${p.calls} / ${p.retries} / ${p.errors}（合计 ${p.sumMs ? secs(p.sumMs) : "—"}） |`,
     `| web URL 缓存命中（省下的抓取） | ${g.webCacheHits} |`,
     `| bash 超时夹顶 | ${g.clampedTimeouts} 次 · 省 ${g.clampSavedMs ? secs(g.clampSavedMs) : "—"} |`,
     `| 卸载降级（存储写失败→截断） | ${g.offloadDegraded} |`,

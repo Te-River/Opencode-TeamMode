@@ -95,7 +95,6 @@ console.log("  7. capability probe: SKIPPED — v1 createCapabilityProbe removed
     { ts: iso(13_500), run_id: "rB", tool: "tm_dispatch", step_id: "join", event: "wait", waited_ms: 60_000, still_running: 1, repeat: false },
     { ts: iso(13_600), run_id: "rB", tool: "tm_dispatch", step_id: "join", event: "wait", waited_ms: 10_000, still_running: 1, repeat: true },
     { ts: iso(17_000), run_id: "rB", tool: "bash", step_id: "timeout-clamp", event: "probe", from_ms: 120_000, to_ms: 60_000 },
-    { ts: iso(18_000), run_id: "rB", tool: "tm_ptc_run", step_id: "s9", event: "finish", status: "ok", calls: 7, errors: 0, retries: 1, ms: 2_500 },
   ]
   const s = summarizeEvents(events)
   eq(s.window.runs, 2, "one run dir == one plugin process, so the window spans restarts")
@@ -122,7 +121,12 @@ console.log("  7. capability probe: SKIPPED — v1 createCapabilityProbe removed
   ok(!govMd.includes("evaluate_script 结果脱敏"), "the retired evaluate_script row is gone from the render")
   ok(!govMd.includes("宿主后台 task 注入"), "the retired task-envelope row is gone from the render")
   ok(govMd.includes("web URL 缓存命中") && govMd.includes("bash 超时夹顶"), "…while the counters that still have producers stay")
-  eq(s.ptc, { runs: 1, calls: 7, errors: 0, retries: 1, sumMs: 2_500 }, "PTC internals roll up (one turn, N governed calls)")
+  // The PTC roll-up was retired with its producer: `tm_ptc_run` went with the v1 cut
+  // (26209fa), so on 2.x the row could only ever read 0. The field, its aggregation and
+  // its render row are gone together — this assertion is the counter-example probe: put
+  // the row back and it goes red.
+  ok(!govMd.includes("tm_ptc_run") && !govMd.includes("PTC 程序"), "the retired PTC row is gone from the render")
+  ok(govMd.includes("### 治理面") && govMd.includes("| 指标 | 值 |") && govMd.includes("|---|---|"), "…and the governance table still prints its header and separator, not an empty table")
   eq([s.dispatch.waitMs, s.dispatch.waits, s.dispatch.repeatWaits], [70_000, 2, 1], "the lead's blocked time inside tm_join is measured, and a chained wait is counted separately from a first one")
   ok(renderStats(s, { runDirs: 1, roots: [] }).includes("lead 在 tm_join 里干等"), "…and it is a visible row, because 'parallel' that parks the lead is not parallel")
   // one child alone proves nothing
