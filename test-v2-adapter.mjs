@@ -3178,6 +3178,87 @@ console.log("26. R6's file-path face on the seam that sees the whole input — g
 }
 console.log("   OK (grep/glob/read env-file paths refused at execute.before, ordinary paths untouched, foreign sessions skipped, internal throws swallowed and counted, tools_in_request observable on the CLI)")
 
+console.log("27. the Code Mode adoption hint — a run of native calls appends a pointer to execute (#35)")
+{
+  const { createProbeChain, applyV2ProbeChain, appendProbeChainNote, renderProbeChainNote, PROBE_CHAIN_MARKER } =
+    await import("./dist/host/v2-probe-chain.js")
+  const { createTeamScope } = await import("./dist/host/v2-scope.js")
+
+  // (a) the pure ledger: 2 silent, the 3rd silent, the 4th (the result AFTER the
+  // threshold is reached) carries the hint.
+  const chain = createProbeChain(3)
+  assert.equal(chain.observe("read").advise, false, "1st native call: no hint")
+  assert.equal(chain.observe("grep").advise, false, "2nd native call: no hint")
+  assert.equal(chain.observe("glob").advise, false, "3rd native call: still no hint — the hint rides the NEXT result")
+  const fourth = chain.observe("shell")
+  assert.equal(fourth.count, 4, "the streak is 4")
+  assert.equal(fourth.advise, true, "the 4th consecutive native call carries the hint")
+
+  // (b) execute resets the streak — it is the alternative the hint points at
+  const c2 = createProbeChain(3)
+  c2.observe("read"); c2.observe("read"); c2.observe("read"); c2.observe("read")
+  assert.equal(c2.observe("execute").advise, false, "execute is the alternative, not a native call")
+  assert.equal(c2.streak(), 0, "…and it resets the streak")
+  assert.equal(c2.observe("read").count, 1, "the run starts over after execute")
+
+  // (c) a non-chain tool is transparent — it neither counts nor resets
+  const c3 = createProbeChain(3)
+  c3.observe("read"); c3.observe("read"); c3.observe("read")
+  assert.equal(c3.observe("question").count, 3, "question is not a native file/command call")
+  assert.equal(c3.observe("question").advise, false, "…and it never triggers the hint")
+  assert.equal(c3.observe("read").advise, true, "the streak survives a question and the next read advises")
+
+  // (d) the append is byte-exact and idempotent
+  const res = { content: [{ type: "text", text: "ORIGINAL BODY" }] }
+  const line = renderProbeChainNote(4)
+  assert.ok(line.includes(PROBE_CHAIN_MARKER), "the line carries the marker")
+  assert.ok(line.includes("execute"), "…and names execute")
+  assert.equal(appendProbeChainNote(res, line), true, "the line is appended")
+  assert.equal(res.content[0].text, `ORIGINAL BODY\n\n${line}`, "the original body is preserved verbatim, the line appended after it")
+  assert.equal(appendProbeChainNote(res, line), false, "a second append is refused (idempotent)")
+  assert.equal(res.content[0].text.split(PROBE_CHAIN_MARKER).length - 1, 1, "exactly one marker on the body")
+
+  // (e) hook level: the 4th native result is annotated, the first three are not
+  const f = makeFakeCtx({ directory: ws, agents: [] })
+  const scope = createTeamScope(["team", "architect", "implementer", "reviewer", "tester", "researcher"])
+  const advised = []
+  const pc = applyV2ProbeChain(f.ctx, { scope, env: {}, onAdvise: (i) => advised.push(i) })
+  const fire = (tool, text, agent = "team", sessionID = "ses_chain") =>
+    f.hook("tool.execute.after").fire({ tool, sessionID, agent, result: { content: [{ type: "text", text }] } })
+  await fire("read", "R1")
+  await fire("grep", "R2")
+  await fire("glob", "R3")
+  const r4 = { content: [{ type: "text", text: "R4" }] }
+  await f.hook("tool.execute.after").fire({ tool: "shell", sessionID: "ses_chain", agent: "team", result: r4 })
+  assert.equal(r4.content[0].text.startsWith("R4"), true, "the 4th result keeps its body verbatim")
+  assert.ok(r4.content[0].text.includes(PROBE_CHAIN_MARKER), "…and carries the appended hint")
+  assert.equal(pc.report.seen, 4, "four native calls seen")
+  assert.equal(pc.report.advised, 1, "exactly one result was annotated")
+  assert.equal(advised.length, 1, "the trajectory sink fired once")
+  assert.equal(advised[0].tool, "shell", "…naming the tool that triggered it")
+
+  // (f) a foreign session is left alone
+  const foreignRes = { content: [{ type: "text", text: "FOREIGN" }] }
+  await f.hook("tool.execute.after").fire({ tool: "read", sessionID: "ses_build", agent: "build", result: foreignRes })
+  assert.equal(foreignRes.content[0].text, "FOREIGN", "a build session's result is untouched")
+  assert.equal(pc.report.foreignSkipped, 1, "…and counted")
+
+  // (g) a throw is swallowed and counted, never thrown into the host
+  const boom = { content: [{ get type() { throw new Error("boom") } }] }
+  await f.hook("tool.execute.after").fire({ tool: "read", sessionID: "ses_chain", agent: "team", result: boom })
+  assert.equal(pc.report.threw, 1, "a hook that cannot decide allows the call and counts the throw")
+
+  // (h) the counters and the wiring are visible where tm_stats reads them
+  const v2src = fs.readFileSync(path.join(path.dirname(fileURLToPath(import.meta.url)), "src", "host", "v2.ts"), "utf8")
+  assert.ok(/applyV2ProbeChain\(ctx,/.test(v2src), "the personality installs the adoption hint")
+  assert.ok(/probe_chain_seen: probeChain\.report\.seen/.test(v2src), "…and the counter rides the observation rows")
+  assert.ok(/probe_chain_advised: probeChain\.report\.advised/.test(v2src), "…including the advised count")
+  assert.ok(/step_id: "probe-chain"/.test(v2src), "the trajectory line is wired")
+
+  for (const r of await Promise.all(pc.registrations)) await r.dispose()
+}
+console.log("   OK (2 silent, the 4th native call advises; execute resets; question is transparent; the body is preserved verbatim and the append is idempotent; foreign sessions skipped; throws swallowed and counted)")
+
 // B5: the group count is DERIVED from the numbered group headers this file
 // actually printed, never hand-written — the last hand-written number was
 // already stale while the file had more.  The self-scan reads THIS file by its

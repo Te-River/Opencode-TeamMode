@@ -43,6 +43,7 @@ import { applyV2EventFeed } from "./v2-events.js"
 import { createV2SessionReader } from "./v2-session-client.js"
 import { applyV2Probe, probeSummary } from "./v2-probe.js"
 import { applyV2NativeOffload } from "./v2-offload.js"
+import { applyV2ProbeChain } from "./v2-probe-chain.js"
 import { applyV2SubagentRegistry, applyV2CompletionWatch } from "./v2-subagent.js"
 import { applyV2BrowserGate, browserGateSummary } from "./v2-browser-gate.js"
 import { seedWebfetchDomains } from "../tm/webfetch.js"
@@ -350,6 +351,28 @@ export const v2Personality: V2Plugin = {
     // teardown is a counter that does not exist.
     const offload = await applyV2NativeOffload(ctx, { pipelines: tmRuntime.pipelines, scope })
     registrations.push(...(await Promise.all(offload.registrations)))
+    // #35: the Code Mode adoption hint.  Registered AFTER the offloader so its
+    // append lands on whatever text the offloader left (a rewritten body or the
+    // host's verbatim one) — the hint only ever ADDS a line, never rewrites.
+    const probeChain = applyV2ProbeChain(ctx, {
+      scope,
+      env: v2Env,
+      onAdvise: (info) => {
+        try {
+          tmRuntime.pipelines.store.appendTrajectory({
+            tool: "host",
+            step_id: "probe-chain",
+            event: "advised",
+            native_tool: info.tool,
+            count: info.count,
+            sessionID: info.sessionID,
+          })
+        } catch {
+          /* the trajectory is an extra, never a reason to fail the call */
+        }
+      },
+    })
+    registrations.push(...(await Promise.all(probeChain.registrations)))
     // The host's own sub-agents, entered into tm_join's registry (decision 4,
     // 2026-09-26).  On v2 every dispatch IS the host's `subagent` tool, so without this
     // the collect side had nothing to collect: tm_join answered 没有待收集的派发 about
@@ -869,6 +892,13 @@ export const v2Personality: V2Plugin = {
       native_tokens_saved: offload.report.tokensSaved,
       native_capped: offload.report.capped,
       native_report_capped: offload.report.reportCapped,
+      // #35: the Code Mode adoption hint — how many native file/command calls we
+      // saw, and how many results actually carried the appended line.
+      probe_chain_seen: probeChain.report.seen,
+      probe_chain_advised: probeChain.report.advised,
+      probe_chain_reset: probeChain.report.reset,
+      probe_chain_foreign_skipped: probeChain.report.foreignSkipped,
+      probe_chain_threw: probeChain.report.threw,
     })
     const removedPlanSizes = [...plan.entries()].map(([id, set]) => `${id}=${set.size}`).join(" ")
 
