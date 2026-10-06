@@ -10,9 +10,6 @@
  */
 
 import { resolveTmConfig } from "./config.js"
-// The browser verb list lives in ONE place (browser.ts).  A second hand-written
-// copy here is how a shipped verb went missing from the tool schema.
-import { BROWSER_ACTION_MENU, BROWSER_PLAYWRIGHT_ACTIONS } from "./browser.js"
 
 /**
  * Load zod when the host environment provides it (opencode ships it as a
@@ -260,102 +257,6 @@ export async function buildMemoryArgsSchema(): Promise<Record<string, unknown>> 
   }
 }
 
-/**
- * tm_browser args — same ZodRawShape treatment (BUG#3 class); descriptor
- * fallback when zod is absent.
- *
- * STRIP BEHAVIOR / WHY EVERY FIELD IS DECLARED: this is a RAW shape, never
- * wrapped in z.object() (BUG#3), so no zod-level .strip()/.passthrough()
- * applies and execute() reads rawArgs verbatim.  But the host serializes
- * exactly these keys into the LLM parameter spec — an undeclared field is
- * invisible to the model and never reaches browser.ts, i.e. the shape is a
- * CLOSED param surface in effect.  T5's 16 playwright verbs
- * (BROWSER_PLAYWRIGHT_ACTIONS, browser.ts:505) + the 5 compat verbs consume
- * 19 fields across execute/act (args.uid/selector/targetUid/targetSelector/
- * text/key/function/expression/filePath/files/index/timeoutMs/dialogAction/
- * promptText/clear/fullPage/image, browser.ts act() + execute()) — every one
- * is declared below, or the corresponding verb silently loses its input.
- *
- * `headless` is DELIBERATELY not declared (2026-09-18): it used to be a model
- * arg, `Boolean("false")` read as true, and one such call pinned the whole
- * host process to a headless browser that every anti-bot gate then rejected.
- * Mode is an operator setting (TM_BROWSER_HEADLESS) — a closed surface here
- * is the fix, not a validation layer.
- */
-export async function buildBrowserArgsSchema(): Promise<Record<string, unknown>> {
-  const z = await loadZod()
-  // Derived from the action table itself (browser.ts) — the hand-written verb
-  // list here is how `new_page` and `close_page` went missing from the schema
-  // while the gate accepted them.
-  const ACTION_LIST =
-    `${BROWSER_ACTION_MENU} (required) — the ${BROWSER_PLAYWRIGHT_ACTIONS.length} chrome-devtools-mcp verbs, ` +
-    `plus open|navigate|read|screenshot|close (compat) and allow_host (ask the user to un-block ONE script domain).`
-  if (!z) {
-    return {
-      action: { descriptor: `action: ${ACTION_LIST}` },
-      id: { descriptor: 'id: which browser ("b1" from open) — one per agent; required once more than one is live, another agent\'s id is refused' },
-      url: { descriptor: "url: string (open/navigate/navigate_page/new_page, allowlisted https)" },
-      host: { descriptor: "host: one bare domain for allow_host (no wildcards, no URL, no port)" },
-      image: { descriptor: "image: true with take_screenshot — inline the PNG pixels in this result" },
-      uid: { descriptor: "uid: snapshot [uid=eN] token (click/fill/hover/drag/upload_file/wait_for)" },
-      selector: { descriptor: "selector: CSS/text locator escape hatch (only when a snapshot cannot express the node)" },
-      targetUid: { descriptor: "targetUid: drag destination uid" },
-      targetSelector: { descriptor: "targetSelector: drag destination selector" },
-      text: { descriptor: "text: fill value / wait_for visible text" },
-      key: { descriptor: "key: press_key chord, e.g. Enter|Control+A" },
-      function: { descriptor: "function: JS function source for evaluate_script" },
-      expression: { descriptor: "expression: alias of function (evaluate_script)" },
-      filePath: { descriptor: "filePath: local file path for upload_file" },
-      files: { descriptor: "files: alias of filePath — single path or array of paths" },
-      index: { descriptor: "index: select_page target tab index from list_pages" },
-      timeoutMs: { descriptor: "timeoutMs: wait_for budget in ms (default 3000, clamped 100..30000)" },
-      dialogAction: { descriptor: "dialogAction: accept|dismiss for handle_dialog (default accept)" },
-      promptText: { descriptor: "promptText: prompt-dialog reply text for handle_dialog accept" },
-      clear: { descriptor: "clear: drain the console buffer after list_console_messages" },
-      fullPage: { descriptor: "fullPage: take_screenshot captures the full page (default viewport only)" },
-    }
-  }
-  // describe-LAST on every optional chain — zod v4 drops a description set
-  // before .optional() when the shape is serialized (see buildMemoryArgsSchema).
-  const zz = z as unknown as {
-    string: () => {
-      describe: (d: string) => unknown
-      optional: () => { describe: (d: string) => unknown }
-    }
-    boolean: () => { optional: () => { describe: (d: string) => unknown } }
-    number: () => {
-      int: () => { min: (n: number) => { optional: () => { describe: (d: string) => unknown } } }
-    }
-    // upload_file accepts a single path OR an array — any() keeps the host
-    // spec from narrowing (and rejecting) the array shape.
-    any: () => { optional: () => { describe: (d: string) => unknown } }
-  }
-  const str = (d: string) => zz.string().optional().describe(d)
-  const bool = (d: string) => zz.boolean().optional().describe(d)
-  return {
-    action: zz.string().describe(ACTION_LIST),
-    id: str('Which browser to drive — the id `open` returned ("b1"). Each agent gets its OWN browser: the id is required as soon as more than one is live, another agent\'s id is refused with the owner named, and close {id:"all"} closes all of yours.'),
-    url: str("Absolute https URL on an allowlisted host (open/navigate/navigate_page). URL-encode the query (CJK terms too)."),
-    host: str("allow_host only: ONE bare domain whose script the subresource gate blocked (e.g. bkssl.bdimg.com). Wildcards/URLs/ports are refused — the user approves exactly this string."),
-    image: bool("take_screenshot only: inline the PNG pixels into this tool result (default false = path only; pixels cost context, so ask only when the screenshot IS the evidence)."),
-    uid: str("Snapshot [uid=eN] token from the LATEST take_snapshot (click/fill/hover/drag source/upload_file/wait_for)."),
-    selector: str("CSS/text locator escape hatch — only for a node the snapshot cannot express; never guess locators."),
-    targetUid: str("drag destination uid from the latest take_snapshot."),
-    targetSelector: str("drag destination selector escape hatch."),
-    text: str("fill value, or the visible text to wait for with wait_for (uid or text — one of them)."),
-    key: str('press_key chord, e.g. "Enter" or "Control+A".'),
-    function: str("JS function/expression source for evaluate_script (returns the JSON-serialized value)."),
-    expression: str("Alias of function for evaluate_script."),
-    filePath: str("Local file path for upload_file (must exist on disk)."),
-    files: zz.any().optional().describe("Alias of filePath for upload_file — a single path or an array of paths."),
-    index: zz.number().int().min(0).optional().describe("select_page target tab index (0-based, from list_pages)."),
-    timeoutMs: zz.number().int().min(100).optional().describe("wait_for visibility budget in ms (engine default 3000, clamped to 30000)."),
-    dialogAction: str("handle_dialog verdict: accept (default) | dismiss."),
-    promptText: str("Reply text when handle_dialog accepts a prompt()-type dialog."),
-    clear: bool("Drain the buffered console messages after list_console_messages."),
-    fullPage: bool("take_screenshot captures the full page (default: viewport only)."),
-  }
-}
 /** tm_board_write — four strings, and the shape of the PATH is the tool's
  *  business, not the model's (that is what makes it safe to hand a writer to a
  *  role that owns no write-capable file tool). */

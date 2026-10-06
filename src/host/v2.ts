@@ -159,9 +159,9 @@ export const v2Personality: V2Plugin = {
     // other half of that sentence is that a direct tool definition rides EVERY
     // request (our own estimate for the full set is 9 528 tokens).
     // Delivered as REAL tools by default: the user's call (2026-09-25) was "slim the
-    // description first, then go direct", and the description is now 729 tokens for
-    // tm_browser (was 2 788 for the whole tool), which puts the measured per-role
-    // cost at 2 660 build-class / 4 726 tester / 6 391 researcher / 7 793 lead.
+    // description first, then go direct", and the descriptions are now slim enough
+    // that the measured per-role cost is 2 660 build-class / 4 726 tester /
+    // 6 391 researcher / 7 793 lead.
     // `TM_V2_CODEMODE=off` restores catalog-only for anyone who wants the tokens back
     // — and the boot note says which world this is, because in catalog mode most of
     // our governance text never reaches the model at all.
@@ -1002,7 +1002,7 @@ export const v2Personality: V2Plugin = {
           /* a host that already tore down its own registry has nothing left to free */
         }
       }
-      // tm_browser owns a child process — teardown must await it.
+      // A tool may own a child process — teardown must await it.
       await tmRuntime.dispose()
     }
   },

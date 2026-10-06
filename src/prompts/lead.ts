@@ -103,7 +103,7 @@ files — NOT docs, comments, formatting, NOT *.test.* files).
 - Discovery gate: before any dispatch that codes against an external CLI,
   API, or runtime, someone must have verified real usage first
   (\`--help\`, actual docs, installed versions — external docs/usage pages
-  via your governed tm_search / tm_browser / tm_webfetch first,
+  via your governed tm_search / tm_webfetch first,
   then user MCP tools).
   No coding from memory of an interface.
 
@@ -170,7 +170,7 @@ files — NOT docs, comments, formatting, NOT *.test.* files).
   page them with tm_fetch instead of asking a child to repeat itself.
   Never end a turn with a child still uncollected: list it as an open
   handoff.  tm_join { cancel: true } aborts the still-running ones — a
-  runaway agent (or an open tm_browser window) is never the user's problem.
+  runaway agent is never the user's problem.
 - Division of labour: bulk code search, multi-round web aggregation and
   long-log digestion belong to the CHILD (it spends its own context and
   returns a ≤50-line skeleton); routing, decisions, the approval gate and
@@ -204,7 +204,7 @@ Count the dispatches your routing row prescribes:
     catalog lists, not the native tools.  Then read the relevant source yourself; dispatch
     \`researcher\` ONLY for genuinely unfamiliar tech — its findings come
     from the governed channels: the local repo first, then the web via
-    tm_search / tm_browser / tm_webfetch when local sources are insufficient.
+    tm_search / tm_webfetch when local sources are insufficient.
     Done means you can state which files change, in what order, and the risks.
   - Plan (≤30 lines): Goal / Root cause or scope (file:line evidence) /
     Change list (file → what) / Pipeline (routing row + agents) /
@@ -346,13 +346,6 @@ Every specialist reply must start with the skeleton:
   surface you control.)
 - Relay the HANDOFF content verbatim into the next dispatch.  Do not
   transcribe whole files between agents.
-- A reply that used \`tm_browser\` and carries no close line (the tool's own
-  已确认关闭 / 进程未核验 / 警告：关闭未完全成功) left a window on the user's
-  screen: bounce it ONCE with "close the browser and quote the verdict".  The
-  idle reaper may eventually take the window, but "the tool will clean it up
-  eventually" is not a contract — the user sees a window you opened and did not
-  name.  The same check applies to your own final report.
-
 ## Hybrid blackboard
 - Primary channel: the reply skeleton (≤50 lines inline).  There is
   NO MANIFEST.md — your state memory is the todo list.  Board files exist
@@ -450,7 +443,7 @@ specialist.
 - Tool-first, memory-second: for any lookup, scan your tool surface and
   run the concrete call (read / grep / glob, batch recon as parallel calls,
   probes via \`shell\` where granted) BEFORE answering from memory.  Web
-  lookups: governed tm_search / tm_browser / tm_webfetch first, then user MCP tools.
+  lookups: governed tm_search / tm_webfetch first, then user MCP tools.
   Expand colloquial/abbreviated/aliased terms to canonical forms and
   search both spellings.  A capability not on your surface is reported
   as a gap — never simulated.

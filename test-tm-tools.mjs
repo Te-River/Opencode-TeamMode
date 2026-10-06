@@ -504,11 +504,11 @@ try {
       ep.classifyBashCommand("env FOO=bar node app.js", "standard"), null,
       "R6: env real launcher stays allowed",
     )
-    // #62 (from a real session): tm_browser's close now verifies that the OS pid
-    // actually exited, but the agent had NO allowed way to double-check leftover
-    // msedge trees — `tasklist` was refused by this very allowlist, so a
-    // "已确认关闭" claim was unverifiable by the one party who cared. Read-only
-    // process LISTING is now allowed; nothing that can act is.
+    // #62 (from a real session): an agent verifying that a process really exited
+    // had NO allowed way to double-check leftover trees — `tasklist` was refused
+    // by this very allowlist, so a "已确认关闭" claim was unverifiable by the one
+    // party who cared. Read-only process LISTING is now allowed; nothing that can
+    // act is.
     for (const cmd of ['tasklist /FI "IMAGENAME eq msedge.exe"', "ps -eo pid,ppid,comm"]) {
       assert.equal(tm.classifyReadonlyCommand(cmd, allow).ok, true, `process listing is read-only: ${cmd}`)
     }
@@ -1047,11 +1047,11 @@ try {
         const refused = await pa.askUserForTargetDetailed({ ask: async () => { throw new Error("no") } }, req, 5_000, 1_500)
         assert.equal(pa.askGrantNote(refused), "", "a refusal appends nothing")
       }
-      // 403 after header disguise → DIRECTIVE: call tm_browser (not "try again")
+      // 403 after header disguise → DIRECTIVE: use the host's native browser (not "try again")
       const forbidden = await wf.execute({ url: "https://baike.baidu.com/item/x" }, ctx)
       assert.ok(
-        forbidden.output.includes("tm_browser") && forbidden.output.includes('action:"open"'),
-        "403 → directive to call tm_browser with the exact action chain",
+        forbidden.output.includes("宿主原生浏览器") && forbidden.output.includes("browser_navigate"),
+        "403 → directive to use the host's native browser with the exact action chain",
       )
       assert.ok(forbidden.output.includes("真实浏览器会话"), "403 explains WHY (JS/TLS gate, fetch cannot pass)")
       // R6 red lines NEVER ask: env-file URL hard-blocks even with a resolver
@@ -1600,32 +1600,6 @@ try {
       const good = [h("https://maimai.sega.com/", "maimai DX"), h("https://zhuanlan.zhihu.com/p/1", "舞萌DX 是什么")]
       assert.equal(g2.observe("bing", "舞萌DX", good, ["舞萌"]).note, "", "a normal, on-topic result set gets NO warning text")
       assert.equal(g2.stalled("bing").blocked, false, "…and does not stall the engine")
-    }
-
-    // #14: a live session spent ~30 browser navigations on cn.bing.com/search?q=…
-    // — one query per round trip, on the channel tm_search already owns.
-    {
-      const sl = await import("./dist/tm/serp-loop.js")
-      const serpUrl = `https://cn.bing.com/search?q=${encodeURIComponent("神椿 动漫")}`
-      const serp = sl.serpTarget(serpUrl)
-      assert.equal(serp.engine, "bing", "a bing results page is recognised, with the query decoded")
-      assert.equal(serp.query, "神椿 动漫", "…and the query comes back readable")
-      assert.equal(sl.serpTarget("https://cn.bing.com/")?.engine, undefined, "a bare home page (no query) is NOT a search")
-      assert.equal(sl.serpTarget("https://baike.baidu.com/item/%E5%85%83%E7%A5%9E/10593772"), null, "an article is not a search — the guard must not eat real pages")
-      assert.equal(sl.serpTarget("https://github.com/search?q=opencode&type=repositories").engine, "github", "github's search path maps to the github engine")
-      assert.equal(sl.serpTarget("not a url"), null, "a malformed URL is simply not a search")
-      assert.equal(sl.serpTarget("https://stackoverflow.com/questions/12/x"), null, "a question page is not /search")
-
-      const loop = sl.createSerpLoopGuard(2)
-      assert.equal(loop.observe("https://cn.bing.com/search?q=a").blocked, false, "the first SERP grab passes — bing's HTML is sometimes an anti-bot shell and only a real browser gets through")
-      assert.equal(loop.observe("https://cn.bing.com/search?q=b").blocked, false, "…and the second")
-      const third = loop.observe("https://cn.bing.com/search?q=c")
-      assert.equal(third.blocked, true, "past the limit the navigation is refused")
-      const refusal = sl.serpRefusal(third)
-      assert.ok(refusal.includes("tm_search") && refusal.includes("bing"), "the refusal names the tool and the engine that should have been used")
-      assert.ok(refusal.includes("反爬壳子"), "…and it keeps the legitimate fallback on the record instead of banning the path")
-      assert.equal(loop.observe("https://example.com/docs"), null, "a non-SERP URL is not counted and not judged at all")
-      assert.equal(loop.seen(), 3, "only search pages feed the counter")
     }
 
     // bing's international layout wraps EVERY hit in /ck/a?…u=a1<base64> —
@@ -2248,150 +2222,6 @@ try {
   }
   console.log("6n. tm_memory: OK (add/update/search scoring/list/forget, slug-collision guard, scope filter, content cap, frontmatter round-trip, layered project>global precedence (same-title shadowing + +2 weight))")
 
-  // 6o. tm_browser — governed interactive browser (Plan C: headful CDP pipe).
-  {
-    // headless resolution matrix (environment adaptivity)
-    assert.equal(tm.resolveHeadless({ TM_BROWSER_HEADLESS: "1" }), true, "force headless")
-    assert.equal(tm.resolveHeadless({ TM_BROWSER_HEADLESS: "0" }), false, "force headful")
-    if (process.platform === "linux") {
-      assert.equal(tm.resolveHeadless({ DISPLAY: ":0" }), false, "auto: DISPLAY present → headful")
-      assert.equal(tm.resolveHeadless({}), true, "auto: no DISPLAY/WAYLAND → headless")
-    } else {
-      assert.equal(tm.resolveHeadless({}), false, "auto: win/mac desktop sessions → headful")
-    }
-    // discovery: TM_BROWSER_PATH override wins
-    const fake = path.join(os.tmpdir(), `tm-browser-fake-${Date.now()}.exe`)
-    fs.writeFileSync(fake, "x")
-    assert.equal(tm.findBrowserExecutable({ TM_BROWSER_PATH: fake }), path.resolve(fake), "TM_BROWSER_PATH override wins")
-    fs.rmSync(fake, { force: true })
-    // default-browser resolution: Chromium-family filter + registry parsers
-    assert.equal(tm.isChromiumFamily("C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe"), true, "chrome.exe is Chromium-family")
-    assert.equal(tm.isChromiumFamily("/usr/bin/brave"), true, "brave (linux) is Chromium-family")
-    assert.equal(tm.isChromiumFamily("C:\\Program Files\\Mozilla Firefox\\firefox.exe"), false, "firefox is NOT CDP-capable")
-    assert.equal(
-      tm.parseProgId("HKEY_CURRENT_USER\\...\\UserChoice\r\n    ProgId    REG_SZ    ChromeHTML\r\n"),
-      "ChromeHTML",
-      "reg ProgId parsed",
-    )
-    assert.equal(
-      tm.parseRegCommand('    (Default)    REG_SZ    "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe" --single-argument %1\r\n'),
-      "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",
-      "reg open-command exe parsed",
-    )
-    assert.equal(
-      tm.parseDesktopExec('[Desktop Entry]\nName=Chrome\nExec=/usr/bin/google-chrome-stable %U\n'),
-      "/usr/bin/google-chrome-stable",
-      "xdg desktop Exec parsed",
-    )
-    if (process.platform === "win32") {
-      // fake registry: default = a REAL file named chrome.exe → resolver returns it
-      const chromeFake = path.join(mktmp("defbrowser"), "chrome.exe")
-      fs.writeFileSync(chromeFake, "x")
-      const fakeReg = (cmd, args) =>
-        args.some((a) => String(a).includes("UserChoice"))
-          ? "    ProgId    REG_SZ    ChromeHTML\r\n"
-          : `    (Default)    REG_SZ    "${chromeFake}" --single-argument %1\r\n`
-      assert.equal(
-        tm.defaultBrowserExecutable({}, fakeReg),
-        chromeFake,
-        "default browser (Chromium-family) resolved from the registry",
-      )
-      const ffReg = (cmd, args) =>
-        args.some((a) => String(a).includes("UserChoice"))
-          ? "    ProgId    REG_SZ    FirefoxURL\r\n"
-          : "    (Default)    REG_SZ    \"C:\\FF\\firefox.exe\" -osint -url \"%1\"\r\n"
-      assert.equal(tm.defaultBrowserExecutable({}, ffReg), null, "Firefox default → null (CDP cannot drive it; probe list takes over)")
-      // Issue #5 of 2026-09-18: the user's default was Edge BETA, installed
-      // machine-wide (HKLM\SOFTWARE\Classes) with the association recorded on
-      // https.  The old probe read http + HKCU only, came back null, and the
-      // STABLE candidate path won — so stable Edge kept opening.
-      const betaFake = path.join(mktmp("defbrowser-beta"), "Microsoft", "Edge Beta", "Application", "msedge.exe")
-      fs.mkdirSync(path.dirname(betaFake), { recursive: true })
-      fs.writeFileSync(betaFake, "x")
-      const betaReg = (cmd, args) => {
-        const a = String(args.join(" "))
-        if (a.includes("UrlAssociations\\http\\UserChoice")) throw new Error("reg: key not found")
-        if (a.includes("UrlAssociations\\https\\UserChoice")) return "    ProgId    REG_SZ    MSEdgeBetaHTM\r\n"
-        if (a.includes("HKCU\\Software\\Classes")) throw new Error("reg: key not found")
-        if (a.includes("HKLM\\SOFTWARE\\Classes")) return `    (Default)    REG_SZ    "${betaFake}" --no-first-run --url "%1"\r\n`
-        throw new Error(`unexpected probe: ${a}`)
-      }
-      assert.equal(
-        tm.defaultBrowserExecutable({}, betaReg),
-        betaFake,
-        "https UserChoice + HKLM classes resolve Edge BETA when http/HKCU both fail",
-      )
-      assert.equal(
-        tm.playwrightLaunchTarget(betaFake).channel,
-        undefined,
-        "the discovered BETA path launches as-is (channel msedge would silently open stable)",
-      )
-      assert.equal(
-        tm.playwrightLaunchTarget(betaFake.replace("Edge Beta", "Edge")).channel,
-        "msedge",
-        "a stable-shaped path is the only case allowed to carry a channel",
-      )
-    }
-    // allowlist is checked BEFORE any browser spawns (works without a browser)
-    const blocked = await runtime.tools.tm_browser.execute({ action: "open", url: "https://evil.example.com/x" }, ctx)
-    assert.ok(blocked.output.includes("phase=permission"), "disallowed host → permission error, no spawn")
-    const noUrl = await runtime.tools.tm_browser.execute({ action: "open" }, ctx)
-    assert.ok(noUrl.output.includes("缺少 url"), "open without url → args error")
-    // real round-trip ONLY when a browser exists (skip on bare CI).  Mode is
-    // an OPERATOR setting now (TM_BROWSER_HEADLESS) — the model-facing
-    // `headless` arg is gone, so a test suite must never pop a window on the
-    // developer running it.
-    if (tm.findBrowserExecutable()) {
-      const savedHeadless = process.env.TM_BROWSER_HEADLESS
-      process.env.TM_BROWSER_HEADLESS = "1"
-      // its OWN runtime: this block drives a real browser, and the shared §6
-      // runtime has already been through env changes in earlier sections
-      // (store dirs, allowlists) — a live round-trip must not inherit those.
-      const liveRt = await tm.createTmTools({
-        directory: mktmp("browser-live"),
-        client: fakeClient({}),
-        $: fake$Ok(""),
-      })
-      const B = liveRt.tools.tm_browser
-      try {
-        const open = await B.execute({ action: "open", url: "https://cn.bing.com" }, ctx)
-        assert.ok(open.output.includes("浏览器已启动") && open.output.includes("无头"), "open launches headless via the env knob and reports the REAL mode")
-        assert.ok(open.output.includes("已导航"), "open navigates")
-        const read = await B.execute({ action: "read" }, ctx)
-        assert.ok(/bing/i.test(read.output), "read extracts page text")
-        const shot = await B.execute({ action: "screenshot" }, ctx)
-        const shotPath = /截图已保存（PNG \d+ bytes）：(.+)$/m.exec(shot.output)?.[1]
-        assert.ok(shotPath && fs.existsSync(shotPath.trim()) && fs.statSync(shotPath.trim()).size > 1000, "screenshot PNG written to the run store")
-        assert.ok(shot.output.includes("上下文只携带路径"), "default screenshot ships the path, not the pixels")
-        assert.equal(shot.attachments, undefined, "no attachment unless the caller asks")
-        const shotImg = await B.execute({ action: "take_screenshot", image: true }, ctx)
-        assert.ok(
-          Array.isArray(shotImg.attachments) && shotImg.attachments.length === 1,
-          "image:true attaches ONE file :: " + JSON.stringify(String(shotImg.output)).slice(0, 240),
-        )
-        assert.equal(shotImg.attachments?.[0]?.mime, "image/jpeg", "the model gets a JPEG (a real page is ~1.5MB as PNG — never inline that)")
-        assert.equal(shotImg.attachments?.[0]?.type, "file", "attachment carries the official {type:'file'} shape")
-        assert.ok(String(shotImg.attachments?.[0]?.url ?? "").startsWith("data:image/jpeg;base64,"), "pixels ride as a data URL")
-        assert.ok(shotImg.attachments[0].url.length < 400_000 * 1.4 + 64, "the attached image respects TM_BROWSER_IMAGE_MAX_BYTES (base64 ceiling)")
-        const after = await B.execute({ action: "take_screenshot" }, ctx)
-        assert.equal(after.attachments, undefined, "attachments do NOT leak onto the next call")
-        const closed = await B.execute({ action: "close" }, ctx)
-        assert.ok(
-          closed.output.includes("已确认关闭") || closed.output.includes("警告：关闭未完全成功"),
-          "close states an VERIFIED verdict — success or an explicit warning, never a bare claim",
-        )
-        assert.ok(fs.existsSync(shotPath.trim()), "screenshot stays in the run store after close (TTL owns reclamation)")
-      } finally {
-        await liveRt.dispose()
-        if (savedHeadless === undefined) delete process.env.TM_BROWSER_HEADLESS
-        else process.env.TM_BROWSER_HEADLESS = savedHeadless
-      }
-    } else {
-      console.log("  (no browser found — live round-trip skipped)")
-    }
-  }
-  console.log("6o. tm_browser: OK (headless matrix, discovery override + DEFAULT-browser registry/xdg resolution with Chromium-family filter, pre-spawn allowlist, live round-trip when a browser exists)")
-
   // 6h. degraded path: store failure -> truncated + warning, task NOT failed
   {
     const blocker = path.join(mktmp("degraded"), "blocker.txt")
@@ -2585,7 +2415,7 @@ try {
     // the real host hands tool ctx an ask() bridge, and tm_dispatch now uses
     // it for spawn consent (parity with the built-in task tool's ctx.ask)
     const LEAD = { agent: "team", sessionID: "ses_lead", directory: ".", ask: async () => "once" }
-    const BRIEF = "重构 tm_browser 的关闭路径：目标是 close 之后窗口必须真的消失，涉及 src/tm/browser.ts，完成判据是 npm test 全绿。"
+    const BRIEF = "重构 tm_join 的收集路径：目标是后台子代理的回复必须真的被取回，涉及 src/tm/dispatch.ts，完成判据是 npm test 全绿。"
 
     // ── 10. tm_dispatch is GONE; tm_join is the collect side ────────────────
     // A plugin-spawned child is a session the user can neither open from a card
@@ -2832,69 +2662,6 @@ try {
           assert.ok(/目标核对没做成.*返回异常/.test(broken.output), "a failing todo endpoint says it failed, distinctly from having no seam")
           await brokenRt.dispose()
         }
-      }
-
-      // #80: a settled child still holding a browser is reported as a FACT at the
-      // moment the lead reads the round, not left to a prompt rule the child may
-      // never have followed.
-      assert.equal(dmod.leaseTripwire([], "ses_lead"), null, "no held lease adds nothing")
-      {
-        const line = dmod.leaseTripwire(
-          [
-            { id: "b2", owner: "ses_x", agent: "researcher", idleMs: 45_000 },
-            { id: "b3", owner: "ses_y", agent: "", idleMs: 1_500 },
-          ],
-          "ses_lead",
-        )
-        assert.ok(line.includes("2 个浏览器还开着"), "counts them")
-        assert.ok(line.includes("b2（researcher · 空闲 45s）"), "names the id, the owning role, and how long it has sat")
-        assert.ok(line.includes("未知角色"), "an owner with no recorded role is still reported, never dropped")
-        assert.ok(/已确认关闭/.test(line) && /进程未核验/.test(line), "points at the tool's own verdicts instead of a bare 已关闭")
-        // The seam is the whole design: tm_join must read the browser tool's OWN
-        // lease table, or the two drift and the warning lies.
-        const idxSrc = fs.readFileSync(new URL("./dist/tm/index.js", import.meta.url), "utf8")
-        assert.ok(/browserLeases:\s*\(\)\s*=>\s*browserTool\.leases\(\)/.test(idxSrc), "tm_join is wired to the browser's own lease table")
-        const brSrc = fs.readFileSync(new URL("./dist/tm/browser.js", import.meta.url), "utf8")
-        assert.ok(/leases:\s*\(\)/.test(brSrc), "tm_browser exposes that table instead of a copy of it")
-      }
-      // #86: the LIVE recheck caught the blind spot — the lead opened b5, kept it
-      // on purpose, collected a child, and nothing said a word about the window
-      // the USER could see. Filtering to settled children only was the whole bug.
-      {
-        const own = dmod.leaseTripwire([{ id: "b5", owner: "ses_lead", agent: "team", idleMs: 62_000 }], "ses_lead")
-        assert.ok(own.includes("你自己还占着 b5"), "the caller's own lease is named as its own")
-        assert.ok(own.includes("空闲 62s"), "with how long it has sat")
-        assert.ok(!/子代理已结算/.test(own), "and NOT accused of being a settled child — keeping a window across rounds is legitimate")
-        assert.ok(/向用户说明/.test(own), "the next move is to close it or tell the user why")
-        const mixed = dmod.leaseTripwire(
-          [
-            { id: "b5", owner: "ses_lead", agent: "team", idleMs: 10_000 },
-            { id: "b2", owner: "ses_x", agent: "researcher", idleMs: 30_000 },
-          ],
-          "ses_lead",
-        )
-        assert.ok(/子代理已结算/.test(mixed) && /你自己还占着/.test(mixed), "a mixed round reports both groups, separately worded")
-      }
-      // #87: the LIVE regression of #86 still failed, by a different path — the
-      // lead dispatched a SYNCHRONOUS host task (never registered here, the host
-      // collects it inline), so tm_join hit its "nothing to collect" early return
-      // and the lease check — which lived in the header below it — never ran.
-      // A forgotten window must be reported on EVERY answer tm_join gives.
-      {
-        const dSrc = fs.readFileSync(new URL("./dist/tm/dispatch.js", import.meta.url), "utf8")
-        const uses = (dSrc.match(/leaseLine\(\)/g) || []).length
-        assert.ok(uses >= 2, `the lease line is attached to every return path, not just the settled-round header (found ${uses})`)
-        const earlyAt = dSrc.indexOf("if (!mine.length)")
-        assert.ok(earlyAt > 0, "the early 'nothing to collect' return is still findable")
-        // The window has to cover the WHOLE early answer: the sentence that names
-        // the real reason now sits behind the looked/did-not-look branch, and the
-        // ctx.session bridge clause sits inside it, so a narrower slice would fail
-        // for layout rather than for the defect.
-        const early = dSrc.slice(earlyAt, earlyAt + 2600)
-        assert.ok(early.includes("leaseLine"), "…including the early 'nothing to collect' return")
-        // And that message must not diagnose a SUCCESSFUL dispatch as a failure.
-        assert.ok(!/那说明派发生本身没成功/.test(early), "no more asserting the dispatch failed when a sync host task simply never registers here")
-        assert.ok(/同步/.test(early), "it names the real reason instead")
       }
 
       // the pure helpers that outlived the dispatcher

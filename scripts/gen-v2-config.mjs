@@ -174,21 +174,12 @@ const V2_TEXT = [
   ["Do NOT store task state or oversized content there — todo list and\nboard files own those.",
    "Do NOT store task state or oversized content there — the lead's `tm_ledger`\nand board files own those."],
   ["dropped: the list is the user's audit surface (pending / in_progress /\n  completed / blocked)", "dropped: the list is the user's audit surface (open / doing /\n  done / blocked — `tm_ledger` keeps the states, and `blocked` carries the note\n  naming what blocked it)"],
-  /* Option A (user decision 2026-09-25): interactive browsing goes to the host's own
-   * browser_* tools, because that is the only browser the desktop renders in its side
-   * panel (docs/research/browser-pane.md).  Governance is NOT taken off the table: the gate
-   * lives in src/host/v2-browser-gate.ts (execute.before + a leak-detected fallback that
-   * replaces the page with the refusal), and snapshots stay addressable through
-   * capKeepingAddressing.  tm_browser stays named as the fallback for a host with no
-   * desktop browser (CLI / standalone server).  Every key below must match the v1 prompt
-   * byte-exactly: assertForkApplied() throws when one stops matching. */
-  ["  URLs → tm_webfetch, JS-rendered pages → tm_browser (network roles only).", "  URLs → tm_webfetch, JS-rendered pages → the host's own browser_* tools (they drive\n  the side panel the user can actually see), falling back to tm_browser when no desktop browser is connected (network roles only)."],
-  ["- a visual state (a rendered UI, a chart) → tm_browser", "- a visual state (a rendered UI, a chart) → the host's browser_* tools (browser_tabs_open → browser_snapshot → browser_screenshot), or tm_browser when they are not offered"],
-  ["## UI verification (tm_browser — you carry it)", "## UI verification (the host's browser_* tools — you carry them)"],
-  ["For user-visible frontend changes, verify through the governed tm_browser", "For user-visible frontend changes, verify through the host's own browser_* tools (tm_browser only when they are absent)"],
-  ["If tm_browser is unavailable on this host, the action you need is not", "If neither browser_* nor tm_browser is available on this host, the action you need is not"],
-  ["  via your governed tm_search / tm_browser / tm_webfetch first,", "  via your governed tm_search / tm_webfetch and the host's browser_* tools (or tm_browser when no desktop browser is connected) first,"],
-  ["  lookups: governed tm_search / tm_browser / tm_webfetch first, then user MCP tools.", "  lookups: governed tm_search / tm_webfetch + the host's browser_* tools first, then user MCP tools."],
+  /* The browser fork entries are GONE (user decision 2026-10-06): the self-built
+   * tm_browser was removed outright, so the shared source prompts now name the
+   * host's native browser_* tools natively and there is nothing left to fork.
+   * Governance is unchanged: the gate lives in src/host/v2-browser-gate.ts
+   * (execute.before + a leak-detected fallback that replaces the page with the
+   * refusal), and snapshots stay addressable through capKeepingAddressing. */
 ]
 
 function forkBody(text, hits) {

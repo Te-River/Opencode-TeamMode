@@ -204,7 +204,7 @@ const eq = (a, b, msg) => assert.strictEqual(a, b, msg)
 }
 
 // ---------------------------------------------------------------------------
-// 9. the red-line exempt table is exactly the six documented knobs
+// 9. the red-line exempt table is exactly the five documented knobs
 // ---------------------------------------------------------------------------
 {
   const expected = [
@@ -212,15 +212,14 @@ const eq = (a, b, msg) => assert.strictEqual(a, b, msg)
     "r6FineAsk",
     "privateSpace",
     "webfetchAllowedDomains",
-    "browserAskEval",
     "bashReadonlyAllowed",
   ]
-  eq(RED_LINE_EXEMPT_KEYS.length, expected.length, "six red-line keys")
+  eq(RED_LINE_EXEMPT_KEYS.length, expected.length, "five red-line keys")
   for (const k of expected) assert.ok(RED_LINE_EXEMPT_KEYS.includes(k), `red-line table has ${k}`)
   for (const spec of CONFIG_KEYS.filter((s) => s.redLine)) {
     assert.ok(spec.redLineReason && spec.redLineReason.length > 0, `${spec.key} carries a reason`)
   }
-  console.log("9. red-line table: OK (six knobs, each with a reason)")
+  console.log("9. red-line table: OK (five knobs, each with a reason)")
 }
 
 console.log(`\ntest-config-layers.mjs: ALL PASS (9 groups)`)

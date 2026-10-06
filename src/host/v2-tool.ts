@@ -8,9 +8,8 @@
  *    returned a bare `output` without declaring an `output` schema came back as
  *    "Tool result declared output without an output schema".  So the v2 adapter
  *    answers with `content` parts instead — text plus `file` entries, which is
- *    also the first time tm_browser's screenshot attachment has had a host
- *    contract we can VERIFY rather than assume (the v1 capability row for it is
- *    still 未验证).
+ *    also the first time a screenshot attachment has had a host contract we can
+ *    VERIFY rather than assume (the v1 capability row for it is still 未验证).
  * 2. THE CONTEXT.  Our tools read `{directory, sessionID, agent, ask}` off the
  *    per-call ctx.  v2's ToolContext carries `{sessionID, agent, messageID, id,
  *    progress}` and NO directory and NO ask bridge.  Directory comes from the

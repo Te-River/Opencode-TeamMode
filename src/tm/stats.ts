@@ -16,7 +16,7 @@
  *
  * Plus the governance and degrade counts a user needs to see whether the
  * guardrails are biting (blocked subresources, refused tm_pty starts,
- * clamped bash timeouts, engine fallbacks).
+ * clamped bash timeouts).
  *
  * Honesty rules baked in: the numbers are an ESTIMATE over the retained
  * trajectory (TTL-swept, run-per-process), the window is stated alongside
@@ -139,7 +139,6 @@ export interface TmStats {
      *  host's schema wants a boolean) — the trap the host would reject. */
     argsCoerced: number
   }
-  degrades: Array<{ seam: string; reason: string }>
   /** `tool:"host"` lines — which personality booted, what it could not do.
    *  Without this the v2 boot record is written and never read back, so "the
    *  plugin loaded" stays a claim the user cannot check from a session. */
@@ -166,7 +165,6 @@ export function summarizeEvents(events: readonly TrajEvent[]): TmStats {
     dispatch: { starts: 0, settled: 0, failed: 0, adopted: 0, claims: 0, cancelled: 0, sumMs: 0, maxMs: 0, overlapSavedMs: 0, waitMs: 0, waits: 0, repeatWaits: 0 },
     ptc: { runs: 0, calls: 0, errors: 0, retries: 0, sumMs: 0 },
     governance: { blockedSubresources: 0, blockedHosts: [], ptyRefused: 0, clampedTimeouts: 0, clampSavedMs: 0, offloadDegraded: 0, webCacheHits: 0, evalMasks: 0, taskEnvelopes: 0, taskOffloads: 0, taskOffloadTokens: 0, argsCoerced: 0 },
-    degrades: [],
     boot: [],
   }
   const byTool = new Map<string, ToolStat>()
@@ -280,9 +278,6 @@ export function summarizeEvents(events: readonly TrajEvent[]): TmStats {
     if ((tool === "bash" || tool === "shell") && e.step_id === "timeout-clamp") {
       stats.governance.clampedTimeouts++
       stats.governance.clampSavedMs += Math.max(0, num(e.from_ms) - num(e.to_ms))
-    }
-    if (ev === "engine" && tool === "tm_browser" && String(e.kind ?? "") === "cdp-legacy") {
-      stats.degrades.push({ seam: "tm_browser/playwright-core", reason: String(e.reason ?? "").slice(0, 160) })
     }
     if (e.degraded === true) stats.governance.offloadDegraded++
   }
@@ -640,11 +635,6 @@ export function renderStats(
     `| 内置工具参数纠偏（模型把布尔写成字符串） | ${g.argsCoerced || "—"}${g.argsCoerced ? " 次 · 宿主的 schema 会直接拒绝，不纠偏就是白挂一次" : ""} |`,
     `| 卸载降级（存储写失败→截断） | ${g.offloadDegraded} |`,
   )
-
-  if (stats.degrades.length) {
-    out.push("", "### 引擎降级", "", "| 接口 | 原因 |", "|---|---|")
-    for (const x of stats.degrades) out.push(`| ${x.seam} | ${x.reason || "—"} |`)
-  }
 
   if (opts.matrix?.length) {
     out.push("", "### 宿主能力矩阵（升级后先看这张表）", "", renderCapabilityMatrix(opts.matrix))

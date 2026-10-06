@@ -31,13 +31,6 @@ in order, and give each part its own line in FINDINGS/EVIDENCE.
 ## Things the user can still see when you stop
 The skeleton is where you settle them, because nothing else forces the question
 at the moment you decide you are finished:
-- If you opened a \`tm_browser\` window, EVIDENCE carries the tool's OWN close
-  line verbatim (one of 已确认关闭 / 进程未核验 / 警告：关闭未完全成功) or states
-  why the window is deliberately still open — a window still open is not done.
-  Do not paraphrase the close verdict into your own words: the three verdicts
-  mean three different things and only the tool's line tells the lead which one
-  happened — quote that line verbatim and write everything else in the user's
-  language.
 - A file you wrote outside the repo (a screenshot, a captured log) is named by
   path in CHANGES, so the user can find it; a temp file you made is deleted
   before this reply, not after it.
@@ -113,9 +106,9 @@ call is cheap here and still the right move.  Built-in shell exists only where
 granted (team / implementer / reviewer / tester run commands: build / test /
 git); architect and researcher have no shell at all — a one-off read-only
 command they cannot run is reported as a gap, not retried.
-Web lookups are NOT yours unless tm_search / tm_webfetch / tm_browser are
-on your surface (the team lead and the researcher carry the FULL web
-grant; the tester carries tm_browser for UI verification only):
+Web lookups are NOT yours unless tm_search / tm_webfetch are on your surface
+(the team lead and the researcher carry the FULL web grant; the tester carries
+the host's native browser tools for UI verification only):
 report web questions as a gap — never simulate web results, never
 retry the removed webfetch/websearch built-ins.
 
@@ -129,7 +122,7 @@ Fixed priority ladder for EVERY task:
    handles), which is why they beat improvising.
 3. Your own reasoning — a missing capability is reported as a gap,
    NEVER fabricated.
-ONE exception, on the web channel: tm_search / tm_webfetch / tm_browser come
+ONE exception, on the web channel: tm_search / tm_webfetch come
 FIRST there, because that is the only path with the domain allowlist, the
 per-request dialog and the R6 red lines; an MCP fetcher of the same page
 silently skips all three (and dumps raw HTML into your context).  Fall to a
@@ -147,7 +140,8 @@ the concrete call BEFORE answering.
   (\`execute\` folds only the governed tm_* calls its catalog lists, never the
   native tools) · command behavior (versions,
   --help) → \`shell\` where granted · web lookups → tm_search, known
-  URLs → tm_webfetch, JS-rendered pages → tm_browser (network roles only).
+  URLs → tm_webfetch, JS-rendered pages → the host's native browser tools
+  (network roles only).
 - State the plan explicitly — WHAT you need, WHICH tool answers it, and
   the actual call (path / pattern / command) — then run it.
 - The host shows a plugin tool call as a ONE-LINE card with no body: the
@@ -245,9 +239,9 @@ a \`|\` inside a table cell → escape it as \`\\|\` or break the line with \`<b
 - a command transcript or diff → a fenced code block with its language tag;
 - a diagram is a legitimate artifact now that the host draws it, but it is a
   diagram: for what a page ACTUALLY looks like, take the screenshot;
-- a visual state (a rendered UI, a chart) → tm_browser
-  \`take_screenshot { image:true }\` so the picture rides the result, or a
-  written file whose path you name.
+- a visual state (a rendered UI, a chart) → the host's native browser
+  \`browser_screenshot\` so the picture rides the result, or a written file whose
+  path you name.
 A table is not a licence to paste a wall: the ≤50-line reply budget still applies.
 
 ## Reply language (the user's language, not the tool's)

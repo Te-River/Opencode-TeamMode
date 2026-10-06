@@ -184,7 +184,7 @@ export function checkWebUrl(raw: unknown, allowlist: readonly string[]): UrlVerd
       message:
         `目标 ${url.hostname} 落在不可路由 / 元数据地址段（${egress.via}）——R6 同级红线，不可批准。` +
         `这类地址没有"看起来对不对"可供判断：云元数据端点会把临时凭据直接送进上下文、run store 和 trajectory。` +
-        `要本机服务请用 tm_browser（有头窗口由用户自己看着），要公网内容请给公开主机名。`,
+        `要本机服务请用宿主原生浏览器（有头窗口由用户自己看着），要公网内容请给公开主机名。`,
     }
   }
   if (egress.level === "loopback") {
@@ -228,7 +228,7 @@ export function checkWebUrl(raw: unknown, allowlist: readonly string[]): UrlVerd
       url,
       message:
         `目标 ${url.hostname} 属于私网地址段（${egress.via}），域名白名单——包括 "*"——不能替你放行，只能逐次经用户批准。` +
-        `正在请求官方确认窗；批准仅对本次有效。私网服务的 UI 验证更该用 tm_browser（那才是为它设计的通道）。` +
+        `正在请求官方确认窗；批准仅对本次有效。私网服务的 UI 验证更该用宿主原生浏览器（那才是为它设计的通道）。` +
         `如果这个会话的宿主给不出确认窗（OpenCode 2.x 的插件没有弹窗权限），出路只有操作者把这一台主机名写进 ` +
         `TM_WEBFETCH_ALLOWED_DOMAINS（显式主机名，如 192.168.1.10；"*" 不算）后重启宿主。`,
     }
@@ -494,7 +494,7 @@ export function renderSearchHits(query: string, engine: string, hits: SearchHit[
     lines.push(`   ${h.url}`)
     if (h.snippet) lines.push(`   ${h.snippet}`)
   })
-  lines.push("(读正文: tm_webfetch 结果 URL；JS 渲染页用 tm_browser 打开。)")
+  lines.push("(读正文: tm_webfetch 结果 URL；JS 渲染页用宿主原生浏览器打开。)")
   return lines.join("\n")
 }
 
@@ -670,7 +670,7 @@ export async function fetchWebText(
       if (res.status === 403 || res.status === 418) {
         // Already sent real-Chrome UA + Accept headers and still rejected:
         // the gate is JS-challenge / TLS-fingerprint based — only a real
-        // browser passes.  DIRECTIVE to the agent: call tm_browser.
+        // browser passes.  DIRECTIVE to the agent: use the host's native browser.
         const u = current.toString()
         const known = u.includes("baike.baidu.com")
           ? "（baike.baidu.com 是 JS 渲染 SPA）"
@@ -679,7 +679,7 @@ export async function fetchWebText(
             : ""
         throw new Error(
           `HTTP ${res.status}${known}——伪装浏览器请求头后仍被拒，该站需要真实浏览器会话。` +
-            `下一步：调用 tm_browser 打开此 URL（action:"open" → action:"read"）` +
+            `下一步：用宿主原生浏览器打开此 URL（browser_navigate → browser_snapshot）` +
             `（${shorten(u, 120)}）；或换 tm_search 引擎 / 找直接源站。${trail()}`,
         )
       }
@@ -770,7 +770,7 @@ export function buildTmWebfetchTool(deps: {
               tmError(tool, "permission", verdict.message + " " + askRefusalNote(res.outcome)),
             )
           }
-          // Same reporting duty as tm_browser: the page came because a rule
+          // Same reporting duty as the native browser: the page came because a rule
           // allowed it, and "an always the user clicked in another session"
           // must not read as "this host is on the allowlist".
           grantNote = askGrantNote(res)
@@ -834,7 +834,7 @@ export function buildTmWebfetchTool(deps: {
             tmError(
               tool,
               "execute",
-              "页面内容为空——该站点可能是反爬或 JS 渲染页（baidu 常见）。换 tm_search 的其他引擎（bing/stackoverflow/hn）、用 tm_browser 打开，或直接访问数据源 URL（如 registry.npmjs.org/<pkg>/latest）。",
+              "页面内容为空——该站点可能是反爬或 JS 渲染页（baidu 常见）。换 tm_search 的其他引擎（bing/stackoverflow/hn）、用宿主原生浏览器打开，或直接访问数据源 URL（如 registry.npmjs.org/<pkg>/latest）。",
             ),
           )
         }

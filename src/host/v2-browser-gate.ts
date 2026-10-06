@@ -40,11 +40,11 @@ import { isEnvFilePath } from "../envprotect.js"
  *  host that queues the tool and then answers is the case we are measuring. */
 const LEAK_WINDOW_MS = 30_000
 
-/** The four host-vs-tm_browser differences that cost rounds in the user's real task log,
+/** The host's native-browser reading conventions that cost rounds in the user's real task log,
  *  said once per session at the result where each one bites. */
 export const NATIVE_BROWSER_NOTE =
   "（宿主原生浏览器的读法，本会话只说一次：① snapshot/find 的结果是 {tab, content, truncated}，" +
-  "可寻址记号写成 `@e8 [link]`，不是 tm_browser 的 `[ref=e12]`；② evaluate 的参数名是 `script`（不是 fn），" +
+  "可寻址记号写成 `@e8 [link]`；② evaluate 的参数名是 `script`（不是 fn），" +
   "而且它求值的是表达式：传 `() => …` 这种函数源文本不会被调用，结果同样是 {} —— 要么写成表达式，" +
   "要么自己写成 `(()=>{…})()`，返回对象也要自己 JSON.stringify 成标量；③ screenshot 需要一个真正可见且聚焦的" +
   "桌面标签页，宿主在后台窗口下必定失败，别为它反复 focus；④ wait 的 state 取值不是 playwright 那一套" +
@@ -272,7 +272,7 @@ export function applyV2BrowserGate(
       }
     }
     // Once per session, at the result where the confusion actually happened: the host's
-    // browser surface differs from tm_browser's in ways that each cost a round in the
+    // browser surface has quirks that each cost a round in the
     // user's real-task log (a guessed `snap.text`, an `fn` argument that is really
     // `script`, a function source that reads as `{}`, a screenshot retried after `focus`,
     // a `wait` state the host rejects, a MediaWiki URL guessed instead of the site's own

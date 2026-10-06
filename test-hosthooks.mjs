@@ -94,12 +94,11 @@ console.log("  7. capability probe: SKIPPED — v1 createCapabilityProbe removed
     // the lead parked twice inside tm_join, the second time after nothing settled
     { ts: iso(13_500), run_id: "rB", tool: "tm_dispatch", step_id: "join", event: "wait", waited_ms: 60_000, still_running: 1, repeat: false },
     { ts: iso(13_600), run_id: "rB", tool: "tm_dispatch", step_id: "join", event: "wait", waited_ms: 10_000, still_running: 1, repeat: true },
-    { ts: iso(14_000), run_id: "rB", tool: "tm_browser", step_id: "browser", event: "blocked", count: 3, hosts: "cdn.x,fonts.y" },
-    { ts: iso(15_000), run_id: "rB", tool: "tm_browser", step_id: "browser", event: "blocked", count: 2, hosts: "cdn.x" },
+    { ts: iso(14_000), run_id: "rB", tool: "browser_gate", step_id: "browser", event: "blocked", count: 3, hosts: "cdn.x,fonts.y" },
+    { ts: iso(15_000), run_id: "rB", tool: "browser_gate", step_id: "browser", event: "blocked", count: 2, hosts: "cdn.x" },
     { ts: iso(16_000), run_id: "rB", tool: "tm_pty", step_id: "pty", event: "refused", category: "delete" },
     { ts: iso(17_000), run_id: "rB", tool: "bash", step_id: "timeout-clamp", event: "probe", from_ms: 120_000, to_ms: 60_000 },
     { ts: iso(18_000), run_id: "rB", tool: "tm_ptc_run", step_id: "s9", event: "finish", status: "ok", calls: 7, errors: 0, retries: 1, ms: 2_500 },
-    { ts: iso(19_000), run_id: "rB", tool: "tm_browser", step_id: "browser", event: "engine", kind: "cdp-legacy", reason: "playwright-core import failed" },
   ]
   const s = summarizeEvents(events)
   eq(s.window.runs, 2, "one run dir == one plugin process, so the window spans restarts")
@@ -119,7 +118,6 @@ console.log("  7. capability probe: SKIPPED — v1 createCapabilityProbe removed
   eq(s.ptc, { runs: 1, calls: 7, errors: 0, retries: 1, sumMs: 2_500 }, "PTC internals roll up (one turn, N governed calls)")
   eq([s.dispatch.waitMs, s.dispatch.waits, s.dispatch.repeatWaits], [70_000, 2, 1], "the lead's blocked time inside tm_join is measured, and a chained wait is counted separately from a first one")
   ok(renderStats(s, { runDirs: 1, roots: [] }).includes("lead 在 tm_join 里干等"), "…and it is a visible row, because 'parallel' that parks the lead is not parallel")
-  eq(s.degrades, [{ seam: "tm_browser/playwright-core", reason: "playwright-core import failed" }], "an engine fallback is listed with its reason, not swallowed")
   // one child alone proves nothing
   {
     // The v2 boot record was being WRITTEN and never read back, so "the plugin
@@ -205,7 +203,6 @@ console.log("  7. capability probe: SKIPPED — v1 createCapabilityProbe removed
   ok(md.includes("**口径**"), "the estimate is labelled as an estimate, in the first lines")
   ok(md.includes("重叠省下"), "the parallelism number is its own labelled row")
   ok(md.includes("子代理结算 / 失败 / 取消（派活走宿主 task） | 2 / 1 / 0"), "dispatch counts render")
-  ok(md.includes("引擎降级"), "a degrade gets its own table")
   ok(!md.includes("undefined") && !md.includes("NaN"), "no placeholder leaked into a user-facing table")
 
   // the tool itself, over a REAL store (explicit trajectory dir: the AUTO

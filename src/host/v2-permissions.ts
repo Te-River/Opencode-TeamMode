@@ -167,16 +167,13 @@ export function triplesFromAgentPermission(
       if (V2_LADDER_ACTIONS.has(action) && direct === "deny") continue
       const effect: PermissionEffect =
         options.escalateShellAsk && action === "shell" && direct === "allow" ? "ask" : direct
+      // The host's 45 `browser_*` tools share ONE permission action named
+      // `browser` (read from the binary), and they are NOT in the direct tool
+      // surface — so deleting `browser_*` from `event.tools` at the request layer
+      // removes a catalog the assembled request never contained.  The matrix now
+      // names that action directly (`browser`), so the deny reaches the host's
+      // own evaluator, which is the only lever that speaks their language.
       triples.push({ action, resource: "*", effect })
-      // The host's 45 `browser_*` tools share ONE permission action named `browser`
-      // (read from the binary), and they are NOT in the direct tool surface — so
-      // deleting `browser_*` from `event.tools` at the request layer removes a
-      // catalog the assembled request never contained, while a role that is denied
-      // `tm_browser` can still reach every one of them from inside `execute`.
-      // Projecting the deny is the only lever that speaks their language.
-      if (action === "tm_browser" && direct === "deny") {
-        triples.push({ action: "browser", resource: "*", effect: "deny" })
-      }
       continue
     }
     if (value && typeof value === "object" && !Array.isArray(value)) {

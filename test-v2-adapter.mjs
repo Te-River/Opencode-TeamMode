@@ -47,7 +47,7 @@ function workspace(name) {
 
 const TM_NAMES = [
   "tm_read", "tm_grep", "tm_bash", "tm_fetch", "tm_memory", "tm_search",
-  "tm_webfetch", "tm_browser", "tm_ptc_run", "tm_join", "tm_pty", "tm_stats",
+  "tm_webfetch", "tm_ptc_run", "tm_join", "tm_pty", "tm_stats",
   "tm_board_write",
 ]
 /** v1's roster minus what v2 deliberately does not register. */
@@ -401,16 +401,17 @@ assert.ok(
 assert.ok(find("websearch").some((p) => p.effect === agents.Team.permission.websearch), "the matrix decides a network action, not a stray config line (the user's value is replaced by what our whitelist says)")
 // The host's 45 browser tools share ONE permission action (`browser`) and never
 // appear in the direct tool surface, so the request-layer `browser_*` deletion
-// alone left a role that is DENIED tm_browser able to browse from inside `execute`
-// — the goal-5 promise broken by an implementation detail nobody had read.
+// alone left a role that is DENIED the native browser able to browse from inside
+// `execute` — the goal-5 promise broken by an implementation detail nobody had
+// read.  The matrix now names the `browser` action directly.
 assert.ok(
   fake.agents.get("architect").permissions.some((p) => p.action === "browser" && p.effect === "deny" && p.resource === "*"),
-  "a role without tm_browser is denied the host's `browser` action too, not just our door",
+  "a role without the native browser is denied the host's `browser` action too, not just our door",
 )
 assert.equal(
   find("browser").length,
   0,
-  "and the lead, which carries tm_browser with an ask-map, gets no blanket browser deny (that would deny itself)",
+  "and the lead, which carries the native browser, gets no blanket browser deny (that would deny itself)",
 )
 // tm_ledger exists ONLY on this personality (v1 has the host's todowrite), so it is in
 // no v1 permission map — which meant nothing named it, and an unruled action is the
@@ -555,7 +556,7 @@ const SURFACE = [
   "read", "grep", "glob", "list", "edit", "write", "patch", "shell", "webfetch", "websearch",
   "skill", "question", "todowrite", "subagent", "browser_navigate", "browser_tabs_list",
   "tm_fetch", "tm_memory", "tm_board_write", "tm_stats", "tm_join", "tm_ledger",
-  "tm_browser", "tm_search", "tm_webfetch",
+  "tm_search", "tm_webfetch",
 ]
 const event = (agent, options = {}) => ({
   agent,
@@ -575,7 +576,7 @@ for (const gone of [
   // phantom rule), and the lead's ledger monopoly is held by the `tm_ledger`
   // deny asserted in group 4, not by a deny on a tool that does not exist.
   "subagent", "browser_navigate", "browser_tabs_list",
-  "tm_webfetch", "tm_search", "tm_browser", "tm_join", "tm_ledger",
+  "tm_webfetch", "tm_search", "tm_join", "tm_ledger",
 ]) {
   assert.ok(!archLeft.includes(gone), `architect is not even OFFERED ${gone} (v1 left its description in every request)`)
 }
@@ -603,7 +604,7 @@ assert.ok(leadLeft.includes("subagent"), "the lead keeps the dispatch lever")
 assert.ok(leadLeft.includes("tm_ledger"), "the lead keeps the list it is mandated to keep — v2 has no todowrite to lean on")
 assert.ok(leadLeft.includes("question"), "and the blocking-question grant its prompt mandate needs (the ledger grant lives in the tm_ledger triple, group 4)")
 assert.ok(leadLeft.includes("browser_navigate"), "a network role keeps the host's browser catalog")
-assert.ok(leadLeft.includes("tm_webfetch") && leadLeft.includes("tm_browser"), "granted with an ask-map, so still offered")
+assert.ok(leadLeft.includes("tm_webfetch"), "granted with an ask-map, so still offered")
 assert.ok(leadLeft.includes("read") && leadLeft.includes("shell"), "the lead reads and runs through the native tools — its v1 aliases are retired, not missed")
 
 const preset = event("tester", { temperature: 0.7 })
@@ -756,7 +757,7 @@ console.log("7e. Team-scope isolation — nothing outside Team may be touched (#
     system: [],
     messages: [],
     options: {},
-    tools: Object.fromEntries(["read", "shell", "webfetch", "tm_browser"].map((n) => [n, { description: "d", input: {} }])),
+    tools: Object.fromEntries(["read", "shell", "webfetch", "browser_navigate"].map((n) => [n, { description: "d", input: {} }])),
   }
   await fake.hook("session.context").fire(foreignReq)
   assert.equal(Object.keys(foreignReq.tools).length, 4, "build is offered every tool the host gave it — we delete nothing for a stranger")

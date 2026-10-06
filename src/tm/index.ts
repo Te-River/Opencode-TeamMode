@@ -10,7 +10,7 @@
  * It generates the run identity (run id + store-persisted HMAC key), resolves
  * the env config, sweeps expired run payloads (startup-only TTL reclamation)
  * and assembles the governed tool surface (tm_fetch + tm_memory / tm_search /
- * tm_webfetch / tm_browser / tm_join / tm_stats / tm_board_write / tm_ledger;
+ * tm_webfetch / tm_join / tm_stats / tm_board_write / tm_ledger;
  * T0.4-verified shape: `{ tool: { tm_fetch: { description, args,
  * execute(args, ctx) } } }`).
  */
@@ -31,7 +31,7 @@ import { hmacToken, loadOrCreateHandleKey, newRunId } from "./refs.js"
 import { RunStore } from "./store.js"
 import { buildTmTools } from "./tools.js"
 import { buildPipelines } from "./pipelines.js"
-import { buildWebfetchArgsSchema, buildMemoryArgsSchema, buildBrowserArgsSchema, buildSearchArgsSchema, buildBoardArgsSchema } from "./args-schema.js"
+import { buildWebfetchArgsSchema, buildMemoryArgsSchema, buildSearchArgsSchema, buildBoardArgsSchema } from "./args-schema.js"
 import { buildStatsTool } from "./stats.js"
 import { buildBoardWriteTool } from "./board.js"
 import { buildLedgerTool } from "./ledger.js"
@@ -66,24 +66,7 @@ export {
   type LedgerItem,
   type LedgerStore,
 } from "./ledger.js"
-export {
-  buildTmBrowserTool,
-  defaultBrowserExecutable,
-  findBrowserExecutable,
-  isChromiumFamily,
-  isPassiveResource,
-  normalizeResourceType,
-  parseDesktopExec,
-  parseProgId,
-  parseRegCommand,
-  playwrightLaunchTarget,
-  rememberSite,
-  resolveHeadless,
-  siteOf,
-  subresourcePass,
-} from "./browser.js"
 import { buildTmMemoryTool } from "./memory.js"
-import { buildTmBrowserTool } from "./browser.js"
 import { buildDispatchTools } from "./dispatch.js"
 export {
   buildDispatchTools,
@@ -102,9 +85,9 @@ export interface TmRuntime {
   /** The ONE main pipeline instance (exposed for tests + tool builders). */
   pipelines: ReturnType<typeof import("./pipelines.js").buildPipelines>
   tools: Record<string, ToolDefinition>
-  /** Kill any long-lived session the tools own (tm_browser child process).
-   *  ASYNC because the host's dispose hook awaits it — a fire-and-forget
-   *  browser close could lose the window. */
+  /** Kill any long-lived session the tools own.  ASYNC because the host's
+   *  dispose hook awaits it.  No tool owns a child process any more (the
+   *  self-built browser is gone), so this is a no-op kept for the contract. */
   dispose: () => Promise<void>
   /** Host event bus slice the async dispatcher needs (session.idle /
    *  .error / .status settle the lead's children). */
@@ -126,9 +109,6 @@ export interface CreateTmToolsOptions {
   mode?: EnvProtectMode
   /** R6 extra deny rules — same single-source rule. */
   extra?: RegExp[]
-  /** Best-effort user notification (the host toast) — tm_browser's idle
-   *  reaper uses it so an auto-closed window is announced, not silent. */
-  notify?: (message: string) => void
   /** A sub-agent child session entered our registry (adopted from the host's
    *  session tree, or claimed by an id the lead named) — let the approval gate
    *  register it so the sub-agent's own protected read opens the official
@@ -449,17 +429,11 @@ export async function createTmTools(
     pipelines,
     args: memoryArgs,
   })
-  // tm_browser — governed interactive browser (Plan C, headful CDP pipe).
-  // Network role tool: team + researcher carry the allow; the other four
-  // hold an explicit deny (overrides the tm_* wildcard).  dispose() kills
-  // the browser child when the host tears the plugin down.
-  const browserTool = buildTmBrowserTool({
-    pipelines,
-    cfg,
-    args: await buildBrowserArgsSchema(),
-    notify: opts.notify,
-  })
-  tools.tm_browser = browserTool
+  // (The self-built governed interactive browser was REMOVED
+  // (2026-10-06, user decision): the host's own native `browser_*` catalog is
+  // the only browser path now, governed by src/host/v2-browser-gate.ts.  On a
+  // host without that catalog (CLI/standalone) there is simply no browser, and
+  // an agent must report that gap rather than simulate one.)
   // (tm_ptc_run was the v1-only batch-orchestration tool; the v2 host's native
   // Code Mode `execute` runs one program over N governed calls, so it is gone
   // with the v1 personality — no secondary "ptc-" pipeline is built here.)
@@ -475,10 +449,6 @@ export async function createTmTools(
     pipelines,
     onChildSession: opts.onChildSession,
     maxWaitMs: cfg.joinMaxWaitMs,
-    // #80: tm_join reports a child that settled while still holding a browser
-    // window.  One shared instance already owns the lease table, so this is a
-    // read of a fact, not a second source of truth.
-    browserLeases: () => browserTool.leases(),
     // The goal tripwire prefers the HOST's todo list; when there is none (v2),
     // the plugin's own LEDGER is the list that can actually be checked.
     ledgerStore: opts.ledgerStore,
@@ -520,7 +490,7 @@ export async function createTmTools(
     store,
     pipelines,
     tools,
-    dispose: () => browserTool.dispose(),
+    dispose: async () => {},
     observeDispatchEvent: dispatch.observeEvent,
     registerHostChild: dispatch.register,
     settleHostChild: dispatch.settle,

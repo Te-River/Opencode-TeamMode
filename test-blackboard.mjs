@@ -229,8 +229,8 @@ assert.equal(cfg.agent["Team"].permission.task, "allow", "lead task dispatch all
 assert.deepEqual(cfg.agent["Team"].permission.tm_webfetch, { "*": "ask" }, "lead: web channel carries the ask-map (out-of-allowlist targets pop the official dialog)")
 assert.equal(cfg.agent["implementer"].permission.tm_webfetch, "deny", "implementer is NOT a network role")
 assert.deepEqual(cfg.agent["researcher"].permission.tm_webfetch, { "*": "ask" }, "researcher: web channel carries the ask-map")
-assert.deepEqual(cfg.agent["Team"].permission.tm_browser, { "*": "ask" }, "lead: browser carries the ask-map")
-assert.equal(cfg.agent["implementer"].permission.tm_browser, "deny", "implementer is NOT a network role (browser)")
+assert.equal(cfg.agent["Team"].permission.browser, undefined, "lead: the native browser catalog is left to the host (no blanket deny)")
+assert.equal(cfg.agent["implementer"].permission.browser, "deny", "implementer is NOT a network role (native browser denied)")
 assert.equal(cfg.agent["implementer"].permission.tm_memory, "allow", "memory store: all roles (not a network channel)")
 assert.equal(cfg.agent["Team"].permission.tm_ledger, undefined, "the ledger is NOT named in the matrix — v2-permissions grants tm_ledger by role name, so a second source of truth here would drift")
 assert.equal(cfg.agent["Team"].permission.question, "allow", "lead: question granted (batched blocking questions)")
@@ -364,7 +364,10 @@ assert.ok(cfg2.agent["implementer"].prompt.includes("`shell` with\n  `background
  * Banned by assertion, not left to chance, because a stale sentence loads fine
  * and costs the round it points at.  And the batching red line must name the
  * tool that replaced it, or the mandate cannot be walked. */
-const RETIRED_TOOL_NAMES = [...v2perm.V1_ONLY_TOOLS, "todowrite"]
+// `tm_browser` is added EXPLICITLY: it is not in V1_ONLY_TOOLS (it was a v2
+// tool), but it retired with the native-browser-only route (2026-10-06), so a
+// prompt that still names it points at a tool this package no longer ships.
+const RETIRED_TOOL_NAMES = [...v2perm.V1_ONLY_TOOLS, "todowrite", "tm_browser"]
 const BANNED_RES = [
   ...RETIRED_TOOL_NAMES.map((n) => new RegExp(n.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i")),
   /task\s+tool/i,
@@ -496,10 +499,6 @@ assert.ok(leadPrompt.includes("## Evidence standard"), "lead: evidence standard 
 assert.ok(leadPrompt.includes("## Docs sync"), "lead: docs-sync rule (CHANGELOG + AGENTS.md)")
 assert.ok(leadPrompt.includes("## Efficiency first"), "lead: the efficiency mandate is there, spelled in English like the rest of the prompt")
 assert.ok(leadPrompt.includes("## Reply language"), "lead: output language follows the USER, not the tool output")
-// #80: the lead is the one role that actually sees a specialist's reply, so the
-// lease check has to be its enforcement duty too — a rule nobody reads is a rule
-// nobody follows, and the idle reaper is a fallback, not a contract.
-assert.ok(leadPrompt.includes("no close line"), "lead: bounces a browser reply that never reported closing")
 assert.ok(
   leadPrompt.indexOf("## Efficiency first") < leadPrompt.indexOf("## Routing table"),
   "lead: the efficiency mandate is stated BEFORE the table it justifies (a rule after its exception cannot bind)",
@@ -528,13 +527,6 @@ assert.ok(!testerP.includes("UI verification mode"), "tester: old UI automation 
 assert.ok(testerP.includes("UI NOT VERIFIED:"), "tester: honest no-tooling fallback")
 for (const expert of EXPERTS) {
   assert.ok(cfg2.agent[expert].prompt.includes("STATUS: done | blocked | failed"), expert + ": skeleton status line")
-  // #80: forgetting to close a browser is not an attention problem, it is a
-  // missing field — the skeleton is the one thing every role fills in at the
-  // moment it decides it is finished, so the lease question lives there.
-  assert.ok(
-    cfg2.agent[expert].prompt.includes("a window still open is not done"),
-    expert + ": the reply contract asks for the lease verdict before 'done'",
-  )
 
   assert.ok(cfg2.agent[expert].prompt.includes("Do not re-open"), expert + ": no README/AGENTS.md re-reading")
   assert.ok(cfg2.agent[expert].prompt.includes("## Evidence rule"), expert + ": evidence rule")
@@ -570,11 +562,11 @@ for (const expert of EXPERTS) {
   assert.ok(cfg2.agent[expert].prompt.includes("apply:true"), expert + ": compact is dry-run by default, apply:true performs it")
   assert.ok(cfg2.agent[expert].prompt.includes(".compact-backup"), expert + ": .compact-backup tree is the compaction rollback path")
   assert.ok(
-    cfg2.agent[expert].prompt.includes("Web lookups are NOT yours unless tm_search / tm_webfetch / tm_browser"),
+    cfg2.agent[expert].prompt.includes("Web lookups are NOT yours unless tm_search / tm_webfetch"),
     expert + ": web boundary rule (network roles are lead + researcher only)",
   )
   assert.ok(
-    cfg2.agent[expert].prompt.includes("the tester carries tm_browser for UI verification"),
+    cfg2.agent[expert].prompt.includes("the host's native browser tools for UI verification"),
     expert + ": web boundary rule names the tester's browser-only exception",
   )
   assert.ok(cfg2.agent[expert].prompt.includes("1. The user's OWN tools"), expert + ": priority ladder rung 1 (the user's own MCP/plugin tools come first)")
@@ -612,55 +604,9 @@ for (const dead of ["bing-int", "sogou", "baidu", "360"]) {
 }
 assert.ok(cfg2.agent["researcher"].prompt.includes("never build a search URL there"), "researcher: dead CN SERPs are named as dead ends, not options")
 assert.ok(cfg2.agent["researcher"].prompt.includes("ONE SEARCH IS A SAMPLE, NOT A SEARCH"), "researcher: multi-query refinement loop is mandatory (no one-shot search)")
-assert.ok(cfg2.agent["researcher"].prompt.includes("个子资源请求被拦截"), "researcher: a trimmed page is reported as gate action, not 'the site has no images'")
-// #81: measured live, a researcher saw no dialog and INFERRED the host was
-// allowlisted — the absence of a prompt is not a fact about the allowlist,
-// because a saved "always" answers for every session in the project.
-assert.ok(
-  cfg2.agent["researcher"].prompt.includes("Absence of a confirmation dialog is NOT evidence"),
-  "researcher: no-dialog must not be read as allowlisted",
-)
-assert.ok(
-  /project-wide/.test(cfg2.agent["researcher"].prompt),
-  "…and the rule names the project-wide reach of a saved always",
-)
-// close now has THREE verdicts, and the third is the one that used to be
-// reported to the user as a success: the tool could not find a pid, so nothing
-// was verified.  A prompt that only knows two of them turns 进程未核验 into
-// "浏览器已关闭".
-assert.ok(
-  cfg2.agent["researcher"].prompt.includes("已确认关闭") &&
-    cfg2.agent["researcher"].prompt.includes("进程未核验") &&
-    cfg2.agent["researcher"].prompt.includes("警告：关闭未完全成功"),
-  "researcher: all three close verdicts are named",
-)
-assert.ok(
-  /Only the first may be reported as the browser being/.test(cfg2.agent["researcher"].prompt),
-  "researcher: an unverified close may not be reported to the user as closed",
-)
-// One browser per agent.  Three agents carry tm_browser and host `task`
-// children run in the same plugin process, so a shared window meant one
-// agent's take_snapshot renumbered the uids another was holding — and the
-// click still reported success.  The id is the fix, so the prompt has to say
-// it exists and that it must be passed.
-assert.ok(/ONE BROWSER PER\s+AGENT/.test(cfg2.agent["researcher"].prompt), "researcher: the browser is leased per agent and the id addresses yours")
-assert.ok(
-  cfg2.agent["researcher"].prompt.includes("another agent's id is refused"),
-  "researcher: an id is a name, not a capability token — the refusal is stated up front",
-)
-// A blank page has three possible meanings and the agent must be told the
-// difference, because "0 个可寻址节点" was being reported as "该网站没有内容"
-// while our own gate was blocking the site's script bundle (measured on baike:
-// 0 nodes blocked vs 260 with bdimg.com allowed).
-assert.ok(
-  cfg2.agent["researcher"].prompt.includes("the blankness is our gate"),
-  "researcher: a gate-caused blank is named as ours, not as an empty site",
-)
-assert.ok(
-  cfg2.agent["researcher"].prompt.includes("allow_host") &&
-    cfg2.agent["researcher"].prompt.includes("re-navigate"),
-  "researcher: the remedy is a scoped approval plus a re-navigation, and it is in the prompt",
-)
+// A thin/empty snapshot is a claim about the page or about our own gate, never
+// about the site being empty — and a human-verification wall is a different
+// fact again whose move is another source.
 assert.ok(
   cfg2.agent["researcher"].prompt.includes("human-verification wall"),
   "researcher: a human-verification wall is a different fact, and its move is another source",
@@ -669,11 +615,6 @@ assert.ok(
   cfg2.agent["tester"].prompt.includes("never about the site being empty"),
   "tester: the same three-way reading of an empty snapshot, on the UI-verification side",
 )
-assert.ok(
-  cfg2.agent["tester"].prompt.includes("id of YOUR browser"),
-  "tester: open returns the id of the caller's own browser",
-)
-assert.ok(cfg2.agent["researcher"].prompt.includes("there is no headless parameter for you"), "researcher: headless is an operator setting, not a model arg")
 assert.ok(/independent web calls: two unrelated tm_search queries belong in/.test(cfg2.agent["researcher"].prompt), "researcher: independent web calls batch into one round")
 assert.ok(cfg2.agent["researcher"].prompt.includes("Command time budget"), "researcher: command time budget section present")
 assert.ok(cfg2.agent["researcher"].prompt.includes("does not make anything finish"), "researcher: a big timeout is explained as dead air, not speed")
@@ -685,7 +626,7 @@ assert.ok(cfg2.agent["researcher"].prompt.includes("registry.npmjs.org/-/v1/sear
 assert.ok(cfg2.agent["researcher"].prompt.includes("mobile.moegirl.org.cn"), "researcher: seeded web hosts documented")
 assert.ok(cfg2.agent["Team"].prompt.includes("tm_search"), "lead: governed search front referenced")
 assert.ok(cfg2.agent["Team"].prompt.includes("tm_webfetch"), "lead: governed web fallback referenced")
-assert.ok(cfg2.agent["tester"].prompt.includes("## UI verification (tm_browser"), "tester: governed UI verification section present")
+assert.ok(cfg2.agent["tester"].prompt.includes("## UI verification (the host's native browser tools"), "tester: governed UI verification section present")
 assert.ok(cfg2.agent["tester"].prompt.includes("UI NOT VERIFIED"), "tester: honest-gap fallback kept alongside the browser grant")
 assert.ok(cfg2.agent["Team"].prompt.includes("tm_memory search"), "lead: memory consulted during research phase")
 assert.ok(cfg2.agent["Team"].prompt.includes("project layer first, global layer for cross-repo conventions"), "lead: memory layering (project layer first, global for cross-repo conventions)")
@@ -802,7 +743,7 @@ console.log("\n8. board-write call shape (A5) + write-capable wording (A8)")
       `command ${name}: carries no tool-less overstatement`)
   }
   // The same overstatement lived in CODE-adjacent text too — the board tool's own
-  // DESCRIPTION, its file header, the browser args-schema note, and the per-role
+  // DESCRIPTION, its file header, the args-schema notes, and the per-role
   // comments in agents.ts. Nothing pinned those, so A8 fixed the prompts twice (and
   // P2 the descriptions) while the next refactor was free to write it back. Scan the
   // SOURCE, not dist/: dist can be stale, and a test that reads a stale artifact

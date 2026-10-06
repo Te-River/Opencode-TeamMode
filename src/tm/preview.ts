@@ -116,7 +116,7 @@ export function detectContentType(content: string, hint?: ContentType): ContentT
  * a silent tail cut is how a wrong-element click gets reported as 已点击.
  *
  * The addressing pattern is deliberately wide (any `key=value` token whose key ends in
- * `ref` / `id`, plus the `[uid=…]` shape our own tm_browser mints), because matching
+ * `ref` / `id`, plus the `[uid=…]` shape a snapshot may mint), because matching
  * the host's future snapshot format is a guess; over-collecting only costs budget.
  */
 /** How far an addressing payload may overtake its nominal budget: every ref line is
@@ -128,9 +128,9 @@ export function capKeepingAddressing(
   text: string,
   maxTokens: number,
 ): { text: string; kept: number; dropped: number; total: number; addressesDropped: number; fellBack: boolean } {
-  // Two syntaxes, both observed: our own tm_browser mints `[uid=e12]` / `ref=…`, while the
+  // Two syntaxes, both observed: a snapshot may mint `[uid=e12]` / `ref=…`, while the
   // HOST's ariaSnapshot writes `@e8 [link] "…"` (measured in the user's desktop export).
-  // Matching only ours meant every native snapshot line read as static text — and then the
+  // Matching only one meant every native snapshot line read as static text — and then the
   // budget arithmetic below could not tell the model which lines it had lost.
   const ADDRESSIVE = /\b\w*(?:ref|uid)\w*\s*=|(?:^|[\s[,@])@?e\d{1,5}(?=[\s\]:"',]|$)/i
   const lines = text.split(String.fromCharCode(10))

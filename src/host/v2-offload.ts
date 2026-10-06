@@ -162,7 +162,7 @@ function locatableText(result: unknown): { parts: unknown[]; index: number; text
  * take a `ref` out of the snapshot, so a preview that drops the ref tokens does not
  * save the model a round-trip — it makes it click the wrong element, or spend a call
  * re-snapshotting.  For these two the text stays in context, capped, with the handle
- * kept for the tail.  1 200 tokens is the budget tm_browser's own snapshot already
+ * kept for the tail.  1 200 tokens is the budget a native snapshot already
  * runs at, so the governed door and the native one cost the same window space.
  */
 export const ADDRESSING_NATIVE_TOOLS: ReadonlySet<string> = new Set(["browser_snapshot", "browser_find"])

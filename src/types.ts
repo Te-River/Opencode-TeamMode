@@ -54,7 +54,7 @@ export interface CommandConfig {
  *
  * `attachments` is the SAME contract (`ToolAttachment`): a
  * `{type:"file", mime, url}` entry the host turns into a FilePart on the tool
- * result, which is how tm_browser hands a screenshot's PIXELS to a vision
+ * result, which is how a screenshot's PIXELS reach a vision
  * model instead of only a path.  It is opt-in per call (token economy) and
  * every attachment-producing path still writes the file and prints its path,
  * so a host that ignores `attachments` degrades to the old path-only

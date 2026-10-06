@@ -123,10 +123,6 @@ export interface DispatchDeps {
   onChildSession?: (sessionID: string, agent: string) => void
   /** Injectable clock for tests. */
   now?: () => number
-  /** tm_browser's live lease table (id + owning session + idle).  tm_join uses
-   *  it to report a child that settled while still holding a visible window —
-   *  see the lease tripwire. Absent = the check is skipped, never assumed. */
-  browserLeases?: () => { id: string; owner: string; agent: string; idleMs: number }[]
   /** Ceiling on how long tm_join will wait on a round of children. */
   maxWaitMs?: number
   /** What the v2 `ctx.session` bridge saw on its last attempt — reported so a failed
@@ -186,42 +182,6 @@ export function openHostTodos(todos: unknown): HostTodo[] {
     if (content) open.push({ content: content.slice(0, 120), status })
   }
   return open
-}
-
-/** #80: the line tm_join adds when a SETTLED child still owns a browser window.
- *  Takes only the leases already filtered to settled children, so the ownership
- *  rule stays where the child registry is; this function's whole job is to say
- *  it in the one shape that survives the lead's skimming — and to refuse to say
- *  it for a window that was never ours. */
-export function leaseTripwire(
-  held: readonly { id: string; owner: string; agent: string; idleMs: number }[],
-  callerSessionID?: string,
-): string | null {
-  if (!held.length) return null
-  const isMine = (l: { owner: string }) => !!callerSessionID && l.owner === callerSessionID
-  const mine = held.filter(isMine)
-  const theirs = held.filter((l) => !isMine(l))
-  const at = (l: { idleMs: number }) => `空闲 ${Math.round(l.idleMs / 1000)}s`
-  const parts: string[] = []
-  if (theirs.length) {
-    parts.push(
-      `⚠ ${theirs.length} 个浏览器还开着（子代理已结算，但它没 close）：` +
-        theirs.map((l) => `${l.id}（${l.agent || "未知角色"} · ${at(l)}）`).join("、") +
-        `\n要么让它 close 并引用工具自己的三种裁决之一（已确认关闭 / 进程未核验 / 警告：关闭未完全成功），` +
-        `要么由你向用户写明为什么留着。不要替它写"已关闭"——那是把没人核实过的结论交付出去。`,
-    )
-  }
-  // The caller's own window is the one the user is looking at, and the live
-  // recheck proved this branch was the missing one: a lead that keeps a browser
-  // across rounds is legitimate, so this is a reminder, not an accusation —
-  // but silence is the defect.
-  for (const l of mine) {
-    parts.push(
-      `（你自己还占着 ${l.id}，${at(l)}。收尾前 action:"close" 并引用工具的裁决句；` +
-        `如果确实要跨轮留着，就在回复里向用户说明为什么。）`,
-    )
-  }
-  return parts.join("\n")
 }
 
 /** Resolve the host session API defensively — `messages` is what tm_join
@@ -1095,33 +1055,6 @@ export function buildDispatchTools(deps: DispatchDeps): {
             }
           }
         }
-        // #87: computed BEFORE any early return.  The live regression of #86 was
-        // a lead holding a browser while tm_join answered "nothing to collect" —
-        // a SYNCHRONOUS host task never registers in this table (the host
-        // collects it inline), so the header assembly below never ran, and the
-        // window the user was looking at went unreported again.  A forgotten
-        // browser has to surface on EVERY answer this tool gives.
-        const leaseLine = (): string => {
-          if (typeof deps.browserLeases !== "function") return ""
-          let held: { id: string; owner: string; agent: string; idleMs: number }[] = []
-          try {
-            const done = new Set(mine.filter((r) => r.state !== "running").map((r) => r.sessionID))
-            held = deps.browserLeases().filter((l) => done.has(l.owner) || l.owner === parent)
-          } catch {
-            /* the lease table is an extra, never a reason to fail a join */
-            return ""
-          }
-          const line = leaseTripwire(held, parent) ?? ""
-          if (line) {
-            log({
-              step_id: "join",
-              event: "lease_held",
-              count: held.length,
-              ids: held.map((l) => l.id).join(","),
-            })
-          }
-          return line
-        }
         // ── #steer: 插话 / 未读 / 撤回 ──────────────────────────────────────────────
         // Three new actions, each answered and returned HERE.  A call that names none of
         // them falls through to the collect/wait flow below untouched, which is what keeps
@@ -1158,9 +1091,6 @@ export function buildDispatchTools(deps: DispatchDeps): {
             }
             target = [...idFilter][0]
           }
-          // #87 applies to these answers too: a forgotten window surfaces on EVERY reply.
-          const lease = leaseLine()
-          const tail = lease ? `\n${lease}` : ""
           const gate = await parentageOf(target, parent, directory)
           if (!gate.ok) {
             log({
@@ -1169,7 +1099,7 @@ export function buildDispatchTools(deps: DispatchDeps): {
               child: target,
               reason: "parentage",
             })
-            return toToolResult(`没有发送：${gate.why}。${tail}`)
+            return toToolResult(`没有发送：${gate.why}。`)
           }
           const row = children.get(target)
           const rowLine = row
@@ -1214,7 +1144,7 @@ export function buildDispatchTools(deps: DispatchDeps): {
                 ? `\n它现在不是运行中（${row.state === "error" ? "失败" : "已结算"}）；按文档 steer 会唤醒它的执行，但唤醒之后它做什么，要等它结算才看得到。`
                 : ""
             return toToolResult(
-              `插话目标：${rowLine}\n插话结果：${steerVerdictLine(outcome, { inboxID, note, seam })}\n插话计数：${steerOutcomeParts(tally).join(" · ")}${wake}${tail}`,
+              `插话目标：${rowLine}\n插话结果：${steerVerdictLine(outcome, { inboxID, note, seam })}\n插话计数：${steerOutcomeParts(tally).join(" · ")}${wake}`,
             )
           }
 
@@ -1222,7 +1152,7 @@ export function buildDispatchTools(deps: DispatchDeps): {
             if (!api || api.v2SteerSeam !== true || typeof api.inboxList !== "function") {
               log({ step_id: "join", event: "unread", child: target, outcome: "no-seam" })
               return toToolResult(
-                `未读列表没有查询：这个宿主没给 session.inbox.list 的缝（v1 客户端没有这条契约），未发送。\n目标：${rowLine}${tail}`,
+                `未读列表没有查询：这个宿主没给 session.inbox.list 的缝（v1 客户端没有这条契约），未发送。\n目标：${rowLine}`,
               )
             }
             const un = unwrapClientResult(await api.inboxList({ sessionID: target }))
@@ -1237,7 +1167,7 @@ export function buildDispatchTools(deps: DispatchDeps): {
                   ? "这个宿主没给 session.inbox.list 的缝（两种拼写都试了）"
                   : `查询被宿主拒绝：${shorten(String(data?.message ?? (un.ok ? "" : un.message) ?? ""), 120)}`
               log({ step_id: "join", event: "unread", child: target, outcome: seamOut === "no-seam" ? "no-seam" : "threw" })
-              return toToolResult(`未读列表没有查到：${why}。\n目标：${rowLine}${tail}`)
+              return toToolResult(`未读列表没有查到：${why}。\n目标：${rowLine}`)
             }
             const listed = inboxItemLines(data?.items)
             log({
@@ -1256,7 +1186,7 @@ export function buildDispatchTools(deps: DispatchDeps): {
             return toToolResult(
               `未投递的插话项（${target}）：${listed.lines.length} 条${trimmed}\n` +
                 `${listed.lines.join("\n") || "（没有未投递项）"}\n` +
-                `（只给 id 与形状，正文不进这里 —— 要撤回某条就 unsend 它的 id）\n目标：${rowLine}${tail}`,
+                `（只给 id 与形状，正文不进这里 —— 要撤回某条就 unsend 它的 id）\n目标：${rowLine}`,
             )
           }
 
@@ -1264,7 +1194,7 @@ export function buildDispatchTools(deps: DispatchDeps): {
           if (!api || api.v2SteerSeam !== true || typeof api.inboxCancel !== "function") {
             log({ step_id: "join", event: "unsend", child: target, inboxID: unsendID, outcome: "no-seam" })
             return toToolResult(
-              `撤回没有发送：这个宿主没给 session.inbox.cancel 的缝（v1 客户端没有这条契约）。\n目标：${rowLine}${tail}`,
+              `撤回没有发送：这个宿主没给 session.inbox.cancel 的缝（v1 客户端没有这条契约）。\n目标：${rowLine}`,
             )
           }
           const got = unsendOutcomeOf(await api.inboxCancel({ sessionID: target, inboxID: unsendID }))
@@ -1280,11 +1210,10 @@ export function buildDispatchTools(deps: DispatchDeps): {
           })
           log({ step_id: "join", event: "unsend_summary", count: 1, outcomes: unsendOutcomeParts(tallyU).join(" / ") })
           return toToolResult(
-            `撤回目标：${target} · inbox=${unsendID}\n结果：${unsendVerdictLine(got.outcome, { inboxID: got.inboxID, note: got.note })}\n撤回计数：${unsendOutcomeParts(tallyU).join(" · ")}\n${rowLine}${tail}`,
+            `撤回目标：${target} · inbox=${unsendID}\n结果：${unsendVerdictLine(got.outcome, { inboxID: got.inboxID, note: got.note })}\n撤回计数：${unsendOutcomeParts(tallyU).join(" · ")}\n${rowLine}`,
           )
         }
         if (!mine.length) {
-          const lease = leaseLine()
           // The parenthetical is now chosen by whether we actually looked, so a
           // host we cannot query no longer reports as "confirmed: nothing there".
           const saw = adoption.looked
@@ -1313,8 +1242,7 @@ export function buildDispatchTools(deps: DispatchDeps): {
               // the transcript, and the honest reason is that a synchronous host
               // task never enters this registry at all.
               `如果你用的是同步 \`task\`：宿主自己就把结果收回来了，它从不登记在这里，这不是派发失败。` +
-              `只有后台 \`task {background:true}\`（或显式带 ids）需要 tm_join 来取。` +
-              (lease ? `\n${lease}` : ""),
+              `只有后台 \`task {background:true}\`（或显式带 ids）需要 tm_join 来取。`,
           )
         }
         await settleAdopted(mine, directory)
@@ -1488,13 +1416,6 @@ export function buildDispatchTools(deps: DispatchDeps): {
               reason: canCheck ? "endpoint_failed" : ledgerEmpty ? "ledger_empty" : "no_seam",
             })
           }
-        }
-        // #80/#86/#87: THE LEASE TRIPWIRE — one computation (leaseLine above),
-        // attached to every answer this tool gives, so a settled round and an
-        // empty one cannot disagree about whether a window is still open.
-        if (settled) {
-          const lease = leaseLine()
-          if (lease) header.push(lease)
         }
         const wantText = !(args.includeText === false || args.includeText === "false")
         const collectible = mine.filter((r) => r.state !== "running")

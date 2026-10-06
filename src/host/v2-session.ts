@@ -89,10 +89,10 @@ export function toolsToRemove(permission: Record<string, unknown> | undefined | 
   const names: string[] = []
   for (const [key, value] of Object.entries(permission ?? {})) {
     if (!isDeny(value)) continue
-    if (key === "tm_browser") {
-      // Both doors go: our own tool AND the host's catalog. Removing only
-      // tm_browser would leave 45 native browser tools in the request, which is
-      // the exact surface the whitelist withholds.
+    if (key === "browser") {
+      // The matrix names the host's `browser` action directly (the self-built
+      // self-built browser is retired).  A deny on it removes the whole native catalog
+      // from the request, which is the exact surface the whitelist withholds.
       names.push(BROWSER_CATALOG)
     }
     // A `tm_*` key IS a tool name, so a DENY on one has to remove it too —

@@ -28,13 +28,13 @@ export const DEFAULT_BASH_READONLY_ALLOWED: readonly string[] = [
   "wc", "cut", "dir", "Get-Content", "Get-ChildItem", "Select-String",
   "Measure-Object", "Select-Object", "Where-Object", "Sort-Object",
   "Group-Object", "Test-Path",
-  // Process LISTING, read-only and write-free.  tm_browser's close now verifies
-  // that the browser's OS pid really exited, and a "已确认关闭" claim the user
-  // cannot check is worth less than one they can — measured live, an agent told
-  // to verify leftover msedge processes had no allowed way to ask the OS.
-  // findstr joins it for the same reason: `tasklist | findstr /i msedge` is the
-  // natural Windows spelling of that check, and refusing it only turned one
-  // call into two (live evidence: refused, then re-run with Select-String).
+  // Process LISTING, read-only and write-free.  An agent verifying that a
+  // process really exited (a leftover browser, a stray server) had no allowed
+  // way to ask the OS, and a claim the user cannot check is worth less than one
+  // they can.  findstr joins it for the same reason: `tasklist | findstr /i
+  // msedge` is the natural Windows spelling of that check, and refusing it only
+  // turned one call into two (live evidence: refused, then re-run with
+  // Select-String).
   "tasklist", "ps", "findstr",
 ]
 
@@ -49,8 +49,8 @@ export const DEFAULT_BASH_READONLY_ALLOWED: readonly string[] = [
  * agents bouncing off baike.baidu.com and mzh.moegirl.org.cn (the agent-install flow points
  * agents at the installation guide on exactly these hosts).  A site's OWN
  * asset CDN on a brand-unrelated domain has to be seeded too — same-site
- * cannot infer it, and blocking it is what makes tm_browser report a blank
- * page (bdimg.com below is that case, measured).  Subdomains of
+ * cannot infer it, and blocking it is what makes a page render blank
+ * (bdimg.com below is that case, measured).  Subdomains of
  * an entry are included;
  * TM_WEBFETCH_ALLOWED_DOMAINS overrides the list (comma/semicolon
  * separated; a lone "*" opens every host — keep the engine hosts or
@@ -59,12 +59,12 @@ export const DEFAULT_BASH_READONLY_ALLOWED: readonly string[] = [
 export const DEFAULT_WEBFETCH_DOMAINS: readonly string[] = [
   // CN search engines + content (parent domains cover every sibling subdomain)
   "baidu.com", // www. search / baike. encyclopedia / tieba. — real sessions hit baike.baidu.com
-  // Baidu's OWN static + anti-spam CDN.  Not a subdomain of baidu.com, so the
-  // same-site subresource policy can never infer it, and tm_browser rendered
-  // baike.baidu.com/ as 0 addressable nodes while the identical client with
-  // this host allowed rendered 260 (measured 2026-09-23, Edge Beta +
-  // playwright-core 1.63).  A page whose own bundle we block is a blank page
-  // we then report as "no content" — that is the bug this seed closes.
+  // Baidu's OWN static + anti-spam CDN.  Not a subdomain of baidu.com, so a
+  // same-site subresource policy can never infer it, and a page whose own
+  // bundle we block is a blank page we then report as "no content" — that is
+  // the bug this seed closes (measured 2026-09-23: baike.baidu.com/ rendered 0
+  // addressable nodes while the identical client with this host allowed
+  // rendered 260).
   "bdimg.com", // bkssl. challenge scripts / resource. / static. asset bundles
   "moegirl.org.cn", // mobile. term / mzh. main site — real sessions hit mzh
   "bilibili.com", // search. / www. video pages / space.
@@ -163,43 +163,6 @@ export interface TmConfig {
    *  explicit `TM_OFFLOAD_THRESHOLD_DATA` always wins.  Consumed by
    *  pipelines.ts `offloadThresholdFor` (T4 tiering — now live). */
   offloadThresholdData: number
-  /** tm_browser engine: "playwright" (default; a failed playwright-core
-   *  import degrades to legacy CDP at runtime) | "cdp-legacy".
-   *  Consumed by browser.ts (T5). */
-  browserEngine: "playwright" | "cdp-legacy"
-  /** Hard cap (estimated tokens) for tm_browser snapshot payloads.
-   *  Consumed by browser.ts (T5). */
-  browserSnapshotMaxTokens: number
-  /** tm_browser SUBRESOURCE policy — what the in-page network gate does with
-   *  everything a page pulls AFTER the navigation itself was allowed.
-   *  Gating subresources by the CONTENT allowlist (the pre-v1.5.13 behavior)
-   *  silently aborts every img/css/js the site serves from its own CDN, so
-   *  pages render picture-less and the agent reports "no images".
-   *    same-site (default) — passive types (image/media/font/stylesheet)
-   *      always pass; an EXECUTABLE resource (script/xhr/fetch/document/…)
-   *      passes only when its registrable site is one this session actually
-   *      navigated to;
-   *    passive — passive types pass, everything else stays on the allowlist;
-   *    off   — the legacy verbatim behavior (every request re-checked).
-   *  Consumed by browser.ts. */
-  browserSubresource: "same-site" | "passive" | "off"
-  /** TM_BROWSER_ASK_EVAL (default on) — `evaluate_script` runs arbitrary JS in
-   *  the user's OWN browser, which is the one verb the domain allowlist cannot
-   *  cover: the allowlist limits where we NAVIGATE, not what a loaded page
-   *  hands back (cookies, localStorage, any token in the DOM).  So this verb
-   *  asks the official dialog once per browser session, and refuses when the
-   *  host gives us no ask bridge (tm_pty's rule).  `off` restores the
-   *  pre-v1.5.14 behaviour; result redaction is NOT switchable. */
-  browserAskEval: "on" | "off"
-  /** Ceiling on PNG bytes tm_browser will base64-inline as a tool-result
-   *  attachment (an oversized screenshot stays path-only + says why).
-   *  Consumed by browser.ts. */
-  browserImageMaxBytes: number
-  /** Idle wall-clock after which tm_browser closes an untouched session on
-   *  its own — the safety net for the "agent claims it closed the window but
-   *  it is still on screen" class.  0 disables the reaper.  Consumed by
-   *  browser.ts. */
-  browserIdleCloseMs: number
   /** TM_WEB_CACHE_TTL_SEC (default 300; 0 disables) — how long a governed
    *  fetch body may be re-served for the SAME URL.  The web channel is the
    *  slowest thing the team does and the most duplicated (lead + researcher
@@ -287,12 +250,6 @@ export const TM_CONFIG_DEFAULTS = {
   // applying these.
   offloadThresholdText: 4000,
   offloadThresholdData: 2000,
-  browserEngine: "playwright",
-  browserSnapshotMaxTokens: 1200,
-  browserSubresource: "same-site",
-  browserAskEval: "on",
-  browserImageMaxBytes: 400_000,
-  browserIdleCloseMs: 180_000,
   webCacheTtlSec: 300,
   joinMaxWaitMs: 60_000,
   boardMaxChars: 200_000,
@@ -335,15 +292,6 @@ function envNum(env: EnvLike, key: string, def: number, min: number, max: number
   const n = Number(raw.trim())
   if (!Number.isFinite(n) || n < min || n > max) return def
   return n
-}
-
-/** TM_BROWSER_SUBRESOURCE — anything unrecognized keeps the same-site
- *  default (fail-soft toward the newer, working behavior). */
-function resolveSubresourcePolicy(raw: unknown): "same-site" | "passive" | "off" {
-  const v = typeof raw === "string" ? raw.trim().toLowerCase() : ""
-  if (v === "off" || v === "strict" || v === "legacy") return "off"
-  if (v === "passive") return "passive"
-  return "same-site"
 }
 
 /** TM_SEARCH_WEIGHTS — `bing=0.2,hn=0.3` into a partial weight table.  A
@@ -413,12 +361,6 @@ export function resolveTmConfig(env: EnvLike = process.env): TmConfig {
     searchRelevanceFloor: envNum(env, "TM_SEARCH_RELEVANCE_FLOOR", TM_CONFIG_DEFAULTS.searchRelevanceFloor, 0, 1),
     offloadThresholdText: envInt(env, "TM_OFFLOAD_THRESHOLD_TEXT", textTierDefault, 0, 10_000_000),
     offloadThresholdData: envInt(env, "TM_OFFLOAD_THRESHOLD_DATA", dataTierDefault, 0, 10_000_000),
-    browserEngine: resolveBrowserEngine(env.TM_BROWSER_ENGINE),
-    browserSnapshotMaxTokens: envInt(env, "TM_BROWSER_SNAPSHOT_MAX_TOKENS", TM_CONFIG_DEFAULTS.browserSnapshotMaxTokens, 10, 100_000),
-    browserSubresource: resolveSubresourcePolicy(env.TM_BROWSER_SUBRESOURCE),
-    browserAskEval: resolveOnOff(env.TM_BROWSER_ASK_EVAL),
-    browserImageMaxBytes: envInt(env, "TM_BROWSER_IMAGE_MAX_BYTES", TM_CONFIG_DEFAULTS.browserImageMaxBytes, 10_000, 5_000_000),
-    browserIdleCloseMs: envInt(env, "TM_BROWSER_IDLE_MS", TM_CONFIG_DEFAULTS.browserIdleCloseMs, 0, 3_600_000),
     webCacheTtlSec: envInt(env, "TM_WEB_CACHE_TTL_SEC", TM_CONFIG_DEFAULTS.webCacheTtlSec, 0, 86_400),
     joinMaxWaitMs: envInt(env, "TM_JOIN_MAX_WAIT_MS", TM_CONFIG_DEFAULTS.joinMaxWaitMs, 0, 600_000),
     boardMaxChars: envInt(env, "TM_BOARD_MAX_CHARS", TM_CONFIG_DEFAULTS.boardMaxChars, 1_000, 2_000_000),
@@ -429,14 +371,6 @@ export function resolveTmConfig(env: EnvLike = process.env): TmConfig {
     bashTimeoutMaxMs: envInt(env, "TM_BASH_TIMEOUT_MAX_MS", TM_CONFIG_DEFAULTS.bashTimeoutMaxMs, 0, 3_600_000),
     bashTimeoutProbeMs: envInt(env, "TM_BASH_TIMEOUT_PROBE_MS", TM_CONFIG_DEFAULTS.bashTimeoutProbeMs, 0, 600_000),
   }
-}
-
-/** TM_BROWSER_ENGINE — anything not exactly "cdp-legacy" resolves to the
- *  playwright default (runtime import failure degrades to legacy inside
- *  browser.ts, T5 — the config layer only parses the preference). */
-function resolveBrowserEngine(raw: unknown): "playwright" | "cdp-legacy" {
-  const v = typeof raw === "string" ? raw.trim().toLowerCase() : ""
-  return v === "cdp-legacy" ? v : "playwright"
 }
 
 /** TM_PTC_WEB_BRIDGE — off only on an explicit off-ish value; unset or

@@ -62,7 +62,7 @@ import { V1_ONLY_TOOLS } from "./host/v2-permissions.js"
  *    pass through the whitelist untouched and are the HIGH-priority channel;
  *  - "tm_*" covers the governed retrieval/memory tools this package still
  *    registers (tm_fetch / tm_memory / tm_stats / tm_board_write); tm_webfetch,
- *    tm_search and tm_browser are explicit keys that override the wildcard per
+ *    tm_search is an explicit key that overrides the wildcard per
  *    agent; the R6 env-protection hook aliases onto the native shell unchanged,
  *    so narrowing the surface does not weaken the anti-backdoor chain.
  *
@@ -141,13 +141,16 @@ const whitelist = (
   }
   for (const tool of TM_TOOLS) permission[tool] = "allow"
   permission["tm_*"] = "allow"
-  // Governed web channels (tm_webfetch / tm_search / tm_browser) — default
-  // DENY for every agent; the explicit keys override the tm_* wildcard.
-  // applyNetworkPermission grants the FULL set to the lead + researcher
-  // and tm_browser alone to the tester (UI verification).
+  // Governed web channels (tm_webfetch / tm_search) — default DENY for every
+  // agent; the explicit keys override the tm_* wildcard.  applyNetworkPermission
+  // grants the FULL set to the lead + researcher, and the host's native browser
+  // catalog to the tester (UI verification).
   permission["tm_webfetch"] = "deny"
   permission["tm_search"] = "deny"
-  permission["tm_browser"] = "deny"
+  // The host's native `browser_*` catalog is the ONLY browser path now (the
+  // self-built browser is retired).  Default DENY here; applyNetworkPermission
+  // lifts it for the two network roles and the tester.
+  permission["browser"] = "deny"
   // Nobody creates sub-agents through us any more: a tm_dispatch child is a
   // session the user can neither open from a card nor stop from the UI, so
   // delegation goes through the host's own `task` (governed, visible,
@@ -179,15 +182,18 @@ export function applyDispatcherPermission(permission: AgentPermission, isTeamLea
 const WEB_ASK_MAP = { "*": "ask" } as const
 
 /** Apply the network grant: the team lead and the researcher carry the
- *  FULL governed web channels (tm_webfetch / tm_search / tm_browser — the
- *  ask-map overrides the tm_* wildcard so out-of-allowlist targets pop the
- *  official dialog); the TESTER carries tm_browser ONLY (governed UI
+ *  FULL governed web channels (tm_webfetch / tm_search — the ask-map overrides
+ *  the tm_* wildcard so out-of-allowlist targets pop the official dialog); the
+ *  TESTER carries the host's native browser catalog ONLY (governed UI
  *  verification — no open web fetching); architect / implementer /
  *  reviewer keep the whitelist deny. */
 function applyNetworkPermission(permission: AgentPermission, isWebRole: boolean, isTester = false): void {
   permission["tm_webfetch"] = isWebRole ? { ...WEB_ASK_MAP } : "deny"
   permission["tm_search"] = isWebRole ? { ...WEB_ASK_MAP } : "deny"
-  permission["tm_browser"] = isWebRole || isTester ? { ...WEB_ASK_MAP } : "deny"
+  // The native browser catalog is granted to the two network roles and the
+  // tester (UI verification) by REMOVING the whitelist's deny, so the host's own
+  // browser permission applies to them rather than a blanket rule of ours.
+  if (isWebRole || isTester) delete permission["browser"]
 }
 
 /* ------------------------------------------------------------------ */
@@ -205,7 +211,7 @@ const teamLead: AgentConfig = {
     "different expertise areas.",
   prompt: TEAM_LEAD_PROMPT,
   color: "#E879F9", // purple
-  // Whitelist: TM_TOOLS + tm_webfetch/tm_search/tm_browser (the lead is
+  // Whitelist: TM_TOOLS + tm_webfetch/tm_search (the lead is
   // a network role) + subagent dispatch + edit (<=10-line non-product edits) +
   // write (board files) + shell (discovery-gate probes) + question
   // (the lead's ledger discipline and batched blocking questions are
@@ -276,15 +282,15 @@ const tester: AgentConfig = {
     "Test engineer — writes and runs unit/integration tests, classifies " +
     "failures (product bug vs bad test vs environment), verifies via build, " +
     "typecheck, static analysis and API-level tests, verifies user-visible " +
-    "frontend changes through the governed tm_browser (UI verification of " +
-    "this project only), and reports a clear verdict.  Use to validate " +
+    "frontend changes through the host's native browser tools (UI verification " +
+    "of this project only), and reports a clear verdict.  Use to validate " +
     "correctness or raise coverage.",
   prompt: TESTER_PROMPT,
   color: "#F472B6", // pink
   // Whitelist: TM_TOOLS + edit/write (test files) + bash (the whole
   // verification stack: build / typecheck / lint / test runs).
-  // tm_browser granted for governed UI verification; tm_webfetch / tm_search
-  // DENIED (open web lookups stay with the lead + researcher).
+  // The host's native browser catalog is granted for governed UI verification;
+  // tm_webfetch / tm_search DENIED (open web lookups stay with the lead + researcher).
   permission: whitelist("edit", "write", "bash"),
   temperature: 0.2,
 }
@@ -295,13 +301,13 @@ const researcher: AgentConfig = {
     "Researcher — investigates the local repository (code, configs, " +
     "installed/vendored packages, shipped documentation) and, when local " +
     "sources are insufficient, the web via the priority ladder: governed " +
-    "tm_search / tm_browser / tm_webfetch first, user-configured MCP tools " +
+    "tm_search / tm_webfetch first, user-configured MCP tools " +
     "second.  Every finding carries a source (file:line or URL) and a " +
     "confidence tag so the team can decide what needs verification.  Use " +
     "for information that must inform a technical decision.",
   prompt: RESEARCHER_PROMPT,
   color: "#A78BFA", // violet
-  // Whitelist: TM_TOOLS + tm_webfetch / tm_search / tm_browser (the
+  // Whitelist: TM_TOOLS + tm_webfetch / tm_search (the
   // researcher is a network role).  The built-in webfetch/websearch tools
   // stay removed — web lookups ride user-configured MCP tools (preferred)
   // or the governed tm_* web channels (allowlisted, threshold-offloaded).
@@ -326,7 +332,7 @@ if (teamLead.permission) {
 }
 for (const a of [architect, implementer, reviewer, tester, researcher]) {
   if (a.permission) {
-    // tester: tm_browser only (UI verification); researcher: full web grant
+    // tester: native browser only (UI verification); researcher: full web grant
     applyNetworkPermission(a.permission, a === researcher, a === tester)
     applyDispatcherPermission(a.permission, false)
   }
