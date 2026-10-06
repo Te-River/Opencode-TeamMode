@@ -189,6 +189,15 @@ registry saw 1.5.0 as the install-script fix release).
 
 ### Fixed
 
+- **Context pruning was inert on 2.0.24** (found by the live verification, fixed in `0fb56e6`).
+  `textSlots` accepted only parts with `type: "text"`, while a tool result arrives as
+  `{role:"tool", content:[{type:"tool-result", result}]}` — the body is in `result`, there is no
+  `text` — and reasoning as `{type:"reasoning", text}`. So `used` counted only user/assistant prose,
+  stayed below the threshold forever, and 45 large file reads pruned nothing. Parts are now
+  recognised **by shape**, an object `result` is walked for its text instead of being stringified
+  into `[object Object]`, and an unrecognised part is **not** counted into `used` (under-count rather
+  than over-count and prune evidence) but **is** counted as `unknownParts` — so the next shape change
+  is a number rather than a silent stop.
 - **The shell timeout clamp is back** (issue #6). v1 enforced it in a composed
   `tool.execute.before` hook, so the v1 cut silently dropped it: a model that passes a timeout at
   all passes `120000+` for a `Get-ChildItem`, and three serialised probes cost minutes of dead
