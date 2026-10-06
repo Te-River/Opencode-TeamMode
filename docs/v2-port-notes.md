@@ -487,3 +487,14 @@ survivors were written. Each is recorded here so the next reader does not re-der
 - **`tools_in_request` was unobservable in a CLI run** (measured on 2.0.24): it was written only
   on `v2-shutdown`, and a CLI process never reaches dispose. It now rides the throttled
   `v2-surface` row too, which is the row a CLI run actually writes. `[L]`
+
+- **The context-hook part inventory on 2.0.24** (measured 2026-10-06, three real turns with a
+  probe plugin on `session.hook("context")`, plus a read-only scan of the host binary's
+  `LLM.Content` union). Message shape is `{id, role, metadata, content:[…]}`; the part types
+  that actually appeared, with their key names: `text` → `type,text,providerMetadata`;
+  `reasoning` → `type,text,providerMetadata`; `tool-call` → `type,id,name,input,
+  providerExecuted,providerMetadata`; `tool-result` → `type,id,name,namespace,result,
+  providerExecuted,cache,metadata,providerMetadata`; `media` → `type,media,filename,metadata`.
+  The binary's union also names `compaction` and `effort`, which were never observed in a turn.
+  This is why the prune layer's first version was inert: it accepted only `type:"text"`, and the
+  bulk of a real request is `tool-result`/`tool-call`. `[L]`

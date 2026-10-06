@@ -198,6 +198,15 @@ registry saw 1.5.0 as the install-script fix release).
   into `[object Object]`, and an unrecognised part is **not** counted into `used` (under-count rather
   than over-count and prune evidence) but **is** counted as `unknownParts` — so the next shape change
   is a number rather than a silent stop.
+- **The prune shape list was completed from observation, not memory** (`85c540b`). The live
+  re-verification showed `unknownParts` climbing 32 → 132, i.e. `used` was systematically low and
+  the layer pruned less than it should. A probe plugin on `session.hook("context")` over three
+  real turns (plus a read-only scan of the host binary's `LLM.Content` union) produced the actual
+  inventory: `text` / `reasoning` (`text`), `tool-call` (`input`), `tool-result` (`result`),
+  `media` (`media`, a pure reference). `tool-call` is now recognised — it was the bulk of those
+  132 — and `media` is listed as known-but-textless, so it is neither counted into `used` nor
+  noise in `unknownParts`. `compaction` and `effort` exist in the binary but were never observed,
+  so they stay unknown rather than being added on a guess.
 - **The shell timeout clamp is back** (issue #6). v1 enforced it in a composed
   `tool.execute.before` hook, so the v1 cut silently dropped it: a model that passes a timeout at
   all passes `120000+` for a `Get-ChildItem`, and three serialised probes cost minutes of dead
