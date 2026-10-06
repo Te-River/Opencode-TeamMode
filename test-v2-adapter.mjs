@@ -423,7 +423,7 @@ assert.ok(
 assert.ok(
   ["architect", "implementer", "reviewer", "tester", "researcher"].every((role) =>
     fake.agents.get(role).permissions.some((p) => p.action === "tm_ledger" && p.effect === "deny")),
-  "the five specialists are explicitly denied it — the runtime onlyAgent gate now has a rule the user can read",
+  "the five specialists are explicitly denied it — the runtime onlyAgent gate now has a rule the user can read (that gate is UNREACHABLE on the real host: the request layer removes tm_ledger from every non-lead surface, so it is unit-covered only — see group 7g)",
 )
 assert.ok(
   find("my_mcp_thing").some((p) => p.effect === "allow" && p.resource === "*"),
@@ -721,6 +721,27 @@ console.log("   OK (surface trimmed per role, 0.2 restored, board root and survi
     else process.env.TM_TRAJECTORY_DIR = prevTj
   }
 }
+
+// 7g. tm_ledger's runtime `onlyAgent` gate is a SECOND lock, and on the real host
+// it is UNREACHABLE (task #57).  The request layer already removes `tm_ledger`
+// from every non-lead surface — `toolsToRemove` pushes it whenever the matrix
+// denies `tm_join`, which every specialist's does — and the v2 permission layer
+// adds an explicit `tm_ledger: deny` triple for them (group 4).  So a specialist
+// never sees the tool, and the host answers `Unknown tool` if one is
+// hallucinated; the gate only fires in a unit test that calls `execute` directly
+// (group 26c).  This group pins the surface exclusion for ALL five specialists,
+// so the "unreachable" claim is a measurement rather than a comment.
+{
+  for (const role of ["architect", "implementer", "reviewer", "tester", "researcher"]) {
+    const e = event(role)
+    await fake.hook("session.context").fire(e)
+    assert.ok(
+      !Object.keys(e.tools).includes("tm_ledger"),
+      `${role} is not even OFFERED tm_ledger — the runtime onlyAgent gate is unreachable on the real host`,
+    )
+  }
+}
+console.log("   OK (tm_ledger excluded from every specialist surface; the runtime onlyAgent gate is a documented second lock, unit-covered in group 26c)")
 
 console.log("7b. the permission guard — the red line below the allowlist, on the HOST's own web path")
 const { webGuard, shellGuard, needsCoarseShellAsk } = await import("./dist/host/v2-guard.js")
@@ -3258,6 +3279,164 @@ console.log("27. the Code Mode adoption hint — a run of native calls appends a
   for (const r of await Promise.all(pc.registrations)) await r.dispose()
 }
 console.log("   OK (2 silent, the 4th native call advises; execute resets; question is transparent; the body is preserved verbatim and the append is idempotent; foreign sessions skipped; throws swallowed and counted)")
+
+console.log("28. Context Pruning — settled history becomes pointers, evidence survives (#49)")
+{
+  const { resolvePruneConfig, prunePlan, isProtectedMessage, renderPruneStub, applyV2ContextPrune } =
+    await import("./dist/host/v2-prune.js")
+  const envKeys = ["TM_PRUNE", "TM_PRUNE_AT_PERCENT", "TM_PRUNE_KEEP_TAIL_PERCENT"]
+  const saved = Object.fromEntries(envKeys.map((k) => [k, process.env[k]]))
+  const clearEnv = () => envKeys.forEach((k) => { delete process.env[k] })
+  try {
+    clearEnv()
+    const d = resolvePruneConfig()
+    assert.equal(d.enabled, true, "on by default: the user asked for the behaviour, not a knob to remember")
+    assert.equal(d.atPercent, 70, "70% of the model's window is the default")
+    assert.equal(d.keepTailPercent, 40, "the newest 40% of the window is kept verbatim")
+    for (const off of ["off", "false", "0", "no", "OFF"]) {
+      process.env.TM_PRUNE = off
+      assert.equal(resolvePruneConfig().enabled, false, `TM_PRUNE=${off} restores today's behaviour`)
+    }
+    clearEnv()
+    for (const junk of ["", "abc", "0"]) {
+      process.env.TM_PRUNE_AT_PERCENT = junk
+      assert.equal(resolvePruneConfig().atPercent, 70, `a garbage percent (${JSON.stringify(junk)}) falls back rather than arming a wild threshold`)
+    }
+    clearEnv()
+    process.env.TM_PRUNE_AT_PERCENT = "50"
+    assert.equal(resolvePruneConfig().atPercent, 50, "a real percent is honoured")
+    process.env.TM_PRUNE_AT_PERCENT = "10"
+    assert.equal(resolvePruneConfig().atPercent, 40, "clamped up to 40")
+    process.env.TM_PRUNE_AT_PERCENT = "101"
+    assert.equal(resolvePruneConfig().atPercent, 90, "an out-of-range percent is clamped, not honoured")
+    process.env.TM_PRUNE_AT_PERCENT = "900"
+    assert.equal(resolvePruneConfig().atPercent, 90, "and a wild one clamps to the same ceiling")
+    clearEnv()
+
+    // ---- pure: the hard-protection list ----
+    const msg = (text, role = "assistant") => ({ role, parts: [{ type: "text", text }] })
+    assert.equal(isProtectedMessage(msg("STATUS: done\nHANDOFF: x")), true, "the reply skeleton is protected")
+    assert.equal(isProtectedMessage(msg("GOAL: ship it\nACCEPTANCE: tests green", "user")), true, "GOAL/ACCEPTANCE protected")
+    assert.equal(isProtectedMessage(msg("正文来源=ctx.session.context")), true, "provenance protected")
+    assert.equal(isProtectedMessage(msg('<subagent sessionID="ses_run" state="running">working</subagent>', "user")), true, "a still-running child is protected")
+    assert.equal(isProtectedMessage(msg("child ses_abc is still going", "user")), true, "an uncollected child id (no settled marker) is protected")
+    assert.equal(isProtectedMessage(msg('<subagent sessionID="ses_done" state="completed">report</subagent>', "user")), false, "a SETTLED child report is prunable — the stub keeps its id")
+    assert.equal(isProtectedMessage(msg("you are a helpful agent", "system")), true, "system messages protected")
+    assert.equal(isProtectedMessage(msg("## Team Blackboard\nroot: /x", "user")), true, "the board note is protected")
+    assert.equal(isProtectedMessage(msg("just some old tool output")), false, "ordinary settled output is prunable")
+
+    // ---- pure: prunePlan ----
+    const big = (n) => "x".repeat(n) // ~n/4 tokens
+    const seq = [
+      msg(big(4000)),                 // 0 prunable
+      msg("STATUS: keep me"),         // 1 protected
+      msg(big(4000)),                 // 2 prunable
+      msg(big(4000), "user"),         // 3 tail
+    ]
+    const plan = prunePlan(seq, { budgetTokens: 100, keepTailTokens: 1500 })
+    assert.ok(plan.prune.some((e) => e.index === 0), "the oldest big message is pruned")
+    assert.ok(!plan.prune.some((e) => e.index === 1), "the skeleton message is never pruned")
+    assert.ok(!plan.prune.some((e) => e.index === 3), "the tail message is never pruned")
+    assert.ok(plan.protectedCount >= 1, "protected messages are counted")
+    assert.ok(plan.savedTokens > 0, "the savings are counted")
+    const already = [msg("[已裁剪 · 原 100 token] 旧替身"), msg("tail", "user")]
+    assert.equal(prunePlan(already, { budgetTokens: 0, keepTailTokens: 0 }).prune.length, 0, "a message already carrying the sentinel is not pruned again (idempotent)")
+
+    // ---- pure: the stub shape ----
+    const hstub = renderPruneStub({ kind: "handle", originalTokens: 12340, handle: { ref: "tm://runs/r-1/steps/s1/result", accessToken: "tok", expireAt: 99 } })
+    assert.ok(hstub.includes("tm://runs/r-1/steps/s1/result"), "the handle ref survives in the stub")
+    assert.ok(hstub.includes("access_token"), "and the token")
+    assert.ok(hstub.includes("已裁剪"), "and it says it was pruned")
+    assert.ok(hstub.includes("12,340"), "and it names the original size")
+    const cstub = renderPruneStub({ kind: "child", originalTokens: 500, childId: "ses_done", childState: "completed" })
+    assert.ok(cstub.includes("ses_done"), "the child id survives in the stub")
+
+    // ---- the layer, driven through the fake host ----
+    const CAT = [{ id: "glm", providerID: "lxns", modelID: "glm", limit: { context: 100_000, output: 1000 } }]
+    const scopeStub = { decide: (e) => (e && e.agent === "team" ? "ours" : "foreign"), count: (v) => v, learn: () => {} }
+    const handleText = 'tm_fetch { ref:"tm://runs/r-9/steps/s9/result", access_token:"tok9", expire_at: 9 } ' + "z".repeat(300_000)
+    const drive = async (opts = {}) => {
+      const f = makeFakeCtx({ directory: ws, agents: [], models: opts.catalog === undefined ? CAT : opts.catalog })
+      const events = []
+      const layer = await applyV2ContextPrune(f.ctx, {
+        config: opts.config ?? { enabled: true, atPercent: 70, keepTailPercent: 0 },
+        scope: opts.noScope ? undefined : scopeStub,
+        onEvent: (row) => events.push(row),
+      })
+      const fire = async (messages, agent = "team", sessionID = "ses_t") => {
+        await f.hook("session.context").fire({ agent, sessionID, system: [], messages, tools: {} })
+      }
+      return { f, report: layer.report, registrations: layer.registrations, fire, events }
+    }
+
+    {
+      // under threshold → below, nothing touched
+      const { report, fire } = await drive()
+      const messages = [{ role: "assistant", model: { providerID: "lxns", id: "glm" }, parts: [{ type: "text", text: "small" }] }, msg("STATUS: keep", "user")]
+      await fire(messages)
+      assert.equal(report.below, 1, "under the threshold is counted as below, not as silence")
+      assert.equal(report.prunedMessages, 0, "and nothing is pruned")
+      assert.equal(messages[0].parts[0].text, "small", "the body is byte-exact")
+    }
+
+    {
+      // over threshold → the oldest settled message becomes a pointer
+      const { report, fire, events } = await drive()
+      const messages = [
+        { role: "assistant", model: { providerID: "lxns", id: "glm" }, parts: [{ type: "text", text: handleText }] }, // 0: handle, big, prunable
+        msg("STATUS: keep me"),          // 1: protected
+        msg("recent tail", "user"),      // 2: newest, protected
+      ]
+      await fire(messages)
+      assert.equal(report.prunedMessages, 1, "exactly the one settled message is pruned")
+      assert.ok(report.prunedTokens > 0, "and the savings are counted")
+      assert.ok(messages[0].parts[0].text.includes("已裁剪"), "the body is replaced by a stub")
+      assert.ok(messages[0].parts[0].text.includes("tm://runs/r-9/steps/s9/result"), "the handle ref survives — evidence is not destroyed")
+      assert.ok(messages[0].parts[0].text.includes("access_token"), "and the token")
+      assert.equal(messages[1].parts[0].text, "STATUS: keep me", "the skeleton message is byte-exact")
+      assert.equal(messages[2].parts[0].text, "recent tail", "the newest message is byte-exact")
+      assert.ok(events.some((e) => e.kind === "prune"), "the decision gets its own trajectory line")
+      await fire(messages)
+      assert.equal(report.prunedMessages, 1, "a replayed hook does not double-prune")
+    }
+
+    {
+      // no limit.context → no prune, counted
+      const { report, fire } = await drive({ catalog: [] })
+      const messages = [msg(handleText), msg("tail", "user")]
+      await fire(messages)
+      assert.equal(report.noLimit, 1, "no denominator is counted as no_limit, never a guessed window")
+      assert.equal(report.prunedMessages, 0, "and nothing is pruned")
+      assert.ok(messages[0].parts[0].text.includes("tm://runs/"), "the body is untouched")
+    }
+
+    {
+      // a foreign session is left alone
+      const { report, fire } = await drive()
+      const messages = [msg(handleText), msg("tail", "user")]
+      await fire(messages, "build", "ses_build")
+      assert.equal(report.foreignSkipped, 1, "a build session is skipped and counted")
+      assert.equal(report.prunedMessages, 0, "and nothing is pruned")
+    }
+
+    {
+      // a throw is swallowed and counted, never thrown into the host
+      const { report, fire } = await drive()
+      const boom = { role: "assistant", model: { providerID: "lxns", id: "glm" }, get parts() { throw new Error("boom") } }
+      await fire([boom, msg("tail", "user")])
+      assert.equal(report.threw, 1, "a hook that cannot decide allows the request and counts the throw")
+    }
+
+    // ---- the wiring is visible where tm_stats reads it ----
+    const v2src = fs.readFileSync(path.join(path.dirname(fileURLToPath(import.meta.url)), "src", "host", "v2.ts"), "utf8")
+    assert.ok(/applyV2ContextPrune\(ctx,/.test(v2src), "the personality installs the prune layer")
+    assert.ok(/prune_pruned_tokens: prune\.report\.prunedTokens/.test(v2src), "…and the counter rides the observation rows")
+    assert.ok(/step_id: "v2-prune"/.test(v2src), "the trajectory line is wired")
+  } finally {
+    for (const [k, v] of Object.entries(saved)) { if (v === undefined) delete process.env[k]; else process.env[k] = v }
+  }
+}
+console.log("   OK (threshold derived from limit.context; settled bodies become self-explaining pointers; skeleton/handle/GOAL/tail byte-exact; no_limit and foreign counted; throws swallowed; idempotent)")
 
 // B5: the group count is DERIVED from the numbered group headers this file
 // actually printed, never hand-written — the last hand-written number was

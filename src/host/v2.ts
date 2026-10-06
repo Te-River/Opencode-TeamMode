@@ -50,6 +50,7 @@ import { seedWebfetchDomains } from "../tm/webfetch.js"
 import { v2CapabilityRows } from "./v2-capabilities.js"
 import { applyV2SessionLayer, removalPlan } from "./v2-session.js"
 import { applyV2EarlyCompaction, resolveCompactConfig } from "./v2-compaction.js"
+import { applyV2ContextPrune, resolvePruneConfig } from "./v2-prune.js"
 import { checkDefaultAgentRole, globalConfigDir, type DefaultAgentCheck } from "./v2-default-agent.js"
 import { createStorageLedgerStore } from "../tm/ledger.js"
 import { createTeamScope } from "./v2-scope.js"
@@ -734,6 +735,24 @@ export const v2Personality: V2Plugin = {
         }
       },
     })
+    // Context Pruning (plan 功能 1, #49): the request layer trims the tool
+    // surface, the compaction layer decides WHEN to summarize, and this layer
+    // shrinks the HISTORY itself — settled messages become one-line pointers
+    // (handle / child id / re-run hint) once the session crosses a fraction of
+    // its window.  Registered AFTER the session layer so its `context` hook runs
+    // on the same assembled request, and it never touches a message outside its
+    // plan (the newest message and every hard-protected one stay byte-exact).
+    const prune = await applyV2ContextPrune(ctx, {
+      config: resolvePruneConfig(process.env),
+      scope,
+      onEvent: (row) => {
+        try {
+          tmRuntime.pipelines.store.appendTrajectory({ tool: "host", step_id: "v2-prune", event: "prune", api: 2, ...row })
+        } catch {
+          /* a diagnostic that cannot be written never breaks the request it describes */
+        }
+      },
+    })
     // Everything the matrix reports now exists, so the late-bound closure can be
     // pointed at the real observations.
     v2Matrix = () =>
@@ -782,6 +801,7 @@ export const v2Personality: V2Plugin = {
         scope,
       })
     registrations.push(...session.registrations)
+    registrations.push(...prune.registrations)
     if (!session.registrations.length) {
       notes.push("ctx.session.hook 不存在：工具面裁剪、温度、黑板根目录三项请求层治理都没装上")
     }
@@ -849,6 +869,19 @@ export const v2Personality: V2Plugin = {
       compact_confirmed: compaction.report.confirmed,
       compact_source: compaction.report.lastSource,
       compact_last_percent: compaction.report.lastPercent,
+      // #49 Context Pruning — the history-shrinking half of the budget work.
+      prune_enabled: prune.report.enabled,
+      prune_at_percent: prune.report.atPercent,
+      prune_keep_tail_percent: prune.report.keepTailPercent,
+      prune_checked: prune.report.checked,
+      prune_pruned_messages: prune.report.prunedMessages,
+      prune_pruned_tokens: prune.report.prunedTokens,
+      prune_skipped_protected: prune.report.skippedProtected,
+      prune_below: prune.report.below,
+      prune_no_limit: prune.report.noLimit,
+      prune_foreign_skipped: prune.report.foreignSkipped,
+      prune_threw: prune.report.threw,
+      prune_last_percent: prune.report.lastPercent,
       scope_ours: scope.report.ours,
       scope_foreign: scope.report.foreign,
       scope_unknown: scope.report.unknown,
@@ -1031,6 +1064,21 @@ export const v2Personality: V2Plugin = {
           compact_source: compaction.report.lastSource,
           compact_last_percent: compaction.report.lastPercent,
           compact_error: compaction.report.lastError,
+          // #49 Context Pruning — per-outcome, so "we pruned nothing" is
+          // distinguishable from "we never found a denominator" (`no_limit`).
+          prune_enabled: prune.report.enabled,
+          prune_at_percent: prune.report.atPercent,
+          prune_keep_tail_percent: prune.report.keepTailPercent,
+          prune_checked: prune.report.checked,
+          prune_pruned_messages: prune.report.prunedMessages,
+          prune_pruned_tokens: prune.report.prunedTokens,
+          prune_skipped_protected: prune.report.skippedProtected,
+          prune_below: prune.report.below,
+          prune_no_limit: prune.report.noLimit,
+          prune_no_messages: prune.report.noMessages,
+          prune_foreign_skipped: prune.report.foreignSkipped,
+          prune_threw: prune.report.threw,
+          prune_last_percent: prune.report.lastPercent,
           // Accumulates for the whole process, so it can only be written at
           // teardown: this is the number that answers "did the feed stay alive, and
           // did the host rename the event types under us after the last upgrade?"

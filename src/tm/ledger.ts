@@ -269,8 +269,15 @@ const LEDGER_ARGS = {
 export interface LedgerToolDeps {
   store: LedgerStore
   /** The LEDGER is the lead's instrument (a specialist reports STATUS and answers
-   *  to the lead), and on v2 the matrix grants every `tm_*` to every role, so the
-   *  gate lives here rather than in the frozen permission table. */
+   *  to the lead).  This is the SECOND lock, and on the real host it is
+   *  UNREACHABLE: the request layer already removes `tm_ledger` from every
+   *  non-lead surface (`v2-session.ts` `toolsToRemove` pushes it whenever the
+   *  matrix denies `tm_join`, which every specialist's does), and the v2
+   *  permission layer adds an explicit `tm_ledger: deny` triple for them
+   *  (`v2-permissions.ts`).  A specialist therefore never sees the tool, and the
+   *  host answers `Unknown tool` if one is hallucinated — this branch only fires
+   *  in a unit test that calls `execute` directly.  It stays as defence-in-depth
+   *  for a host that stops honouring the request-layer removal. */
   onlyAgent?: string
   /** Resolved from the personality's own env copy, so v1 and v2 can differ. */
   env?: Record<string, string | undefined>
@@ -287,6 +294,8 @@ export function buildLedgerTool(deps: LedgerToolDeps): ToolDefinition {
     args: LEDGER_ARGS,
     execute: async (rawArgs, ctx): Promise<ToolResult> => {
       const c = (ctx ?? {}) as { sessionID?: unknown; agent?: unknown }
+      // Second lock (see `onlyAgent` above): unreachable on the real host because
+      // the tool surface excludes tm_ledger for non-lead; unit-covered only.
       if (deps.onlyAgent && !sameAgent(c.agent, deps.onlyAgent)) {
         return toToolResult(
           tmError(
