@@ -89,8 +89,25 @@ interface TextSlot {
  * shape rule: an unrecognised part contributes nothing to `used`, so a shape the
  * host renames can only make us UNDER-count (never prune evidence we misread), and
  * the counter is what keeps that from being silent.
+ *
+ * `tool-call` joined the set from a live 2.0.24 probe (#64): the host's own
+ * `LLM.Content.ToolCall` carries the arguments under `input` (there is NO
+ * `text`), and it rides every request — leaving it out made `used` read low on
+ * exactly the messages a tool-heavy session is made of.
  */
-const TEXT_PART_TYPES = new Set(["text", "tool-result", "reasoning"])
+const TEXT_PART_TYPES = new Set(["text", "tool-result", "reasoning", "tool-call"])
+
+/**
+ * Part types we KNOW carry no text — a pure reference/metadata part.  They are
+ * excluded from `unknownPartCount` (a media attachment is not a renamed shape, so
+ * it must not read as noise) but contribute nothing to `used` (there is no body
+ * to count).  Measured on 2.0.24: a `media` part is
+ * `{type:"media", media:{…asset ref…}, filename}` — a reference, not text.
+ */
+const TEXTLESS_PART_TYPES = new Set(["media"])
+
+/** Every part type we recognise, text-bearing or not. */
+const KNOWN_PART_TYPES = new Set([...TEXT_PART_TYPES, ...TEXTLESS_PART_TYPES])
 
 /**
  * Read the text out of a `result`/`content` value that may be a string, an
@@ -133,12 +150,13 @@ function extractText(value: unknown, depth = 0): string {
  * Every text slot in a message, across the shapes the host has actually used:
  * `{info:{role},parts:[{type:"text",text}]}` (v1-ish), `{role,parts:[…]}`,
  * `{role,content:[{type:"text",text}]}` (2.0.20), the flat
- * `{id,time,type,text}` (2.0.18), and the 2.0.24 pair a live probe measured —
+ * `{id,time,type,text}` (2.0.18), and the 2.0.24 set a live probe measured —
  * `{role:"tool",content:[{type:"tool-result",result}]}` (the body is under
- * `result`, there is no `text`) and `{type:"reasoning",text}`.  Recognition is
- * BY SHAPE, never by host version (the same discipline `normaliseContextMessages`
- * follows).  An unrecognised shape yields no slots and is therefore never
- * touched.
+ * `result`, there is no `text`), `{type:"reasoning",text}`, and
+ * `{type:"tool-call",input}` (the arguments are the body; #64).  Recognition
+ * is BY SHAPE, never by host version (the same discipline
+ * `normaliseContextMessages` follows).  An unrecognised shape yields no slots and
+ * is therefore never touched.
  */
 export function textSlots(msg: unknown): TextSlot[] {
   const m = msg as Record<string, unknown> | null | undefined
@@ -154,6 +172,9 @@ export function textSlots(msg: unknown): TextSlot[] {
       } else if (part.type === "tool-result" && "result" in part) {
         const text = extractText(part.result)
         if (text) slots.push({ container: part, key: "result", text })
+      } else if (part.type === "tool-call" && "input" in part) {
+        const text = extractText(part.input)
+        if (text) slots.push({ container: part, key: "input", text })
       }
     }
   }
@@ -167,6 +188,8 @@ export function textSlots(msg: unknown): TextSlot[] {
  * How many parts in a message carry a `type` we do not recognise.  A non-zero
  * count beside a small `used` is the signature of a renamed shape — the exact
  * failure that made pruning a no-op on 2.0.24 while every counter read healthy.
+ * A KNOWN-but-textless part (`media`) is not counted: it is not a renamed
+ * shape, and counting it would drown the signal in attachment noise.
  */
 export function unknownPartCount(msg: unknown): number {
   const m = msg as Record<string, unknown> | null | undefined
@@ -176,7 +199,7 @@ export function unknownPartCount(msg: unknown): number {
   let n = 0
   for (const p of arr) {
     const part = p as Record<string, unknown> | null | undefined
-    if (part && typeof part === "object" && typeof part.type === "string" && !TEXT_PART_TYPES.has(part.type)) {
+    if (part && typeof part === "object" && typeof part.type === "string" && !KNOWN_PART_TYPES.has(part.type)) {
       n++
     }
   }

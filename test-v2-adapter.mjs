@@ -3525,6 +3525,62 @@ console.log("32. Context Pruning reads the 2.0.24 shapes — a renamed part is c
 }
 console.log("   OK (tool-result/reasoning read by shape; object results walked; unknown parts counted; the layer prunes the 2.0.24 shapes)")
 
+console.log("33. Context Pruning reads the tool-call shape, and a textless part is known (#64)")
+{
+  const { textSlots, messageText, messagesTokens, unknownPartCount, messagesUnknownParts, applyV2ContextPrune } =
+    await import("./dist/host/v2-prune.js")
+
+  const big = "x".repeat(4000) // ~1000 tokens
+
+  // (a) the shape a live 2.0.24 probe measured: a tool CALL carries its
+  // arguments under `input` (there is NO `text`).
+  const callMsg = { role: "assistant", content: [{ type: "tool-call", id: "c1", name: "read", input: { filePath: "a.ts" } }] }
+  assert.equal(textSlots(callMsg).length, 1, "a tool-call part yields a slot")
+  assert.equal(textSlots(callMsg)[0].key, "input", "…and the slot addresses `input`, not a missing `text`")
+  assert.ok(messageText(callMsg).includes("a.ts"), "the call arguments are read, not dropped")
+  assert.ok(messagesTokens([callMsg]) > 0, "the tool-call shape counts toward `used`")
+  assert.equal(unknownPartCount(callMsg), 0, "a recognised tool-call is no longer counted as unknown")
+
+  // (b) a `write`-shaped input is walked to its `content`, never `[object Object]`
+  const writeMsg = { role: "assistant", content: [{ type: "tool-call", id: "c2", name: "write", input: { filePath: "b.ts", content: big } }] }
+  assert.ok(messageText(writeMsg).includes("xxxx"), "a nested input object is walked to its text")
+  assert.ok(!messageText(writeMsg).includes("[object Object]"), "…and never stringified to [object Object]")
+
+  // (c) a `media` part is KNOWN but textless: no slot, and NOT counted as unknown
+  const mediaMsg = { role: "user", content: [{ type: "media", media: { source: { type: "url", url: "x" } }, filename: "p.png" }] }
+  assert.equal(messageText(mediaMsg), "", "a media part contributes no text")
+  assert.equal(unknownPartCount(mediaMsg), 0, "…and is NOT counted as unknown (known, just textless)")
+  assert.equal(messagesUnknownParts([callMsg, mediaMsg]), 0, "the count aggregates per message")
+
+  // (d) a shape we have NOT observed stays counted
+  const unobserved = { role: "assistant", content: [{ type: "effort", effort: "high" }] }
+  assert.equal(unknownPartCount(unobserved), 1, "an unobserved shape stays counted as unknown")
+
+  // (e) the layer counts the tool-call toward `used` and prunes it
+  const CAT = [{ id: "glm", providerID: "lxns", modelID: "glm", limit: { context: 100_000, output: 1000 } }]
+  const scopeStub = { decide: (e) => (e && e.agent === "team" ? "ours" : "foreign"), count: (v) => v, learn: () => {} }
+  const f = makeFakeCtx({ directory: workspace("prune-toolcall"), agents: [], models: CAT })
+  const events = []
+  const layer = await applyV2ContextPrune(f.ctx, {
+    config: { enabled: true, atPercent: 40, keepTailPercent: 0 },
+    scope: scopeStub,
+    onEvent: (row) => events.push(row),
+  })
+  const messages = [
+    { role: "assistant", model: { providerID: "lxns", id: "glm" }, content: [{ type: "tool-call", id: "c1", name: "write", input: { filePath: "a.ts", content: "y".repeat(200_000) } }] }, // 0: big, prunable
+    { role: "user", content: [{ type: "text", text: "recent tail" }] }, // 1: newest, kept
+  ]
+  await f.hook("session.context").fire({ agent: "team", sessionID: "ses_t", system: [], messages, tools: {} })
+  assert.ok(layer.report.prunedMessages >= 1, "the tool-call shape is actually pruned")
+  assert.ok(messages[0].content[0].input.includes("已裁剪"), "the tool-call input becomes a stub")
+  assert.equal(messages[1].content[0].text, "recent tail", "the newest message is byte-exact")
+  assert.equal(layer.report.unknownParts, 0, "no unknown parts on the report")
+  assert.ok(events.some((e) => e.kind === "prune"), "the decision is on the trajectory")
+
+  for (const r of layer.registrations) await r.dispose()
+}
+console.log("   OK (tool-call read by shape; a media part is known-but-textless; an unobserved shape stays counted)")
+
 console.log("29. the concurrency cap — a hard gate on permission.evaluate (#49 feature 2)")
 {
   const { concurrencyGuard, applyV2PermissionGuards } = await import("./dist/host/v2-guard.js")
