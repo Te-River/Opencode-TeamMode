@@ -3055,6 +3055,46 @@ try {
       console.log("16. recency anchor: OK (the date is computed per render across a month boundary, defaults to now, and rides the one header every search route renders)")
     }
 
+    // ---------- 17. layered team-mode.jsonc is wired into the runtime ----------
+    {
+      const ws = mktmp("cfg-e2e")
+      const globalDir = mktmp("cfg-global")
+      // A project file sets two observable values the runtime must actually use.
+      fs.writeFileSync(
+        path.join(ws, "team-mode.jsonc"),
+        `{ "offloadThreshold": 7777, "searchDefaultEngine": "hn" }`,
+      )
+      const rt = await tm.createTmTools(
+        { directory: ws, client: {}, $: () => ({}) },
+        { env: { TM_STORE_RECLAIM: "off" }, configRoots: { globalDir, projectDir: ws } },
+      )
+      assert.equal(rt.config.offloadThreshold, 7777, "the project file's offloadThreshold reaches the runtime config")
+      assert.equal(rt.config.searchDefaultEngine, "hn", "…and searchDefaultEngine too")
+
+      // The tm_search descriptor must publish the SAME default (goal #6: no drift
+      // between what the model is told and what the runtime does).
+      const sArgs = await (await import("./dist/tm/args-schema.js")).buildSearchArgsSchema(rt.config.searchDefaultEngine)
+      const engDesc = sArgs.engine?.description ?? sArgs.engine?.descriptor ?? ""
+      assert.match(engDesc, /default hn/, "the tm_search descriptor names the file's default engine")
+
+      // tm_stats carries the config section naming the winning layer.
+      const stats = await rt.tools.tm_stats.execute({}, { directory: ws })
+      const out = String(stats?.output ?? "")
+      assert.match(out, /分层配置/, "tm_stats renders the config section")
+      assert.match(out, /offloadThreshold=project/, "…naming the layer each key came from")
+
+      // TM_CONFIG_ENV_ONLY ignores the file entirely.
+      const rtEnvOnly = await tm.createTmTools(
+        { directory: ws, client: {}, $: () => ({}) },
+        { env: { TM_STORE_RECLAIM: "off", TM_CONFIG_ENV_ONLY: "1" }, configRoots: { globalDir, projectDir: ws } },
+      )
+      assert.equal(rtEnvOnly.config.offloadThreshold, 2000, "TM_CONFIG_ENV_ONLY=1 ignores the file (default stands)")
+      assert.equal(rtEnvOnly.config.searchDefaultEngine, "auto", "…for every key")
+      await rt.dispose()
+      await rtEnvOnly.dispose()
+      console.log("17. layered config wiring: OK (project file reaches the runtime + the tm_search descriptor + tm_stats; TM_CONFIG_ENV_ONLY ignores it)")
+    }
+
 } finally {
   restoreEnv()
   for (const dir of tmpDirs) fs.rmSync(dir, { recursive: true, force: true })

@@ -18,6 +18,9 @@
  */
 
 import assert from "node:assert"
+import * as fs from "node:fs"
+import * as os from "node:os"
+import * as path from "node:path"
 import {
   resolveLayeredConfig,
   parseJsonc,
@@ -25,6 +28,12 @@ import {
   RED_LINE_EXEMPT_KEYS,
   CONFIG_KEYS,
 } from "./dist/tm/config-layers.js"
+import {
+  readConfigFiles,
+  resolveLayeredTmConfig,
+  renderConfigSection,
+  CONFIG_FILE_NAME,
+} from "./dist/tm/config-files.js"
 
 const eq = (a, b, msg) => assert.strictEqual(a, b, msg)
 
@@ -222,4 +231,64 @@ const eq = (a, b, msg) => assert.strictEqual(a, b, msg)
   console.log("9. red-line table: OK (five knobs, each with a reason)")
 }
 
-console.log(`\ntest-config-layers.mjs: ALL PASS (9 groups)`)
+// ---------------------------------------------------------------------------
+// 10. the FILE READER — locate + read both layers from an injected root
+// ---------------------------------------------------------------------------
+{
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "tm-cfg-"))
+  const home = path.join(tmp, "home")
+  const globalDir = path.join(home, ".config", "opencode")
+  const proj = path.join(tmp, "proj")
+  const sub = path.join(proj, "sub")
+  fs.mkdirSync(globalDir, { recursive: true })
+  fs.mkdirSync(path.join(sub, ".opencode"), { recursive: true })
+
+  // global sets one key; the direct project file overrides it and adds another;
+  // the `.opencode/` file overrides the direct one (host semantics).
+  fs.writeFileSync(path.join(globalDir, CONFIG_FILE_NAME), `{ "offloadThreshold": 6000, "previewLines": 30 }`)
+  fs.writeFileSync(path.join(proj, CONFIG_FILE_NAME), `{ "offloadThreshold": 7000, "searchMaxHits": 9 }`)
+  fs.writeFileSync(path.join(sub, ".opencode", CONFIG_FILE_NAME), `{ "offloadThreshold": 8000 }`)
+
+  const roots = { globalDir, projectDir: sub, home }
+  const files = readConfigFiles(roots)
+  eq(files.globalPath, path.join(globalDir, CONFIG_FILE_NAME), "global file located")
+  eq(files.projectPaths.length, 2, "both project files read (direct + .opencode)")
+  eq(files.opencodePaths.length, 1, "one .opencode file")
+
+  const r = resolveLayeredTmConfig({}, roots)
+  eq(r.cfg.offloadThreshold, 8000, ".opencode beats the direct file")
+  eq(r.cfg.previewLines, 30, "global-only key survives")
+  eq(r.cfg.searchMaxHits, 9, "direct-only key survives")
+  eq(r.layered.perKeySource.offloadThreshold, "project:.opencode", "source is the .opencode layer")
+  eq(r.layered.perKeySource.previewLines, "global", "source is global")
+  eq(r.layered.perKeySource.searchMaxHits, "project", "source is the direct project layer")
+
+  // a bad layer is skipped WHOLE (never half-applied) and reported
+  fs.writeFileSync(path.join(proj, CONFIG_FILE_NAME), `{ "offloadThreshold": 7000,, }`)
+  const rBad = resolveLayeredTmConfig({}, roots)
+  eq(rBad.cfg.offloadThreshold, 8000, "the broken direct layer is skipped; .opencode still wins")
+  assert.ok(rBad.layered.skippedLayers.some((s) => s.name === "project"), "the broken layer is reported")
+
+  // unknown keys are collected, never applied
+  fs.writeFileSync(path.join(proj, CONFIG_FILE_NAME), `{ "totallyMadeUp": 1 }`)
+  const rUnknown = resolveLayeredTmConfig({}, roots)
+  assert.ok(rUnknown.layered.unknownKeys.some((u) => u.key === "totallyMadeUp"), "unknown key collected")
+  assert.ok(!("totallyMadeUp" in rUnknown.layered.values), "unknown key never applied")
+
+  // TM_CONFIG_ENV_ONLY removes every file layer BEFORE any read
+  const rEnvOnly = resolveLayeredTmConfig({ TM_CONFIG_ENV_ONLY: "1" }, roots)
+  eq(rEnvOnly.layered.envOnlyActive, true, "env-only flag reported")
+  eq(rEnvOnly.files.projectPaths.length, 0, "no project file was read")
+  eq(rEnvOnly.files.globalPath, null, "no global file was read")
+  eq(rEnvOnly.cfg.offloadThreshold, 2000, "file value ignored; default stands")
+
+  // the rendered section names the sources
+  const section = renderConfigSection(r.layered, r.files)
+  assert.match(section, /offloadThreshold=project:\.opencode/, "section names the winning layer")
+  assert.match(renderConfigSection(rUnknown.layered, rUnknown.files), /未知键/, "section reports unknown keys when present")
+
+  fs.rmSync(tmp, { recursive: true, force: true })
+  console.log("10. file reader: OK (global/project/.opencode precedence, whole-layer skip, env-only, unknown keys)")
+}
+
+console.log(`\ntest-config-layers.mjs: ALL PASS (10 groups)`)

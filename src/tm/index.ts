@@ -19,7 +19,7 @@ import * as crypto from "node:crypto"
 import * as fs from "node:fs"
 import * as os from "node:os"
 import * as path from "node:path"
-import type { HostEvent, PluginInput, ToolDefinition } from "../types.js"
+import type { HostEvent, PluginInput, ToolDefinition, ToolResult } from "../types.js"
 import { findRepoRoot } from "../blackboard.js"
 import {
   parseExtraDeny,
@@ -27,6 +27,7 @@ import {
   type EnvProtectMode,
 } from "../envprotect.js"
 import { resolveTmConfig, type TmConfig } from "./config.js"
+import { resolveLayeredTmConfig, renderConfigSection, type ConfigFileRoots } from "./config-files.js"
 import { hmacToken, loadOrCreateHandleKey, newRunId } from "./refs.js"
 import { RunStore } from "./store.js"
 import { buildTmTools } from "./tools.js"
@@ -132,6 +133,9 @@ export interface CreateTmToolsOptions {
   /** What the v2 `ctx.session` bridge saw (attempted shapes, last host error), so
    *  `tm_join` can report WHY a named id could not be claimed. */
   sessionReaderReport?: () => { attempted: number; resolved: number; usedShape?: string; failedShapes: string[]; lastError?: string }
+  /** Roots for the layered `team-mode.jsonc` reader.  Injectable so tests point
+   *  at a temp dir and never read the user's real `~/.config/opencode`. */
+  configRoots?: ConfigFileRoots
 }
 
 /** Collision-free shard key for a workspace path.  It is a HASH rather than a
@@ -273,11 +277,18 @@ export async function createTmTools(
   input: PluginInput,
   opts: CreateTmToolsOptions = {},
 ): Promise<TmRuntime> {
-  const cfg = resolveTmConfig(opts.env ?? process.env)
   const directory =
     typeof input?.directory === "string" && input.directory.length > 0
       ? input.directory
       : process.cwd()
+  // Layered config: env < global file < project file(s).  The project search
+  // starts at the workspace root, mirroring the host's own config layering
+  // (direct files farthest→closest, then `.opencode/` files, which win).
+  const layeredConfig = resolveLayeredTmConfig(opts.env ?? process.env, {
+    ...opts.configRoots,
+    projectDir: opts.configRoots?.projectDir ?? directory,
+  })
+  const cfg = layeredConfig.cfg
   const runId = newRunId()
   // Store roots — AUTO default resolves git-aware: under <repo>/.git, so
   // the payload/trajectory stores never pollute the user's working tree
@@ -364,6 +375,39 @@ export async function createTmTools(
     source: handleKey.source,
     ...(handleKey.reason ? { reason: handleKey.reason } : {}),
   })
+  // The layered-config boot row: which file layers were read, and what a file
+  // tried to set that we refused (red-line) or did not recognise (unknown).
+  // `config_layers` names the layers that answered; the detail rides the
+  // `tm_stats` config section (renderConfigSection).
+  store.appendTrajectory({
+    tool: "host",
+    step_id: "config-layers",
+    event: "config",
+    api: 2,
+    config_layers:
+      [
+        layeredConfig.files.globalPath ? "global" : null,
+        layeredConfig.files.projectPaths.length ? "project" : null,
+      ]
+        .filter(Boolean)
+        .join(",") || "env-only",
+    config_global: layeredConfig.files.globalPath ? "present" : "absent",
+    config_project_files: layeredConfig.files.projectPaths.length,
+    config_opencode_files: layeredConfig.files.opencodePaths.length,
+    config_env_only: layeredConfig.layered.envOnlyActive,
+    config_unknown_keys: layeredConfig.layered.unknownKeys.map((u) => u.key).join(","),
+    config_redline_ignored: layeredConfig.layered.ignoredRedLineKeys.map((r) => r.key).join(","),
+    config_skipped_layers: layeredConfig.layered.skippedLayers.map((s) => s.name).join(","),
+  })
+  // Unknown keys are WARNED, never applied — a typo'd knob must not look like
+  // it took effect.  (Red-line ignores and the per-key sources ride the
+  // tm_stats config section instead of a startup line.)
+  if (layeredConfig.layered.unknownKeys.length) {
+    console.warn(
+      `[team-mode] team-mode.jsonc 有未知键（已忽略，未应用）：` +
+        layeredConfig.layered.unknownKeys.map((u) => `${u.key}（${u.layer}）`).join(" · "),
+    )
+  }
   // Startup-only TTL reclamation for expired run payloads — the sole cleanup
   // path for the tm store (mirrors blackboard.ts's sweeper philosophy).
   store.sweepExpired()
@@ -416,7 +460,7 @@ export async function createTmTools(
   // sogou/so/baidu/bilibili + npm/github JSON), extracted title+URL hit
   // lists, same pipeline + allowlist as tm_webfetch.  Network-role tool
   // like the other two web channels (agents.ts gates who sees it).
-  tools.tm_search = buildTmSearchTool({ pipelines, cfg, args: await buildSearchArgsSchema(), cache: webCache })
+  tools.tm_search = buildTmSearchTool({ pipelines, cfg, args: await buildSearchArgsSchema(cfg.searchDefaultEngine), cache: webCache })
   // tm_memory — project/global memory mirror (Markdown + frontmatter under
   // the same git-aware store base).  Available to ALL agents: memory is not
   // a network channel, it is shared project knowledge.
@@ -463,6 +507,26 @@ export async function createTmTools(
   // with a number behind it instead of a vibe, and what names the surface an
   // OpenCode upgrade removed.
   tools.tm_stats = buildStatsTool({ store, capabilities: opts.capabilities })
+  // Append the layered-config section to the stats reply.  stats.ts is a
+  // frozen surface (not edited here): the section is rendered from the SAME
+  // layered view the runtime resolved, so the report can never disagree with
+  // what the tools actually used.
+  {
+    const baseStatsExecute = tools.tm_stats.execute
+    tools.tm_stats = {
+      ...tools.tm_stats,
+      execute: async (args, ctx) => {
+        const res = baseStatsExecute ? await baseStatsExecute(args, ctx) : ""
+        const section = renderConfigSection(layeredConfig.layered, layeredConfig.files)
+        if (typeof res === "string") return `${res}\n${section}`
+        if (res && typeof res === "object" && typeof (res as { output?: unknown }).output === "string") {
+          const r = res as { output: string } & Record<string, unknown>
+          return { ...r, output: `${r.output}\n${section}` } as ToolResult
+        }
+        return res
+      },
+    }
+  }
   // tm_board_write — the blackboard's write side.  The board layout the
   // workspace note publishes is <root>/<session-key>/<task>/NN-<role>-<topic>,
   // and reaching it used to require a file tool: architect and researcher carry
@@ -512,6 +576,15 @@ export {
   shorten,
   TM_CONFIG_DEFAULTS,
 } from "./config.js"
+export {
+  CONFIG_FILE_NAME,
+  readConfigFiles,
+  resolveLayeredTmConfig,
+  renderConfigSection,
+  type ConfigFileRoots,
+  type ConfigFileRead,
+  type LayeredTmConfig,
+} from "./config-files.js"
 export {
   buildRef,
   hmacToken,

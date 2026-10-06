@@ -10,6 +10,8 @@
  */
 
 import { resolveTmConfig } from "./config.js"
+import { resolveLayeredTmConfig, type ConfigFileRoots } from "./config-files.js"
+import type { EnvLike } from "./config-layers.js"
 
 /**
  * Load zod when the host environment provides it (opencode ships it as a
@@ -175,10 +177,19 @@ export async function buildWebfetchArgsSchema(): Promise<Record<string, unknown>
  */
 export async function buildSearchArgsSchema(
   defaultEngine?: string,
+  layeredInput?: { env?: EnvLike; roots?: ConfigFileRoots },
 ): Promise<Record<string, unknown>> {
   const { AUTO_ENGINE_KEY, SEARCH_ENGINE_NAMES } = await import("./search.js")
+  // The descriptor's default MUST match the runtime's.  When the caller hands
+  // us the layered view's inputs we resolve through the SAME file-aware path;
+  // otherwise we fall back to env-only — a bare call (a test) must never read
+  // the user's real ~/.config/opencode.
   const defEngine =
-    (defaultEngine && defaultEngine.trim()) || resolveTmConfig().searchDefaultEngine || AUTO_ENGINE_KEY
+    (defaultEngine && defaultEngine.trim()) ||
+    (layeredInput
+      ? resolveLayeredTmConfig(layeredInput.env ?? process.env, layeredInput.roots).cfg.searchDefaultEngine
+      : resolveTmConfig().searchDefaultEngine) ||
+    AUTO_ENGINE_KEY
   const engineList = `${AUTO_ENGINE_KEY}|${SEARCH_ENGINE_NAMES.join("|")}`
   const engineDesc =
     `engine: ${engineList} (optional, default ${defEngine}). ` +
