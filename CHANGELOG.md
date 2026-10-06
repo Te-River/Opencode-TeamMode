@@ -109,6 +109,16 @@ registry saw 1.5.0 as the install-script fix release).
   `TM_RETRY=off`, `TM_RETRY_BASE_MS` (5000), `TM_RETRY_MAX_MS` (60000), `TM_RETRY_JITTER` (0.3),
   `TM_RETRY_BREAK_AFTER` (5), `TM_RETRY_COOLDOWN_MS` (60000); counters `retry_*` ride the
   surface and shutdown rows with a `v2-retry` trajectory line.
+- **A split-the-task discipline, and a hint when a brief is too big.** The lead prompt gains a
+  `## Task splitting` section: one dispatch owns **one** deliverable with its own acceptance check,
+  a brief carrying more than three acceptance criteria is a signal to split, and every piece must be
+  **independently verifiable** — a slice a reviewer can accept or reject without waiting on a
+  sibling, because cutting one deliverable into pieces that only make sense together is chopping, not
+  splitting. The mechanical half reads the brief on `tool.hook("execute.before")` (the context
+  hook only sees the parent's history) and injects **one** line into the next request naming the
+  measured size, the threshold and that property. Advice, never a gate; lead-only. Knobs
+  `TM_SPLIT_ADVICE=off`, `TM_SPLIT_BRIEF_TOKENS` (4000), `TM_SPLIT_MAX_CRITERIA` (3); counters
+  `split_seen/advised` ride the surface and shutdown rows with a `v2-split` trajectory line.
 
 ### Changed
 

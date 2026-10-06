@@ -645,6 +645,9 @@ for overrides, extra agents and disabling roles.
 | `TM_RETRY_JITTER` | `0.3` | ± fraction applied to the wait, so parallel sessions do not re-fire together |
 | `TM_RETRY_BREAK_AFTER` | `5` | consecutive errors before the cooldown starts |
 | `TM_RETRY_COOLDOWN_MS` | `60000` | how long new sub-agent dispatches are refused once the breaker trips |
+| `TM_SPLIT_ADVICE` | `on` | `off` stops the split hint (the prompt discipline stays) |
+| `TM_SPLIT_BRIEF_TOKENS` | `4000` | a dispatch brief above this size earns a split hint on the next request |
+| `TM_SPLIT_MAX_CRITERIA` | `3` | the prompt's own rule: more acceptance criteria than this is a signal to split |
 | `TM_BASH_TIMEOUT_MAX_MS` | `0` | optional global ceiling for every other bash command — off by default so a real build keeps the timeout it asked for |
 | `TM_JOIN_MAX_WAIT_MS` | `60000` | ceiling on `tm_join { waitMs }`. Was 300 000, and a lead parked in it twice in a row (19 min of nothing) while its children worked — waiting is not parallelism, so the default now says "check, then work". A second consecutive wait after nothing settled is cut to 10 s and answered with what to do instead |
 | `TM_STORE_RECLAIM` | `on` | at boot, reclaim what an upgrade left behind: a per-workspace store shard idle past the TTL, and the pre-shard `blackboard/` + `trajectory/` under the temp-dir fallback (503 MB of expired runs on one real machine, with no sweeper pointed at them any more). Only TTL-expired entries are ever removed — a fresh run dir survives, because a session started before the upgrade may still be writing there. `off` leaves the disk exactly as found (the test runner sets it) |
