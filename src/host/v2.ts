@@ -116,7 +116,17 @@ export const v2Personality: V2Plugin = {
     setAskUnavailableNote(V2_NO_DIALOG_NOTE)
 
     const options = (ctx.options ?? {}) as Record<string, unknown>
-    const envProtectMode = options.envProtect ? resolveEnvProtectMode(process.env.TM_ENV_PROTECT) : "off"
+    // R6 is ARMED BY DEFAULT, matching v1 (which was always armed).  The old form
+    // (`options.envProtect ? … : "off"`) made the env-file red line opt-IN, and
+    // `docs/installation-v2.md` never mentioned the option — so a default install
+    // read `.env` in plaintext while AGENTS.md called that rule "hard".  Two
+    // explicit switches turn it off, and only those two: the plugin option
+    // `envProtect:false`, or `TM_ENV_PROTECT=off` (resolved below, which also
+    // fails CLOSED into "strict" for a typo).  On v2 the shell face is `ask`
+    // (the host's own dialog) and the env-FILE face is `deny`; the resolved mode
+    // rides the boot row's `env_protect` field so the user can see which world
+    // they are in.
+    const envProtectMode = options.envProtect === false ? "off" : resolveEnvProtectMode(process.env.TM_ENV_PROTECT)
     const envProtectExtra = parseExtraDeny(process.env.TM_ENV_PROTECT_EXTRA_DENY)
 
     // ---------- the v2 network policy: no domain gate, IP red line only ----------
@@ -773,7 +783,15 @@ export const v2Personality: V2Plugin = {
       shell_timeout_clamped: shellTimeout.report.clamped,
       shell_timeout_foreign_skipped: shellTimeout.report.foreignSkipped,
       shell_timeout_threw: shellTimeout.report.threw,
-      tools_removed: Object.entries(session.report.removed).map(([k, v]) => `${k}=${v}`).join(" "),
+      // (a) The PLAN, not our hook's own cut.  `session.report.removed` counts what
+      // THIS layer deleted from `event.tools`, and on a live host that is 0 because
+      // the permission layer already excluded the denied names before the request
+      // reached us — so the old field read as "nothing was trimmed" while the boot
+      // row's `request_removed_plan` said `team=7`.  The whitelist's effect on the
+      // request IS the removal, so this reports the plan (aligned with
+      // `request_removed_plan`); the hook's own cut is an implementation detail that
+      // is 0 by design, not a fact the user needs a separate field for.
+      tools_removed: [...plan.entries()].map(([k, v]) => `${k}=${v.size}`).join(" "),
       note_pushed: session.report.notePushed,
       compaction_lines: session.report.compactionLines,
       compact_enabled: compaction.report.enabled,
@@ -934,7 +952,6 @@ export const v2Personality: V2Plugin = {
           shell_timeout_clamped: shellTimeout.report.clamped,
           shell_timeout_foreign_skipped: shellTimeout.report.foreignSkipped,
           shell_timeout_threw: shellTimeout.report.threw,
-          tools_removed: Object.entries(session.report.removed).map(([k, v]) => `${k}=${v}`).join(" "),
           note_pushed: session.report.notePushed,
           compaction_lines: session.report.compactionLines,
           // Early compaction, counted per outcome so the claim is checkable: `fired` is

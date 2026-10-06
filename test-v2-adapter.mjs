@@ -491,6 +491,48 @@ assert.ok(
 await r6NoHook.value?.()
 if (prevFine !== undefined) process.env.TM_R6_FINE_ASK = prevFine
 
+// R6 is ARMED BY DEFAULT (task #56).  The old form made it opt-IN through the
+// plugin option `envProtect`, and docs/installation-v2.md never mentioned the
+// option — so a default install read `.env` in plaintext while AGENTS.md called
+// that rule "hard".  Two switches turn it off, and only those two.
+{
+  const wsR6d = workspace("r6-default")
+  const mkR6 = (options) => makeFakeCtx({ directory: wsR6d, options, agents: sixAgents.map((a) => ({ ...a, permissions: [] })) })
+  const fireEnvRead = async (fake) => {
+    const ev = { sessionID: "ses_r6d", agent: "team", action: "read", resources: ["src/.env"], effect: "allow" }
+    for (const h of fake.hook("permission.evaluate").handlers ?? []) await h(ev)
+    return ev
+  }
+  const prevOff = process.env.TM_ENV_PROTECT
+  delete process.env.TM_ENV_PROTECT
+  // (a) no plugin option at all → R6 is ON, and a native read of .env is denied
+  const dflt = mkR6(undefined)
+  const dfltBoot = await withCapturedConsole(() => plugin.setup(dflt.ctx))
+  assert.equal(
+    (await fireEnvRead(dflt)).effect,
+    "deny",
+    "default (no plugin option): a native read of .env is denied — R6 is armed, not opt-in",
+  )
+  await dfltBoot.value?.()
+  // (b) envProtect:false is the explicit off switch
+  const offOpt = mkR6({ envProtect: false })
+  const offBoot = await withCapturedConsole(() => plugin.setup(offOpt.ctx))
+  assert.equal(
+    (await fireEnvRead(offOpt)).effect,
+    "allow",
+    "envProtect:false turns R6 off — the file-path face classifies nothing",
+  )
+  await offBoot.value?.()
+  // (c) TM_ENV_PROTECT=off is the other off switch
+  process.env.TM_ENV_PROTECT = "off"
+  const offEnv = mkR6(undefined)
+  const offEnvBoot = await withCapturedConsole(() => plugin.setup(offEnv.ctx))
+  assert.equal((await fireEnvRead(offEnv)).effect, "allow", "TM_ENV_PROTECT=off turns R6 off too")
+  await offEnvBoot.value?.()
+  if (prevOff === undefined) delete process.env.TM_ENV_PROTECT
+  else process.env.TM_ENV_PROTECT = prevOff
+}
+
 const shape = JSON.parse(before)
 assert.equal(
   shape.filter((p) => p.action === "tm_join").length,
@@ -630,6 +672,55 @@ assert.equal(
   "two registered handlers ran over one request and the board note still landed exactly once",
 )
 console.log("   OK (surface trimmed per role, 0.2 restored, board root and survival list on the request)")
+
+// 7f. `tools_removed` names what it says (task #56).  The old field counted only
+// what THIS layer deleted from `event.tools`, and on a live host that is 0 because
+// the permission layer already excluded the denied names before the request
+// reached us — so every surface row read `tools_removed:""` while the boot row's
+// `request_removed_plan` said `team=7`.  It now reports the PLAN (the whitelist's
+// effect on the request), aligned with `request_removed_plan`, so the field is
+// never a misleading empty string.
+{
+  const tjRoot = mktmp("tools-removed")
+  const prevTj = process.env.TM_TRAJECTORY_DIR
+  process.env.TM_TRAJECTORY_DIR = tjRoot
+  const f = makeFakeCtx({ directory: workspace("tools-removed"), agents: sixAgents })
+  const boot = await withCapturedConsole(() => plugin.setup(f.ctx))
+  try {
+    // Simulate the LIVE host: the permission layer has already excluded the denied
+    // names, so `event.tools` carries none of them and our own delete loop cuts 0 —
+    // which is exactly the case where the old field read as an empty string.
+    await f.hook("session.context").fire({ agent: "team", sessionID: "ses_tr", system: [], messages: [], options: {}, tools: {} })
+    await boot.value()
+    const rows = fs
+      .readdirSync(path.join(tjRoot, "runs"))
+      .flatMap((run) =>
+        fs
+          .readFileSync(path.join(tjRoot, "runs", run, "steps.jsonl"), "utf8")
+          .split(/\r?\n/)
+          .filter(Boolean)
+          .map((l) => {
+            try {
+              return JSON.parse(l)
+            } catch {
+              return null
+            }
+          })
+          .filter(Boolean),
+      )
+    const shutdown = rows.find((e) => e.step_id === "v2-shutdown")
+    assert.ok(shutdown, "the shutdown row is written at teardown")
+    assert.match(
+      String(shutdown.tools_removed),
+      /team=\d+/,
+      "tools_removed reports the PLAN (non-empty), not the hook's own 0 cut",
+    )
+    assert.notEqual(String(shutdown.tools_removed), "", "…and is never the misleading empty string the old field always was")
+  } finally {
+    if (prevTj === undefined) delete process.env.TM_TRAJECTORY_DIR
+    else process.env.TM_TRAJECTORY_DIR = prevTj
+  }
+}
 
 console.log("7b. the permission guard — the red line below the allowlist, on the HOST's own web path")
 const { webGuard, shellGuard, needsCoarseShellAsk } = await import("./dist/host/v2-guard.js")
