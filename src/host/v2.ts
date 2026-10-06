@@ -50,7 +50,6 @@ import { seedWebfetchDomains } from "../tm/webfetch.js"
 import { v2CapabilityRows } from "./v2-capabilities.js"
 import { applyV2SessionLayer, removalPlan, resolveSplitConfig } from "./v2-session.js"
 import { applyV2RetryGovernor, createRetryGovernor, resolveRetryConfig } from "./v2-retry.js"
-import { applyV2EarlyCompaction, resolveCompactConfig } from "./v2-compaction.js"
 import { applyV2ContextPrune, resolvePruneConfig } from "./v2-prune.js"
 import { checkDefaultAgentRole, globalConfigDir, type DefaultAgentCheck } from "./v2-default-agent.js"
 import { createStorageLedgerStore } from "../tm/ledger.js"
@@ -793,27 +792,9 @@ export const v2Personality: V2Plugin = {
       ? await applyV2RetryGovernor(ctx, { scope, governor: retryGovernor, onEvent: retrySink })
       : { registrations: [], report: retryGovernor.report }
     registrations.push(...retry.registrations)
-    // Team's own early-compaction trigger. The host exposes no percentage knob (its
-    // `compaction` block is auto/prune/tail_turns/preserve_recent_tokens/reserved) and a
-    // 2.x plugin has no config domain at all, so "compact at 75% of the window" can only
-    // live here, in the package, enforced through `ctx.session.compact`.
-    const compactConfig = resolveCompactConfig(process.env)
-    const compaction = await applyV2EarlyCompaction(ctx, {
-      config: compactConfig,
-      scope,
-      // Every outcome gets its OWN trajectory line: the counters ride rows a CLI run
-      // never produces (`v2-shutdown` needs dispose, `v2-surface` is throttled), so
-      // without this the feature would be invisible in exactly the runs used to check it.
-      onEvent: (row) => {
-        try {
-          tmRuntime.pipelines.store.appendTrajectory({ tool: "host", step_id: "v2-compact", event: "compaction", api: 2, ...row })
-        } catch {
-          /* a diagnostic that cannot be written never breaks the request it describes */
-        }
-      },
-    })
     // Context Pruning (plan 功能 1, #49): the request layer trims the tool
-    // surface, the compaction layer decides WHEN to summarize, and this layer
+    // surface, the HOST decides WHEN to summarize — the plugin's own 75% trigger was
+    // removed in 1.7.1 (see CHANGELOG), and this layer
     // shrinks the HISTORY itself — settled messages become one-line pointers
     // (handle / child id / re-run hint) once the session crosses a fraction of
     // its window.  Registered AFTER the session layer so its `context` hook runs
@@ -874,21 +855,6 @@ export const v2Personality: V2Plugin = {
           unknown: sessionReader.report.interruptUnknown,
           error: sessionReader.report.interruptError,
         },
-        // #39: the early-compaction seam's counters, read off the layer that calls it.
-        compact: {
-          enabled: compaction.report.enabled,
-          percent: compaction.report.percent,
-          checked: compaction.report.checked,
-          fired: compaction.report.fired,
-          confirmed: compaction.report.confirmed,
-          conflicts: compaction.report.conflicts,
-          threw: compaction.report.threw,
-          noLimit: compaction.report.noLimit,
-          source: compaction.report.lastSource,
-          lastPercent: compaction.report.lastPercent,
-          error: compaction.report.lastError,
-          wired: compaction.registrations.length > 0,
-        },
         hasTodoSeam: typeof (ctx as { session?: { todo?: unknown } }).session?.todo === "function",
         hasAsk: typeof (ctx as { tool?: unknown }).tool === "function",
         storageState: storageProbe.state,
@@ -906,10 +872,6 @@ export const v2Personality: V2Plugin = {
     // `ctx.event.subscribe()` is measured to work.
     const feed = await applyV2EventFeed(ctx, {
       onEvent: (ev) => tmRuntime.observeDispatchEvent(ev),
-      // #39: the host publishes usage ONLY on the event feed (measured: the context hook's
-      // messages carry no tokens, while session.usage.updated fires hundreds of times), so
-      // the early-compaction layer is fed from here rather than from a second subscription.
-      onUsage: (data) => compaction.observeUsage(data),
       // #49 feature 3: the retry governor's error tap.  `session.error` is the only
       // place a provider throttle is published; the governor classifies its text and
       // arms the next-request directive / the cooldown.  A tap that throws never
@@ -967,16 +929,6 @@ export const v2Personality: V2Plugin = {
       // #49 feature 4: 拆分任务 — briefs measured and advice injected.
       split_seen: session.report.splitSeen,
       split_advised: session.report.splitAdvised,
-      compact_enabled: compaction.report.enabled,
-      compact_at_percent: compaction.report.percent,
-      compact_checked: compaction.report.checked,
-      compact_usage_seen: compaction.report.usageSeen,
-      compact_usage_events: compaction.report.usageEvents,
-      compact_event_decided: compaction.report.eventDecided,
-      compact_fired: compaction.report.fired,
-      compact_confirmed: compaction.report.confirmed,
-      compact_source: compaction.report.lastSource,
-      compact_last_percent: compaction.report.lastPercent,
       // #49 Context Pruning — the history-shrinking half of the budget work.
       prune_enabled: prune.report.enabled,
       prune_at_percent: prune.report.atPercent,
@@ -1173,27 +1125,6 @@ export const v2Personality: V2Plugin = {
           // #49 feature 4: 拆分任务 — the same counter set as the surface row.
           split_seen: session.report.splitSeen,
           split_advised: session.report.splitAdvised,
-          // Early compaction, counted per outcome so the claim is checkable: `fired` is
-          // what we admitted, `confirmed` what the host accepted, and a `no_limit` with no
-          // `fired` means we never found a denominator — not that the window was empty.
-          compact_enabled: compaction.report.enabled,
-          compact_at_percent: compaction.report.percent,
-          compact_checked: compaction.report.checked,
-          compact_usage_seen: compaction.report.usageSeen,
-          compact_usage_events: compaction.report.usageEvents,
-          compact_event_decided: compaction.report.eventDecided,
-          compact_fired: compaction.report.fired,
-          compact_confirmed: compaction.report.confirmed,
-          compact_below: compaction.report.below,
-          compact_deduped: compaction.report.deduped,
-          compact_no_usage: compaction.report.noUsage,
-          compact_no_limit: compaction.report.noLimit,
-          compact_conflicts: compaction.report.conflicts,
-          compact_threw: compaction.report.threw,
-          compact_foreign_skipped: compaction.report.foreignSkipped,
-          compact_source: compaction.report.lastSource,
-          compact_last_percent: compaction.report.lastPercent,
-          compact_error: compaction.report.lastError,
           // #49 Context Pruning — per-outcome, so "we pruned nothing" is
           // distinguishable from "we never found a denominator" (`no_limit`).
           prune_enabled: prune.report.enabled,

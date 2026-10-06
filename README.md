@@ -656,9 +656,6 @@ for overrides, extra agents and disabling roles.
 | `TM_AGENT_TEMPERATURE` | `off` | `on` applies a per-role sampling table (architect 0.35 / researcher 0.3 / reviewer 0.1 / rest 0.2) via `chat.params`; or give it `reviewer=0.05;team=0.4`. Off = the documented "all agents at 0.2" invariant stands |
 | `TM_COMPACTION_CONTEXT` | `on` | on the host's pre-compaction hook, add the must-survive list (reply skeleton, offload handles, open sub-agent session ids, provenance, board paths). Additive — the host's own summarizer prompt is never replaced |
 | `TM_COMPACTION_AUTOCONTINUE` | `on` | `off` stops the host from silently resuming the turn after a compaction, so a human re-reads state first |
-| `TM_COMPACT_TRIGGER` | `on` | Team's own early compaction: `off` hands the timing back to the host entirely |
-| `TM_COMPACT_AT_PERCENT` | `75` | usage percentage of the model's window at which Team submits a compaction via `ctx.session.compact` (clamped 5–95). The usage number comes from the host's `session.usage.updated` event, the denominator from `ctx.model.list()`'s `limit.context` |
-| `TM_COMPACT_MIN_MS` | `60000` | floor between two compaction admissions for one session (capped 600000), so a ratio that does not drop cannot become a compaction loop |
 | `TM_SHELL_NO_COLOR` | `on` | inject `NO_COLOR`/`TERM=dumb` into every child shell via `shell.env` (ANSI progress bars are pure context tax). Never overwrites a value the host already set |
 | `TM_SHELL_ENV` | — | explicit `KEY=VALUE;KEY2=VALUE2` passthrough into child shells — deliberately allowlisted, so this hook can't become a side channel for the parent environment |
 | `TM_MEMORY_GLOBAL_DIR` | `~/.opencode-team/memories/global/` | tm_memory GLOBAL tier store |

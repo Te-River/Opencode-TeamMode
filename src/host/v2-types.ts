@@ -224,8 +224,13 @@ export interface V2SessionDomain {
    * `Missing key at ["sessionID"]` and a bogus id with `Session.NotFoundError`, so the
    * seam is real and its required key is known. The handler behind it is
    * `a.compact({sessionID, id, delivery})` and a duplicate input id surfaces as
-   * `Session.CompactionConflictError` — which is why the caller keeps one admission per
-   * usage number instead of firing per request.
+   * `Session.CompactionConflictError`.
+   *
+   * DECLARED, NOT CALLED: 1.7.0 drove this seam from a 75% usage trigger of our own; that
+   * automatic compaction was removed in 1.7.1 (the host owns when a session is
+   * summarized). The declaration stays because it records what the host offers, and a
+   * future layer would otherwise have to re-probe it — but nothing in this package calls
+   * it, so there is no admission rule to state here.
    */
   readonly compact?: (input: { sessionID: string; id?: string; delivery?: string }) => Promise<unknown>
   readonly [key: string]: unknown

@@ -498,3 +498,49 @@ survivors were written. Each is recorded here so the next reader does not re-der
   The binary's union also names `compaction` and `effort`, which were never observed in a turn.
   This is why the prune layer's first version was inert: it accepted only `type:"text"`, and the
   bulk of a real request is `tool-result`/`tool-call`. `[L]`
+
+### 2026-10-07 — the 1.7.1 cut: the 75% trigger is gone, and why the readers stayed `[L][R][D]`
+
+**Decision (user, 2026-10-07).** The early-compaction trigger shipped in 1.7.0 was removed
+outright: the host owns when a conversation is summarized, and a plugin that summarizes a live
+session on its own takes a context-losing action the user did not ask for. This is a
+`[D]`+product decision, not a measurement — recorded here because the *other* two facts below
+are measurements, and a future reader will otherwise look for a falsified claim that does not
+exist.
+
+**What was removed.** `src/host/v2-compaction.ts` (the whole layer: `applyV2EarlyCompaction`,
+`resolveCompactConfig`, `CompactReport`, the `session.hook("context")` registration and the
+`observeUsage` tap), the `onUsage` option on `applyV2EventFeed`, the `compact` input and the
+`ctx.session.compact` capability row in `v2-capabilities.ts`, the `compact_*` counters on both
+the `v2-surface` and `v2-shutdown` rows, the `v2-compact` trajectory line, the three
+file-overridable registry keys (`compactTrigger` / `compactAtPercent` / `compactMinMs`), and
+the `compact` seam on the test fake. An operator's `team-mode.jsonc` that still names those
+keys now collects them as UNKNOWN keys (a boot warning), which is the honest outcome: a knob
+whose feature is gone must not keep reading as if it did something. `[R]`
+
+**What was kept, and it is not sentiment.** The four pure usage readers (`readUsedTokens` /
+`readModelKey` / `lastUsageOf` / `percentOf`) moved to `src/host/v2-usage.ts` because
+`src/host/v2-prune.ts` still computes ITS OWN threshold from the same formula and the same
+`ctx.model.list()` → `limit.context` denominator. Copying them into the prune layer instead
+would have left two definitions of "how full is this window" free to drift, and the evidence
+below is the reason each branch of those readers exists. `[R]`
+
+**The evidence that shaped them (unchanged, re-stated so it is not lost with the module).**
+- Context usage lives ONLY in the `session.usage.updated` event. `session.hook("context")`
+  hands over the assembled messages and those messages carry no token counts: a second turn
+  that DID contain an assistant message still logged `source=no_usage messages=3` (run
+  `r-20261005-235343-114738`). The denominator is `ctx.model.list()`'s `limit.context`; the
+  numerator is the event. `[L]`
+- The readers therefore accept every location the host has actually used (`tokens` /
+  `metadata.tokens` / `info.tokens` / `usage`) and return `null` — never `0` — when they
+  find none, because "we did not find them" and "usage is zero" must not collapse into one
+  number. A model the catalog does not describe gets `percentOf` = 0, never a guessed window. `[R]`
+
+**What 1.7.1 does NOT change.** The host's own compaction is still supported, not intercepted:
+`TM_COMPACTION_CONTEXT` (the survival list on `session.hook("compaction")`) and
+`TM_COMPACTION_AUTOCONTINUE` are untouched, `compaction_lines` still rides `tm_stats`, and the
+`ctx.session.compact` seam stays declared in `src/host/v2-types.ts` with a "DECLARED, NOT
+CALLED" note — a future layer would otherwise have to re-probe a seam the 2.0.23 probe already
+settled. Context Pruning (`TM_PRUNE`, default 70%) is a different mechanism: it rewrites settled
+message BODIES into pointers inside an outgoing request and never asks the host to summarize
+anything. `[R]`

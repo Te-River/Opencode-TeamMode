@@ -373,7 +373,6 @@ async function groupB() {
     {
       cwd: ws,
       env: sandboxEnv({
-        TM_COMPACT_AT_PERCENT: "5",
         TM_TRAJECTORY_DIR: bTraj,
         HOME: process.env.HOME,
         USERPROFILE: process.env.USERPROFILE,
@@ -383,24 +382,11 @@ async function groupB() {
     },
   )
   const rows = readTrajectory(bTraj)
-  const compactRows = rows.filter((x) => x.step_id === "v2-compact")
-  const kinds = [...new Set(compactRows.map((x) => x.kind))]
-  const eventSourced = compactRows.some((x) => x.source === "event")
   // The turn's own death cause (401/403/429/Model unavailable/…) — a SKIP must say WHY.
   const errLine = (r.out.split(/\r?\n/).filter((l) => /Error|error|unavailable|401|403|429|quota/i.test(l)).pop() || "")
     .replace(/\x1b\[[0-9;]*m/g, "")
     .trim()
   const turnNote = `exit=${r.code}${errLine ? ` · ${errLine.slice(0, 120)}` : ""}`
-
-  // B6 早压缩
-  record(
-    "B6",
-    "早压缩：v2-compact 出现 measured/admit/confirmed 且 source=event",
-    kinds.includes("measured") && eventSourced ? "PASS" : "SKIP",
-    compactRows.length
-      ? `v2-compact rows=${compactRows.length} kinds=[${kinds.join(",")}] source=event:${eventSourced}`
-      : `无 v2-compact 行（${turnNote}）`,
-  )
 
   // B7 JIT 卸载
   const offloaded = rows.find((x) => Number(x.native_offloaded) > 0)
@@ -411,13 +397,16 @@ async function groupB() {
     offloaded ? `native_offloaded=${offloaded.native_offloaded} native_tokens_saved=${offloaded.native_tokens_saved}` : `轨迹里没有 native_offloaded>0 的行（${turnNote}）`,
   )
 
-  // B8 session.usage.updated 仍在
-  const usage = rows.some((x) => x.compact_source === "event") || rows.some((x) => String(x.event_unknown_types ?? "").includes("session.usage.updated"))
+  // B8: the usage event still reaches the feed. Since the plugin's own compaction trigger
+  // was removed in 1.7.1 nothing CONSUMES it, so it must be counted as an unrecognised type
+  // rather than silently dropped — a feed that stopped receiving it would look identical to
+  // a host that stopped publishing it if this only checked for a consumer.
+  const usage = rows.some((x) => String(x.event_unknown_types ?? "").includes("session.usage.updated"))
   record(
     "B8",
-    "session.usage.updated 仍在（compact_source=event 或 event_unknown_types 命中）",
+    "session.usage.updated 仍在事件流里（event_unknown_types 命中）",
     usage ? "PASS" : "SKIP",
-    usage ? "命中" : `轨迹里没有 compact_source=event，也没有 event_unknown_types 命中（${turnNote}）`,
+    usage ? "命中" : `轨迹里没有 event_unknown_types 命中（${turnNote}）`,
   )
 
   // B9 permission.evaluate 动作集

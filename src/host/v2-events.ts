@@ -75,7 +75,7 @@ function eventOf(raw: unknown): HostEvent {
 
 export async function applyV2EventFeed(
   ctx: unknown,
-  opts: { onEvent: (event: HostEvent) => void; types?: readonly string[]; onUsage?: (data: unknown) => void; onError?: (data: unknown) => void },
+  opts: { onEvent: (event: HostEvent) => void; types?: readonly string[]; onError?: (data: unknown) => void },
 ): Promise<V2EventFeed> {
   const allowed = new Set(opts.types ?? FEED_TYPES)
   const report: V2EventFeedReport = { active: false, received: 0, forwarded: 0, unknown: {} }
@@ -126,18 +126,6 @@ export async function applyV2EventFeed(
     const ev = eventOf(raw)
     report.received++
     const type = String(ev.type ?? "")
-    // #39: the usage tap. `session.usage.updated` is not a settle event, so it must NOT
-    // enter the dispatcher — but the early-compaction layer needs its numbers, and this is
-    // the only place the host publishes them (measured on 2.0.23: the context hook's
-    // messages carry none, while this event fired 440 times in one desktop session). The
-    // payload never reaches the trajectory; only the count does (R6 binds a diagnostic).
-    if (type === "session.usage.updated" && ev.properties && typeof opts.onUsage === "function") {
-      try {
-        opts.onUsage(ev.properties)
-      } catch {
-        /* a usage tap that throws never closes the feed */
-      }
-    }
     // #49 feature 3: the retry layer's error tap.  `session.error` is the only
     // place the host publishes a provider throttle, and the retry governor needs
     // its text — but the dispatcher must not have to care, so this is a separate

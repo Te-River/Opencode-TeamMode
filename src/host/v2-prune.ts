@@ -32,7 +32,7 @@
  */
 
 import { estimateTokens } from "../tm/config.js"
-import { percentOf, readModelKey } from "./v2-compaction.js"
+import { percentOf, readModelKey } from "./v2-usage.js"
 import type { TeamScope } from "./v2-scope.js"
 import type { V2Context, V2Registration, V2SessionContext } from "./v2-types.js"
 
@@ -432,7 +432,7 @@ export interface PruneLayer {
 }
 
 /** The default denominator: `ctx.model.list()` keyed by the session's model,
- *  the same lookup the desktop's usage meter and the compaction layer use. */
+ *  the same lookup the desktop's usage meter and this package's usage readers use. */
 function defaultModelLimitOf(ctx: V2Context): (sessionID: string, messages: unknown[]) => Promise<number | null> {
   let limits: Map<string, number> | null = null
   const askedUnknown = new Set<string>()

@@ -1416,10 +1416,9 @@ console.log("8d. the event feed (#8): tm_join's settle detection on v2")
   // and v2 subscribed to nothing, so a settled child stayed "running" and tm_join
   // reported a state it had never observed.  A unit test alone would not catch the
   // bug coming back, so the wiring is pinned too.
-  // Tolerant of line breaks (the call now also carries the #39 usage tap), but it still
+  // Tolerant of line breaks, but it still
   // has to prove the same fact: the personality opens the feed WITH an event consumer.
   assert.ok(/applyV2EventFeed\(\s*ctx,\s*\{[\s\S]{0,60}?onEvent:/.test(v2src), "the personality opens the feed")
-  assert.ok(/onUsage:[\s\S]{0,60}?compaction\.observeUsage/.test(v2src), "and taps session.usage.updated into the early-compaction layer (#39)")
   assert.ok(/tmRuntime\.observeDispatchEvent\(ev\)/.test(v2src), "and hands every forwarded event to the dispatcher")
   assert.ok(/event_forwarded/.test(v2src) && /event_unknown_types/.test(v2src), "what it saw is written down at teardown")
   assert.ok(/事件流没接通/.test(v2src), "and a host that will not stream says so out loud at boot")
@@ -2588,244 +2587,20 @@ console.log("17. the lead can STEER a running child — three outcomes, parentag
   console.log("   OK (steer reaches the host with the child's id; three outcomes stay distinct; parentage is a hard gate; v1 never called; the text stays out of the trail)")
 }
 
-console.log("18. Team compacts EARLY — the 75% trigger is plugin logic, not somebody's config (#39)")
+console.log("18. Context Pruning's capability row (#49) — kept after the compaction removal")
 {
-  const { resolveCompactConfig, readUsedTokens, lastUsageOf, percentOf, applyV2EarlyCompaction } =
-    await import("./dist/host/v2-compaction.js")
-  const envKeys = ["TM_COMPACT_TRIGGER", "TM_COMPACT_AT_PERCENT", "TM_COMPACT_MIN_MS"]
-  const saved = Object.fromEntries(envKeys.map((k) => [k, process.env[k]]))
-  const clearEnv = () => envKeys.forEach((k) => { delete process.env[k] })
-  try {
-    clearEnv()
-    const d = resolveCompactConfig()
-    assert.equal(d.enabled, true, "on by default: the user asked for the behaviour, not for a knob they must remember to set")
-    assert.equal(d.percent, 75, "75% of the model's window is the default the user named")
-    assert.equal(d.minIntervalMs, 60_000, "at most one admission per session per minute")
-    for (const off of ["off", "false", "0", "no", "OFF"]) {
-      process.env.TM_COMPACT_TRIGGER = off
-      assert.equal(resolveCompactConfig().enabled, false, `TM_COMPACT_TRIGGER=${off} hands the timing back to the host`)
-    }
-    clearEnv()
-    for (const junk of ["", "abc", "0", "101", "900"]) {
-      process.env.TM_COMPACT_AT_PERCENT = junk
-      assert.equal(resolveCompactConfig().percent, 75, `a garbage percent (${JSON.stringify(junk)}) falls back rather than arming a wild threshold`)
-    }
-    clearEnv()
-    process.env.TM_COMPACT_AT_PERCENT = "50"
-    assert.equal(resolveCompactConfig().percent, 50, "a real percent is honoured")
-    process.env.TM_COMPACT_MIN_MS = "99999999"
-    assert.equal(resolveCompactConfig().minIntervalMs, 600_000, "and the floor interval is capped — a runaway wait is not a feature")
-    clearEnv()
-
-    // The host's own usage block, read from every location it has actually used.
-    assert.equal(readUsedTokens({ tokens: { input: 500, output: 100, reasoning: 20, cache: { read: 30, write: 10 } } }), 660,
-      "input+output+reasoning+cache.read+cache.write — the formula read verbatim out of the 2.0.23 binary")
-    assert.equal(readUsedTokens({ metadata: { tokens: { input: 40 } } }), 40, "the 2.0.20 metadata location is read too")
-    assert.equal(readUsedTokens({ usage: { tokens: { input: 7 } } }), 7, "and the usage wrapper")
-    assert.equal(readUsedTokens({ tokens: { input: 0, output: 0 } }), null, "zeros are NOT a reading — an empty usage block is absent usage")
-    assert.equal(readUsedTokens({ role: "user", content: [] }), null, "a message with no numbers returns null, never 0")
-    assert.equal(readUsedTokens(undefined), null, "and no message at all is not a crash")
-    const newest = lastUsageOf([
-      { role: "assistant", model: { providerID: "p1", id: "m1" }, tokens: { input: 10 } },
-      { role: "user", content: [] },
-      { role: "assistant", model: { providerID: "p2", id: "m2" }, tokens: { input: 90_000 } },
-    ])
-    assert.equal(newest.used, 90_000, "the NEWEST usage wins — that is what the host's meter calls usage.last")
-    assert.deepEqual(newest.model, { providerID: "p2", id: "m2" }, "and the model id rides the same message, so the denominator is the model actually in use")
-    assert.equal(lastUsageOf([]), null, "an empty transcript has no usage")
-    assert.equal(percentOf(75_000, 100_000), 75, "75% of a 100k window")
-    assert.equal(percentOf(10, 0), 0, "a window with no size never reaches the threshold")
-    assert.equal(percentOf(10, Number.NaN), 0, "neither does a NaN limit")
-  } finally {
-    for (const [k, v] of Object.entries(saved)) { if (v === undefined) delete process.env[k]; else process.env[k] = v }
-  }
-
-  // ---- the layer, driven through the fake host ----
-  const CAT = [{ id: "glm", providerID: "lxns", modelID: "glm", limit: { context: 100_000, output: 1000 } }]
-  const usageMsg = (used) => ({ role: "assistant", model: { providerID: "lxns", id: "glm" }, tokens: { input: used } })
-  const scopeStub = { decide: (e) => (e && e.agent === "team" ? "ours" : "foreign"), count: (v) => v }
-  let clock = 1_000_000
-  const now = () => clock
-
-  async function drive(seed, opts = {}) {
-    const f = makeFakeCtx({
-      directory: ws,
-      agents: [],
-      sessionData: { compact: seed },
-      models: opts.catalog === undefined ? CAT : opts.catalog,
-    })
-    const events = []
-    const layer = await applyV2EarlyCompaction(f.ctx, {
-      config: opts.config ?? resolveCompactConfig(),
-      scope: opts.noScope ? undefined : scopeStub,
-      now,
-      onEvent: (row) => events.push(row),
-    })
-    const fire = async (messages, agent = "team", sessionID = "ses_t") => {
-      await f.hook("session.context").fire({ agent, sessionID, system: [], messages, tools: {} })
-      // the hook body is fire-and-forget; give the swallowed promise one tick to land
-      await new Promise((r) => setTimeout(r, 0))
-    }
-    return { f, registrations: layer.registrations, report: layer.report, observe: layer.observeUsage, fire, events }
-  }
-
   {
-    const { f, report, fire, events: driveEvents } = await drive({})
-    await fire([usageMsg(50_000)])
-    assert.equal(f.compactCalls.length, 0, "50% of the window is not a compaction — the host still owns the rest")
-    assert.equal(report.below, 1, "and that is counted as below, not as silence")
-    await fire([usageMsg(76_000)])
-    assert.equal(f.compactCalls.length, 1, "crossing 75% admits exactly one compaction")
-    assert.deepEqual(f.compactCalls[0], { sessionID: "ses_t" }, "with the session's own id, and nothing else (the host's required key)")
-    assert.equal(report.fired, 1, "fired is OUR intent")
-    assert.equal(report.confirmed, 1, "confirmed is the host's answer — two different numbers, on purpose")
-    assert.equal(report.lastPercent, 76, "the percent we acted on is reported")
-    assert.equal(report.lastSource, "message", "and the source is named: on a live 2.0.23 the hook payload carries NO usage, so a number read off a message is the secondary path, not the primary one")
-    assert.deepEqual(driveEvents.map((e) => e.kind), ["measured", "admit", "confirmed"],
-      "one measured line per session, then the admission and the host's answer")
-    assert.equal(driveEvents[0].percent, 50, "the measured line is the FIRST observation (50%), not the one that acted")
-    assert.equal(driveEvents[0].limit, 100_000, "and it carries the denominator it used, so a wrong window is checkable")
-    assert.equal(driveEvents[0].source, "message", "the line says WHERE the number came from")
-    assert.equal(driveEvents[0].from, "request", "and which signal drove this decision")
-    assert.equal(driveEvents[0].model, "lxns/glm", "and which model's window that was")
-    assert.equal(driveEvents[1].percent, 76, "the admit line carries the percent that crossed the threshold")
-    await fire([usageMsg(76_000)])
-    assert.equal(f.compactCalls.length, 1, "the same usage number never re-admits — a stuck ratio must not become a compaction loop")
-    assert.equal(report.deduped, 1, "counted as deduped, not silently skipped")
-    clock += 61_000
-    await fire([usageMsg(77_000)])
-    assert.equal(f.compactCalls.length, 2, "after the floor interval, a genuinely larger context admits again")
-  }
-
-  {
-    // the floor interval holds even when the number grows
-    clock += 600_000
-    const { f, report, fire } = await drive({})
-    await fire([usageMsg(80_000)])
-    assert.equal(f.compactCalls.length, 1, "first crossing fires")
-    await fire([usageMsg(95_000)])
-    assert.equal(f.compactCalls.length, 1, "one second later it does not, however full the window got")
-    assert.equal(report.deduped, 1, "and the refusal is counted")
-  }
-
-  {
-    // the host's two refusal shapes stay distinct, and neither breaks the hook
-    clock += 600_000
-    const { f, report, fire, events } = await drive(new Error("Session.CompactionConflictError: input id already admitted"))
-    await fire([usageMsg(90_000)])
-    assert.equal(report.conflicts, 1, "a duplicate input id is a conflict, named as one")
-    assert.deepEqual(events.map((e) => e.kind), ["measured", "admit", "conflict"], "the refusal gets its OWN line — a reader can tell 'we asked and the host refused' from 'we never asked'")
-    assert.match(events[events.length - 1].error, /CompactionConflict/, "and the line carries the host's words, not a paraphrase")
-    assert.equal(report.confirmed, 0, "and it is NOT a confirmation")
-    assert.equal(report.threw, 0, "a conflict is not lumped into 'threw'")
-    assert.match(report.lastError, /CompactionConflict/, "the host's own words are kept")
-    await fire([usageMsg(91_000)])
-    assert.equal(f.compactCalls.length, 2, "a failed admission is not remembered as a success, so the next request may try again")
-    clock += 600_000
-    const bad = await drive(new Error("boom: transport closed"))
-    await bad.fire([usageMsg(92_000)])
-    assert.equal(bad.report.threw, 1, "anything else is a throw, counted separately")
-    assert.match(bad.report.lastError, /transport closed/, "with the host's reason")
-    assert.equal(bad.report.conflicts, 0, "and it never inflates the conflict count")
-  }
-
-  {
-    // the gate that is not a threshold
-    clock += 600_000
-    const { f, report, fire } = await drive({})
-    await fire([usageMsg(90_000)], "build")
-    assert.equal(f.compactCalls.length, 0, "a foreign agent's request is never ours to compact")
-    assert.equal(report.foreignSkipped, 1, "counted, not silently passed")
-    assert.equal(report.checked, 0, "and it is not even measured — the gate sits before the arithmetic")
-    const noId = await drive({})
-    await noId.fire([usageMsg(99_000)], "team", "")
-    assert.equal(noId.f.compactCalls.length, 0, "no session id, no admission — we never compact 'somebody'")
-    assert.equal(noId.report.checked, 0, "and nothing was counted as measured")
-  }
-
-  {
-    // no denominator, no claim
-    clock += 600_000
-    const { f, report, fire, events } = await drive({}, { catalog: [] })
-    await fire([usageMsg(99_000)])
-    assert.equal(f.compactCalls.length, 0, "a model the catalog does not describe is never compacted on a guessed window")
-    assert.equal(report.noLimit, 1, "counted as no_limit — 'we could not read the size', not 'the window was empty'")
-    assert.deepEqual(events.map((e) => e.kind), ["no_denominator"], "no percent is claimed when there is no denominator — the line says which of the two states this was, and `measured` stays unemitted rather than printing a number we do not have")
-    assert.ok(f.modelListCalls.length <= 2, `an unknown model costs at most two catalog reads, not one per request (got ${f.modelListCalls.length})`)
-    const noUsage = await drive({})
-    clock += 600_000
-    await noUsage.fire([{ role: "user", content: [{ type: "text", text: "hi" }] }])
-    assert.equal(noUsage.f.compactCalls.length, 0, "a payload with no usage numbers admits nothing — there is no estimated numerator here")
-    assert.equal(noUsage.report.noUsage, 1, "and that is said as no_usage")
-  }
-
-  {
-    // the operator's opt-out removes the hook entirely
-    clock += 600_000
-    const off = await drive({}, { config: { enabled: false, percent: 75, minIntervalMs: 60_000 } })
-    assert.equal(off.registrations.length, 0, "TM_COMPACT_TRIGGER=off attaches nothing — the host owns the timing again")
-    const hostless = makeFakeCtx({ directory: ws, agents: [], sessionData: {} })
-    const hl = await applyV2EarlyCompaction(hostless.ctx, { config: resolveCompactConfig(), scope: scopeStub, now })
-    assert.equal(hl.registrations.length, 0, "a host that gives no compact seam is detected, not worked around")
-    assert.equal(hl.report.enabled, true, "the feature is on, the seam is what is missing — two different facts")
-  }
-
-  {
-    // THE EVENT PATH IS THE PRIMARY ONE — measured: a live 2.0.23 context hook carries no
-    // usage on its messages, while `session.usage.updated` fires hundreds of times. A layer
-    // that only read the hook would sit there counting and never compact anything.
-    clock += 600_000
-    const stray = await drive({})
-    stray.observe({ sessionID: "ses_somebody_else", tokens: { input: 99_000 } })
-    assert.equal(stray.report.usageSeen, 1, "the tap counted the event")
-    assert.equal(stray.report.foreignSkipped, 1, "…and the gate refused to act on an id it never learned")
-    assert.equal(stray.f.compactCalls.length, 0, "an unlearned session is never compacted on an event alone")
-
-    const known = await drive({})
-    await known.fire([usageMsg(10_000)])
-    assert.equal(known.f.compactCalls.length, 0, "10% on the request path is not a compaction")
-    known.events.length = 0
-    known.observe({ sessionID: "ses_t", tokens: { input: 92_000 } })
-    await new Promise((r) => setTimeout(r, 0))
-    assert.equal(known.f.compactCalls.length, 1, "the event alone crosses the threshold and admits a compaction")
-    assert.equal(known.report.lastSource, "event", "…and says so: event is the primary source, message the fallback")
-    assert.deepEqual(known.events.map((e) => e.kind), ["admit", "confirmed"], "the event path emits the same lines the request path does")
-    assert.equal(known.events[0].from, "event", "and each line names which signal drove it")
-    assert.equal(known.report.usageEvents, 1, "the event that acted is counted")
-  }
-
-  {
-    // wiring: the personality actually attaches the layer, not just the module
-    const wf = makeFakeCtx({ directory: ws, agents: sixAgents, sessionData: { compact: {} }, models: CAT })
+    // wiring: the personality attaches the layers that survive — the request layer and
+    // the prune layer both sit on session.context. The compaction layer was removed in
+    // 1.7.1, so this assertion is now what catches prune silently going away.
+    const wf = makeFakeCtx({ directory: ws, agents: sixAgents, sessionData: {} })
     await withCapturedConsole(() => plugin.setup(wf.ctx))
     const handlers = wf.hook("session.context").handlers.length
-    assert.ok(handlers >= 2, `the request layer AND the compaction layer both sit on session.context (got ${handlers})`)
+    assert.ok(handlers >= 2, `the request layer AND the prune layer both sit on session.context (got ${handlers})`)
   }
-
-  {
-    // the capability row keeps `declared` and `ok` apart
-    const { v2CapabilityRows } = await import("./dist/host/v2-capabilities.js")
-    const base = (compact) => ({
-      ctx: { session: {} },
-      probe: { report: { ctxDomains: ["session"], hooksMissing: [], executed: [], executedAfter: [], actions: [], evaluations: 0, agentsSeen: [] } },
-      guardsInstalled: true, backgroundForced: true,
-      offload: { active: true, registrations: [{}], report: { seen: 0, offloaded: 0 } },
-      sessionHooks: 2, temperature: 0.2, hasTodoSeam: false, hasAsk: false, compact,
-    })
-    const row = (compact) => v2CapabilityRows(base(compact)).find((r) => r.seam === "ctx.session.compact")
-    const counts = (o) => ({ enabled: true, percent: 75, checked: 1, fired: 0, confirmed: 0, conflicts: 0, threw: 0, noLimit: 0, source: "usage", lastPercent: 0, error: "", wired: true, ...o })
-    assert.equal(row(counts({ fired: 3, confirmed: 0 })).state, "declared", "an admission the host never accepted does NOT green the row")
-    assert.equal(row(counts({ fired: 1, confirmed: 1 })).state, "ok", "ok is reserved for a compaction the host actually took")
-    assert.match(row(counts({})).note, /已测 1 次请求装配/, "the note carries the observation, so a silent layer is visible")
-    const off = row(counts({ enabled: false, wired: false }))
-    assert.equal(off.state, "declared", "an operator opt-out is not a broken host")
-    assert.match(off.note, /TM_COMPACT_TRIGGER=off/, "and it names the knob that did it")
-    assert.equal(row(undefined).state, "declared", "a host that gave no compact seam reads declared, never ok")
-  }
-
   {
     // #49 Context Pruning: the capability row keeps `declared` and `ok` apart the same
-    // way the compaction row does — `ok` only after a message was actually pruned, and
+    // way the removed compaction row did — `ok` only after a message was actually pruned, and
     // an operator opt-out names the knob instead of looking broken.
     const { v2CapabilityRows } = await import("./dist/host/v2-capabilities.js")
     const base = (prune) => ({
@@ -2845,7 +2620,7 @@ console.log("18. Team compacts EARLY — the 75% trigger is plugin logic, not so
     assert.match(row(counts({ prunedMessages: 2 })).note, /估算/, "the token figure is labelled as our estimate")
   }
 }
-console.log("   OK (75% is plugin logic; one admission per usage number with a floor interval; the host's formula and both refusal shapes kept distinct; foreign/no-id/no-denominator all counted; declared ≠ ok)")
+console.log("   OK (the prune row earns ok only after a real prune, and names the opt-out knob; the request and prune layers both sit on session.context)")
 
 console.log("19. the shell timeout clamp came back to 2.x — the same lever, the same discipline (#43)")
 {

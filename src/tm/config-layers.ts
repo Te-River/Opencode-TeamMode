@@ -90,9 +90,6 @@ export const CONFIG_KEYS: readonly ConfigKeySpec[] = [
   { key: "bashTimeoutProbeMs", env: "TM_BASH_TIMEOUT_PROBE_MS", type: "number" },
   // ---- knobs read directly from process.env (design §4 names them file-overridable) ----
   { key: "nativeOffload", env: "TM_NATIVE_OFFLOAD", type: "string" },
-  { key: "compactTrigger", env: "TM_COMPACT_TRIGGER", type: "string" },
-  { key: "compactAtPercent", env: "TM_COMPACT_AT_PERCENT", type: "number" },
-  { key: "compactMinMs", env: "TM_COMPACT_MIN_MS", type: "number" },
   { key: "ptcWebBridge", env: "TM_PTC_WEB_BRIDGE", type: "string" },
   { key: "hitBlacklist", env: "TM_HIT_BLACKLIST", type: "string[]" },
   { key: "envProtectExtraDeny", env: "TM_ENV_PROTECT_EXTRA_DENY", type: "string" },

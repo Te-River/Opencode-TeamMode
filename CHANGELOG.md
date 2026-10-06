@@ -5,6 +5,39 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 versioning is semver (the 1.4.x train shipped under working labels; the
 registry saw 1.5.0 as the install-script fix release).
 
+## [1.7.1] - 2026-10-07
+
+### Removed
+
+- **The plugin no longer compacts a session on its own.** 1.7.0 shipped an early-compaction
+  trigger that submitted `ctx.session.compact({sessionID})` once a Team session crossed 75% of
+  the model's window. It is removed in full by user decision: the host owns when a conversation
+  is summarized, and a plugin that summarizes a live session by itself takes a context-losing
+  action the user did not ask for. `src/host/v2-compaction.ts` is deleted, together with the
+  three knobs that drove it (`TM_COMPACT_TRIGGER`, `TM_COMPACT_AT_PERCENT`,
+  `TM_COMPACT_MIN_MS`), the `ctx.session.compact` capability row, and the `v2-compact`
+  trajectory line. A `team-mode.jsonc` that still names those knobs reports them as unknown
+  keys at boot and applies nothing — the registry entries are gone, not silently dead.
+- **The usage readers survived the cut, in their own module.** `src/host/v2-usage.ts` keeps
+  `readUsedTokens` / `readModelKey` / `lastUsageOf` / `percentOf` — the host's own accounting
+  formula and the `limit.context` denominator — because `src/host/v2-prune.ts` still computes
+  its OWN percent from them: one definition of "how full is this window", not two that drift.
+  The evidence that shaped the readers is kept in that module's header (the 2.0.23 request
+  payload carries no usage, the numbers ride `session.usage.updated`, and "found nothing" is
+  `null` rather than `0`), so the next reader does not have to re-derive it.
+
+### Unchanged
+
+- **The host's own compaction is supported, not intercepted.** `TM_COMPACTION_CONTEXT` (the
+  must-survive list pushed on `session.hook("compaction")`) and `TM_COMPACTION_AUTOCONTINUE`
+  are untouched: they only ever run when the HOST decides to compact. `tm_stats` still prints
+  `compaction_lines`, the `ctx.session.compact` host seam stays DECLARED in `src/host/v2-types.ts`
+  with a note that nothing calls it, and for a user who never had 1.7.0's trigger in play the
+  timing is exactly what it was before that release.
+- **Context Pruning (`TM_PRUNE`, default 70%) is a different mechanism and is NOT part of this
+  change.** It replaces settled message BODIES with self-explaining pointers inside an outgoing
+  request; it never asks the host to summarize anything.
+
 ## [1.7.0] - 2026-10-06
 
 ### Added

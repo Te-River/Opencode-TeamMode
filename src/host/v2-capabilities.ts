@@ -43,23 +43,6 @@ interface Inputs {
   /** Team-scope isolation (#22): how many hook events resolved to one of our six
    *  roles, how many were somebody else's, and how many the host never told us. */
   scope?: { report: { ours: number; foreign: number; unknown: number } }
-  /** Early compaction (#39): the `ctx.session.compact` seam's counters, read off the
-   *  layer that calls it. `wired` says a hook got attached at all; `confirmed` is the
-   *  only evidence the host accepted an admission. */
-  compact?: {
-    enabled: boolean
-    percent: number
-    checked: number
-    fired: number
-    confirmed: number
-    conflicts: number
-    threw: number
-    noLimit: number
-    source: string
-    lastPercent: number
-    error: string
-    wired: boolean
-  }
   /** The `ctx.event.subscribe()` feed (#8).  `received` is the observation that
    *  makes this row `ok` rather than `declared`: an event that actually arrived. */
   eventFeed?: { active: boolean; received: number; forwarded: number; unknown: Record<string, number>; stopped?: string }
@@ -242,34 +225,6 @@ export function v2CapabilityRows(i: Inputs): CapabilityRow[] {
         ? `已试 ${i.stop.tried} 次：宿主确认中断 ${i.stop.confirmed} · idle no-op ${i.stop.refused} · 未回布尔 ${i.stop.unknown}` +
           (i.stop.error ? `（最后一次宿主错误：${i.stop.error}）` : "")
         : "缝已接上（POST /api/session/{id}/interrupt 的契约是 interrupted=true / false=idle no-op），本进程还没被 cancel:true 用过",
-  })
-  // #39: Team's own early compaction. `ok` requires the HOST to have ACCEPTED an
-  // admission (`compact()` resolved) — a fired-but-unconfirmed call is our intent, not a
-  // fact, and the two must not print the same row. An operator who turned the trigger off
-  // says so in the note instead of looking like a broken host.
-  rows.push({
-    seam: "ctx.session.compact",
-    feature: `Team 自己的早压缩：上下文用量到窗口上限的 ${i.compact?.percent ?? 75}% 就提交压缩（宿主配置只有 auto/prune/tail_turns/preserve_recent_tokens/reserved，没有百分比，而 2.x 插件根本没有 config 域）`,
-    state: !i.compact
-      ? domains.includes("session")
-        ? "declared"
-        : "missing"
-      : !i.compact.enabled
-        ? "declared"
-        : i.compact.confirmed > 0
-          ? "ok"
-          : i.compact.wired
-            ? "declared"
-            : domains.includes("session")
-              ? "declared"
-              : "missing",
-    evidence: i.compact && i.compact.confirmed > 0 ? "runtime" : "static",
-    note: !i.compact
-      ? "层没接上"
-      : !i.compact.enabled
-        ? "TM_COMPACT_TRIGGER=off：操作员关掉了早压缩，压缩时机完全交回宿主"
-        : `已测 ${i.compact.checked} 次请求装配 · 提交 ${i.compact.fired} · 宿主接受 ${i.compact.confirmed} · 冲突 ${i.compact.conflicts} · 抛错 ${i.compact.threw} · 读不到上限 ${i.compact.noLimit} · 最近一次 ${i.compact.lastPercent}%（用量来源=${i.compact.source}）` +
-          (i.compact.error ? `（最后一次宿主错误：${i.compact.error}）` : ""),
   })
   // #49: Context Pruning. `ok` requires an actual prune (`prunedMessages > 0`) — a layer
   // that ran but found nothing over the threshold is `declared`, and the two zeroes a

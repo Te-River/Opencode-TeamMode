@@ -572,9 +572,6 @@ Team Lead 自己从不删黑板，你可以随时审计任何一次运行。
 | `TM_AGENT_TEMPERATURE` | `off` | `on` 时按角色分档采样（architect 0.35 / researcher 0.3 / reviewer 0.1 / 其余 0.2）经 `chat.params` 生效；也可写 `reviewer=0.05;team=0.4`。默认关闭＝守住"所有 agent 0.2"这条既定原则 |
 | `TM_COMPACTION_CONTEXT` | `on` | 在宿主压缩前追加"必须存活清单"（回复骨架、offload 句柄、未回收的子会话 id、出处、板上路径）。只做追加——宿主自己的压缩提示词不被替换 |
 | `TM_COMPACTION_AUTOCONTINUE` | `on` | 设 `off` 则压缩后不让宿主静默续跑，先由人复核状态 |
-| `TM_COMPACT_TRIGGER` | `on` | Team 自己的提前压缩：设 `off` 把时机整个交回宿主 |
-| `TM_COMPACT_AT_PERCENT` | `75` | 用量达到模型窗口的百分之多少时，Team 用 `ctx.session.compact` 提交一次压缩（夹在 5–95）。用量数字来自宿主的 `session.usage.updated` 事件，分母来自 `ctx.model.list()` 的 `limit.context` |
-| `TM_COMPACT_MIN_MS` | `60000` | 同一会话两次压缩准入之间的最小间隔（上限 600000），免得一个降不下去的比例变成压缩死循环 |
 | `TM_SHELL_NO_COLOR` | `on` | 经 `shell.env` 给每个子 shell 注入 `NO_COLOR`/`TERM=dumb`（ANSI 进度条纯属上下文税）。绝不覆盖宿主已设的值 |
 | `TM_SHELL_ENV` | — | 显式 `KEY=VALUE;KEY2=VALUE2` 透传进子 shell——刻意用白名单，避免这个钩子变成父环境泄露通道 |
 | `TM_WEBFETCH_ALLOWED_DOMAINS` | `"*"` | tm_webfetch / tm_search 白名单（`"*"` 全开；空 = 全拒；自定义值**替换**种子——保留引擎主机）。`"*"` **不覆盖私网**：回环 / RFC1918 / CGNAT / `.localhost` 仍然每次都要弹确认窗；不可路由段（169.254.0.0/16 元数据端点、0.0.0.0/8、组播、保留段，以及这些地址的 IPv4-mapped 与 DNS64 写法）是不可被任何配置打开的硬红线 |
