@@ -98,6 +98,17 @@ registry saw 1.5.0 as the install-script fix release).
   Team-scoped, and fails **open** on its own errors — the honest direction for a throughput gate.
   Counters `concurrency_seen/denied/running_max/threw` ride the surface and shutdown rows with a
   `v2-concurrency` trajectory line.
+- **Staggered retry after a quota or rate-limit error.** A quota error used to be answered by the
+  model re-issuing immediately, which is how a rate limit becomes a wall. `src/host/v2-retry.ts`
+  classifies the error from the event feed (`session.error`, by **name and text only** — quota /
+  rate / transient / unknown, with `Retry-After` parsed when present), computes a backoff with
+  jitter, and injects **one** directive naming the **exact seconds** to wait; after
+  `TM_RETRY_BREAK_AFTER` consecutive errors it enters a cooldown during which a new `subagent`
+  dispatch is denied. **Honest boundary:** there is no seam to intercept the model's own retry, so
+  this identifies, states the wait, and refuses new work — it does not wait for the model. Knobs
+  `TM_RETRY=off`, `TM_RETRY_BASE_MS` (5000), `TM_RETRY_MAX_MS` (60000), `TM_RETRY_JITTER` (0.3),
+  `TM_RETRY_BREAK_AFTER` (5), `TM_RETRY_COOLDOWN_MS` (60000); counters `retry_*` ride the
+  surface and shutdown rows with a `v2-retry` trajectory line.
 
 ### Changed
 
