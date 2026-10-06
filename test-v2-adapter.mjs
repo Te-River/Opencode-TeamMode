@@ -1423,6 +1423,11 @@ console.log("8d. the event feed (#8): tm_join's settle detection on v2")
   assert.ok(/tmRuntime\.observeDispatchEvent\(ev\)/.test(v2src), "and hands every forwarded event to the dispatcher")
   assert.ok(/event_forwarded/.test(v2src) && /event_unknown_types/.test(v2src), "what it saw is written down at teardown")
   assert.ok(/事件流没接通/.test(v2src), "and a host that will not stream says so out loud at boot")
+  // The probe field is named for what it MEASURES: the transform callback runs before the config
+  // directory merges, so it never sees our six roles. The old name implied "the editor's ids"
+  // and a filter made it look truncated (2 of 7) rather than early.
+  assert.ok(/agents_editor_ids_at_transform/.test(v2src), "the probe field is named for what it measures")
+  assert.ok(!/agents_editor_ids:/.test(v2src), "and the misleading name is gone")
 
   // (a) no subscribe on this host -> inactive with a reason, and nothing thrown
   const silent = await applyV2EventFeed({}, { onEvent: () => {} })

@@ -624,11 +624,14 @@ export const v2Personality: V2Plugin = {
                   return -1
                 }
               })(),
-              agents_editor_ids: (() => {
+              // The ids the transform callback can SEE — which is the set from BEFORE the config
+              // directory merges, so it never contains our six roles. Named for what it measures:
+              // the old name implied "the editor's ids" and the filter made it look truncated
+              // (2 of 7) when the truth is that the transform runs too early to see them.
+              agents_editor_ids_at_transform: (() => {
                 try {
                   return (editor.list?.() ?? [])
                     .map((a: { id?: string }) => String(a?.id ?? "?"))
-                    .filter((n: string) => wantedIds.some((w) => normalizeAgentName(w) === normalizeAgentName(n)) || n === "build" || n === "plan")
                     .join(" ")
                 } catch {
                   return "list-threw"
