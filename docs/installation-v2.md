@@ -226,6 +226,26 @@ rewrites `default_agent` and **reads the value back from disk**. That matters be
 (`plugin update` + the generator) and a release ever renames a role, re-run the installer
 before concluding the install is broken.
 
+### Layered configuration (`team-mode.jsonc`)
+
+Settings can live in a file instead of the environment. Two layers, mirroring the host's own config:
+
+| layer | file |
+|---|---|
+| global | `~/.config/opencode/team-mode.jsonc` |
+| project | `<project>/team-mode.jsonc`, or `<project>/.opencode/team-mode.jsonc` (the `.opencode` one wins) |
+
+Precedence is `env < global < project`, and **a file beats an environment variable** — a value you
+put in a file wins over the matching `TM_*`. To get the environment back for one run, set
+`TM_CONFIG_ENV_ONLY=1`: it is read before any file, and a file cannot switch it off.
+
+Keys are the `TM_*` names in camelCase (`offloadThreshold`, `searchDefaultEngine`, …). Six keys are
+**red lines a file may not change** — `envProtect`, `r6FineAsk`, `privateSpace`,
+`webfetchAllowedDomains`, `browserAskEval`, `bashReadonlyAllowed`; a file value for one of them is
+ignored and reported. A file that fails to parse is skipped **whole** (half a config is worse than
+none), while a single bad key loses only itself. Unknown keys warn at boot and are never applied.
+`tm_stats` shows which layer each key came from.
+
 ### Uninstalling
 
 1. Remove the plugin entry (`opencode plugin remove @te-river/opencode-team-mode`).
@@ -425,6 +445,23 @@ opencode reload
 `default_agent` 并**从磁盘回读**。这条要紧是因为：`default_agent` 指向一个不存在的角色**不算错误**——
 宿主会静默退回 `build`，会话就此不再是 Team。如果你手工升级（`plugin update` + 生成器），而某个版本
 改过角色名，请先重跑安装器，再下结论说装坏了。
+
+### 分层配置（`team-mode.jsonc`）
+
+设置可以写在文件里，而不是环境变量里。两层，与宿主自己的配置同构：
+
+| 层 | 文件 |
+|---|---|
+| 全局 | `~/.config/opencode/team-mode.jsonc` |
+| 项目 | `<project>/team-mode.jsonc`，或 `<project>/.opencode/team-mode.jsonc`（后者胜） |
+
+优先级 `env < 全局 < 项目`，并且**文件赢环境变量**——写进文件的值会盖过同名的 `TM_*`。想让某一次运行回到纯环境变量，设
+`TM_CONFIG_ENV_ONLY=1`：它在任何文件被读取之前求值，文件关不掉它。
+
+键名就是 `TM_*` 的 camelCase 写法（`offloadThreshold`、`searchDefaultEngine` …）。有六个键是**文件不许改写的红线**——
+`envProtect`、`r6FineAsk`、`privateSpace`、`webfetchAllowedDomains`、`browserAskEval`、`bashReadonlyAllowed`；文件里写了也会被忽略并报告。
+解析失败的那一层**整层跳过**（半份配置比没有配置更危险），单个坏键只丢它自己。未知键在启动时告警、**不应用**。
+`tm_stats` 会显示每个键最终来自哪一层。
 
 ### 卸载
 
