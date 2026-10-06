@@ -3540,6 +3540,132 @@ console.log("29. the concurrency cap — a hard gate on permission.evaluate (#49
 }
 console.log("   OK (cap 3 denies the 4th with the running ids + tm_join paths; under-cap and foreign sessions untouched; host deny preserved; a throwing read fails open and is counted)")
 
+// 30. 错峰重试 — recognise a provider throttle, inject an EXACT wait, cool down (#49 feature 3)
+console.log("30. 错峰重试 — recognise a provider throttle, inject an exact wait, cool down (#49 feature 3)")
+{
+  const { classifyProviderError, backoffMs, createRetryGovernor, resolveRetryConfig, applyV2RetryGovernor, RETRY_MARKER } =
+    await import("./dist/host/v2-retry.js")
+  const { createTeamScope } = await import("./dist/host/v2-scope.js")
+
+  // (a) the pure classifier — explicit signatures only, never a guess
+  assert.equal(classifyProviderError("Allocated quota exceeded").kind, "quota", "the plan's own signature is quota")
+  assert.equal(classifyProviderError("HTTP 429 Too Many Requests").kind, "rate", "429 is rate")
+  assert.equal(classifyProviderError("503 Service Unavailable").kind, "transient", "5xx is transient")
+  assert.equal(classifyProviderError("some random failure").kind, "unknown", "no signature → unknown, never a guess")
+  assert.equal(classifyProviderError("").kind, "unknown", "empty text is not an error")
+  assert.equal(classifyProviderError(null).kind, "unknown", "a non-string is not an error")
+  assert.equal(classifyProviderError("429 retry after 30 seconds").retryAfterMs, 30000, "a Retry-After hint is parsed to ms")
+  assert.equal(classifyProviderError("quota exceeded (429)").kind, "quota", "the most specific class wins")
+
+  // (b) the backoff sequence base → ×2 → … → cap (jitter 0 for a deterministic read)
+  const seq = [0, 1, 2, 3, 4].map((a) => backoffMs(a, 1000, 8000, 0, () => 0.5))
+  assert.deepEqual(seq, [1000, 2000, 4000, 8000, 8000], "base doubles to the cap and stays there")
+
+  // (c) jitter stays inside [1-j, 1+j]
+  assert.equal(backoffMs(0, 1000, 100000, 0.3, () => 0), 700, "random 0 → the low edge 1-j")
+  assert.equal(backoffMs(0, 1000, 100000, 0.3, () => 1), 1300, "random 1 → the high edge 1+j")
+  for (let i = 0; i < 50; i++) {
+    const d = backoffMs(0, 1000, 100000, 0.3, Math.random)
+    assert.ok(d >= 700 && d <= 1300, `jittered delay ${d} stays in [700,1300]`)
+  }
+
+  // (d) the breaker trips on the Nth consecutive throttle error
+  let clock = 0
+  const g = createRetryGovernor({ baseMs: 5000, maxMs: 60000, jitter: 0, breakAfter: 3, cooldownMs: 1000, now: () => clock, random: () => 0.5 })
+  g.observe("Allocated quota exceeded")
+  g.observe("Allocated quota exceeded")
+  assert.equal(g.inCooldown(), false, "2 errors is below breakAfter 3 → no cooldown")
+  g.observe("Allocated quota exceeded")
+  assert.equal(g.inCooldown(), true, "the 3rd consecutive error trips the breaker")
+  assert.equal(g.report.breakTrips, 1, "the trip is counted")
+  assert.equal(g.report.quotaSeen, 3, "every quota error is counted")
+
+  // (e) the cooldown window is judged against the clock
+  clock = 999
+  assert.equal(g.inCooldown(), true, "still inside the 1000ms window")
+  clock = 1000
+  assert.equal(g.inCooldown(), false, "the window closes at cooldownMs")
+
+  // (f) illegal knobs fall back to defaults, and only an explicit off disables
+  assert.equal(resolveRetryConfig({ TM_RETRY_BASE_MS: "abc" }).baseMs, 5000, "an illegal base falls back, it does not disable")
+  assert.equal(resolveRetryConfig({ TM_RETRY_JITTER: "5" }).jitter, 0.3, "an out-of-range jitter falls back")
+  assert.equal(resolveRetryConfig({ TM_RETRY: "off" }).enabled, false, "only an explicit off disables")
+  assert.equal(resolveRetryConfig({}).enabled, true, "default is on")
+
+  // (g) the hooks, on the fake host
+  const ws30 = workspace("retry")
+  const f = makeFakeCtx({ directory: ws30, agents: [] })
+  const scope = createTeamScope(["team", "architect", "implementer", "reviewer", "tester", "researcher"])
+  const rows = []
+  const gov = createRetryGovernor({ baseMs: 5000, maxMs: 60000, jitter: 0, breakAfter: 5, cooldownMs: 60000, random: () => 0.5, onEvent: (row) => rows.push(row) })
+  const layer = await applyV2RetryGovernor(f.ctx, { scope, governor: gov, onEvent: (row) => rows.push(row) })
+  const fireCtx = (ev) => f.hook("session.context").fire(ev)
+  const firePerm = (ev) => f.hook("permission.evaluate").fire(ev)
+
+  // no error yet → nothing injected
+  const before = { sessionID: "ses_lead", agent: "team", system: [], messages: [], tools: {}, options: {} }
+  await fireCtx(before)
+  assert.equal(before.system.length, 0, "no directive before any error")
+
+  // a quota error arms the next request with the EXACT seconds
+  gov.observe("Allocated quota exceeded")
+  const after = { sessionID: "ses_lead", agent: "team", system: [], messages: [], tools: {}, options: {} }
+  await fireCtx(after)
+  assert.equal(after.system.length, 1, "the next request carries the directive")
+  const injected = String(after.system[0].text)
+  assert.ok(injected.includes(RETRY_MARKER), "the directive carries the recognisable marker")
+  assert.ok(injected.includes("5 秒"), `the directive names the EXACT wait (got: ${injected})`)
+  assert.equal(layer.report.directivesInjected, 1, "the injection is counted")
+
+  // consumed once — a replayed hook cannot duplicate it
+  const replay = { sessionID: "ses_lead", agent: "team", system: [], messages: [], tools: {}, options: {} }
+  await fireCtx(replay)
+  assert.equal(replay.system.length, 0, "the directive is consumed once, so a replay injects nothing")
+
+  // a foreign session is not ours to inject into
+  gov.observe("Allocated quota exceeded")
+  const foreignCtx = { sessionID: "ses_build", agent: "build", system: [], messages: [], tools: {}, options: {} }
+  await fireCtx(foreignCtx)
+  assert.equal(foreignCtx.system.length, 0, "a build session's request is not ours to touch")
+
+  // (h) the cooldown denies a new dispatch, and only a dispatch
+  for (let i = 0; i < 5; i++) gov.observe("Allocated quota exceeded")
+  assert.equal(gov.inCooldown(), true, "5 consecutive errors trip the breaker")
+  const dispatch = { sessionID: "ses_lead", agent: "team", action: "subagent", resources: [], effect: "allow" }
+  await firePerm(dispatch)
+  assert.equal(dispatch.effect, "deny", "a dispatch during cooldown is denied")
+  assert.ok(String(dispatch.message).includes("配额保护"), "the refusal says it is quota protection, not a fault")
+  assert.ok(String(dispatch.message).includes("TM_RETRY=off"), "…and names the escape hatch")
+  assert.equal(layer.report.cooldownDenied, 1, "the cooldown denial is counted")
+  assert.ok(rows.some((r) => r.event === "classified" && r.kind === "quota"), "each recognised error emits a classified row")
+  assert.ok(rows.some((r) => r.event === "cooldown"), "the breaker trip emits a cooldown row")
+  assert.ok(rows.some((r) => r.event === "injected"), "the injection emits a row")
+  assert.ok(rows.some((r) => r.event === "denied"), "the cooldown denial emits a row")
+
+  const foreignDispatch = { sessionID: "ses_build", agent: "build", action: "subagent", resources: [], effect: "allow" }
+  await firePerm(foreignDispatch)
+  assert.equal(foreignDispatch.effect, "allow", "a foreign session's dispatch is not ours to cool down")
+  assert.equal(layer.report.foreignSkipped, 1, "…and the skip is counted")
+
+  const readCall = { sessionID: "ses_lead", agent: "team", action: "read", resources: [], effect: "allow" }
+  await firePerm(readCall)
+  assert.equal(readCall.effect, "allow", "a non-subagent action is never judged by the cooldown")
+
+  const alreadyDenied = { sessionID: "ses_lead", agent: "team", action: "subagent", resources: [], effect: "deny" }
+  await firePerm(alreadyDenied)
+  assert.equal(alreadyDenied.effect, "deny", "a host that already denied keeps its decision")
+
+  // (i) a throw inside the hook is swallowed and counted, never propagated
+  const boomCtx = { sessionID: "ses_lead", agent: "team", system: [], messages: [], tools: {}, options: {} }
+  boomCtx.system.push = () => { throw new Error("system exploded") }
+  gov.observe("Allocated quota exceeded")
+  await fireCtx(boomCtx)
+  assert.equal(layer.report.threw, 1, "a throwing injection is swallowed and counted")
+
+  for (const r of layer.registrations) await r.dispose()
+}
+console.log("   OK (explicit signatures only; base→×2→cap with jitter in [1-j,1+j]; the Nth error trips the breaker; the next request carries the EXACT seconds once; cooldown denies only a Team dispatch and names TM_RETRY=off; foreign/other actions untouched; a throw is swallowed and counted)")
+
 // B5: the group count is DERIVED from the numbered group headers this file
 // actually printed, never hand-written — the last hand-written number was
 // already stale while the file had more.  The self-scan reads THIS file by its

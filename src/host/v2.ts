@@ -49,6 +49,7 @@ import { applyV2BrowserGate, browserGateSummary } from "./v2-browser-gate.js"
 import { seedWebfetchDomains } from "../tm/webfetch.js"
 import { v2CapabilityRows } from "./v2-capabilities.js"
 import { applyV2SessionLayer, removalPlan } from "./v2-session.js"
+import { applyV2RetryGovernor, createRetryGovernor, resolveRetryConfig } from "./v2-retry.js"
 import { applyV2EarlyCompaction, resolveCompactConfig } from "./v2-compaction.js"
 import { applyV2ContextPrune, resolvePruneConfig } from "./v2-prune.js"
 import { checkDefaultAgentRole, globalConfigDir, type DefaultAgentCheck } from "./v2-default-agent.js"
@@ -754,6 +755,28 @@ export const v2Personality: V2Plugin = {
     // #58: point the late-bound reader at the real observation now that the
     // request layer exists, so `v2-surface` carries `tools_in_request` too.
     tmInRequestSurface = () => (session.report.tmInRequestSurface ? "tm-in-request" : "catalog-only")
+    // #49 feature 3: 错峰重试.  We have no seam that intercepts the model's own
+    // retry, so this layer only (1) recognises a provider throttle from the event
+    // feed, (2) injects an exact wait into the next request, and (3) denies new
+    // dispatches during the breaker's cooldown.  Registered AFTER the permission
+    // guards so its `evaluate` hook runs after the concurrency cap — both only
+    // ever deny, so whichever fires first keeps its message and the stricter
+    // effect (deny) stands either way.
+    const retryConfig = resolveRetryConfig(v2Env)
+    // The layer owns no store, so the trajectory sink is wired here — same shape
+    // as the shell-timeout clamp's `onClamp` and the SERP guard's `onSerp`.
+    const retrySink = (row: Record<string, unknown>): void => {
+      try {
+        tmRuntime.pipelines.store.appendTrajectory({ tool: "host", step_id: "v2-retry", api: 2, ...row })
+      } catch {
+        /* the trajectory is an extra, never a reason to fail the call */
+      }
+    }
+    const retryGovernor = createRetryGovernor({ ...retryConfig, onEvent: retrySink })
+    const retry = retryConfig.enabled
+      ? await applyV2RetryGovernor(ctx, { scope, governor: retryGovernor, onEvent: retrySink })
+      : { registrations: [], report: retryGovernor.report }
+    registrations.push(...retry.registrations)
     // Team's own early-compaction trigger. The host exposes no percentage knob (its
     // `compaction` block is auto/prune/tail_turns/preserve_recent_tokens/reserved) and a
     // 2.x plugin has no config domain at all, so "compact at 75% of the window" can only
@@ -871,6 +894,11 @@ export const v2Personality: V2Plugin = {
       // messages carry no tokens, while session.usage.updated fires hundreds of times), so
       // the early-compaction layer is fed from here rather than from a second subscription.
       onUsage: (data) => compaction.observeUsage(data),
+      // #49 feature 3: the retry governor's error tap.  `session.error` is the only
+      // place a provider throttle is published; the governor classifies its text and
+      // arms the next-request directive / the cooldown.  A tap that throws never
+      // closes the feed (the governor itself never throws).
+      onError: (data) => retryGovernor.observeEvent(data),
     })
     if (!feed.report.active) {
       notes.push(`事件流没接通（${feed.report.stopped ?? "原因未知"}）：tm_join 的结算检测只剩等待预算内的轮询，子代理结算了也要等到超时才报告`)
@@ -943,6 +971,20 @@ export const v2Personality: V2Plugin = {
       prune_foreign_skipped: prune.report.foreignSkipped,
       prune_threw: prune.report.threw,
       prune_last_percent: prune.report.lastPercent,
+      // #49 feature 3: 错峰重试 — recognition counts, breaker trips, cooldown
+      // denials and the last computed wait, so "we backed off" is a number.
+      retry_enabled: retry.report.enabled,
+      retry_quota_seen: retry.report.quotaSeen,
+      retry_rate_seen: retry.report.rateSeen,
+      retry_transient_seen: retry.report.transientSeen,
+      retry_unknown_seen: retry.report.unknownSeen,
+      retry_break_trips: retry.report.breakTrips,
+      retry_cooldowns: retry.report.cooldowns,
+      retry_last_delay_ms: retry.report.lastDelayMs,
+      retry_directives_injected: retry.report.directivesInjected,
+      retry_cooldown_denied: retry.report.cooldownDenied,
+      retry_foreign_skipped: retry.report.foreignSkipped,
+      retry_threw: retry.report.threw,
       scope_ours: scope.report.ours,
       scope_foreign: scope.report.foreign,
       scope_unknown: scope.report.unknown,
@@ -1144,6 +1186,19 @@ export const v2Personality: V2Plugin = {
           prune_foreign_skipped: prune.report.foreignSkipped,
           prune_threw: prune.report.threw,
           prune_last_percent: prune.report.lastPercent,
+          // #49 feature 3: 错峰重试 — the same counter set as the surface row.
+          retry_enabled: retry.report.enabled,
+          retry_quota_seen: retry.report.quotaSeen,
+          retry_rate_seen: retry.report.rateSeen,
+          retry_transient_seen: retry.report.transientSeen,
+          retry_unknown_seen: retry.report.unknownSeen,
+          retry_break_trips: retry.report.breakTrips,
+          retry_cooldowns: retry.report.cooldowns,
+          retry_last_delay_ms: retry.report.lastDelayMs,
+          retry_directives_injected: retry.report.directivesInjected,
+          retry_cooldown_denied: retry.report.cooldownDenied,
+          retry_foreign_skipped: retry.report.foreignSkipped,
+          retry_threw: retry.report.threw,
           // Accumulates for the whole process, so it can only be written at
           // teardown: this is the number that answers "did the feed stay alive, and
           // did the host rename the event types under us after the last upgrade?"

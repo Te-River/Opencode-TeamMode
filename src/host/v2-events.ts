@@ -75,7 +75,7 @@ function eventOf(raw: unknown): HostEvent {
 
 export async function applyV2EventFeed(
   ctx: unknown,
-  opts: { onEvent: (event: HostEvent) => void; types?: readonly string[]; onUsage?: (data: unknown) => void },
+  opts: { onEvent: (event: HostEvent) => void; types?: readonly string[]; onUsage?: (data: unknown) => void; onError?: (data: unknown) => void },
 ): Promise<V2EventFeed> {
   const allowed = new Set(opts.types ?? FEED_TYPES)
   const report: V2EventFeedReport = { active: false, received: 0, forwarded: 0, unknown: {} }
@@ -136,6 +136,19 @@ export async function applyV2EventFeed(
         opts.onUsage(ev.properties)
       } catch {
         /* a usage tap that throws never closes the feed */
+      }
+    }
+    // #49 feature 3: the retry layer's error tap.  `session.error` is the only
+    // place the host publishes a provider throttle, and the retry governor needs
+    // its text — but the dispatcher must not have to care, so this is a separate
+    // tap with the same never-throw discipline as the usage tap.  The payload
+    // never reaches the trajectory; only the classification count does (R6 binds
+    // a diagnostic).
+    if (type === "session.error" && typeof opts.onError === "function") {
+      try {
+        opts.onError(ev)
+      } catch {
+        /* an error tap that throws never closes the feed */
       }
     }
     if (!type || !allowed.has(type)) {
