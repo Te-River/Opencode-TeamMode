@@ -120,6 +120,19 @@ registry saw 1.5.0 as the install-script fix release).
 - **Consequence of the gate removal**: `TM_ASK_TIMEOUT_MIN` / `TM_ASK_TIMEOUT_FLOOR_MIN` are now
   orphaned knobs and `perm-ask.ts`'s `setAskWaitMs` has no caller. Recorded rather than quietly
   left in place.
+- **The self-built browser is gone; the browser is the host's own** (user decision 2026-10-06,
+  `d668817`, breaking). `src/tm/browser.ts` (playwright/cdp engines, profile isolation, pid
+  ledger, `browsers.jsonl` orphan reaper, subresource gate, `allow_host`, the per-caller lease
+  table), `src/tm/serp-loop.ts` and `test-browser.mjs` were deleted, together with every
+  `TM_BROWSER_*` knob and `tm_join`'s browser-lease tripwire — a lease warning with no leases
+  left can never fire. What stays is the enforcement for the native path:
+  `src/host/v2-browser-gate.ts` polices the host's `browser_*` catalog at `execute.before`
+  (URL and address red lines, env-file paths, a leak-detected fallback that replaces the page with
+  the refusal), and `test-v2-adapter` still pins the native snapshot's addressability and the
+  gate's teeth. The prompts name `browser_navigate` / `browser_snapshot` and keep the rule that
+  a host with no browser catalog is a **reported gap**, never a simulated capability. Known cost,
+  accepted: on CLI / standalone there is now no browser at all. The suite count returns from 9 to
+  8 with `test-browser.mjs` gone.
 
 ### Fixed
 
