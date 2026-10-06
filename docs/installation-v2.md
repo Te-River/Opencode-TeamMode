@@ -226,6 +226,11 @@ rewrites `default_agent` and **reads the value back from disk**. That matters be
 (`plugin update` + the generator) and a release ever renames a role, re-run the installer
 before concluding the install is broken.
 
+**Before a release, run the real-host acceptance script:** `node scripts/acceptance.mjs` prints a
+pass/fail table for the checks that found the last two defects (plugin load, the 2.x option shape,
+agent visibility, the layered config, R6 armed by default, `grep`/`glob` not bypassing the
+env-file line). It is zero-token by default; `--turns` adds the checks that need a model.
+
 ### Layered configuration (`team-mode.jsonc`)
 
 Settings can live in a file instead of the environment. Two layers, mirroring the host's own config:
@@ -451,6 +456,9 @@ opencode reload
 `default_agent` 并**从磁盘回读**。这条要紧是因为：`default_agent` 指向一个不存在的角色**不算错误**——
 宿主会静默退回 `build`，会话就此不再是 Team。如果你手工升级（`plugin update` + 生成器），而某个版本
 改过角色名，请先重跑安装器，再下结论说装坏了。
+
+**发版前跑一次真机验收脚本：** `node scripts/acceptance.mjs` 会打印一张通过/不通过表，覆盖"抓出最近两个缺陷"的那些检查
+（插件装载、2.x 选项形状、角色可见性、分层配置、R6 默认 armed、`grep`/`glob` 不绕 env-FILE）。默认零 token；`--turns` 加上需要真回合的检查。
 
 ### 分层配置（`team-mode.jsonc`）
 
