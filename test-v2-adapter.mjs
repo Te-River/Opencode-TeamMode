@@ -1022,6 +1022,71 @@ console.log("7d2. the native snapshot stays ADDRESSABLE, and the browser gate ha
 }
 console.log("   OK (snapshot refs stay addressable under the cap; the gate refuses, detects its own leaks, and stays out of other agents' way)")
 
+console.log("24. the SERP-loop guard rides the native browser path (#14)")
+{
+  const { serpTarget, createSerpLoopGuard, serpRefusal, SERP_NAV_LIMIT } = await import("./dist/tm/serp-loop.js")
+  // pure recognition: the four engines tm_search covers, and nothing else
+  assert.equal(serpTarget("https://cn.bing.com/search?q=hello")?.engine, "bing", "bing's /search is recognised")
+  assert.equal(serpTarget("https://stackoverflow.com/search?q=hello")?.engine, "stackoverflow", "stackoverflow's /search is recognised")
+  assert.equal(serpTarget("https://github.com/search?q=hello")?.engine, "github", "github's /search is recognised")
+  assert.equal(serpTarget("https://www.bilibili.com/search?keyword=hello")?.engine, "bilibili", "bilibili's /search is recognised")
+  assert.equal(serpTarget("https://example.com/article"), null, "a non-SERP URL is never judged")
+  assert.equal(serpTarget("https://cn.bing.com/"), null, "a SERP host with no query is not a search")
+  assert.equal(serpTarget("not a url"), null, "an unparseable target is not a search")
+  // per-engine+query accounting: the 4th of the SAME query is refused, a different query has its own budget
+  const guard = createSerpLoopGuard()
+  const q = "https://cn.bing.com/search?q=same"
+  assert.equal(guard.observe(q)?.blocked, false, "1st same-query navigation passes")
+  assert.equal(guard.observe(q)?.blocked, false, "2nd passes")
+  assert.equal(guard.observe(q)?.blocked, false, "3rd passes (the limit is 3)")
+  const fourth = guard.observe(q)
+  assert.equal(fourth?.blocked, true, "the 4th of the SAME query is refused")
+  assert.equal(fourth?.count, 4, "…and the count is per engine+query, not global")
+  assert.equal(guard.observe("https://cn.bing.com/search?q=other")?.blocked, false, "a DIFFERENT query gets its own budget")
+  assert.equal(guard.seen(), 5, "seen() totals every SERP navigation across queries")
+  assert.match(serpRefusal(fourth), /tm_search/, "the refusal names tm_search as the next move")
+  assert.equal(SERP_NAV_LIMIT, 3, "the limit is 3")
+}
+console.log("   OK (SERP recognition is pure; the 4th same-query navigation is refused and names tm_search)")
+
+console.log("25. the SERP guard is wired into the native gate's execute.before")
+{
+  const { applyV2BrowserGate } = await import("./dist/host/v2-browser-gate.js")
+  const { createTeamScope } = await import("./dist/host/v2-scope.js")
+  const scope = createTeamScope(["team"])
+  const sf = makeFakeCtx({ directory: workspace("serp"), agents: [] })
+  const events = []
+  const sg = applyV2BrowserGate(sf.ctx, { allowlist: ["*"], env: {}, scope, onSerp: (e) => events.push(e) })
+  const nav = (url) => sg.fireBefore({ tool: "browser_navigate", input: { url }, agent: "team", sessionID: "ses_s" })
+  const url = "https://cn.bing.com/search?q=loop"
+  nav(url)
+  nav(url)
+  nav(url)
+  let refused = ""
+  try {
+    nav(url)
+  } catch (err) {
+    refused = String(err?.message ?? err)
+  }
+  assert.match(refused, /tm_search/, "the 4th native navigation to the same SERP is refused, naming tm_search")
+  assert.equal(sg.report.serpNav, 4, "every SERP navigation is counted")
+  assert.equal(sg.report.serpRefused, 1, "the refusal is counted separately from a policy refusal")
+  assert.ok(
+    events.some((e) => e.event === "serp_nav") && events.some((e) => e.event === "serp_refused"),
+    "the trajectory sink sees both serp_nav and serp_refused",
+  )
+  // a non-navigation verb carries no url and is never judged or counted
+  let snapOk = true
+  try {
+    sg.fireBefore({ tool: "browser_snapshot", input: { tabID: "t1" }, agent: "team", sessionID: "ses_s" })
+  } catch {
+    snapOk = false
+  }
+  assert.ok(snapOk, "a non-navigation action is untouched")
+  assert.equal(sg.report.serpNav, 4, "…and it does not move the SERP counter")
+}
+console.log("   OK (the native gate refuses the 4th same-SERP navigation and leaves non-navigation verbs alone)")
+
 console.log("8. the config projection — what the installer copies onto disk")
 const genRoot = workspace("gen")
 const GEN = fileURLToPath(new URL("./scripts/gen-v2-config.mjs", import.meta.url))

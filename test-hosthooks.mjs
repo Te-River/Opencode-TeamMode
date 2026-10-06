@@ -114,6 +114,14 @@ console.log("  7. capability probe: SKIPPED — v1 createCapabilityProbe removed
   // together, rather than left asserting a number that can no longer move.
   eq(s.governance.clampedTimeouts, 1, "a clamped bash timeout counts")
   eq(s.governance.clampSavedMs, 60_000, "…and reports the dead air it removed")
+  // The retired counters must be GONE from the render, not left as a row that always
+  // reads 0 — a 0 with no producer is the "silent" shape this repo refuses.
+  const govMd = renderStats(s, { runDirs: 1, roots: [] })
+  ok(!govMd.includes("被拦子资源请求"), "the retired blocked-subresource row is gone from the render")
+  ok(!govMd.includes("tm_pty 治理面拒绝"), "the retired tm_pty row is gone from the render")
+  ok(!govMd.includes("evaluate_script 结果脱敏"), "the retired evaluate_script row is gone from the render")
+  ok(!govMd.includes("宿主后台 task 注入"), "the retired task-envelope row is gone from the render")
+  ok(govMd.includes("web URL 缓存命中") && govMd.includes("bash 超时夹顶"), "…while the counters that still have producers stay")
   eq(s.ptc, { runs: 1, calls: 7, errors: 0, retries: 1, sumMs: 2_500 }, "PTC internals roll up (one turn, N governed calls)")
   eq([s.dispatch.waitMs, s.dispatch.waits, s.dispatch.repeatWaits], [70_000, 2, 1], "the lead's blocked time inside tm_join is measured, and a chained wait is counted separately from a first one")
   ok(renderStats(s, { runDirs: 1, roots: [] }).includes("lead 在 tm_join 里干等"), "…and it is a visible row, because 'parallel' that parks the lead is not parallel")

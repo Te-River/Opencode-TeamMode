@@ -38,8 +38,12 @@ const SERIAL = argv.includes("--serial")
 const NO_BUILD = argv.includes("--no-build")
 const FILTERS = argv.filter((a) => !a.startsWith("--"))
 
-/** Suites that launch a REAL browser — never two at once. */
-const BROWSER_SUITES = new Set(["test-tm-tools.mjs", "test-browser.mjs"])
+/** Suites that launch a REAL browser — never two at once.
+ *  EMPTY since the self-built browser was removed (1.7.0): `test-browser.mjs` is gone and
+ *  `test-tm-tools.mjs` no longer launches one (it only names `msedge` in a tasklist string).
+ *  The mechanism stays so a future real-browser suite is serialized by adding its name here —
+ *  and so the reason it is empty is written down rather than inferred from a missing file. */
+const BROWSER_SUITES = new Set([])
 
 /**
  * One throwaway store root for the whole run.

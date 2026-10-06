@@ -443,3 +443,31 @@ survivors were written. Each is recorded here so the next reader does not re-der
   (case-insensitive), so `team` / `Team` / `TEAM` are all the lead and an existing install or
   in-flight session is not broken. `agents_default` in the trajectory keeps the lower-case
   value — that field is a measurement, not a label. `[L][R]`
+- **The self-built browser is gone; the host's own is the only one** (user decision
+  2026-10-06, commit `d668817`, a breaking change, −6 337 lines). `src/tm/browser.ts`
+  (playwright/cdp engines, profile isolation, pid ledger, `browsers.jsonl` orphan
+  reaper, subresource gate, `allow_host`, the per-caller lease table),
+  `src/tm/serp-loop.ts` and `test-browser.mjs` were deleted, along with every
+  `TM_BROWSER_*` knob and `tm_join`'s browser-lease tripwire (a lease warning with no
+  leases left can never fire). What stays is the **enforcement for the native path**:
+  `src/host/v2-browser-gate.ts` polices the host's `browser_*` catalog at
+  `execute.before` (URL and address red lines, env-file paths, a leak-detected
+  fallback that replaces the page with the refusal). The test suite count drops
+  9 → 8; `test-v2-adapter` still pins the native snapshot's addressability and the
+  gate's teeth. Known cost, accepted: on CLI / standalone there is now no browser at
+  all, and the prompts require the agent to report that gap rather than simulate it.
+  `[L]`
+- **Native browser calling convention, which differs from the deleted tool.**
+  `browser_evaluate` takes `{tabID, script}` where `script` is an **expression** (not
+  a function source) and the return value must be a scalar you `JSON.stringify`
+  yourself; snapshot addressable tokens read `@e8 [link]` (not the deleted tool's
+  `[uid=eN]`). `[L]`
+- **Plugin options on 2.x are the `{package, options}` object shape.** The 1.x tuple
+  `["spec", {…}]` is rejected with `path=$.plugins.1 kind=invalid`; the object form is
+  delivered. Measured 2026-10-06. `[L]`
+- **The host's config has NO session layer.** `opencode.ai/v2/docs/config` is
+  authoritative: global `~/.config/opencode/opencode.json(c)`, project
+  `<dir>/opencode.json(c)` or `<dir>/.opencode/opencode.json(c)`, merged
+  farthest→closest with every `.opencode/` dir overriding every direct config — and
+  no per-session layer. So a layered `team-mode` config can only be global + project.
+  `[L]`
