@@ -19,8 +19,7 @@
 > **懒人路径：** 把下面这段话粘给任意编码 agent，让它替你装：
 >
 > ```text
-> 安装 OpenCode 插件 @te-river/opencode-team-mode：先跑 `opencode --version` 判断版本。
-> 1.18.x → https://raw.githubusercontent.com/Te-River/Opencode-TeamMode/main/docs/installation.md
+> 安装 OpenCode 插件 @te-river/opencode-team-mode：本包**只支持 OpenCode 2.x**——1.18.x 人格已在 1.7.0 线里整体移除。
 > 2.x → https://raw.githubusercontent.com/Te-River/Opencode-TeamMode/main/docs/installation-v2.md
 > （2.x 的插件不能创建 agent，六个角色和六条 `/team-*` 命令要靠那份指南里的生成步骤落到
 > 配置目录——这一步不是可选的。）然后按该指南里的检查项验证。
@@ -46,13 +45,13 @@ TeamMode 对每一个的回应：
 | 痛点 | TeamMode 的回答 |
 |---|---|
 | 🔥 **上下文爆炸** | 所有受治理工具的输出超过内容分档阈值（散文 4000 / 数据 2000 token，CJK 感知）就卸载到本地 run 存储，换成 80 token 的预览 + HMAC 句柄。agent 需要什么再分页取什么——窗口永远淹不了。 |
-| 🐌 **回合开销** | `tm_ptc_run`：agent 写**一个程序**，单回合内发起 N 次受治理调用。运行期间零 LLM 回合。 |
+| 🐌 **回合开销** | 宿主自己的 `execute`（Code Mode）：agent 写**一个程序**，单回合内发起 N 次受治理调用。运行期间零 LLM 回合。 |
 | 🕳️ **静默副作用** | R6/R2 审批门禁：环境变量读取和危险操作走 OpenCode 官方确认弹窗，1 分钟没人理自动拒绝。插件从不代替你批准——它只会拒绝。 |
 | 🌫️ **幻觉式调研** | 联网是双角色的授权 + 白名单受治理工具链。抓不到的事实就报告为缺口——绝不编造。 |
 | 🧭 **纯文本墙** | 回复被引导成宿主渲染得最快的形状：逐文件 / 逐用例 / 逐条发现用 markdown 表格，diff 和配置用围栏代码块，浏览器截图只在你明确要求时才内联附上。宿主支持哪些语法是实测出来的、不是照着 CommonMark 猜的，提示词里带着这份实测的否定清单——脚注 `[^1]`、`==高亮==`、单独的 `---` 分隔线和 `$…$` 数学会以字面量形式出现在你面前，所以 agent 被明确告知不要用；而 `mermaid` 图是可以用的，因为这个宿主确实会画。 |
 | 🎯 **目标漂移** | lead 开局必须用你自己的措辞写下 `GOAL:` 和可验证的 `ACCEPTANCE:` 判据，判据没有证据支撑这一轮就不算结束——合法的停止只有两种（卡在你这里，或有证据地证明做不到）。一轮收完但宿主 todolist 上还有未完成项时，`tm_join` 会直接说"目标未达成"并列出条目；目标本身随上下文压缩一起存活，摘要不能悄悄把它换掉。 |
 | 🗣️ **用你没选的语言回话** | 受治理工具回复的是中文，agent 放任自己就会把这份中文原样反射给你。现在每个角色都带一条回复语言规则：**你用的语言优先**；中文句子只在"它本身就是证据"时逐字引用（close 的三种裁决、拒绝语）——把裁决词翻译掉，正是未经核实的结论看起来像核实过的开始。 |
-| ⏱️ **为了"看起来很认真"而烧掉的轮次** | 效率至上写进了 lead 和五个专家：一次宽调用代替三次窄调用、互不依赖的调用并到同一轮、≥3 个探测合成一次 `tm_ptc_run`、不许为了"再看它绿一遍"重跑同一个检查。同时把边界写死：效率不能拿去赎回证据规则——一个没验证过的"done"会让你赔上那一轮 **加上** 那个 bug。 |
+| ⏱️ **为了"看起来很认真"而烧掉的轮次** | 效率至上写进了 lead 和五个专家：一次宽调用代替三次窄调用、互不依赖的调用并到同一轮、≥3 个探测合成一次 `execute`（Code Mode）程序、不许为了"再看它绿一遍"重跑同一个检查。同时把边界写死：效率不能拿去赎回证据规则——一个没验证过的"done"会让你赔上那一轮 **加上** 那个 bug。 |
 
 底下还有流程纪律：确定性路由表、≥2 次派工先出 ≤30 行计划等你批、agent
 之间用 `STATUS/CHANGES/FINDINGS/EVIDENCE/HANDOFF` 结构化交接、以及静态
@@ -86,8 +85,7 @@ TeamMode 对每一个的回应：
 把这段话粘给任意编码 agent——它会改配置、提醒你重启、并完成验证：
 
 ```text
-安装 OpenCode 插件 @te-river/opencode-team-mode：先跑 `opencode --version` 判断版本。
-1.18.x → https://raw.githubusercontent.com/Te-River/Opencode-TeamMode/main/docs/installation.md
+安装 OpenCode 插件 @te-river/opencode-team-mode：本包**只支持 OpenCode 2.x**——1.18.x 人格已在 1.7.0 线里整体移除。
 2.x → https://raw.githubusercontent.com/Te-River/Opencode-TeamMode/main/docs/installation-v2.md
 （2.x 的插件不能创建 agent，六个角色和六条 `/team-*` 命令要靠那份指南里的生成步骤落到配置
 目录——这一步不是可选的。）按该指南里的检查项验证。
@@ -261,31 +259,29 @@ HMAC 句柄，agent 真需要 payload 时用 `tm_fetch` 分页取。
 
 | 工具 | 功能 | 角色 |
 |---|---|---|
-| `tm_read` / `tm_grep` / `tm_bash` / `tm_fetch` | 受治理的文件读 / 正则搜索 / 只读 shell（白名单）/ 句柄分页（JSON 句柄支持 `fields` 点路径投影——刻意小的 jq 子集，如 `items[].name`） | 全部六个 agent——**但在 OpenCode 2.x 上前三个不注册，见本表下方说明** |
+| `tm_fetch` | 句柄分页：取回被卸载的结果（JSON 句柄支持 `fields` 点路径投影——刻意小的 jq 子集，如 `items[].name`） | 全部六个 agent |
 | `tm_memory` | 会话 + 项目 + 全局三层记忆库（Markdown + frontmatter）：add / search / list / forget / compact | 全部六个 agent |
 | `tm_board_write` | **黑板的写入侧**：只在 `<board-root>/<session-key>/<task-slug>/NN-<role>-<topic>[-rN].md` 放下一个**新**的 Markdown 文件，文件名由工具自己决定——修订是一个带 `-rN` 的新文件，绝不覆写；回复只给路径和字节数，绝不回传正文。它存在的理由是：落黑板原本需要一个文件工具，而 `architect` / `researcher` 一个都没有（没有 `write`、没有 `edit`、连用来给会话目录打时间戳的 `bash` 都没有），于是这两类角色的超长交付每次都以 `BLACKBOARD WRITE FAILED` + 整篇文档内联回来收场——本项目最看重的那个回复形态，恰恰在最需要的角色身上无法执行。范围是强制的：路径段做规整、目标用 realpath 对齐黑板根（符号链接的任务目录直接拒写）、文件名永远以 `.md` 结尾（所以造不出 `.env`/rc 文件）、正文受 `TM_BOARD_MAX_CHARS` 与会话文件数上限约束 | 全部六个 agent |
-| `tm_ptc_run` | 批量编排：一个程序、N 次受治理调用、零 LLM 回合；联网角色还能在程序里调 `tm.search` / `tm.webfetch` | 全部六个 agent |
 | `tm_search` | 多引擎网络搜索，返回提取、去重、RRF 融合后的命中列表 | Lead + Researcher |
 | `tm_webfetch` | 白名单页面的单次受治理 GET（搜索页自动提取）。重定向逐跳手动过检，被拒时会把**整条链**报出来（`跳转链: a → b（停在第 2 跳）`）——以前只会报最后一个主机，一个在白名单内的短链跳到站外时，读起来像"这个站点抓不到"，于是 agent 又回去重试它刚眼睁睁失败的入口 URL。429/503 若带 delta-seconds 的 `Retry-After` 会一并报出（HTTP-date 形式刻意不折算成倒计时），所以"待会儿再来"不会被当成"这里没东西"。读页面时还会优先要 Markdown（`Accept: text/markdown,…`）——实测 `learn.microsoft.com`：60 778 B 的 HTML 变成 11 449 B 的 Markdown，其余站点两种请求返回同一份文档，所以在不支待的地方这个偏好是零成本的 | Lead + Researcher |
-| `tm_ledger` | **领队的任务清单**（`add` / `doing` / `done` / `blocked` / `list`），存在宿主自己的 `ctx.storage` 里、按会话分开——OpenCode 2.x 不给插件 `todowrite`，LEDGER 规则从此有了落点。同一个要求重复提出只算一条；编号撞上两条会拒绝并把两条都列出来；`blocked` 带上卡住的原因；写不进存储就报失败，不会说成「已记录」。**仅 v2**——v1 继续用宿主的 `todowrite` | 仅领队 |
-| `tm_join` | **子代理回收**——插件侧的派发器已经没有了（`tm_dispatch` 被移除：插件创建的子会话，用户既打不开也停不掉）。派活统一走宿主自己的 `task` / `task { background: true }`，`tm_join` 是它的读端：不带参数=状态快照，`waitMs`=有界等待，`cancel:true` 取消跑飞的子任务，`tm_join { ids: ["ses_…"] }` 则把某个子代理的**整篇**回复经卸载管线取回（句柄 + ≤80 token 预览），而不是几千 token 直接压进上下文。插件重启后它还会从宿主会话树重建登记，遗留的子代理被"接管"而不是丢失。**2.x 上它还会登记宿主自己的 `subagent` 工具派出去的子会话**（凭据就是那句确认里的 `metadata.sessionID`），所以用户明明在屏幕上看着子代理跑、`tm_join` 却说"没有待收集的派发"这种事不会再发生；这类行同时说清自己的正文是从哪儿到的（宿主的注入消息），以及它是靠事件结算的还是靠推断结算的。**停掉一个也是真调用**：1.18.x 走 `client.session.abort`，2.x 走宿主自己的 `POST /api/session/{id}/interrupt`（`tm_join { ids: ["ses_…"], cancel: true }` 停指定的那一个，不带 `ids` 就停所有还在跑的）。宿主给这个端点写下的契约是"活动执行被中断返回 interrupted=true，空闲时是 no-op 返回 false"，所以回话刻意分成**五种裁决**：已由宿主中断 / 空闲未中断（它当时没在跑——是我们的登记行过时了，不是失败）/ 未确认（调用成功了但宿主没回布尔）/ 无中断缝 / 被宿主拒绝（带上宿主自己的原因），既在回复里计数，也写进轨迹（`stop_tried` / `stop_confirmed` / `stop_refused` / `stop_unknown`，可用 `tm_stats` 读回）。五个不同的事实不会被压成一句"已取消"；`resume` 也刻意从不发送，因为"中断后继续消化排队的引导输入"和"取消"正好相反。*（这项能力目前只在 `main` 上：已发布的 1.6.1 在 2.x 上仍然回一句"宿主无 abort 接口，未取消"。）* | 仅 Lead |
-| `tm_pty`（**仅 v1**——v2 不注册：插件上下文没有 pty 域）| 在宿主自己的终端会话上**非阻塞执行命令**（`start`/`status`/`list`/`kill`）：独立的构建与测试各自一个会话并行跑，不再串成一条 120 秒的 bash 调用。它不抓输出（命令自己 tee 日志，用 `tm_read` 读），且每次启动都先过 R6 分类器、R2 危险面 glob，再走官方确认窗，才真的建进程 | 仅 Lead |
-| `tm_stats` | **插件把自己的 trajectory 读回来**：卸载挡在上下文之外的 token（扣掉确实回来的预览）、派发重叠省下的秒数（串行代价减去子代理实际占用的墙钟）、PTC 内部量、治理计数（被拦子资源、`tm_pty` 拒绝、bash 超时夹顶、缓存命中、脱敏次数）——外加**宿主能力矩阵**（每个宿主接口标 `已验证/存在未用/待观察/缺失/需人眼`）。只读本插件自己写的文件；OpenCode 升级后第一个跑它。`{ recent: 20 }` 追加一份逐条调用清单——每次卸载结果的句柄和落盘路径都在里面，这就是"看看刚才那个工具到底返回了什么"的办法（宿主不给插件工具卡片留展开位） | 全角色 |
+| `tm_ledger` | **领队的任务清单**（`add` / `doing` / `done` / `blocked` / `list`），存在宿主自己的 `ctx.storage` 里、按会话分开——OpenCode 2.x 不给插件 `todowrite`，LEDGER 规则从此有了落点。同一个要求重复提出只算一条；编号撞上两条会拒绝并把两条都列出来；`blocked` 带上卡住的原因；写不进存储就报失败，不会说成「已记录」 | 仅领队 |
+| `tm_join` | **子代理回收**——插件侧的派发器已经没有了（`tm_dispatch` 被移除：插件创建的子会话，用户既打不开也停不掉）。派活统一走宿主自己的 `task` / `task { background: true }`，`tm_join` 是它的读端：不带参数=状态快照，`waitMs`=有界等待，`cancel:true` 取消跑飞的子任务，`tm_join { ids: ["ses_…"] }` 则把某个子代理的**整篇**回复经卸载管线取回（句柄 + ≤80 token 预览），而不是几千 token 直接压进上下文。插件重启后它还会从宿主会话树重建登记，遗留的子代理被"接管"而不是丢失。**2.x 上它还会登记宿主自己的 `subagent` 工具派出去的子会话**（凭据就是那句确认里的 `metadata.sessionID`），所以用户明明在屏幕上看着子代理跑、`tm_join` 却说"没有待收集的派发"这种事不会再发生；这类行同时说清自己的正文是从哪儿到的（宿主的注入消息），以及它是靠事件结算的还是靠推断结算的。**停掉一个也是真调用**：`cancel: true` 走宿主自己的 `POST /api/session/{id}/interrupt`（`tm_join { ids: ["ses_…"], cancel: true }` 停指定的那一个，不带 `ids` 就停所有还在跑的）。宿主给这个端点写下的契约是"活动执行被中断返回 interrupted=true，空闲时是 no-op 返回 false"，所以回话刻意分成**五种裁决**：已由宿主中断 / 空闲未中断（它当时没在跑——是我们的登记行过时了，不是失败）/ 未确认（调用成功了但宿主没回布尔）/ 无中断缝 / 被宿主拒绝（带上宿主自己的原因），既在回复里计数，也写进轨迹（`stop_tried` / `stop_confirmed` / `stop_refused` / `stop_unknown`，可用 `tm_stats` 读回）。五个不同的事实不会被压成一句"已取消"；`resume` 也刻意从不发送，因为"中断后继续消化排队的引导输入"和"取消"正好相反。*（这项能力目前只在 `main` 上：已发布的 1.6.1 在 2.x 上仍然回一句"宿主无 abort 接口，未取消"。）* | 仅 Lead |
+| `tm_stats` | **插件把自己的 trajectory 读回来**：卸载挡在上下文之外的 token（扣掉确实回来的预览）、派发重叠省下的秒数（串行代价减去子代理实际占用的墙钟）、治理计数（被拦子资源、shell 超时夹顶、缓存命中、脱敏次数）——外加**宿主能力矩阵**（每个宿主接口标 `已验证/存在未用/待观察/缺失/需人眼`）。只读本插件自己写的文件；OpenCode 升级后第一个跑它。`{ recent: 20 }` 追加一份逐条调用清单——每次卸载结果的句柄和落盘路径都在里面，这就是"看看刚才那个工具到底返回了什么"的办法（宿主不给插件工具卡片留展开位） | 全角色 |
 | `tm_browser` | 交互式浏览器会话（**驱动你的默认浏览器**）：18 个 Playwright 动词（快照优先：`take_snapshot` → 按 uid 寻址的 `click`/`fill`/`drag`…，**并新增多标签页 `new_page` / `close_page`**，可同时持有两个页面）+ 5 个旧版兼容动词（open/navigate/read/screenshot/close）；Playwright 引擎需 Node ≥ 20，不满足或导入失败时自动降级到旧版 CDP 引擎。它开的是**你自己的默认浏览器渠道**（默认装 Edge Beta 就开 Beta），除操作者设 `TM_BROWSER_HEADLESS` 外保持有头；页面自家图片/CSS/JS 靠 `same-site` 子资源策略正常加载；`take_screenshot { image:true }` 会附一张 JPEG，让模型真能看见画面。**一个 agent 一个浏览器**：`open` 返回一个 id（`b1`），之后每条回复都带着它——那个窗口、它的 uid 编号、它经对话框批准过的主机，都属于**你的**会话；用别人的 id 会被拒绝并点名属主（id 是名字，不是钥匙），`close { id:"all" }` 只关你自己的。`click` 报的是**页面做了什么**，而不只是"我发出了鼠标事件"：它点击前后各读一次目标的可观测状态（`aria-expanded`、URL、DOM 节点数），回答形如 `已点击 … · aria-expanded: false → true`；页面还没加载完时会有界重试一次——这正是实测中"点击落在没有 handler 的节点上"的成因；仍然没有变化就说"页面没有任何可观测变化"，而不是暗示成功。`close` 在浏览器的操作系统进程真正退出之前不会说“已确认关闭”——它等 pid、必要时补一次终止，两种结果都会把 pid 写在回复里，因为连接断开不等于浏览器关了；万一拿不到 pid，它会说“进程未核验”，而不是借用那句已确认。本进程启动过却没能收掉的浏览器会记进按工作区隔离的账本（pid、属主 pid、可执行文件），由下一次启动回收——只回收属主进程已死**且**该 pid 现在仍是那个可执行文件的条目，并按整棵进程树终止（Windows 上 `taskkill /T`），绝不动另一个窗口的活标签。**空白页现在会自己解释原因**：`same-site` 无从知道一个站点把自己的脚本包放在与品牌无关的 CDN 上（百度把脚本发在 `bdimg.com`），所以当一页返回 `0 个可寻址节点` 而同时有脚本域名被拦时，回复会直接说明这片空白是**我们的门禁**造成的、点名该域名，并给出 `allow_host { host }`——一个域名一次官方确认窗，只对你的浏览器、只在本次会话，不写任何配置文件（批准后要重新导航，门禁在请求时判定）。而真的需要人工验证的页面（百度安全验证 / Cloudflare / access denied）会被说成一道验证墙，因为对它的正确动作是换来源，不是再试一次 | Lead + Researcher + Tester（仅 UI 验证） |
 
-> **在 OpenCode 2.x 上，其中五个工具是刻意不注册的。**
-> `tm_read` / `tm_grep` / `tm_bash` 由宿主自己的 `read` / `grep` / `glob` / `shell`
-> 接管，`tm_ptc_run` 由宿主的 `execute`（Code Mode）接管——同一件工作，少给模型一个
-> 要挑的工具。治理没有跟着消失：超大的原生结果照样被 `tool.execute.after` 卸载
+> **v1（1.18.x）人格已在 1.7.0 线里整体移除。** 包只导出 `{id, setup}`，所以
+> `tm_read` / `tm_grep` / `tm_bash` / `tm_ptc_run` / `tm_pty` 一并消失——这些活现在由
+> 宿主自己的 `read` / `grep` / `glob` / `shell` 和它的 `execute`（Code Mode）承担。
+> 治理没有跟着消失：超大的原生结果照样被 `tool.execute.after` 卸载
 > （实测：`shell` 的 12,902 token 变成 78 token 的预览），地址红线和 R6 的按命令分类
-> 都跑在宿主的 `permission.evaluate` 上。> `tm_ledger` 是唯一一个只存在于 v2 的工具（在 `todowrite` 不存在的地方，领队的清单需要一个家）。
+> 都跑在宿主的 `permission.evaluate` 上。`tm_ledger` 是领队的清单，落在宿主不给插件
+> `todowrite` 的地方。
 > **我们改的一切都不会溢到 Team 之外。** v2 的每个钩子对宿主上所有会话都会触发，所以工具面
 > 裁剪、0.2 温度、黑板注记、原生结果卸载、R6 与地址红线的收紧、强制后台派发，全都会先问一句
 > "这是我们六个角色吗"——`build`、`plan` 和你自己的 agent 保持刚装好时的原样。宿主没告诉我们会话
 > 归属的调用同样不碰，并且会计数（`tm_stats` 里是 `作用域：我们 · 他人 · 未判定`）。
-> 安装器写出的六个角色提示词是 v2 变体，
-> 里面点名的是 `read` / `grep` / `shell` 而不是这些别名。
-> 上面这张表描述的是 v1（1.18.x）的工具面，那一份仍然十三个都在。
+> 安装器写出的六个角色提示词，
+> 里面点名的是 `read` / `grep` / `shell` 而不是这些已移除的别名。
 
 > **在 OpenCode 2.x 上，交互式浏览交给宿主，治理仍在我们手里。** 桌面端侧边栏挂的是**服务端自己的**浏览器
 > 服务——插件没法把自己的页面注册进去（取证：`docs/research/browser-pane.md`）。所以三个有联网授权的角色
@@ -349,7 +345,7 @@ HMAC 句柄，agent 真需要 payload 时用 `tm_fetch` 分页取。
 `tm_fetch`（HMAC 签名、run 域、带过期）分页读；JSON 句柄还可以直接要
 `fields` 点路径投影（刻意小的 jq 子集：`items[].name`、
 `[].stargazers_count`），大 API 转储只留需要的字段、原文从不进窗口。
-`tm_bash` 只放行只读命令（白名单），失败以结构化错误返回，不糊原始转储。
+宿主的 `shell` 在它自己的权限规则下跑只读探针，失败以结构化错误返回，不糊原始转储。
 
 ### 会话 + 项目 + 全局三层记忆（tm_memory）
 
@@ -519,13 +515,16 @@ Team Lead 自己从不删黑板，你可以随时审计任何一次运行。
 
 **全局安装** —— 把插件条目放进 `~/.config/opencode/opencode.jsonc`，每个项目都有团队。
 
-**不想让 Team 占默认位：**
+**不想让 Team 占默认位：** 在 OpenCode 2.x 上做不到，而且这是实测结论不是设计偏好——宿主
+不给 2.x 插件传任何选项：`"plugin": [["…", { "defaultAgent": false }]]` 这种元组下
+`ctx.options` 仍是空的（2026-10-06 实测：带元组启动，boot 行仍写着 `board_ttl_days=5`），
+而把元组写进 `plugins` 数组会被直接拒（`path=$.plugins.1 kind=invalid`）。Team 每次启动都是
+默认。要换掉它，自己改配置键：
 
 ```jsonc
 {
-  "plugin": [
-    ["@te-river/opencode-team-mode@latest", { "defaultAgent": false }]
-  ]
+  "plugins": ["@te-river/opencode-team-mode@latest"],
+  "default_agent": "build"
 }
 ```
 
@@ -537,9 +536,9 @@ Team Lead 自己从不删黑板，你可以随时审计任何一次运行。
 | 环境变量 | 默认 | 用途 |
 |---|---|---|
 | `TM_ENV_PROTECT` | `strict` | R6 模式：`strict` / `standard` / `off`（off 同时解除审批计时器）
-| `TM_R6_FINE_ASK` | 按命令行判定（仅 v2） | 在 **v2** 上，命令行由宿主的 `permission.evaluate` 钩子逐次判定，所以普通 `git status` 什么都不问、导出环境变量照样问。`off` 退回"每条 shell 命令都问"——宿主不提供该钩子时也会自动走这条路，而且启动日志会说是哪一个原因造成的。v1 不受影响：它本来就在工具调用钩子里判定 |
+| `TM_R6_FINE_ASK` | 按命令行判定 | 命令行由宿主的 `permission.evaluate` 钩子逐次判定，所以普通 `git status` 什么都不问、导出环境变量照样问。`off` 退回"每条 shell 命令都问"——宿主不提供该钩子时也会自动走这条路，而且启动日志会说是哪一个原因造成的 |
 | `TM_V2_CODEMODE` | catalog（`direct` 需显式开启）——**仅 v2** | 我们的工具怎么送到模型面前。OpenCode 2.x 用 `options.codemode` 决定可见性。我们曾默认发 `codemode:false` 并宣称"以真实定义交付"——**一次 2.0.16 桌面端活体会话把它推翻了**：发了那个标志之后，十个 `tm_*` 仍然只出现在宿主的 Code Mode 目录里（原文："They cannot be called directly…"），模型可直接调用的是那九个原生工具。所以默认什么都不发，`direct` 留给可能认它的构建做实验。能核对的只有关停记录里的 `tools_in_request`（`tm_stats` 渲染成"请求内实际可见=…"），不是我们发出的标志 |
-| `TM_PRIVATE_SPACE` | v1 `ask` · **v2 `deny`** | 私网（回环、RFC1918、ULA、CGNAT、`.localhost`）经我们工具时的行为：`ask` 走宿主确认窗（v1 弹得出），`allow` 放开整段，`deny` 拒绝。v2 默认 `deny`，因为插件在那儿弹不出窗子——"等用户批准"在一台给不出确认框的宿主上不是闸门，是让 agent 干等。所以 v2 的拒绝语会印出两条操作者自己走得通的出口（`TM_PRIVATE_SPACE=allow`，或把这一台主机名写进 `TM_WEBFETCH_ALLOWED_DOMAINS`）。元数据 / 链路本地 / 保留段不在这个开关管辖内：任何设置都拒，也没有批准路径 |
+| `TM_PRIVATE_SPACE` | `deny` | 私网（回环、RFC1918、ULA、CGNAT、`.localhost`）经我们工具时的行为：`allow` 放开整段，`deny` 拒绝。默认 `deny`，因为 2.x 插件弹不出窗子——"等用户批准"在一台给不出确认框的宿主上不是闸门，是让 agent 干等。所以拒绝语会印出两条操作者自己走得通的出口（`TM_PRIVATE_SPACE=allow`，或把这一台主机名写进 `TM_WEBFETCH_ALLOWED_DOMAINS`）。元数据 / 链路本地 / 保留段不在这个开关管辖内：任何设置都拒，也没有批准路径 |
 | `TM_V2_BROWSER_GATE` | 开——**仅 v2** | 对宿主 `browser_*` 目录的门禁（`execute.before` 判 URL 与 `browser_preview` 路径，也扫 `execute` 程序里出现的浏览器 URL）。`off` 恢复宿主无治理的浏览；启动行与 `tm_stats` 会说清当前是哪种 |
 | `TM_NATIVE_SNAPSHOT_MAX_TOKENS` | 1200——**仅 v2** | 原生 `browser_snapshot` / `browser_find` 在上下文里保留的预算。带 ref 的行优先占位，静态文字先被删；超过 `预算 × 4` 时回复会说明有多少 ref 行没装下，kept + dropped 恒等于总行数 |
 | `TM_NATIVE_REPORT_MAX_TOKENS` | 1600——**仅 v2** | 报告形原生结果（带 Markdown 表格的那种：经 Code Mode 回来的 `tm_stats`、`tm_join` 汇总）在上下文里保留的预算。表格行和小标题优先占位，被删的是表格之间的散文——缺一行的表格就不是表格；全文仍在句柄里 |
@@ -557,7 +556,6 @@ Team Lead 自己从不删黑板，你可以随时审计任何一次运行。
 | `TM_BLACKBOARD_TTL` | `7` | 存储保留天数 |
 | `TM_BOARD_MAX_CHARS` | `200000` | tm_board_write：单个黑板文件的字符上限——超了就拒写并提示拆 topic，而不是把交付物截断 |
 | `TM_BOARD_MAX_FILES` | `200` | tm_board_write：一个会话目录允许的 markdown 文件数；回收只由 TTL 清扫负责，所以拒绝文案会点出 `ttlDays` |
-| `TM_BASH_READONLY_ALLOWED` | 内置表 | tm_bash 白名单 |
 | `TM_SEARCH_DEFAULT_ENGINE` | `auto` | tm_search 未显式给 `engine` 时的默认引擎（`auto` = 分类 + 并行扇出 + RRF 融合；也可钉表中任一引擎） |
 | `TM_SEARCH_WEIGHTS` | 未设 | 按引擎覆盖融合权重，如 `bing=0.3,hn=0.25`；未列出的沿用内置表 |
 | `TM_SEARCH_RELEVANCE_FLOOR` | `0.35` | 与查询词零重叠的命中只保留该比例的权重（压垃圾，不删引擎） |
@@ -566,11 +564,10 @@ Team Lead 自己从不删黑板，你可以随时审计任何一次运行。
 | `TM_BROWSER_SUBRESOURCE` | `same-site` | 顶层导航过白名单后，页面子资源的策略：`same-site` = 图/媒体/字体/样式表一律放行，脚本/XHR 仅当属于本次会话真正打开过的站点；`passive` = 只放被动资源；`off` = 旧行为（逐请求过白名单）。被拦掉的请求会在下一次快照以"N 个子资源请求被拦截"告知；如果这一页已经没有任何可寻址内容，那句提示会直接说明空白是我们的门禁造成的，并指向 `allow_host` 与本变量 |
 | `TM_BROWSER_IDLE_MS` | `180000` | 无人触碰的浏览器会话超过该毫秒数自动关闭并提示用户（0 关闭该回收）——没人负责的窗口是打扰用户的 bug |
 | `TM_BROWSER_ASK_EVAL` | `on` | `evaluate_script` 在**你的**浏览器里跑任意 JS——这是域白名单管不住的唯一动词（白名单限制我们去哪儿导航，管不了已加载的页面交回什么）。每个浏览器会话走一次官方确认窗；没有 ask 桥就拒绝。`off` 恢复旧行为；结果脱敏（JWT/bearer/cookie/api-key 形状）不可关闭 |
-| `TM_WEB_CACHE_TTL_SEC` | `300` | 受治理抓取在同一 URL 上可复用多久（0 = 关）。tm_webfetch / tm_search / PTC 桥共用一份缓存；条目以哈希命名（带令牌的查询串不落盘），且只在**静态白名单**放行的那一跳读写——弹窗授权仍是逐请求的，复用命中会标注 缓存命中 |
+| `TM_WEB_CACHE_TTL_SEC` | `300` | 受治理抓取在同一 URL 上可复用多久（0 = 关）。tm_webfetch / tm_search 共用一份缓存；条目以哈希命名（带令牌的查询串不落盘），且只在**静态白名单**放行的那一跳读写——弹窗授权仍是逐请求的，复用命中会标注 缓存命中 |
 | `TM_BROWSER_IMAGE_MAX_BYTES` | `400000` | `take_screenshot { image:true }` 内联给模型的 JPEG 上限；超过则只回路径并说明原因 |
 | `TM_BASH_TIMEOUT_PROBE_MS` | `60000` | 对只读探针命令（P3 白名单内）强制夹顶模型自设的 `timeout`（0 关闭） |
 | `TM_BASH_TIMEOUT_MAX_MS` | `0` | 其它 bash 命令的可选全局上限——默认关闭，真实构建保留它要的超时 |
-| `TM_PTY_MAX` | `4` | 本插件同时最多保持多少个 `tm_pty` 终端会话 |
 | `TM_JOIN_MAX_WAIT_MS` | `60000` | `tm_join { waitMs }` 的上限。过去是 300 000，于是有了一次"连续两次各等 5 分钟、期间 lead 什么都没做"的实测——等待不是并行，所以默认改成"看一眼就去干活"。上一次没等到任何结算时，第二次等待被截到 10 秒并附替代动作 |
 | `TM_STORE_RECLAIM` | `on` | 启动时回收“升级留下的遗产”：超过 TTL 没动静的分片，以及临时目录回退点上分片之前的 `blackboard/` + `trajectory/`（一台真实机器上实测滞留 503 MB 过期 run，而搬家后没有任何清扫器指向那里）。只删超过 TTL 的条目——新鲜的 run 一定留着，因为升级前起来的会话可能还在往里写。设 `off` 就完全不碰磁盘（测试执行器会设它） |
 | `TM_TASK_OFFLOAD` | `on` | 把宿主的后台子代理压在 token 预算内：`task { background: true }` 完成时宿主会把子代理全文注入你的会话，这里把超限的正文换成预览 + 取回指针（`tm_join { ids: [...] }`）。**只碰**同时满足三条的 part：`synthetic === true`、正文精确匹配宿主自己的 `<task id=… state="completed">` 信封、且超过文本卸载阈值；任一不满足就原样放过。不往磁盘复制任何东西——全文本来就写在子会话里。`off` 恢复宿主原样注入。**OpenCode 2.x 上这一半不适用**：v2 不会把注入后的消息在落盘前交给插件，而我们刻意不改写发出的消息（对那一层形状猜错就是静默删证据，v1 的 `experimental.chat.messages.transform` 就是因此一直没实现）。v2 的补偿是契约而不是改写：超限交付写进黑板文件、回复里带路径，领队读摘要、用 `tm_join` 取全文 |
@@ -578,9 +575,12 @@ Team Lead 自己从不删黑板，你可以随时审计任何一次运行。
 | `TM_AGENT_TEMPERATURE` | `off` | `on` 时按角色分档采样（architect 0.35 / researcher 0.3 / reviewer 0.1 / 其余 0.2）经 `chat.params` 生效；也可写 `reviewer=0.05;team=0.4`。默认关闭＝守住"所有 agent 0.2"这条既定原则 |
 | `TM_COMPACTION_CONTEXT` | `on` | 在宿主压缩前追加"必须存活清单"（回复骨架、offload 句柄、未回收的子会话 id、出处、板上路径）。只做追加——宿主自己的压缩提示词不被替换 |
 | `TM_COMPACTION_AUTOCONTINUE` | `on` | 设 `off` 则压缩后不让宿主静默续跑，先由人复核状态 |
+| `TM_COMPACT_TRIGGER` | `on` | Team 自己的提前压缩：设 `off` 把时机整个交回宿主 |
+| `TM_COMPACT_AT_PERCENT` | `75` | 用量达到模型窗口的百分之多少时，Team 用 `ctx.session.compact` 提交一次压缩（夹在 5–95）。用量数字来自宿主的 `session.usage.updated` 事件，分母来自 `ctx.model.list()` 的 `limit.context` |
+| `TM_COMPACT_MIN_MS` | `60000` | 同一会话两次压缩准入之间的最小间隔（上限 600000），免得一个降不下去的比例变成压缩死循环 |
 | `TM_SHELL_NO_COLOR` | `on` | 经 `shell.env` 给每个子 shell 注入 `NO_COLOR`/`TERM=dumb`（ANSI 进度条纯属上下文税）。绝不覆盖宿主已设的值 |
 | `TM_SHELL_ENV` | — | 显式 `KEY=VALUE;KEY2=VALUE2` 透传进子 shell——刻意用白名单，避免这个钩子变成父环境泄露通道 |
-| `TM_WEBFETCH_ALLOWED_DOMAINS` | v1：24 个种子主机；**v2 默认 `"*"`** | tm_webfetch / tm_search / tm_browser 白名单（`"*"` 全开；空 = 全拒；自定义值**替换**种子——保留引擎主机）。站点自己的资源 CDN 必须进种子，否则 `tm_browser` 打开就是白屏——`bdimg.com` 就是因为这个才在种子里；临时缺口走 `tm_browser { action:"allow_host", host }`，不用改环境变量。`"*"` **不覆盖私网**：回环 / RFC1918 / CGNAT / `.localhost` 仍然每次都要弹确认窗；不可路由段（169.254.0.0/16 元数据端点、0.0.0.0/8、组播、保留段，以及这些地址的 IPv4-mapped 与 DNS64 写法）是不可被任何配置打开的硬红线 |
+| `TM_WEBFETCH_ALLOWED_DOMAINS` | `"*"` | tm_webfetch / tm_search / tm_browser 白名单（`"*"` 全开；空 = 全拒；自定义值**替换**种子——保留引擎主机）。站点自己的资源 CDN 必须进种子，否则 `tm_browser` 打开就是白屏——`bdimg.com` 就是因为这个才在种子里；临时缺口走 `tm_browser { action:"allow_host", host }`，不用改环境变量。`"*"` **不覆盖私网**：回环 / RFC1918 / CGNAT / `.localhost` 仍然每次都要弹确认窗；不可路由段（169.254.0.0/16 元数据端点、0.0.0.0/8、组播、保留段，以及这些地址的 IPv4-mapped 与 DNS64 写法）是不可被任何配置打开的硬红线 |
 | `TM_BROWSER_PATH` | 自动探测 | tm_browser 可执行文件覆盖（默认用你的默认浏览器——Chromium 系时；否则回退 Edge/Chrome 探测） |
 | `TM_BROWSER_HEADLESS` | `auto` | `1` 无头（CI）/ `0` 有头 / `auto`（仅无显示的 Linux 用无头） |
 | `TM_BROWSER_ENGINE` | `playwright` | `playwright`（需 Node ≥ 20；导入失败自动降级）/ `cdp-legacy`（零依赖 CDP pipe，仅核心动词） |
@@ -592,12 +592,6 @@ Team Lead 自己从不删黑板，你可以随时审计任何一次运行。
 | `TM_MEMORY_STALE_DAYS` | `30` | 超过此天数的条目在搜索结果标 `[stale Nd]`（`0` 关闭） |
 | `TM_MEMORY_SESSION_PERSIST` | —（瞬态） | `1` 时 session 条目同时落盘 `memories/sessions/<sid>/` |
 | `TM_HIT_BLACKLIST` | `maimai.cn` | 永不进入搜索命中列表的额外域名（逗号/分号分隔；过滤同名不同站噪音） |
-| `TM_PTC_MAX_PROGRAM_CHARS` | `4000` | PTC 程序源码上限 |
-| `TM_PTC_MAX_CALLS` | `20` | PTC 单次运行桥接调用预算（1–200） |
-| `TM_PTC_MAX_ERRORS` | `3` | PTC 单次运行错误预算（1–50） |
-| `TM_PTC_TIMEOUT_MS` | `60000` | PTC 单次运行墙钟超时（5s–10min） |
-| `TM_PTC_ENGINE` | `auto` | `auto`（worker→inline 降级）/ `worker` / `inline` |
-| `TM_PTC_WEB_BRIDGE` | `on` | 向 PTC 程序暴露 `tm.search` / `tm.webfetch`（`off` 从桥接集移除） |
 
 ---
 
@@ -657,14 +651,16 @@ Team Lead 自己从不删黑板，你可以随时审计任何一次运行。
 
 **停用一个：** `"researcher": { "disable": true }`。
 
-**黑板保留期** 用元组形式：`["@te-river/opencode-team-mode@latest", { "ttlDays": 7 }]`（有效区间 (0, 365]，非法值回退 5）。
+**黑板保留期** 在 OpenCode 2.x 上固定 5 天：`ttlDays` 这个插件选项根本送不进来（实测——元组
+要么被拒要么被忽略，boot 行始终是 `board_ttl_days=5`）。空闲任务目录在启动时和每小时各扫一次；
+暂时没有 2.x 旋钮可调这一项。
 
 ---
 
 ## ❓ FAQ
 
 **会不会很烧 token？**
-恰恰相反，省 token 就是设计目标。卸载 + 80 token 预览 + PTC 批量程序的存在
+恰恰相反，省 token 就是设计目标。卸载 + 80 token 预览 + 宿主 Code Mode 的 `execute` 的存在
 理由就是：五 agent 流水线要是裸接一个上下文窗口，那才叫烧 token。治理本身
 就是省 token 的机制。
 
@@ -697,10 +693,9 @@ OpenCode 按 spec 字符串缓存插件，从不重新解析 `@latest`（上游�
 
 ## 🗑️ 卸载
 
-1. 从配置文件的 `"plugin"` 数组里移除该条目——**OpenCode 2.x 上是 `"plugins"`（复数）**，2.x
-   的安装器也写在那里；如果你是在 2.x 上装的，还要删掉生成的
+1. 从配置文件的 `"plugins"` 数组里移除该条目；如果你是在 2.x 上装的，还要删掉生成的
    `~/.config/opencode/agents/*.md` 与 `commands/team-*.md`，以及你不再需要的
-   `default_agent: "team"`。
+   `default_agent: "Team"`。
 2. 想回收磁盘就删缓存目录（见[安装](#-现在读一遍以后省一小时)里的表格）。
 3. 重启 OpenCode。agent、命令、工具全部消失；`<repo>/.git/opencode-team/`
    下的存储（全局记忆在 `~/.opencode-team/`）都是普通文件，随时可删。
@@ -714,26 +709,27 @@ OpenCode 按 spec 字符串缓存插件，从不重新解析 `@latest`（上游�
 ```
 opencode-team-mode/
 ├── src/
-│   ├── index.ts          ← 插件入口（config + R6 守卫 + 审批门禁 + 工具段）
+│   ├── index.ts          ← 插件入口（{id, setup}——仅 v2）
 │   ├── agents.ts         ← Agent 结构（mode、颜色、温度、白名单矩阵）
 │   ├── prompts/          ← Agent 提示词（lead / specialists / shared）——测试钉死
 │   ├── commands.ts       ← 斜杠命令定义
 │   ├── blackboard.ts     ← 共享黑板 + TTL 清扫
 │   ├── envprotect.ts     ← R6 门面（patterns / 分类器 / 门禁谓词 / hook）
-│   ├── approval-gate.ts  ← 统一审批门禁（弹窗超时自动拒绝）
+│   ├── identity.ts       ← Agent 名身份（大小写不敏感的 lead 判定）
 │   ├── tm/               ← 受治理工具：pipelines / store / preview / guard / refs /
-│   │                        webfetch / search / memory / browser / shell-bridge / ptc/（9 模块）
-│   └── types.ts          ← 加载器契约类型（1.18.x）
-├── docs/installation.md  ← agent 可消费的安装指南（1.18.x）
+│   │                        webfetch / search / memory / browser / shell-bridge / board / ledger
+│   ├── host/             ← v2 人格（setup / guard / offload / session / events / …）
+│   └── types.ts          ← 加载器契约类型
+├── docs/installation.md  ← 历史 1.18.x 指南（已不再支持）
 ├── docs/installation-v2.md ← 2.x 安装指南（角色以生成的配置文件形式落地）
 ├── scripts/              ← 一行安装脚本（bash / PowerShell）
 ├── pt07/                 ← PT-07 基线套件（种子化 A/B token 测量）
 └── README.*.md           ← 你在这里（有两个版本）
 ```
 
-加载器只调一次 `server(input, options)`：`config` 钩子注入六个 agent 和六个
-命令，同一次调用装上 R6 `tool.execute.before` 守卫、通过 `event` 钩子布防
-审批门禁、注册 `tm_*` 工具。用户自定义的同名 agent 永远赢——插件从不覆盖。
+加载器只调一次 `setup(ctx)`：注册 `tm_*` 工具、在 `permission.evaluate` 上装
+R6/地址守卫、在 `tool.execute.after` 上挂 JIT 卸载、并发布黑板注记。用户自定义的
+同名 agent 永远赢——插件从不覆盖。
 
 ---
 
@@ -754,8 +750,8 @@ opencode-team-mode/
 ## 🔗 链接
 
 - [npm 包](https://www.npmjs.com/package/@te-river/opencode-team-mode) — `@te-river/opencode-team-mode`
-- [安装指南（1.18.x）](./docs/installation.md) — 完整的手动 / agent 可消费流程
-- [安装指南（**OpenCode 2.x**）](./docs/installation-v2.md) — 装法不同：2.x 插件不能创建 agent，六个角色和六条命令要生成到配置目录
+- [安装指南（**OpenCode 2.x**）](./docs/installation-v2.md) — 受支持的装法：2.x 插件不能创建 agent，六个角色和六条命令要生成到配置目录
+- [安装指南（1.18.x）](./docs/installation.md) — **仅历史**：1.18.x 人格已在 1.7.0 线里移除，本页只作参考，不是可用的安装路径
 - [OpenCode Desktop](https://opencode.ai) — 官网与下载
 - [OpenCode 文档](https://opencode.ai/docs) — 配置与插件文档
 - [OpenCode 插件 API](https://opencode.ai/docs/plugins) — 开发你自己的插件

@@ -48,10 +48,10 @@ implied:
 |---|---|---|
 | The six roles | injected by the plugin at boot | `~/.config/opencode/agents/*.md`, written by the generator below — a plugin cannot add an agent |
 | The six `/team-*` commands | injected by the plugin | `~/.config/opencode/commands/*.md`, same generator |
-| Default agent | filled only if the user left it alone | **Team is the default on every boot** (the API has no getter), plus `default_agent: "team"` in config, which is the checkable one. Opt out with `"team-mode": { "defaultAgent": false }` |
-| Non-blocking commands | `tm_pty`, on the host's own terminal sessions | **not registered at all** — the v2 plugin context has no pty domain, so the tool could only ever report its own missing seam. Run a slow step as its own `shell` call (one per call, each with its own `timeout`) and tee the output to a log you can read back |
-| File access | `tm_read` / `tm_grep` / `tm_bash` | the host's own `read` / `grep` / `glob` / `shell` — **governed anyway**: oversized results are offloaded through `tool.execute.after`, and out-of-project paths go through the host's own `external_directory` permission (a dialog, where v1 had a hard refusal) |
-| Batch calls | `tm_ptc_run` | the host's own `execute` (Code Mode) |
+| Default agent | filled only if the user left it alone | **Team is the default on every boot** (the API has no getter), plus `default_agent: "Team"` in config, which is the checkable one. There is no opt-out via plugin options on 2.x: the host delivers none — a `"plugin": [["…", { "defaultAgent": false }]]` tuple leaves `ctx.options` empty (measured 2026-10-06: `board_ttl_days=5` with the tuple present) and a tuple inside `plugins` is rejected (`$.plugins.1 kind=invalid`). Set `default_agent` yourself to move off Team |
+| Non-blocking commands | `tm_pty` — **removed with v1 support** | **not registered at all** — the v2 plugin context has no pty domain, so the tool could only ever report its own missing seam. Run a slow step as its own `shell` call (one per call, each with its own `timeout`) and tee the output to a log you can read back |
+| File access | `tm_read` / `tm_grep` / `tm_bash` — **removed with v1 support** | the host's own `read` / `grep` / `glob` / `shell` — **governed anyway**: oversized results are offloaded through `tool.execute.after`, and out-of-project paths go through the host's own `external_directory` permission (a dialog, where v1 had a hard refusal) |
+| Batch calls | `tm_ptc_run` — **removed with v1 support** | the host's own `execute` (Code Mode) |
 | Interactive browsing | `tm_browser` (our own playwright/CDP browser) | **the host's own `browser_*` tools first** — they are the only browser the desktop renders in its side panel (`docs/research/browser-pane.md`). `tm_browser` stays registered as the fallback for a host with no desktop browser (CLI / standalone), and the host catalog is policed by `src/host/v2-browser-gate.ts` (URL / address red line / env-file path at `execute.before`, with a leak-detected fallback that replaces the page with the refusal). Snapshots are capped, not offloaded, so every `[ref=…]` the next click needs stays in context |
 | Sub-agent settlement | the host `event` hook | `ctx.event.subscribe()` — zero-dependency async iterable, filtered by event-type name (`src/host/v2-events.ts`). Without it `tm_join` cannot tell a settled child from a running one; `tm_stats` reports what the feed forwarded and which type names went unrecognised (names only, never payloads) |
 | The task ledger | the host's `todowrite` | **`tm_ledger`**, stored in the host's `ctx.storage` (v2 has no `todowrite`) |
@@ -119,7 +119,7 @@ returning cleanly is not evidence the plugin loaded.
    the next hand edit may not.
 3. Generate the roles and commands (Step 2). A plugin cannot create an agent on 2.x, so
    without these twelve files Team does not exist however well the plugin loaded.
-4. Set `default_agent: "team"` **last** (Step 3) — a default naming agents that are not on
+4. Set `default_agent: "Team"` **last** (Step 3) — a default naming agents that are not on
    disk makes the host fall back to `build` silently.
 5. Verify, in this order, and report what you actually saw:
    - `opencode-cli … run --standalone --print-logs` (or restart the desktop and read the
@@ -131,13 +131,13 @@ returning cleanly is not evidence the plugin loaded.
       `agents_editor_unseen` with `agents_resolved_in_request` non-empty, because the host really
       resolved those ids in a request — from 本进程无法区分, since `ctx.agent.transform` is a
       snapshot from BEFORE the config directory merges. "Step 3 has not run" shows up at the host
-      (`--agent team` does not resolve), never as a row in this table.
+      (`--agent Team` does not resolve), never as a row in this table.
    - If the log shows nothing at all about our id, the entry is under a key the host does
      not read (`plugin`, singular) or the directory has no root `index.js`. Both failures
      are silent by design; the absence of an error is not a success signal.
 6. Say which of the two spellings you left installed, and whether the package came from
    npm or from a local path — the Extensions panel cannot tell them apart (a loader file
-   named `team-mode.js` and a directory whose plugin id is `team-mode` print identically).
+   named `team-mode.js` and a directory whose plugin id is `@te-river/opencode-team-mode` print identically).
 
 ### Step 2 — Generate the six roles and the six commands
 
@@ -157,7 +157,7 @@ node …/scripts/gen-v2-config.mjs --dir ~/.config/opencode
 
 Expected output: `共 12 个文件（角色 6 + 命令 6）`. It is idempotent — re-running writes
 nothing and prints `已是最新`. A file it did not generate (no marker) is **refused**, not
-overwritten, so your own `agents/team.md` survives; `--force` overrides that.
+overwritten, so your own `agents/Team.md` survives; `--force` overrides that.
 
 On Windows the installed path is
 `%USERPROFILE%\.config\opencode\node_modules\@te-river\opencode-team-mode\scripts\gen-v2-config.mjs`.
@@ -174,7 +174,7 @@ The plugin also calls `default("team")` on every boot, but a 2.x plugin cannot r
 value back, so the config key is the one you can verify:
 
 ```jsonc
-{ "default_agent": "team" }
+{ "default_agent": "Team" }
 ```
 
 **Order matters:** set it only after Step 2 wrote the role files. A default naming a
@@ -191,7 +191,7 @@ opencode reload      # or just restart the desktop app
 
 Four checks, in this order:
 
-1. `opencode agents` (or the picker) lists `team`, `architect`, `implementer`,
+1. `opencode agents` (or the picker) lists `Team`, `architect`, `implementer`,
    `reviewer`, `tester`, `researcher`.
 2. A new session starts as Team. Ask: `tm_stats` — the reply has a
    **启动与人格** section showing the v2 boot line: which tools were registered, whether
@@ -229,10 +229,10 @@ before concluding the install is broken.
 ### Uninstalling
 
 1. Remove the plugin entry (`opencode plugin remove @te-river/opencode-team-mode`).
-2. Delete the generated files: `~/.config/opencode/agents/{team,architect,implementer,reviewer,tester,researcher}.md`
+2. Delete the generated files: `~/.config/opencode/agents/{Team,architect,implementer,reviewer,tester,researcher}.md`
    and `~/.config/opencode/commands/team-*.md`. Only files carrying our marker were written
    by the generator — anything else you wrote yourself is yours.
-3. Remove `"default_agent": "team"` if you set it.
+3. Remove `"default_agent": "Team"` if you set it.
 4. The plugin's own data lives under `<repo>/.git/opencode-team/` (git workspaces) or the
    OS temp dir; deleting it costs nothing — the TTL sweeper does the same over time.
 
@@ -242,7 +242,7 @@ before concluding the install is broken.
 |---|---|
 | Roles are not in the picker | Step 2 never ran, or ran against a different `--dir`. `ls ~/.config/opencode/agents` |
 | The default silently became `build` | `default_agent` names an agent that does not exist — re-run Step 2, then Step 3 |
-| A hand-written `agents/team.md` was not updated | By design: the generator refuses files it did not create. Move yours aside, or pass `--force` |
+| A hand-written `agents/Team.md` was not updated | By design: the generator refuses files it did not create. Move yours aside, or pass `--force` |
 | `/team-plan` etc. run but not as the specialist | 2.x documents `mode: subagent` as "runs only in a child session"; if a command selecting a specialist does not behave, the fix is `mode: "all"` in the role definition (report it — this is the one item in this flow still unverified on a live host) |
 | `tm_webfetch` on an odd site says it refused **without asking anyone** | Expected on 2.x: a plugin cannot raise a dialog. Use a source that works, or let the host's own permission rule allow it; the address red line (metadata / private) has no consent path at all, on either generation |
 | `task`/`subagent` seems to block the lead | On 2.x the plugin forces `background: true`; if you also set the old `OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS`, unset it — it is a v1 flag and only confuses the picture |
@@ -271,16 +271,16 @@ before concluding the install is broken.
 |---|---|---|
 | 六个角色 | 插件启动时注入 | `~/.config/opencode/agents/*.md`，由下面的生成器写出——插件没有"造 agent"的接口 |
 | 六条 `/team-*` 命令 | 插件注入 | 同一个生成器写 `commands/*.md` |
-| 默认 agent | 只在用户没动过时补位 | **每次启动都把 Team 设成默认**（v2 没有读取接口），再加配置里的 `default_agent: "team"`（这一条才是你核对得动的）。退出方式：`"team-mode": { "defaultAgent": false }` |
-| 读文件 / 搜代码 / 跑命令 | `tm_read` / `tm_grep` / `tm_bash` | 宿主的 `read` / `grep` / `glob` / `shell`，**治理照旧**：超大结果照样在 `tool.execute.after` 被卸载成预览 + 句柄，跨出项目的路径走宿主自己的 `external_directory` 权限（v1 是硬拒，v2 是弹窗） |
-| 批量调用 | `tm_ptc_run` | 宿主自己的 `execute`（Code Mode） |
+| 默认 agent | 只在用户没动过时补位 | **每次启动都把 Team 设成默认**（v2 没有读取接口），再加配置里的 `default_agent: "Team"`（这一条才是你核对得动的）。2.x 上**没有**靠插件选项退出的办法：宿主不给插件传选项——实测 `"plugin": [["…", { "defaultAgent": false }]]` 元组下 `ctx.options` 仍是空的（带元组启动时 `board_ttl_days=5`），而把元组写进 `plugins` 会被拒（`$.plugins.1 kind=invalid`）。要换默认就自己改 `default_agent` |
+| 读文件 / 搜代码 / 跑命令 | `tm_read` / `tm_grep` / `tm_bash`——**已随 v1 支持一起移除** | 宿主的 `read` / `grep` / `glob` / `shell`，**治理照旧**：超大结果照样在 `tool.execute.after` 被卸载成预览 + 句柄，跨出项目的路径走宿主自己的 `external_directory` 权限（v1 是硬拒，v2 是弹窗） |
+| 批量调用 | `tm_ptc_run`——**已随 v1 支持一起移除** | 宿主自己的 `execute`（Code Mode） |
 | 入口文件（v2 主机的硬要求） | — | 宿主把插件**目录**解析成 `<目录>/index.js`；只写 `package.json#exports` 的目录会被**静默忽略**（连错误都没有）。本包根目录的 `index.js` 就是为这条存在的——`plugins: ["./vendor/team-mode"]` 这类官方写法能加载，靠的是它 |
 | 交互式浏览 | `tm_browser`（我们自己起的 playwright/CDP 浏览器） | **优先宿主的 `browser_*`**——只有它是桌面端侧边栏里那个浏览器（`docs/research/browser-pane.md`）。`tm_browser` 保留为"宿主没接桌面浏览器时"的退路（CLI / standalone）；原生目录由 `src/host/v2-browser-gate.ts` 管（`execute.before` 上判 URL / 地址红线 / 环境文件路径，并且有"漏过去就把页面换成拒绝语"的兜底）。快照是**截断**而不是卸载，所以下一次点击要的 `[ref=…]` 都留在上下文里 |
 | 子代理结算检测 | 宿主的 `event` 钩子 | `ctx.event.subscribe()`——零依赖的 async iterable，按事件类型名过滤（`src/host/v2-events.ts`）。没有它 `tm_join` 分不清「已结算」和「仍在跑」；`tm_stats` 会给出转发了多少、哪些类型名没认出来（只记名字，绝不记负载） |
 | 任务清单 | 宿主 `todowrite` | **`tm_ledger`**，存在宿主的 `ctx.storage` 里（v2 不给插件 `todowrite`） |
 | 征求用户同意 | 宿主官方逐次弹窗 | **插件在 v2 弹不出对话框。** 原本该问的受治理调用一律**直接拒绝**，并说明是"没人可问"而不是"问了被拒"。你看到的弹窗都来自宿主自己（权限规则、越出项目目录） |
 | 联网 | 22 个域名白名单 + 确认弹窗 | **域名门禁关掉**（`TM_WEBFETCH_ALLOWED_DOMAINS` 默认 `"*"`）：2.x 插件弹不出确认框，"批准后放行"等于让 agent 去等一个永远不会出现的窗口。地址类别照管——元数据 / 链路本地 / 保留网段在任何设置下都拒；私网（RFC1918、CGNAT、ULA、IPv6 链路本地、`.localhost`）也拒，但拒绝语现在给出两条出口而不是承诺点击：`TM_PRIVATE_SPACE=allow`（放开整段），或把那一台主机名写进 `TM_WEBFETCH_ALLOWED_DOMAINS`（只放开它自己）。**回环（`127/8`、`::1`、`localhost`）默认放行**——它只打到用户自己机器上的服务，而一道唯一出口是"插件弹不出来的确认框"的门禁，是墙不是门 |
-| 非阻塞命令 | `tm_pty`（跑在宿主终端会话上）| **完全不注册**——v2 插件上下文没有 pty 域，这个工具只能报自己缺缝。慢步骤请一条一个 `shell` 调用（各自带 `timeout`），并把输出 tee 到日志好回读 |
+| 非阻塞命令 | `tm_pty`——**已随 v1 支持一起移除** | **完全不注册**——v2 插件上下文没有 pty 域，这个工具只能报自己缺缝。慢步骤请一条一个 `shell` 调用（各自带 `timeout`），并把输出 tee 到日志好回读 |
 | 子代理 | 需要 `OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS=true` | 原生能力；插件对每次 `subagent` 强制 `background: true`，所以 **2.x 不要去设那个环境变量**（那是 v1 的补丁，在这里什么也不改变，只会让人误判） |
 | 对你其它模式的影响 | 插件钩子是全局的 | **没有影响。** 每个钩子都先看会话归属，所以 `build`、`plan` 和你自己装的 agent 都保持刚装好 OpenCode 时的样子——不会从它们的请求里删工具、不会设温度、不会卸载结果、不会收紧权限、也不会把它们的派发改成后台 |
 
@@ -336,18 +336,18 @@ Node 20+ 还会额外启用 Playwright 浏览器引擎）。
    下一个手工编辑的人未必容忍。
 3. 生成角色与命令（第 2 步）。2.x 上插件不能创建 agent，所以这十二个文件不在，Team 就不存在，
    插件加载得再好也没用。
-4. 最后一步才写 `default_agent: "team"`（第 3 步）——默认值指向不存在的 agent 会让宿主
+4. 最后一步才写 `default_agent: "Team"`（第 3 步）——默认值指向不存在的 agent 会让宿主
    静默退回 `build`。
 5. 验证，按顺序，并且把你真正看到的说出来：
    - `opencode-cli … run --standalone --print-logs`（或重启桌面端后读日志）→
      **恰好一条** `msg="loading plugin" id=<我们的条目> entrypoint=file:///…/index.js`，
      并且**没有**指名我们的 `failed to load plugin`。
    - 新建一个 Team 会话 → `tm_stats` 的 `启动与人格`：`tools_registered: 9`，以及 `作用域`
-     那一行。角色这一项看的是可见性行，不再是缺名字段（boot 行的 `agents_missing` 已经去掉）：它区分"已装而看不见"——`agents_editor_unseen` 有值，且 `agents_resolved_in_request` 也有值，说明宿主在真实请求里解析过这些 id——和"本进程无法区分"，因为 `ctx.agent.transform` 拿到的是配置目录合并**之前**的角色集。"第 3 步没做"要到宿主那边才看得见（`--agent team` 解析不到），不会在这张表里变成一行结论。
+     那一行。角色这一项看的是可见性行，不再是缺名字段（boot 行的 `agents_missing` 已经去掉）：它区分"已装而看不见"——`agents_editor_unseen` 有值，且 `agents_resolved_in_request` 也有值，说明宿主在真实请求里解析过这些 id——和"本进程无法区分"，因为 `ctx.agent.transform` 拿到的是配置目录合并**之前**的角色集。"第 3 步没做"要到宿主那边才看得见（`--agent Team` 解析不到），不会在这张表里变成一行结论。
    - 日志里关于我们的 id 一个字都没有 → 条目写在了宿主不读的键下（单数 `plugin`），或者那个
      目录没有根 `index.js`。这两种失败都是设计上静默的，所以"没报错"不是成功信号。
 6. 明确说清你留下的是哪种写法、包来自 npm 还是本地路径 —— 扩展面板分不出来：一个叫
-   `team-mode.js` 的 loader 文件，和一个插件 id 恰好是 `team-mode` 的目录条目，显示出来一模一样。
+   `team-mode.js` 的 loader 文件，和一个插件 id 恰好是 `@te-river/opencode-team-mode` 的目录条目，显示出来一模一样。
 
 ### 第 2 步 — 生成六个角色和六条命令
 
@@ -365,7 +365,7 @@ node …/scripts/gen-v2-config.mjs --dir ~/.config/opencode
 
 期望输出 `共 12 个文件（角色 6 + 命令 6）`。它是幂等的：再跑一次什么都不写，只报
 `已是最新`。不是它生成的文件（没有标记）会被**拒绝覆盖**，所以你自己手写的
-`agents/team.md` 安全；要强行覆盖才用 `--force`。
+`agents/Team.md` 安全；要强行覆盖才用 `--force`。
 
 Windows 上的路径是
 `%USERPROFILE%\.config\opencode\node_modules\@te-river\opencode-team-mode\scripts\gen-v2-config.mjs`。
@@ -380,7 +380,7 @@ Windows 上的路径是
 插件每次启动也会调 `default("team")`，但 v2 插件读不回这个值，所以能核对的是配置键：
 
 ```jsonc
-{ "default_agent": "team" }
+{ "default_agent": "Team" }
 ```
 
 **顺序不能颠倒**：必须在第 2 步已经把角色文件写出去之后再设。默认值指向一个不存在的 agent
@@ -395,7 +395,7 @@ opencode reload      # 或者直接重启桌面端
 
 按顺序做四项核对：
 
-1. `opencode agents`（或选择器里）能看到 `team`、`architect`、`implementer`、`reviewer`、
+1. `opencode agents`（或选择器里）能看到 `Team`、`architect`、`implementer`、`reviewer`、
    `tester`、`researcher`。
 2. 新会话默认是 Team。在里面跑 `tm_stats` —— 回复里应有**启动与人格**一段，展示 v2 的启动
    快照：注册了哪些工具、`tool.execute.after` / `permission.evaluate` / `session.context`
@@ -429,10 +429,10 @@ opencode reload
 ### 卸载
 
 1. 去掉插件条目（`opencode plugin remove @te-river/opencode-team-mode`）。
-2. 删掉生成的文件：`~/.config/opencode/agents/{team,architect,implementer,reviewer,tester,researcher}.md`
+2. 删掉生成的文件：`~/.config/opencode/agents/{Team,architect,implementer,reviewer,tester,researcher}.md`
    和 `~/.config/opencode/commands/team-*.md`。只有带我们标记的文件是生成器写的，你自己写的
    东西它从不碰。
-3. 如果设过 `"default_agent": "team"`，一并删掉。
+3. 如果设过 `"default_agent": "Team"`，一并删掉。
 4. 插件自己的数据在 `<repo>/.git/opencode-team/`（git 工作区）或系统临时目录下；删掉没有代价
    ——TTL 清理器本来就会定期做同样的事。
 
@@ -442,7 +442,7 @@ opencode reload
 |---|---|
 | 选择器里没有那六个角色 | 第 2 步没跑，或者 `--dir` 指到了别处。`ls ~/.config/opencode/agents` |
 | 默认 agent 悄悄变成 `build` | `default_agent` 指向了一个不存在的角色——重跑第 2 步，再做第 3 步 |
-| 手写的 `agents/team.md` 没被更新 | 这是设计：生成器拒绝覆盖不是它生成的文件。把你的文件挪开，或显式加 `--force` |
+| 手写的 `agents/Team.md` 没被更新 | 这是设计：生成器拒绝覆盖不是它生成的文件。把你的文件挪开，或显式加 `--force` |
 | `/team-plan` 能跑但不是以那个专家身份跑 | 2.x 把 `mode: subagent` 文档化为"只在子会话里运行"。如果选定专家的命令行为不对，改法是角色定义里用 `mode: "all"`（请回报——这是本流程里唯一还没在活体宿主上验证过的一项） |
 | `tm_webfetch` 说它"没问任何人就直接拒绝" | v2 的预期行为：插件弹不出对话框。换一个不需要这次访问的源，或让宿主自己的权限规则放行；地址红线（元数据 / 私网）在两代宿主上都没有授权路径 |
 | `subagent` 好像把领队挡住了 | v2 上插件会强制 `background: true`；如果你顺手设了老的 `OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS`，请取消它——那是 v1 的开关，在这里只会误导判断 |
@@ -463,4 +463,4 @@ opencode reload
 | `TM_NATIVE_OFFLOAD` | on | 用 `tool.execute.after` 治理宿主原生工具的结果；off 就退回宿主原样 |
 | `TM_R6_FINE_ASK` | on（v2） | 由按命令分类器决定哪条 shell 要问；`off` 回到"每条 shell 都问"，宿主没有 `permission.hook` 时也自动回到这一档 |
 | `TM_V2_PROBE` | 未设 | 把宿主真实工具面/动作名记成 JSONL（只有名字和计数） |
-| `"team-mode": { "defaultAgent": false }` | 不设置 = Team 永远默认 | 退出默认位抢占（只影响插件的每次启动行为，配置里的 `default_agent` 请自己改回来） |
+| `"@te-river/opencode-team-mode": { "defaultAgent": false }` | **2.x 上无效**（实测 2026-10-06：宿主不给插件传选项，`ctx.options` 仍为空；元组写进 `plugins` 会被 `$.plugins.1 kind=invalid` 拒） | Team 每次启动都为默认；要换默认请自己改配置里的 `default_agent` |

@@ -1,5 +1,14 @@
 # TeamMode Installation Guide / 安装指南
 
+> **⚠️ HISTORICAL — 1.18.x IS NO LONGER SUPPORTED.** As of the 1.7.0 line this package
+> targets OpenCode 2.x only: the `server` (1.18.x) personality was removed, so the plugin
+> exports `{id, setup}` and nothing else. This page is kept for reference only and is **not
+> a working install path** — install from **[installation-v2.md](./installation-v2.md)**.
+>
+> **⚠️ 历史文档——1.18.x 已不再支持。** 自 1.7.0 线起本包只面向 OpenCode 2.x：`server`
+> （1.18.x）人格已移除，插件只导出 `{id, setup}`。本页仅作历史记录，**不是可用的安装
+> 路径**——请走 **[installation-v2.md](./installation-v2.md)**。
+
 > **This page is the OpenCode 1.18.x path.** On OpenCode 2.x a plugin cannot create an
 > agent, so the six roles and the six `/team-*` commands have to be generated into
 > `~/.config/opencode/agents/` and `commands/` — that flow is its own page:

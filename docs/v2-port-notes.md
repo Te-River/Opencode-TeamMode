@@ -411,3 +411,35 @@ Adjacent and still unread: `Session.Message.Assistant.snapshot {start,end,files}
 `Text.state?: ProviderState` are in the contract and are not consumed here — nothing needs
 them yet, and since the probe records key names only, the next reader must re-measure rather than
 trust this paragraph.
+
+### 2026-10-06 — the 1.7.0 cut: four measurements that shaped it `[L][R][D]`
+
+The v1 personality was deleted outright for the 1.7.0 line (`src/host/v1.ts`, `src/tm/ptc/`,
+`src/tm/ptc.ts`, `src/tm/pty.ts`, `src/tool-coerce.ts`, `src/approval-gate.ts`,
+`src/host-hooks.ts`, `src/tm/bash-timeout.ts`), and four live/measured facts decided how the
+survivors were written. Each is recorded here so the next reader does not re-derive it.
+
+- **`permission.evaluate` DOES fire for the file tools, not just `shell`.** A live session's
+  guard tally read `guard_actions: read=152 grep=86 edit=246 external_directory=38` — so the
+  R6 env-file path face (`pathGuard`, #44) can deny `read` / `write` / `edit` / `glob` /
+  `grep` on an env-file path, and the earlier assumption that only the shell command line
+  reached this hook was wrong. `[L]`
+- **Context usage lives ONLY in the `session.usage.updated` event.** `session.hook("context")`
+  hands over the assembled messages, and those messages carry no token counts: a second turn
+  that DID contain an assistant message still logged `source=no_usage messages=3`. The
+  denominator is `ctx.model.list()`'s `limit.context`; the numerator is the event. This is
+  why `v2-compaction.ts` taps the event feed rather than reading the request payload. `[L]`
+- **win32 `statSync` is case-insensitive on the identity, `realpathSync` is not on the
+  spelling.** For the same file, `statSync` returns the SAME `dev`+`ino` for both casings,
+  while `realpathSync` echoes back the casing it was handed. So the generator's
+  "did we generate this file" check uses `statSync`'s `dev`+`ino` (a rename leftover like the
+  old `agents/team.md` is recognised), and a file it cannot identify is **left alone** rather
+  than deleted. `[R]`
+- **A plugin cannot name a config-file role.** `ctx.agent.list()` shows only the 7 built-ins,
+  and `agent.get({agentID:"team"})` answers `Agent not found: team` — the config directory's
+  roles are not visible to the plugin. Since the desktop picker renders `Agent.Info.name` and
+  a config role's name is its id verbatim (`Config.Agent` has no `name` key), the only lever
+  was the id: the lead role is `Team`. Identity comparisons go through `src/identity.ts`
+  (case-insensitive), so `team` / `Team` / `TEAM` are all the lead and an existing install or
+  in-flight session is not broken. `agents_default` in the trajectory keeps the lower-case
+  value — that field is a measurement, not a label. `[L][R]`
