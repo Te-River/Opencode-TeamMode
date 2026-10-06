@@ -3465,6 +3465,66 @@ console.log("28. Context Pruning — settled history becomes pointers, evidence 
 }
 console.log("   OK (threshold derived from limit.context; settled bodies become self-explaining pointers; skeleton/handle/GOAL/tail byte-exact; no_limit and foreign counted; throws swallowed; idempotent)")
 
+console.log("32. Context Pruning reads the 2.0.24 shapes — a renamed part is counted, never silent (#62)")
+{
+  const { textSlots, messageText, messagesTokens, unknownPartCount, messagesUnknownParts, applyV2ContextPrune } =
+    await import("./dist/host/v2-prune.js")
+
+  const big = "x".repeat(4000) // ~1000 tokens
+
+  // (a) the shapes a live 2.0.24 probe measured: a tool result carries the body
+  // under `result` (there is NO `text`), and reasoning carries `text`.
+  const toolMsg = { role: "tool", content: [{ type: "tool-result", id: "t1", name: "shell", namespace: "native", result: big }] }
+  const reasonMsg = { role: "assistant", content: [{ type: "reasoning", text: big }] }
+  assert.equal(textSlots(toolMsg).length, 1, "a tool-result part yields a slot")
+  assert.equal(textSlots(toolMsg)[0].key, "result", "…and the slot addresses `result`, not a missing `text`")
+  assert.ok(messageText(toolMsg).includes("xxxx"), "the tool body is read, not dropped")
+  assert.ok(messagesTokens([toolMsg, reasonMsg]) > 1500, "the 2.0.24 shapes count toward `used`")
+  assert.ok(messageText(reasonMsg).includes("xxxx"), "a reasoning part's text is read")
+
+  // (b) a `result` that is an OBJECT still yields its text — never `[object Object]`
+  const objMsg = { role: "tool", content: [{ type: "tool-result", result: { content: [{ type: "text", text: big }] } }] }
+  assert.ok(messageText(objMsg).includes("xxxx"), "a nested object result is walked to its text")
+  assert.ok(!messageText(objMsg).includes("[object Object]"), "…and never stringified to [object Object]")
+
+  // (c) an unrecognised part is NOT counted in `used`, but IS counted
+  const unknownMsg = { role: "assistant", content: [{ type: "image", url: "x" }] }
+  assert.equal(messageText(unknownMsg), "", "an unrecognised part contributes no text")
+  assert.equal(unknownPartCount(unknownMsg), 1, "…and is counted as unknown")
+  assert.equal(messagesUnknownParts([toolMsg, unknownMsg]), 1, "the count aggregates per message")
+
+  // (d) the layer actually prunes the 2.0.24 shapes (the live bug: it never did)
+  const CAT = [{ id: "glm", providerID: "lxns", modelID: "glm", limit: { context: 100_000, output: 1000 } }]
+  const scopeStub = { decide: (e) => (e && e.agent === "team" ? "ours" : "foreign"), count: (v) => v, learn: () => {} }
+  const f = makeFakeCtx({ directory: workspace("prune-2024"), agents: [], models: CAT })
+  const events = []
+  const layer = await applyV2ContextPrune(f.ctx, {
+    config: { enabled: true, atPercent: 40, keepTailPercent: 0 },
+    scope: scopeStub,
+    onEvent: (row) => events.push(row),
+  })
+  const messages = [
+    { role: "tool", content: [{ type: "tool-result", id: "t1", name: "shell", result: "y".repeat(200_000) }] }, // 0: big, prunable
+    { role: "assistant", model: { providerID: "lxns", id: "glm" }, content: [{ type: "reasoning", text: "z".repeat(200_000) }] }, // 1: big, prunable
+    { role: "user", content: [{ type: "text", text: "recent tail" }] },                                        // 2: newest, kept
+  ]
+  await f.hook("session.context").fire({ agent: "team", sessionID: "ses_t", system: [], messages, tools: {} })
+  assert.ok(layer.report.prunedMessages >= 1, "the 2.0.24 shapes are actually pruned (the live bug: never)")
+  assert.ok(messages[0].content[0].result.includes("已裁剪"), "the tool-result body becomes a stub")
+  assert.equal(messages[2].content[0].text, "recent tail", "the newest message is byte-exact")
+  assert.ok(events.some((e) => e.kind === "prune"), "the decision is on the trajectory")
+
+  // (e) the unknown-part counter rides the report
+  const f2 = makeFakeCtx({ directory: workspace("prune-unknown"), agents: [], models: CAT })
+  const layer2 = await applyV2ContextPrune(f2.ctx, { config: { enabled: true, atPercent: 40, keepTailPercent: 0 }, scope: scopeStub })
+  await f2.hook("session.context").fire({ agent: "team", sessionID: "ses_t", system: [], messages: [{ role: "assistant", content: [{ type: "image", url: "x" }] }], tools: {} })
+  assert.equal(layer2.report.unknownParts, 1, "an unrecognised part is counted on the report, not swallowed")
+
+  for (const r of layer.registrations) await r.dispose()
+  for (const r of layer2.registrations) await r.dispose()
+}
+console.log("   OK (tool-result/reasoning read by shape; object results walked; unknown parts counted; the layer prunes the 2.0.24 shapes)")
+
 console.log("29. the concurrency cap — a hard gate on permission.evaluate (#49 feature 2)")
 {
   const { concurrencyGuard, applyV2PermissionGuards } = await import("./dist/host/v2-guard.js")

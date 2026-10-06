@@ -67,6 +67,9 @@ function clampPercent(raw: string | undefined, fallback: number, min: number, ma
 export function resolvePruneConfig(env: Record<string, string | undefined> = process.env): PruneConfig {
   return {
     enabled: !isOff(env.TM_PRUNE),
+    // The floor is 40 ON PURPOSE: a value below it (e.g. 5) is clamped UP, so a
+    // reproduction that sets TM_PRUNE_AT_PERCENT=5 and sees no prune is looking
+    // at the clamp, not at a broken layer.
     atPercent: clampPercent(env.TM_PRUNE_AT_PERCENT, 70, 40, 90),
     keepTailPercent: clampPercent(env.TM_PRUNE_KEEP_TAIL_PERCENT, 40, 0, 90),
   }
@@ -81,11 +84,61 @@ interface TextSlot {
 }
 
 /**
+ * The part types whose text we know how to read.  A part of any OTHER type is
+ * COUNTED (`unknownPartCount`), never guessed — the conservative half of the
+ * shape rule: an unrecognised part contributes nothing to `used`, so a shape the
+ * host renames can only make us UNDER-count (never prune evidence we misread), and
+ * the counter is what keeps that from being silent.
+ */
+const TEXT_PART_TYPES = new Set(["text", "tool-result", "reasoning"])
+
+/**
+ * Read the text out of a `result`/`content` value that may be a string, an
+ * array, or an object.  A tool result is not always a string — 2.0.24 carries
+ * the body under `result`, and it can be a nested `{content:[{type:"text",
+ * text}]}` — so a bare `String(obj)` would count `[object Object]` and lose the
+ * payload.  Known text-bearing keys are tried first; an object with none of them
+ * falls back to its JSON, which is a fair token estimate and never the literal
+ * `[object Object]`.
+ */
+function extractText(value: unknown, depth = 0): string {
+  if (typeof value === "string") return value
+  if (typeof value === "number" || typeof value === "boolean") return String(value)
+  if (value == null) return ""
+  if (depth > 6) return ""
+  if (Array.isArray(value)) {
+    return value
+      .map((v) => extractText(v, depth + 1))
+      .filter((s) => s.length > 0)
+      .join("\n")
+  }
+  if (typeof value === "object") {
+    const o = value as Record<string, unknown>
+    for (const key of ["text", "content", "output", "result", "value", "message", "body"]) {
+      if (key in o) {
+        const t = extractText(o[key], depth + 1)
+        if (t) return t
+      }
+    }
+    try {
+      return JSON.stringify(value)
+    } catch {
+      return ""
+    }
+  }
+  return ""
+}
+
+/**
  * Every text slot in a message, across the shapes the host has actually used:
  * `{info:{role},parts:[{type:"text",text}]}` (v1-ish), `{role,parts:[…]}`,
- * `{role,content:[{type:"text",text}]}` (2.0.20) and the flat
- * `{id,time,type,text}` (2.0.18).  An unrecognised shape yields no slots and is
- * therefore never touched.
+ * `{role,content:[{type:"text",text}]}` (2.0.20), the flat
+ * `{id,time,type,text}` (2.0.18), and the 2.0.24 pair a live probe measured —
+ * `{role:"tool",content:[{type:"tool-result",result}]}` (the body is under
+ * `result`, there is no `text`) and `{type:"reasoning",text}`.  Recognition is
+ * BY SHAPE, never by host version (the same discipline `normaliseContextMessages`
+ * follows).  An unrecognised shape yields no slots and is therefore never
+ * touched.
  */
 export function textSlots(msg: unknown): TextSlot[] {
   const m = msg as Record<string, unknown> | null | undefined
@@ -95,8 +148,12 @@ export function textSlots(msg: unknown): TextSlot[] {
     if (!Array.isArray(arr)) return
     for (const p of arr) {
       const part = p as Record<string, unknown> | null | undefined
-      if (part && typeof part === "object" && part.type === "text" && typeof part.text === "string") {
+      if (!part || typeof part !== "object") continue
+      if ((part.type === "text" || part.type === "reasoning") && typeof part.text === "string") {
         slots.push({ container: part, key: "text", text: part.text })
+      } else if (part.type === "tool-result" && "result" in part) {
+        const text = extractText(part.result)
+        if (text) slots.push({ container: part, key: "result", text })
       }
     }
   }
@@ -104,6 +161,33 @@ export function textSlots(msg: unknown): TextSlot[] {
   else if (Array.isArray(m.content)) collect(m.content)
   else if (typeof m.text === "string") slots.push({ container: m, key: "text", text: m.text })
   return slots
+}
+
+/**
+ * How many parts in a message carry a `type` we do not recognise.  A non-zero
+ * count beside a small `used` is the signature of a renamed shape — the exact
+ * failure that made pruning a no-op on 2.0.24 while every counter read healthy.
+ */
+export function unknownPartCount(msg: unknown): number {
+  const m = msg as Record<string, unknown> | null | undefined
+  if (!m || typeof m !== "object") return 0
+  const arr = Array.isArray(m.parts) ? m.parts : Array.isArray(m.content) ? m.content : null
+  if (!arr) return 0
+  let n = 0
+  for (const p of arr) {
+    const part = p as Record<string, unknown> | null | undefined
+    if (part && typeof part === "object" && typeof part.type === "string" && !TEXT_PART_TYPES.has(part.type)) {
+      n++
+    }
+  }
+  return n
+}
+
+export function messagesUnknownParts(messages: unknown): number {
+  if (!Array.isArray(messages)) return 0
+  let n = 0
+  for (const m of messages) n += unknownPartCount(m)
+  return n
 }
 
 export function messageText(msg: unknown): string {
@@ -303,6 +387,8 @@ export interface PruneReport {
   noMessages: number
   foreignSkipped: number
   threw: number
+  /** Parts whose `type` we did not recognise — a renamed shape shows up here. */
+  unknownParts: number
   lastPercent: number
   lastUsed: number
   lastLimit: number
@@ -400,6 +486,7 @@ export async function applyV2ContextPrune(ctx: V2Context, input: PruneInput = {}
     noMessages: 0,
     foreignSkipped: 0,
     threw: 0,
+    unknownParts: 0,
     lastPercent: 0,
     lastUsed: 0,
     lastLimit: 0,
@@ -434,6 +521,7 @@ export async function applyV2ContextPrune(ctx: V2Context, input: PruneInput = {}
           return
         }
         report.checked++
+        report.unknownParts += messagesUnknownParts(messages)
         const sessionID = String((event as { sessionID?: unknown })?.sessionID ?? "")
         const limit = await modelLimitOf(sessionID, messages)
         if (!limit || !Number.isFinite(limit) || limit <= 0) {
@@ -465,6 +553,7 @@ export async function applyV2ContextPrune(ctx: V2Context, input: PruneInput = {}
           pruned: plan.prune.length,
           saved: plan.savedTokens,
           protected: plan.protectedCount,
+          unknown: report.unknownParts,
         })
       } catch (err) {
         report.threw++
