@@ -38,7 +38,7 @@ import { setAskUnavailableNote } from "../tm/perm-ask.js"
 import { setPrivateSpacePolicy } from "../tm/webfetch.js"
 import type { PluginInput, ToolDefinition } from "../types.js"
 import { blackboardNote } from "./note.js"
-import { applyV2BackgroundForce, applyV2PermissionGuards, applyV2ShellTimeoutClamp, needsCoarseShellAsk } from "./v2-guard.js"
+import { applyV2BackgroundForce, applyV2EnvFileInputGuard, applyV2PermissionGuards, applyV2ShellTimeoutClamp, needsCoarseShellAsk } from "./v2-guard.js"
 import { applyV2EventFeed } from "./v2-events.js"
 import { createV2SessionReader } from "./v2-session-client.js"
 import { applyV2Probe, probeSummary } from "./v2-probe.js"
@@ -308,6 +308,12 @@ export const v2Personality: V2Plugin = {
       "已按 Team 作用域收口：工具面裁剪、温度、黑板提示、原生结果卸载、R6 与地址红线、subagent 强制后台，都只对我们六个角色的会话生效；build / plan 等其余模式保持宿主出厂行为（代价：那些会话也不由我们补红线，需要全局红线请让宿主自己的 permission 规则承担）",
     )
     registrations.push(...guards.registrations)
+    // #58: the SAME R6 file-path face, on the seam that sees the whole input.
+    // `permission.evaluate`'s resource for `grep`/`glob` is the PATTERN, not the
+    // search path, so the red line had a hole the width of those two tools —
+    // `read .env` was denied while `grep SECRET in .env` succeeded (2.0.24).
+    const envFileInput = await applyV2EnvFileInputGuard(ctx, { envProtectMode, scope, report: guards.report })
+    registrations.push(...envFileInput.registrations)
     const bgForce = await applyV2BackgroundForce(ctx, { scope })
     registrations.push(...bgForce.registrations)
     // The shell timeout clamp (issue #6), ported here when the v1 personality was
@@ -418,6 +424,12 @@ export const v2Personality: V2Plugin = {
     /** The role ids the HOST resolved in a real request — the only observation that
      *  separates "installed but invisible to the snapshot" from "not installed". */
     let resolvedAgentIds: () => string[] = () => []
+    /** #58: `tools_in_request` used to live ONLY on `v2-shutdown`, which the CLI
+     *  never writes — so on a CLI run the field was unobservable.  Late-bound for
+     *  the same reason as the counters: the request layer registers BELOW the
+     *  probe, and a closure that touched a not-yet-initialized `const` would throw
+     *  inside `onSummary`, where the try/catch would swallow the whole row. */
+    let tmInRequestSurface: () => string = () => "unobserved"
     /** A3: the in-process observation counters.  Measured today: three runs wrote
      *  ZERO `v2-shutdown` rows, because the CLI path never reaches dispose — so the
      *  final totals have to survive on the throttled surface snapshot too, and a row
@@ -468,6 +480,9 @@ export const v2Personality: V2Plugin = {
             // teardown — dispose is not guaranteed to run, and a run that is
             // interrupted is exactly the run whose counters someone needs.
             ...observationCounters("surface"),
+            // #58: the delivery fact the CLI could never see — it only rode
+            // `v2-shutdown`, which a CLI run never reaches.
+            tools_in_request: tmInRequestSurface(),
             ...summary,
           })
         } catch {
@@ -674,6 +689,9 @@ export const v2Personality: V2Plugin = {
     }
 
     const session = await applyV2SessionLayer(ctx, { temperature, note, noteAgents: ["Team"], plan, scope })
+    // #58: point the late-bound reader at the real observation now that the
+    // request layer exists, so `v2-surface` carries `tools_in_request` too.
+    tmInRequestSurface = () => (session.report.tmInRequestSurface ? "tm-in-request" : "catalog-only")
     // Team's own early-compaction trigger. The host exposes no percentage knob (its
     // `compaction` block is auto/prune/tail_turns/preserve_recent_tokens/reserved) and a
     // 2.x plugin has no config domain at all, so "compact at 75% of the window" can only
@@ -776,6 +794,10 @@ export const v2Personality: V2Plugin = {
       guard_strictened: guards.report.strictened,
       guard_denied: guards.report.denied,
       guard_envfile_denied: guards.report.envFileDenied,
+      guard_envfile_denied_by_input: guards.report.envFileDeniedByInput,
+      guard_envfile_input_seen: guards.report.envFileInputSeen,
+      guard_envfile_input_threw: guards.report.envFileInputThrew,
+      guard_envfile_input_foreign_skipped: guards.report.envFileInputForeignSkipped,
       guard_foreign_skipped: guards.report.foreignSkipped,
       subagent_seen: bgForce.report.seen,
       subagent_forced: bgForce.report.forced,
@@ -946,6 +968,10 @@ export const v2Personality: V2Plugin = {
           guard_strictened: guards.report.strictened,
           guard_denied: guards.report.denied,
           guard_envfile_denied: guards.report.envFileDenied,
+          guard_envfile_denied_by_input: guards.report.envFileDeniedByInput,
+          guard_envfile_input_seen: guards.report.envFileInputSeen,
+          guard_envfile_input_threw: guards.report.envFileInputThrew,
+          guard_envfile_input_foreign_skipped: guards.report.envFileInputForeignSkipped,
           subagent_seen: bgForce.report.seen,
           subagent_forced: bgForce.report.forced,
           shell_timeout_seen: shellTimeout.report.seen,

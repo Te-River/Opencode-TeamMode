@@ -3123,6 +3123,61 @@ console.log("23. file identity is platform-neutral — a macOS case-insensitive 
 }
 console.log("   OK (dev+ino decides identity; an undecidable case keeps the file; a vanished target is loud and non-zero; stale reclaimed, case-only and hand-written kept)")
 
+console.log("26. R6's file-path face on the seam that sees the whole input — grep/glob cannot walk around it (#58)")
+{
+  const { applyV2PermissionGuards, applyV2EnvFileInputGuard } = await import("./dist/host/v2-guard.js")
+  const { createTeamScope } = await import("./dist/host/v2-scope.js")
+  const repoRoot = path.dirname(fileURLToPath(import.meta.url))
+  const v2src = fs.readFileSync(path.join(repoRoot, "src", "host", "v2.ts"), "utf8")
+
+  const f = makeFakeCtx({ directory: ws, agents: [] })
+  const scope = createTeamScope(["team", "architect", "implementer", "reviewer", "tester", "researcher"])
+  const g = await applyV2PermissionGuards(f.ctx, { envProtectMode: "audit", scope })
+  const eg = await applyV2EnvFileInputGuard(f.ctx, { envProtectMode: "audit", scope, report: g.report })
+  const fire = (ev) => f.hook("tool.execute.before").fire(ev)
+
+  // (a) grep: the search PATH is the field `permission.evaluate` never sees — its
+  // resource is the pattern, so this is the exact hole #58 measured on 2.0.24.
+  const grepEnv = { tool: "grep", sessionID: "ses_1", agent: "team", input: { pattern: "SECRET", path: "src/.env" } }
+  await assert.rejects(fire(grepEnv), /R6 红线/, "a grep whose search path is .env is refused at execute.before")
+  const grepOk = { tool: "grep", sessionID: "ses_1", agent: "team", input: { pattern: "SECRET", path: "src/index.ts" } }
+  await fire(grepOk)
+  assert.equal(g.report.envFileDeniedByInput, 1, "…and exactly the env-file call was counted")
+
+  // (b) glob: the include filter
+  const globEnv = { tool: "glob", sessionID: "ses_1", agent: "team", input: { pattern: "**/*", include: "*.env" } }
+  await assert.rejects(fire(globEnv), /R6 红线/, "a glob include selecting env files is refused")
+  const globOk = { tool: "glob", sessionID: "ses_1", agent: "team", input: { pattern: "**/*", include: "*.ts" } }
+  await fire(globOk)
+
+  // (c) read/write/edit keep their filePath face on this seam too
+  const readEnv = { tool: "read", sessionID: "ses_1", agent: "team", input: { filePath: ".env" } }
+  await assert.rejects(fire(readEnv), /R6 红线/, "a native read of .env is refused here as well")
+  const readOk = { tool: "read", sessionID: "ses_1", agent: "team", input: { filePath: "src/index.ts" } }
+  await fire(readOk)
+
+  // (d) a non-Team session is not ours to touch (#22)
+  const foreign = { tool: "grep", sessionID: "ses_build", agent: "build", input: { pattern: "SECRET", path: "src/.env" } }
+  await fire(foreign)
+  assert.equal(g.report.envFileInputForeignSkipped, 1, "a build session's grep is skipped and counted")
+
+  // (e) an internal failure is swallowed and counted, never thrown into the host
+  const boom = { tool: "grep", sessionID: "ses_1", agent: "team", input: { get path() { throw new Error("boom") } } }
+  await fire(boom)
+  assert.equal(g.report.envFileInputThrew, 1, "a guard that cannot decide allows the call and counts the throw")
+
+  // (f) the counters and the wiring are visible where tm_stats reads them
+  assert.equal(g.report.envFileDeniedByInput, 3, "grep + glob + read denials are counted for v2-surface / v2-shutdown")
+  assert.ok(/applyV2EnvFileInputGuard\(ctx,/.test(v2src), "the personality installs the input guard")
+  assert.ok(/guard_envfile_denied_by_input: guards\.report\.envFileDeniedByInput/.test(v2src), "…and the counter rides the observation rows")
+  assert.ok(/tools_in_request: tmInRequestSurface\(\)/.test(v2src), "tools_in_request now rides the throttled v2-surface row too (#58)")
+  assert.ok(/tmInRequestSurface = \(\) =>/.test(v2src), "…from a late-bound reader, so the probe cannot read it before the request layer exists")
+
+  for (const r of eg.registrations) await r.dispose()
+  for (const r of g.registrations) await r.dispose()
+}
+console.log("   OK (grep/glob/read env-file paths refused at execute.before, ordinary paths untouched, foreign sessions skipped, internal throws swallowed and counted, tools_in_request observable on the CLI)")
+
 // B5: the group count is DERIVED from the numbered group headers this file
 // actually printed, never hand-written — the last hand-written number was
 // already stale while the file had more.  The self-scan reads THIS file by its

@@ -173,6 +173,18 @@ export interface GuardReport {
    *  write / edit / glob / grep) — the evidence that the file-path face is
    *  actually live, not just installed */
   envFileDenied: number
+  /** R6's file-path face caught at `execute.before`, where the FULL input is
+   *  visible — the seam `permission.evaluate` cannot cover for `grep`/`glob`,
+   *  whose resource is the PATTERN, not the search path (#58).  A separate
+   *  counter from `envFileDenied` on purpose: the two seams fail independently,
+   *  and one number for both would hide which one went dark. */
+  envFileDeniedByInput: number
+  /** `execute.before` file-tool calls the input guard looked at (Team only). */
+  envFileInputSeen: number
+  /** …skipped because the session is not ours (#22). */
+  envFileInputForeignSkipped: number
+  /** …where the guard itself threw and the call was allowed through. */
+  envFileInputThrew: number
 }
 
 export interface BackgroundForceReport {
@@ -225,7 +237,7 @@ export async function applyV2PermissionGuards(
   ctx: V2Context,
   opts: { envProtectMode: EnvProtectMode; scope?: TeamScope },
 ): Promise<{ registrations: V2Registration[]; report: GuardReport; installed: boolean }> {
-  const report: GuardReport = { seen: 0, byAction: {}, strictened: 0, denied: 0, shellMatched: 0, foreignSkipped: 0, envFileDenied: 0 }
+  const report: GuardReport = { seen: 0, byAction: {}, strictened: 0, denied: 0, shellMatched: 0, foreignSkipped: 0, envFileDenied: 0, envFileDeniedByInput: 0, envFileInputSeen: 0, envFileInputForeignSkipped: 0, envFileInputThrew: 0 }
   const permission = ctx.permission
   if (!permission || typeof permission.hook !== "function") {
     return { registrations: [], report, installed: false }
@@ -267,6 +279,95 @@ export async function applyV2PermissionGuards(
   ]
 
   return { registrations, report, installed: true }
+}
+
+/**
+ * The path-class fields each native file tool can carry in its `execute.before`
+ * `input`.  This is the seam `permission.evaluate` cannot cover: the host's own
+ * docs say `grep`'s resource is "the requested pattern, not the search path",
+ * and `glob`'s is the pattern too — so a `grep SECRET in .env` reaches
+ * `evaluate` with `resources:["SECRET"]` and the env-file path is never seen
+ * (#58, measured on 2.0.24: `read .env` denied, `grep` in `.env` succeeded).
+ *
+ * `grep`'s `pattern` is deliberately ABSENT: it is a REGEX, not a path, and
+ * `isEnvFilePath` on a regex misfires (a search for `\.env` is not a read of
+ * `.env`).  `glob`'s `pattern` IS a path glob, so it is checked.  `include` is
+ * the host's own filter field and is checked wherever it appears.
+ */
+const ENV_FILE_INPUT_FIELDS: Record<string, readonly string[]> = {
+  read: ["filePath", "path"],
+  write: ["filePath", "path"],
+  edit: ["filePath", "path"],
+  glob: ["pattern", "path", "include"],
+  grep: ["path", "include"],
+}
+
+/**
+ * R6's file-path face, on the seam that sees the WHOLE input (#58).
+ *
+ * `pathGuard` rides `permission.evaluate`, whose `resources` for `grep`/`glob`
+ * are the pattern — so the red line had a hole exactly the width of those two
+ * tools.  `execute.before` hands us the raw args the model sent, so the search
+ * path (`path` / `include` / `filePath`) is visible there and the same
+ * `isEnvFilePath` matcher can answer.
+ *
+ * A refusal is THROWN, not returned: `execute.before` has no `effect` field, and
+ * silently rewriting a path the model chose is the guesswork this product
+ * refuses — the model has to see the refusal.  Same shape as the browser gate's
+ * red line.  An internal failure is swallowed and counted (`envFileInputThrew`),
+ * never thrown into the host: a guard that cannot decide must not break the call
+ * it is inspecting.  Team-scoped through the same `scope.decide` gate as every
+ * other writer, and the counters land on `v2-surface` / `v2-shutdown`.
+ */
+export async function applyV2EnvFileInputGuard(
+  ctx: V2Context,
+  opts: { envProtectMode: EnvProtectMode; scope?: TeamScope; report: GuardReport },
+): Promise<{ registrations: V2Registration[] }> {
+  const report = opts.report
+  const tool = ctx.tool
+  if (!tool || typeof tool.hook !== "function") return { registrations: [] }
+  if (opts.envProtectMode === "off") return { registrations: [] }
+  let registrations: V2Registration[]
+  try {
+    registrations = [
+      await tool.hook("execute.before", (event) => {
+        let refusal: string | null = null
+        try {
+          const name = String(event?.tool ?? "")
+          const fields = ENV_FILE_INPUT_FIELDS[name]
+          if (!fields) return
+          report.envFileInputSeen++
+          if (opts.scope && opts.scope.count(opts.scope.decide(event)) !== "ours") {
+            report.envFileInputForeignSkipped++
+            return
+          }
+          const input = event.input as Record<string, unknown> | undefined
+          if (!input || typeof input !== "object" || Array.isArray(input)) return
+          for (const field of fields) {
+            const value = input[field]
+            if (typeof value !== "string" || !value.trim()) continue
+            if (isEnvFilePath(value)) {
+              refusal = `R6 红线：${name} 的 ${field} 指向环境文件（.env / shell rc 家族），不授权、不弹窗。`
+              break
+            }
+          }
+        } catch {
+          // A guard that cannot decide must not break the call it is inspecting:
+          // leave the args exactly as the model wrote them and count it.
+          report.envFileInputThrew++
+          return
+        }
+        if (!refusal) return
+        report.envFileDeniedByInput++
+        throw new Error(refusal)
+      }),
+    ]
+  } catch {
+    // No hook seam (an older host, or a ctx without `tool.hook`): the input face
+    // is simply absent, and the counters say so rather than throwing into boot.
+    return { registrations: [] }
+  }
+  return { registrations }
 }
 
 /** Does the config still need the coarse `shell -> ask` escalation?  Only while
