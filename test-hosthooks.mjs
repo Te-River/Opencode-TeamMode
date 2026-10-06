@@ -94,9 +94,6 @@ console.log("  7. capability probe: SKIPPED — v1 createCapabilityProbe removed
     // the lead parked twice inside tm_join, the second time after nothing settled
     { ts: iso(13_500), run_id: "rB", tool: "tm_dispatch", step_id: "join", event: "wait", waited_ms: 60_000, still_running: 1, repeat: false },
     { ts: iso(13_600), run_id: "rB", tool: "tm_dispatch", step_id: "join", event: "wait", waited_ms: 10_000, still_running: 1, repeat: true },
-    { ts: iso(14_000), run_id: "rB", tool: "browser_gate", step_id: "browser", event: "blocked", count: 3, hosts: "cdn.x,fonts.y" },
-    { ts: iso(15_000), run_id: "rB", tool: "browser_gate", step_id: "browser", event: "blocked", count: 2, hosts: "cdn.x" },
-    { ts: iso(16_000), run_id: "rB", tool: "tm_pty", step_id: "pty", event: "refused", category: "delete" },
     { ts: iso(17_000), run_id: "rB", tool: "bash", step_id: "timeout-clamp", event: "probe", from_ms: 120_000, to_ms: 60_000 },
     { ts: iso(18_000), run_id: "rB", tool: "tm_ptc_run", step_id: "s9", event: "finish", status: "ok", calls: 7, errors: 0, retries: 1, ms: 2_500 },
   ]
@@ -110,9 +107,11 @@ console.log("  7. capability probe: SKIPPED — v1 createCapabilityProbe removed
   eq(s.dispatch.sumMs, 6_000 + 8_800 + 11_700, "serial cost = each child's OWN duration: c1's live ms wins, c2/c3 are timed from their timestamps (a child that worked 12 s is not free)")
   eq(s.dispatch.maxMs, 11_700, "the longest child is the lower bound on any serial re-run")
   eq(s.dispatch.overlapSavedMs, 26_500 - 11_900, "overlap saving = serial cost minus the wall window the children really used")
-  eq(s.governance.blockedSubresources, 5, "blocked subresources aggregate across pages")
-  eq(s.governance.blockedHosts, ["cdn.x", "fonts.y"], "hosts are deduped, not repeated per request")
-  eq(s.governance.ptyRefused, 1, "every tm_pty governance refusal is counted (it is a policy win, not an error)")
+  // The blocked-subresource and tm_pty counters were retired with their producers: the
+  // self-built browser (d668817) emitted the `blocked` events, and `tm_pty` went with the
+  // v1 cut. A counter nobody can produce is a row that always reads 0, which is the
+  // "silent" shape this repo refuses — so the fixture events and their assertions are gone
+  // together, rather than left asserting a number that can no longer move.
   eq(s.governance.clampedTimeouts, 1, "a clamped bash timeout counts")
   eq(s.governance.clampSavedMs, 60_000, "…and reports the dead air it removed")
   eq(s.ptc, { runs: 1, calls: 7, errors: 0, retries: 1, sumMs: 2_500 }, "PTC internals roll up (one turn, N governed calls)")
@@ -334,14 +333,10 @@ console.log("  7. capability probe: SKIPPED — v1 createCapabilityProbe removed
   ok(!threw, "a governance hook that throws would eat the user's message — it never throws")
   ok(renderOffloadedTask({ sessionId: "s1", summary: "", body: "x" }, "prev", 5000, 40).includes('id="s1"'), "the renderer survives a missing summary")
 
-  // the three report states, because "0" has two meanings and must not be
-  // allowed to look like either one on its own
-  const md2 = renderStatsWith({ tool: "task_offload", step_id: "chat.message", event: "envelope", action: "offloaded", child: "ses_x", tokens: 9000 })
-  ok(md2.includes("宿主后台 task 注入") && md2.includes("9,000"), "seen + offloaded + the saving all render")
-  const md4 = renderStatsWith({ tool: "task_offload", step_id: "chat.message", event: "envelope", action: "passthrough", child: "ses_x", tokens: 900 })
-  ok(md4.includes("通道是活的"), "seen but nothing over threshold says the channel is ALIVE, not broken")
-  const md3 = renderStatsWith()
-  ok(md3.includes("分不清") && md3.includes("派一个后台任务再看这行"), "and a zero names both readings plus the one action that separates them")
+  // The `task_offload` row (and its three report states) was retired with its producer:
+  // `createTaskOffload` was v1's `chat.message` hook and has no caller on 2.x, so the
+  // event it emitted can no longer fire. The 2.x equivalent is the native envelope
+  // counters (`native_envelopes` / `native_offloaded`), rendered from the surface row.
   console.log("  9. plan B: host background-task injection offloaded under three locks (synthetic + envelope + threshold), never on disk")
 }
 

@@ -371,6 +371,25 @@ export const v2Personality: V2Plugin = {
       allowlist: seedWebfetchDomains(tmRuntime.config.webfetchAllowedDomains),
       scope,
       env: v2Env,
+      // #14: the SERP rate limit's trajectory line.  The gate has no store, so the
+      // sink is wired here — same shape as the shell-timeout clamp's `onClamp`.
+      onSerp: (info) => {
+        try {
+          tmRuntime.pipelines.store.appendTrajectory({
+            tool: "browser",
+            step_id: "serp-loop",
+            event: info.event,
+            engine: info.engine,
+            query: info.query,
+            host: info.host,
+            count: info.count,
+            limit: info.limit,
+            sessionID: info.sessionID,
+          })
+        } catch {
+          /* the trajectory is an extra, never a reason to fail the call */
+        }
+      },
     })
     if (!browserGate.registrations.length) {
       notes.push("原生 browser_* 的门禁没装上（ctx.tool.hook 不可用）：宿主的 45 个浏览器工具在 Team 会话里也不受我们的域名 / 地址规则约束")
@@ -800,6 +819,8 @@ export const v2Personality: V2Plugin = {
       browser_gate_refused: browserGate.report.refused,
       browser_gate_leaked: browserGate.report.leaked,
       browser_gate_held: browserGate.report.held,
+      browser_gate_serp_nav: browserGate.report.serpNav,
+      browser_gate_serp_refused: browserGate.report.serpRefused,
       native_seen: offload.report.seen,
       native_ours: offload.report.ours,
       native_unmatched: offload.report.unmatched,
@@ -948,6 +969,8 @@ export const v2Personality: V2Plugin = {
           browser_gate_refused: browserGate.report.refused,
           browser_gate_leaked: browserGate.report.leaked,
           browser_gate_held: browserGate.report.held,
+          browser_gate_serp_nav: browserGate.report.serpNav,
+          browser_gate_serp_refused: browserGate.report.serpRefused,
           browser_gate_note: browserGateSummary(browserGate.report),
           // What the model could actually call, read off the assembled requests —
           // the half of the delivery story the sent flag cannot tell.

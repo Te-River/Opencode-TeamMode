@@ -75,7 +75,7 @@ projects**: on a two-file script the team simply has less to govern.
 | 🏗️ **Architect** | System designer | Design docs, module structure, API contracts |
 | 💻 **Implementer** | Code writer | Building features, writing production code |
 | 🔍 **Reviewer** | Dimension-focused auditor | Single-dimension review by default; 3 in parallel only for high-risk changes |
-| 🧪 **Tester** | Test engineer | Tests with real edge cases; static verification (build / typecheck / lint); governed UI verification via `tm_browser` |
+| 🧪 **Tester** | Test engineer | Tests with real edge cases; static verification (build / typecheck / lint); governed UI verification via the host's native `browser_*` tools |
 | 🔎 **Researcher** | Knowledge finder | Local repo first, then the web — one of the two network roles (with the Lead) |
 
 Out of the box, **Team is your default agent** — new chats open straight into the
@@ -281,7 +281,6 @@ through with `tm_fetch` when it genuinely needs the payload.
 | `tm_ledger` | **The lead's task ledger** (`add` / `doing` / `done` / `blocked` / `list`), stored in the host's own `ctx.storage` per session — the landing spot for the LEDGER rule, since OpenCode 2.x gives a plugin no `todowrite`. A repeated ask is ONE item, an id that matches two is refused with both printed, `blocked` carries the reason, and a write that did not reach storage is reported as a failure rather than as recorded | Lead only |
 | `tm_join` | **Sub-agent collection** — there is no plugin-side dispatcher any more (`tm_dispatch` is removed: a child a plugin creates is a session the user can neither open nor stop from the interface). Delegation goes through the host's own `task` / `task { background: true }`, and `tm_join` is the read side: a status snapshot, a bounded `waitMs`, `cancel:true` to stop a runaway, and `claimNamedChild` so `tm_join { ids: ["ses_…"] }` pulls one child's WHOLE reply back through the offload pipeline (handle + ≤80-token preview) instead of kilotokens inline. It also rebuilds its registry from the host session tree after a restart, so leftover children are 接管 rather than lost. **On 2.x it also registers the children the host's own `subagent` tool created** (the ack's `metadata.sessionID` is the seam), so a background dispatch is never reported as "nothing to collect" while the user watches it run — and such a row says where its reply actually arrives (the host's injected message) and whether it settled by event or by inference. **Stopping one is a real call:** `cancel: true` goes to the host's `POST /api/session/{id}/interrupt` on 2.x (`tm_join { ids: ["ses_…"], cancel: true }` stops ONE named child; without `ids` it stops every still-running one). The host's own contract is `interrupted=true` for an active execution and `false` for the idle no-op, so the answer comes back as **five distinct verdicts** — 已由宿主中断 / 空闲未中断（it wasn't running: our row was stale, not failed）/ 未确认（the call worked, no boolean came back）/ 无中断缝 / 被宿主拒绝（with the host's reason) — counted in the reply and written to the trajectory (`stop_tried` / `stop_confirmed` / `stop_refused` / `stop_unknown`, readable via `tm_stats`). It will not summarise five different facts as one "已取消", and `resume` is never sent, because resuming pending steering is the opposite of cancelling. *(On `main` only — the published 1.6.1 still answers 宿主无 abort 接口 on 2.x.)* | Lead only |
 | `tm_stats` | **The plugin reads its own trajectory back**: tokens kept out of the context window by offloading (net of the preview that arrived), seconds saved by dispatch overlap (serial cost minus the wall window the children actually used), governance counts (blocked subresources, clamped shell timeouts, cache hits, redactions) — plus the **host capability matrix** (`已验证/存在未用/待观察/缺失/需人眼` per host surface). Read-only over files this plugin wrote; run it first after an OpenCode upgrade. `{ recent: 20 }` appends a call-by-call recap — handle + payload path for every offloaded result, which is how you see what a governed tool actually returned (the host gives plugin tools no expandable card) | All agents |
-| `tm_browser` | Interactive browser session (**your default browser**): 18 Playwright verbs (snapshot-first `take_snapshot` → uid-addressed `click`/`fill`/`drag`/…, **including multi-tab `new_page` / `close_page`** so you can hold two pages at once) + 5 legacy compat verbs (open/navigate/read/screenshot/close); Playwright engine needs Node ≥ 20, below that (or on any import failure) it auto-degrades to the legacy CDP engine. It drives YOUR default browser channel (an Edge Beta default opens Edge Beta), stays headful unless the operator sets `TM_BROWSER_HEADLESS`, loads a page's own images/CSS/JS via the `same-site` subresource policy, and `take_screenshot { image:true }` attaches a JPEG so the model can actually see the screen. **One browser per agent**: `open` returns an id (`b1`) and every reply is tagged with it — that window, its uid numbering and its dialog-approved hosts belong to YOUR session; another agent's id is refused with the owner named (an id is a name, not a key), and `close { id:"all" }` closes only your own. `click` reports what the PAGE did, not merely that a mouse event was sent: it reads the target's observable state before and after (`aria-expanded`, URL, DOM node count) and answers `已点击 … · aria-expanded: false → true`, retries once if the page had not finished loading — the measured cause of a click that lands on a node with no handler — and says 页面没有任何可观测变化 rather than implying success. `close` will not say 已确认关闭 until the browser's OS process is gone — it waits on the pid, terminates it once if it lingers, and prints the pid either way, because a dropped connection is not a closed browser; when no pid could be resolved it says 进程未核验 rather than borrowing that sentence. A browser this process launched but could not reap is recorded in a per-workspace ledger (pid, owner pid, executable) and reclaimed by the next boot — only entries whose owner process is dead *and* whose pid still is that executable, terminated as a whole tree (`taskkill /T` on Windows), never another window's live tab. **A blank page now explains itself**: `same-site` cannot know that a site's own bundle lives on a brand-unrelated CDN (Baidu serves its scripts from `bdimg.com`), so when a page comes back with `0 个可寻址节点` while a script host was blocked, the reply says the blankness is **our gate**, names the host, and offers `allow_host { host }` — one official dialog for one bare domain, for your browser only, for this session, nothing written to config (re-navigate afterwards, the gate decides per request). A page that is really a human-verification wall (百度安全验证 / Cloudflare / access denied) is reported as a wall, because the move there is another source, not another retry | Lead + Researcher + Tester (UI verification) |
 
 > **The v1 (1.18.x) personality was removed in full for the 1.7.0 line.** The package
 > exports `{id, setup}` and nothing else, so `tm_read` / `tm_grep` / `tm_bash` /
@@ -306,8 +305,10 @@ through with `tm_fetch` when it genuinely needs the payload.
 > server's own browser service — a plugin cannot register a page of its own into it
 > (forensics: `docs/research/browser-pane.md`). So the three roles with network
 > grants (lead, researcher, tester) are pointed at the host's `browser_*` tools
-> first, and `tm_browser` remains the governed door for hosts with no desktop
-> browser attached (CLI, standalone). Handing browsing over did not mean handing
+> — the self-built `tm_browser` was removed in 1.7.0, so the host's catalog is the
+> only browser. On a host with no native browser catalog (CLI, standalone) there is
+> now no browser at all, and the agent reports that gap rather than simulating one.
+> Handing browsing over did not mean handing
 > governance over: `permission.evaluate` was observed NOT firing for `browser_*`, so
 > our gate sits on `tool.execute.before` instead — it classifies the URL of every
 > navigate/open, the path of every `browser_preview`, and every browser URL named
@@ -319,7 +320,7 @@ through with `tm_fetch` when it genuinely needs the payload.
 > leaked past the refusal). One exception to the offload rule lives here: a
 > `browser_snapshot` is an addressing table, not a document, so it is CAPPED (every
 > `[ref=…]` line kept, static text dropped, budget `TM_NATIVE_SNAPSHOT_MAX_TOKENS`
-> default 1 200 — the same budget `tm_browser` runs at) rather than replaced by a
+> default 1 200) rather than replaced by a
 > handle. Measured on a 261-ref page: a head cut keeps 118 refs, this keeps 261 of
 > them using 1 044 of 11 326 tokens.
 
@@ -328,8 +329,8 @@ through with `tm_fetch` when it genuinely needs the payload.
 > It doubles as the fallback chain: when a tool errors (no browser on this
 > host, blocked host), the agent says so and drops to the next rung — and
 > rung ③ is where a missing capability gets reported, never fabricated.
-> One stated exception: on the **web** channel `tm_search` / `tm_webfetch` /
-> `tm_browser` come first, because that path is the only one carrying the
+> One stated exception: on the **web** channel `tm_search` / `tm_webfetch` come
+> first, because that path is the only one carrying the
 > domain allowlist, the per-request confirmation dialog and the R6 red lines.
 
 > **What the host UI cannot show you.** OpenCode renders a *plugin* tool call
@@ -448,49 +449,28 @@ Two more channels complete the surface:
 - `tm_webfetch` — a known URL, one governed GET. Search-engine pages it
   fetches are auto-extracted to hit lists too. JSON endpoints like
   `registry.npmjs.org/<pkg>/latest` pass through untouched.
-- `tm_browser` — JS-rendered pages: **your DEFAULT browser** (Windows
-  registry / Linux `xdg-settings`; Chromium-family only — Firefox falls back
-  to the Edge/Chrome probe order because CDP is Chromium-proprietary;
-  `TM_BROWSER_PATH` overrides), headful by default, isolated temp profile,
-  **domain allowlist enforced at the network layer** per request and per
-  redirect hop. The action surface is chrome-devtools-mcp aligned: **16
-  Playwright verbs** (`navigate_page` · `take_snapshot` · `click` · `fill` ·
-  `hover` · `drag` · `press_key` · `select_page` · `upload_file` · `wait_for`
-  · `evaluate_script` · `list_console_messages` · `list_network_requests` ·
-  `list_pages` · `take_screenshot` · `handle_dialog`) plus 5 legacy compat
-  verbs (`open` / `navigate` / `read` / `screenshot` / `close`).
-  Snapshot-first: `take_snapshot` returns the aria snapshot with injected
-  `[uid=eN]` tokens, follow-up actions address nodes by uid instead of
-  guessed locators; snapshots are hard-capped by
-  `TM_BROWSER_SNAPSHOT_MAX_TOKENS` (default 1200).
-  **Engine split:** the primary engine is `playwright-core` (an optional
-  dependency — needs **Node ≥ 20**; on older Node, or if the import fails,
-  the session auto-degrades per instance to the zero-dep `cdp-legacy`
-  engine, which keeps the core verbs only; pin either via
-  `TM_BROWSER_ENGINE=playwright|cdp-legacy`). No browser download is ever
-  involved — Playwright launches YOUR installed browser by path, so
-  `npx playwright install` is not part of the user flow (the dependency
-  itself resolves at npm install/publish time). Isolated temp profile by
-  default: persistent logins only if you explicitly set
-  `TM_BROWSER_USER_DATA_DIR`. No cookies by design — the agent opens a blank
-  profile, which is also why a risk-scored site (Baidu) may hand it a
-  verification wall your own window walks past. Want it logged in: point the
-  variable at a DEDICATED directory and log in once by hand. The browser's **own** site-permission bubble
-  ("…wants to access other apps and services on this device") is
-  auto-**denied** at launch: that modal is not our confirmation channel, it has
-  no timeout, and on a machine left running unattended it would hang the page
-  indefinitely. Nothing is ever auto-allowed — a page that truly needs such a
-  permission fails visibly at that feature instead of invisibly at a dialog. A
-  window an agent forgets is now **reported**, not merely reaped: `open` states
-  the close duty in its own reply (with the real idle seconds), the reply
-  contract requires the tool's close verdict in `EVIDENCE`, and `tm_join` tells
-  the lead `⚠ N 个浏览器还开着` when a sub-agent settled while still holding one
-  — so you are never the only one who notices.
+- **Interactive browsing is the host's own `browser_*` tools** (`browser_tabs_open`
+  · `browser_navigate` · `browser_snapshot` · `browser_click` · `browser_evaluate`
+  …). The self-built `tm_browser` was **removed in 1.7.0** (a breaking change):
+  the desktop renders a browser in its side panel and that panel attaches to the
+  server's own browser service, so a plugin cannot register a page of its own
+  (forensics: `docs/research/browser-pane.md`). The host catalog is policed by
+  `src/host/v2-browser-gate.ts` at `execute.before` — the URL of every navigate/open,
+  the path of every `browser_preview`, and every browser URL named inside an
+  `execute` program are classified against the address red lines and the env-file
+  rule, and a refused call the host runs anyway has its page replaced with the same
+  refusal, so no out-of-policy content reaches the context, the store or the
+  trajectory. Calling convention differs from the deleted tool: `evaluate` takes
+  `{tabID, script}` where `script` is an **expression** (not a function source) and
+  the return value must be a scalar you `JSON.stringify` yourself; snapshot tokens
+  read `@e8 [link]`. **Known cost, accepted:** on a host with no native browser
+  catalog (CLI / standalone) there is now no browser at all — the agent reports that
+  gap rather than simulating one.
 
 When a fetch still returns **403 after the real-Chrome headers**, the error
 is a DIRECTIVE: the gate is JS-challenge / TLS-fingerprint based and only a
-real browser passes — the agent is told to call `tm_browser`
-(`action:"open"` → `action:"read"`) for that URL. Search hit lists also
+real browser passes — the agent is told to open that URL with the host's
+native `browser_navigate` (and read it with `browser_snapshot`). Search hit lists also
 filter known noise: engine-internal wrappers (`so.com/link?`, `ai.so.com`)
 and same-name-different-site domains (`maimai.cn` 脉脉 vs the maimai DX
 game) never ride along — extend the hit blacklist with `TM_HIT_BLACKLIST`.
@@ -508,9 +488,9 @@ mzh.moegirl.org.cn, space.bilibili.com — is covered):
 `TM_WEBFETCH_ALLOWED_DOMAINS` (`"*"` opens every host; a custom list REPLACES
 the seed, so keep the engine hosts or `tm_search` loses its targets). Architect /
 implementer / reviewer have NO network grant — web questions come back as a
-reported gap, never simulated. The tester carries `tm_browser` ONLY, for
-governed UI verification of the project (local dev servers, preview routes);
-open web fetching stays with the two network roles.
+reported gap, never simulated. The tester carries the host's native `browser_*`
+tools ONLY, for governed UI verification of the project (local dev servers,
+preview routes); open web fetching stays with the two network roles.
 
 **Out-of-allowlist targets are a gate, not a wall.** When a fetch / search /
 browser-open points at a host outside the allowlist, the tool hands the URL
@@ -643,16 +623,8 @@ for overrides, extra agents and disabling roles.
 | `TM_BOARD_MAX_CHARS` | `200000` | tm_board_write: one board file's character cap — over it the write refuses (with a "split the topic" hint) instead of truncating a deliverable |
 | `TM_BOARD_MAX_FILES` | `200` | tm_board_write: markdown files allowed per session folder; the TTL sweeper is the only reclaim path, so the refusal names it and the `ttlDays` option |
 | `TM_SEARCH_DEFAULT_ENGINE` | `auto` | tm_search engine when no `engine` arg is given (`auto` = classify + parallel fan-out + RRF fusion; any table name also pins a manual default) |
-| `TM_WEBFETCH_ALLOWED_DOMAINS` | `"*"` | tm_webfetch / tm_search / tm_browser allowlist (`"*"` opens all; empty = deny all; a custom list REPLACES the seed — keep the engine hosts). A site's own asset CDN has to be seeded or `tm_browser` renders it blank — `bdimg.com` is there for exactly that reason; per-session gaps go through `tm_browser { action:"allow_host", host }` instead of an env edit. `"*"` does **not** cover private space: loopback / RFC1918 / CGNAT / `.localhost` still need the dialog on every use, and non-routable ranges (169.254.0.0/16 metadata, 0.0.0.0/8, multicast, reserved, plus the IPv4-mapped and DNS64 spellings of the same target) are a hard red line no setting can open |
-| `TM_BROWSER_PATH` | auto-detect | tm_browser executable override (default: your DEFAULT browser when Chromium-family, else Edge/Chrome probes) |
-| `TM_BROWSER_HEADLESS` | `auto` | `1` headless (CI) / `0` headful / `auto` (headless only on display-less Linux) |
-| `TM_BROWSER_ENGINE` | `playwright` | `playwright` (needs Node ≥ 20; any import failure auto-degrades) / `cdp-legacy` (zero-dep CDP pipe, core verbs only) |
-| `TM_BROWSER_SNAPSHOT_MAX_TOKENS` | `1200` | hard cap on `take_snapshot` payloads |
-| `TM_BROWSER_SUBRESOURCE` | `same-site` | what a page may load after its navigation was allowed: `same-site` = images/media/fonts/stylesheets always, scripts/XHR only for a site this session actually opened; `passive` = only the passive types; `off` = the legacy every-request gate. Blocked requests surface as a "N 个子资源请求被拦截" note on the next snapshot, and when the page has nothing addressable left the note says the blankness is ours and points at `allow_host` / this env var |
-| `TM_BROWSER_IDLE_MS` | `180000` | an untouched browser session closes itself after this many ms (0 disables) and tells the user — a window nobody owns is a user-facing bug |
-| `TM_BROWSER_ASK_EVAL` | `on` | `evaluate_script` runs arbitrary JS in YOUR browser — the one verb the domain allowlist can't cover (it limits where we navigate, not what a loaded page hands back). One official-dialog consent per browser session; no ask bridge ⇒ refused. `off` restores the old behaviour; the result redaction (JWT/bearer/cookie/api-key shapes) is NOT switchable |
+| `TM_WEBFETCH_ALLOWED_DOMAINS` | `"*"` | tm_webfetch / tm_search allowlist (`"*"` opens all; empty = deny all; a custom list REPLACES the seed — keep the engine hosts). `"*"` does **not** cover private space: loopback / RFC1918 / CGNAT / `.localhost` still need the dialog on every use, and non-routable ranges (169.254.0.0/16 metadata, 0.0.0.0/8, multicast, reserved, plus the IPv4-mapped and DNS64 spellings of the same target) are a hard red line no setting can open |
 | `TM_WEB_CACHE_TTL_SEC` | `300` | how long a governed fetch may re-serve the same URL (0 = off). One store shared by tm_webfetch / tm_search; entries are hash-named (a token-bearing query never hits disk) and are only read or written for hops the STATIC allowlist admitted — dialog consent stays per-request, and a re-served page says 缓存命中 |
-| `TM_BROWSER_IMAGE_MAX_BYTES` | `400000` | ceiling on the JPEG `take_screenshot { image:true }` inlines into the model's context (above it the reply stays path-only and says why) |
 | `TM_SEARCH_WEIGHTS` | unset | per-engine fusion weight overrides, e.g. `bing=0.3,hn=0.25`; anything unset keeps the built-in table |
 | `TM_SEARCH_RELEVANCE_FLOOR` | `0.35` | weight fraction kept by a hit that shares no query token with its title/snippet/host (demotes junk without deleting an engine) |
 | `TM_SEARCH_MAX_HITS` | `10` | hits kept per engine leg and in the fused list |
@@ -671,7 +643,6 @@ for overrides, extra agents and disabling roles.
 | `TM_COMPACT_MIN_MS` | `60000` | floor between two compaction admissions for one session (capped 600000), so a ratio that does not drop cannot become a compaction loop |
 | `TM_SHELL_NO_COLOR` | `on` | inject `NO_COLOR`/`TERM=dumb` into every child shell via `shell.env` (ANSI progress bars are pure context tax). Never overwrites a value the host already set |
 | `TM_SHELL_ENV` | — | explicit `KEY=VALUE;KEY2=VALUE2` passthrough into child shells — deliberately allowlisted, so this hook can't become a side channel for the parent environment |
-| `TM_BROWSER_USER_DATA_DIR` | — (isolated temp profile) | explicit persistent profile dir — the ONLY way logins survive between sessions, and honored by BOTH engines (playwright and cdp-legacy). Use a DEDICATED directory (e.g. `D:\tm-browser-profile`) and log in by hand the first time; pointing it at your browser's own data dir (`…\Microsoft\Edge\User Data`, `google-chrome`, Firefox `Profiles`) is refused before anything spawns, because that would have the agent browse as you while a force-kill reaper owns the process |
 | `TM_MEMORY_GLOBAL_DIR` | `~/.opencode-team/memories/global/` | tm_memory GLOBAL tier store |
 | `TM_MEMORY_SESSION_TTL_MIN` | `240` | session-tier entry TTL (lazy + boot sweep) |
 | `TM_MEMORY_MAX_ENTRIES` | `200` | per-scope entry cap; over it `add` fails on purpose — run `compact` |
@@ -788,8 +759,9 @@ here fails the test suite before it ever reaches you.
 
 **Does it work in the CLI (TUI), or only Desktop?**
 Both. Desktop adds the color-coded picker and panels; the governed tools and
-the whole workflow are host-agnostic. On display-less Linux, `tm_browser`
-runs headless automatically.
+the whole workflow are host-agnostic. Interactive browsing is the host's own
+`browser_*` catalog, so a host with no native browser (CLI / standalone) has
+none — the agent reports that gap rather than simulating one.
 
 **What happens if I don't answer a confirmation dialog?**
 It auto-rejects after `TM_ASK_TIMEOUT_MIN` (default 1). The plugin never

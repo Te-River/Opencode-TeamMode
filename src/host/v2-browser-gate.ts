@@ -2,6 +2,7 @@ import type { V2Registration } from "./v2-types.js"
 import type { TeamScope } from "./v2-scope.js"
 import { checkWebUrl } from "../tm/webfetch.js"
 import { isEnvFilePath } from "../envprotect.js"
+import { createSerpLoopGuard, serpRefusal } from "../tm/serp-loop.js"
 
 /**
  * The native browser catalog, put behind OUR gate.
@@ -69,6 +70,12 @@ export interface BrowserGateReport {
   codeModeRefused: number
   /** out-of-scope calls left completely alone, counted rather than invisible */
   foreignSkipped: number
+  /** SERP navigations observed (engine+query rate limit, #14) — the whole point
+   *  is that a browser SERP grab is a slower `tm_search`, so this is the count
+   *  of times the agent reached for the slower one. */
+  serpNav: number
+  /** SERP navigations refused past the per-engine+query limit. */
+  serpRefused: number
   /** per-tool refusal counts, so "which verb is the hole" is answerable */
   byTool: Record<string, { seen: number; refused: number; leaked: number }>
 }
@@ -159,14 +166,29 @@ export function applyV2BrowserGate(
     allowlist: readonly string[]
     scope?: TeamScope
     env?: Record<string, string | undefined>
+    /** Trajectory sink for the SERP rate limit (#14).  The gate has no store of
+     *  its own, so the caller wires this to `appendTrajectory`; a throwing sink
+     *  is swallowed because a log line is never a reason to fail a call. */
+    onSerp?: (info: {
+      event: "serp_nav" | "serp_refused"
+      engine: string
+      query: string
+      host: string
+      count: number
+      limit: number
+      sessionID: string
+    }) => void
   },
 ): BrowserGate {
-  const report: BrowserGateReport = { seen: 0, classified: 0, refused: 0, codeModeRefused: 0, leaked: 0, held: 0, annotated: 0, foreignSkipped: 0, byTool: {} }
+  const report: BrowserGateReport = { seen: 0, classified: 0, refused: 0, codeModeRefused: 0, leaked: 0, held: 0, annotated: 0, foreignSkipped: 0, serpNav: 0, serpRefused: 0, byTool: {} }
   const registrations: V2Registration[] = []
   /** key = `${tool}\n${sessionID}` → the refusal we owe that call's answer */
   const annotated = new Set<string>()
   const pending = new Map<string, { message: string; at: number }>()
   const off = /^(0|false|no|off)$/i.test(String(opts.env?.TM_V2_BROWSER_GATE ?? "").trim())
+  // ONE guard per gate instance = per plugin process, which is the accounting
+  // basis the module documents: a conversation-level fact, not a per-agent one.
+  const serpGuard = createSerpLoopGuard()
 
   const keyOf = (tool: string, sessionID: unknown) => `${tool}\n${String(sessionID ?? "")}`
 
@@ -223,7 +245,42 @@ export function applyV2BrowserGate(
     report.byTool[tool] ??= { seen: 0, refused: 0, leaked: 0 }
     report.byTool[tool].seen++
     const message = decide(target)
-    if (!message) return
+    if (!message) {
+      // The allowlist passed.  The SERP rate limit (#14) applies to NAVIGATION
+      // targets only — a call carrying a `url` is a navigation; a click/fill/
+      // snapshot carries none and is never judged or counted here.
+      if (target.kind === "url") {
+        const verdict = serpGuard.observe(target.value)
+        if (verdict) {
+          report.serpNav++
+          const info = {
+            engine: verdict.target.engine,
+            query: verdict.target.query,
+            host: verdict.target.host,
+            count: verdict.count,
+            limit: verdict.limit,
+            sessionID: String(event?.sessionID ?? ""),
+          }
+          try {
+            opts.onSerp?.({ event: "serp_nav", ...info })
+          } catch {
+            /* a log line is an extra, never a reason to fail the call */
+          }
+          if (verdict.blocked) {
+            report.serpRefused++
+            const serpMessage = serpRefusal(verdict)
+            pending.set(keyOf(tool, event?.sessionID), { message: serpMessage, at: Date.now() })
+            try {
+              opts.onSerp?.({ event: "serp_refused", ...info })
+            } catch {
+              /* same */
+            }
+            throw new Error(serpMessage)
+          }
+        }
+      }
+      return
+    }
     report.refused++
     report.byTool[tool].refused++
     pending.set(keyOf(tool, event?.sessionID), { message, at: Date.now() })
@@ -351,5 +408,6 @@ export function applyV2BrowserGate(
 export function browserGateSummary(r: BrowserGateReport): string {
   if (!r.seen) return "原生 browser_* 没被调用过（门禁在场，没数据）"
   const teeth = r.refused === 0 ? "没有拒绝发生过" : r.leaked === 0 ? `${r.refused} 次拒绝全部拦停在门口` : `${r.refused} 次拒绝中 ${r.leaked} 次被宿主放过去（已在返回处换成拒绝语）`
-  return `原生 browser_*/Code Mode：看过 ${r.seen} 次调用（其中 Code Mode 程序拒绝 ${r.codeModeRefused} 次） · 可判定目标 ${r.classified} 次 · 拒绝 ${r.refused} 次（${teeth}）· 拦下后无返回 ${r.held} 次 · 非 Team 跳过 ${r.foreignSkipped} 次 · 原生读法提示发了 ${r.annotated} 个会话`
+  const serp = r.serpNav === 0 ? "" : ` · SERP 导航 ${r.serpNav} 次（其中 ${r.serpRefused} 次超限被拒，指向 tm_search）`
+  return `原生 browser_*/Code Mode：看过 ${r.seen} 次调用（其中 Code Mode 程序拒绝 ${r.codeModeRefused} 次） · 可判定目标 ${r.classified} 次 · 拒绝 ${r.refused} 次（${teeth}）· 拦下后无返回 ${r.held} 次 · 非 Team 跳过 ${r.foreignSkipped} 次 · 原生读法提示发了 ${r.annotated} 个会话${serp}`
 }

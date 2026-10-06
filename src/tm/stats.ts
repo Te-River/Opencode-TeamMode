@@ -15,8 +15,10 @@
  *      occupied — serial cost minus parallel cost).
  *
  * Plus the governance and degrade counts a user needs to see whether the
- * guardrails are biting (blocked subresources, refused tm_pty starts,
- * clamped bash timeouts).
+ * guardrails are biting (clamped bash timeouts, web-cache hits, offload
+ * degradation).  Counters whose producer was deleted with the v1 personality
+ * or the self-built browser are RETIRED rather than left rendering a 0 that
+ * reads as "never blocked" — see the `governance` block below.
  *
  * Honesty rules baked in: the numbers are an ESTIMATE over the retained
  * trajectory (TTL-swept, run-per-process), the window is stated alongside
@@ -119,25 +121,11 @@ export interface TmStats {
   }
   ptc: { runs: number; calls: number; errors: number; retries: number; sumMs: number }
   governance: {
-    blockedSubresources: number
-    blockedHosts: string[]
-    ptyRefused: number
     clampedTimeouts: number
     clampSavedMs: number
     offloadDegraded: number
     /** URL-cache hits — every one is a fetch this round did NOT pay for. */
     webCacheHits: number
-    /** evaluate_script results that had a secret shape masked out. */
-    evalMasks: number
-    /** Host background-task envelopes we SAW through chat.message — the
-     *  liveness proof for the channel, independent of size. */
-    taskEnvelopes: number
-    /** …of which were over the threshold and kept out of the context. */
-    taskOffloads: number
-    taskOffloadTokens: number
-    /** Built-in tool args we had to repair (a model-sent string where the
-     *  host's schema wants a boolean) — the trap the host would reject. */
-    argsCoerced: number
   }
   /** `tool:"host"` lines — which personality booted, what it could not do.
    *  Without this the v2 boot record is written and never read back, so "the
@@ -164,11 +152,10 @@ export function summarizeEvents(events: readonly TrajEvent[]): TmStats {
     tools: [],
     dispatch: { starts: 0, settled: 0, failed: 0, adopted: 0, claims: 0, cancelled: 0, sumMs: 0, maxMs: 0, overlapSavedMs: 0, waitMs: 0, waits: 0, repeatWaits: 0 },
     ptc: { runs: 0, calls: 0, errors: 0, retries: 0, sumMs: 0 },
-    governance: { blockedSubresources: 0, blockedHosts: [], ptyRefused: 0, clampedTimeouts: 0, clampSavedMs: 0, offloadDegraded: 0, webCacheHits: 0, evalMasks: 0, taskEnvelopes: 0, taskOffloads: 0, taskOffloadTokens: 0, argsCoerced: 0 },
+    governance: { clampedTimeouts: 0, clampSavedMs: 0, offloadDegraded: 0, webCacheHits: 0 },
     boot: [],
   }
   const byTool = new Map<string, ToolStat>()
-  const hosts = new Set<string>()
   const runs = new Set<string>()
   let first = 0
   let last = 0
@@ -258,21 +245,7 @@ export function summarizeEvents(events: readonly TrajEvent[]): TmStats {
       stats.ptc.retries += num(e.retries)
       stats.ptc.sumMs += num(e.ms)
     }
-    if (ev === "blocked") {
-      stats.governance.blockedSubresources += num(e.count)
-      for (const h of String(e.hosts ?? "").split(",")) if (h.trim()) hosts.add(h.trim())
-    }
-    if (tool === "tm_pty" && ev === "refused") stats.governance.ptyRefused++
     if (ev === "cache_hit") stats.governance.webCacheHits++
-    if (ev === "eval_redacted") stats.governance.evalMasks++
-    if (ev === "coerced" && e.step_id === "args-coerce") stats.governance.argsCoerced++
-    if (tool === "task_offload" && ev === "envelope") {
-      stats.governance.taskEnvelopes++
-      if (e.action === "offloaded") {
-        stats.governance.taskOffloads++
-        stats.governance.taskOffloadTokens += num(e.tokens)
-      }
-    }
     // v1 labelled the row by its tool name `bash`; on v2 the host's own id is
     // `shell`, and the clamp is the same protection either way.
     if ((tool === "bash" || tool === "shell") && e.step_id === "timeout-clamp") {
@@ -291,7 +264,6 @@ export function summarizeEvents(events: readonly TrajEvent[]): TmStats {
   stats.window.from = first || undefined
   stats.window.to = last || undefined
   stats.window.wallMs = last > first ? last - first : 0
-  stats.governance.blockedHosts = [...hosts].slice(0, 12)
   stats.tools = [...byTool.values()].sort(
     (a, b) => b.savedTokens - a.savedTokens || b.calls - a.calls || a.tool.localeCompare(b.tool),
   )
@@ -626,13 +598,8 @@ export function renderStats(
     "| 指标 | 值 |",
     "|---|---|",
     `| PTC 程序 / 内部调用 / 重试 / 错误 | ${p.runs} / ${p.calls} / ${p.retries} / ${p.errors}（合计 ${p.sumMs ? secs(p.sumMs) : "—"}） |`,
-    `| 被拦子资源请求（浏览器） | ${g.blockedSubresources}${g.blockedHosts.length ? ` · 域名：${g.blockedHosts.join(", ")}` : ""} |`,
-    `| tm_pty 治理面拒绝 | ${g.ptyRefused} |`,
     `| web URL 缓存命中（省下的抓取） | ${g.webCacheHits} |`,
-    `| evaluate_script 结果脱敏次数 | ${g.evalMasks} |`,
-    `| 宿主后台 task 注入（经 chat.message 实测） | ${g.taskEnvelopes ? `见到 ${g.taskEnvelopes} 次 · ${g.taskOffloads ? `其中 ${g.taskOffloads} 次超限，挡在上下文外约 ${g.taskOffloadTokens.toLocaleString("en-US")} token` : "全部未超阈值，按设计原样放行（通道是活的）"}` : "0 次 —— 分不清是「没派过后台任务」还是「宿主的注入不再经过 chat.message」（后者才是失效）；派一个后台任务再看这行就能分开"} |`,
     `| bash 超时夹顶 | ${g.clampedTimeouts} 次 · 省 ${g.clampSavedMs ? secs(g.clampSavedMs) : "—"} |`,
-    `| 内置工具参数纠偏（模型把布尔写成字符串） | ${g.argsCoerced || "—"}${g.argsCoerced ? " 次 · 宿主的 schema 会直接拒绝，不纠偏就是白挂一次" : ""} |`,
     `| 卸载降级（存储写失败→截断） | ${g.offloadDegraded} |`,
   )
 
@@ -767,7 +734,7 @@ export function buildStatsTool(deps: StatsDeps): ToolDefinition {
   }
   return {
     description: `Read the plugin's OWN trajectory back as numbers: what it saved and where it broke.
-- The throughput argument in one call — tokens kept out of the context window by offloading, and seconds saved by dispatch overlap (serial cost minus the wall-clock the children actually used), plus governance counts (blocked subresources, refused tm_pty starts, clamped bash timeouts, engine fallbacks).
+- The throughput argument in one call — tokens kept out of the context window by offloading, and seconds saved by dispatch overlap (serial cost minus the wall-clock the children actually used), plus governance counts (clamped bash timeouts, web-cache hits, offload degradation).
 - It also renders the HOST CAPABILITY MATRIX: every OpenCode surface this plugin leans on, marked 已验证 / 存在未用 / 待观察 / 缺失.  After an OpenCode upgrade, call this FIRST — a missing row names the feature that silently went away.
 - { runs: 10 } recent run dirs (default 10, max 50); { capabilities: false } to skip the matrix.  Read-only over files this plugin wrote: no network, no shell, no secrets (the trajectory never records command text or values).
 - { recent: 20 } appends a call-by-call recap — the host renders a plugin tool as a one-line card nobody can open, so this is where an offloaded result's handle AND its payload file path are named out loud.  When the user asks "what did that tool actually return", call this and paste the table.`,
