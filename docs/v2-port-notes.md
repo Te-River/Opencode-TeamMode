@@ -544,3 +544,34 @@ CALLED" note — a future layer would otherwise have to re-probe a seam the 2.0.
 settled. Context Pruning (`TM_PRUNE`, default 70%) is a different mechanism: it rewrites settled
 message BODIES into pointers inside an outgoing request and never asks the host to summarize
 anything. `[R]`
+
+### 2026-10-07 — the agent ID is the FILE NAME, and a case-only difference is not cosmetic `[L][R]`
+
+**Measured on 2.0.24 / 2026-10-07 (this machine).** The global config directory held
+`agents/team.md` — lowercase, left over from the pre-1.7 naming — while the generator had been
+"writing" `agents/Team.md` on every install since. The host was asked directly:
+
+- `opencode-cli run --standalone --agent Team --model nope/nope "x"` → `Agent not found: "Team"`
+- `opencode-cli run --standalone --agent team --model nope/nope "x"` → resolves (fails only on
+  the fake model: `Model unavailable: nope/nope`)
+- `opencode-cli api get /api/agent?directory=…` → `{"id":"team","name":"team",…}` for the lead
+
+So the on-disk spelling IS the registered id, and the installer's own
+`default_agent: "Team"` named an agent that did not exist. Per the agents doc the fallback for
+an unresolvable default is `build` — silent, which is exactly the failure the installer's
+"write `default_agent` LAST, and read it back" rule exists to prevent; the read-back cannot see
+it, because the key IS on disk and the ID is what is wrong. `[L]`
+
+**Why every install failed to fix it.** `writeFileSync(<dir>/Team.md)` on a case-insensitive,
+case-PRESERVING filesystem opens the existing `team.md` and leaves that name alone — and the
+reclaim pass deliberately refused to delete the case-only entry (deleting it would delete the
+file just written: the #47/#48 guard). Nothing in the pipeline could ever change the spelling.
+The fix is an explicit two-step rename (`team.md` → temp → `Team.md`; a case-only `rename` on
+win32 is itself a no-op), performed ONLY on an entry the identity verdict has already PROVEN is
+the same file as a target, with a restore path if the second step throws. `[R]`
+
+**The lesson, stated in the general form.** "Is the tool loaded" and "is the file on disk" were
+both yes here — the two checks the installer prints. What no check covered was *which id the
+host derives from it*, and that is the difference between Team being the default and a silent
+`build`. A verifiable claim has to name the artefact the host actually keys on (the FILE NAME),
+not the one we wrote (the path we computed). `[R]`

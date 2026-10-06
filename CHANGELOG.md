@@ -5,6 +5,27 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 versioning is semver (the 1.4.x train shipped under working labels; the
 registry saw 1.5.0 as the install-script fix release).
 
+## [1.7.2] - 2026-10-07
+
+### Fixed
+
+- **The lead role's FILE NAME is the agent ID, and a stale spelling is a functional defect.**
+  A machine that still carried the pre-1.7 `team.md` registered the lead as `team` — while the
+  installer itself writes `default_agent: "Team"`, and the documented behaviour for a default
+  that names an agent the host cannot find is a silent fall back to `build`. Measured on 2.0.24
+  (2026-10-07) on the machine this was found on: `--agent Team` answered
+  `Agent not found: "Team"`, `--agent team` resolved, and `GET /api/agent` listed
+  `{"id":"team","name":"team"}`. Windows and APFS keep the EXISTING spelling when a write opens
+  that file through another one, which is why every install since 1.7.0 wrote `Team.md` and left
+  `team.md` on disk — re-running the generator did not repair it. The reclaim pass now RENAMES a
+  case-only entry it has PROVEN is the same file as a target to the canonical spelling (two
+  steps on win32, because a case-only rename is a no-op there), prints `已修正大小写 … → …`, and
+  puts the file back under the name it found if the second step fails rather than leaving it
+  under the temporary name. A stale `team.md` on an affected machine is repaired by re-running
+  the generator; the regression is pinned by `test-v2-adapter` `22 and `23d, whose
+  counter-example (the rename disabled) goes red on Windows. See
+  `docs/installation-v2.md`'s troubleshooting table for the 1.7.1-and-older hand fix.
+
 ## [1.7.1] - 2026-10-07
 
 ### Removed

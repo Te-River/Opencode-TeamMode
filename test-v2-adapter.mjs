@@ -2841,11 +2841,21 @@ console.log("22. the generator reclaims a stale role file it wrote before (#47)"
   assert.ok(fs.existsSync(path.join(agentsDir22, "Team.md")), "the current lead file is written")
   assert.ok(!fs.existsSync(path.join(agentsDir22, "legacy.md")), "a marker-bearing stale role file is reclaimed")
   assert.match(out1, /回收 .*legacy\.md/, "and the reclaim is printed, not silent")
+  // The host takes an agent's ID from the FILE NAME, so a case-only difference is
+  // the difference between the lead being registered as `Team` — the value the
+  // installer itself writes into `default_agent` — and `team`, a default that
+  // resolves to nothing and makes the host fall back to `build`.  Exactly one file
+  // may exist for the role and its spelling must be canonical; on a
+  // case-insensitive FS this assertion fails whenever the rename is missing, which
+  // is the counter-example it exists for (measured on 2.0.24 / 2026-10-07).
+  const leadFiles = fs.readdirSync(agentsDir22).filter((n) => n.toLowerCase() === "team.md")
+  assert.equal(leadFiles.length, 1, `exactly one lead role file (got ${JSON.stringify(fs.readdirSync(agentsDir22))})`)
+  assert.equal(leadFiles[0], "Team.md", "…and its on-disk spelling is the canonical Team.md")
   if (process.platform === "win32") {
-    // team.md and Team.md are one file: nothing stale, and the file we just
-    // wrote must survive its own reclaim pass.
+    // team.md and Team.md are ONE file: nothing stale, the file we just wrote
+    // survives, and the stale spelling is RENAMED rather than left in place.
     assert.ok(fs.existsSync(path.join(agentsDir22, "Team.md")), "on Windows the same file is NOT self-deleted")
-    assert.match(out1, /同一个文件/, "…and the case difference is reported, not silent")
+    assert.match(out1, /已修正大小写 team\.md → Team\.md/, "…the stale spelling is renamed, and the rename is printed")
   } else {
     assert.ok(!fs.existsSync(path.join(agentsDir22, "team.md")), "on a case-sensitive FS the stale lowercase file is reclaimed")
     assert.ok(fs.readdirSync(agentsDir22).includes("Team.md"), "…leaving only the canonical Team.md")
@@ -2862,6 +2872,7 @@ console.log("22. the generator reclaims a stale role file it wrote before (#47)"
   fs.rmSync(path.join(agentsDir22, "legacy.md"), { force: true })
   const out3 = execFileSync(process.execPath, [GEN, "--dir", g22], { encoding: "utf8" })
   assert.ok(!/回收 /.test(out3), "a clean re-run reclaims nothing")
+  assert.ok(!/已修正大小写/.test(out3), "…and there is no stale spelling left to fix")
 }
 console.log("   OK (a stale generated role file is reclaimed; a hand-written one is kept and reported; re-runs are idempotent)")
 
@@ -2934,6 +2945,8 @@ console.log("23. file identity is platform-neutral — a macOS case-insensitive 
     }
   })()
   if (sameIno) assert.match(outB, /同一个文件/, "…and the case-only entry is reported as the same file, not deleted")
+  const lead23 = fs.readdirSync(agentsDir23b).filter((n) => n.toLowerCase() === "team.md")
+  assert.deepEqual(lead23, ["Team.md"], `…and the lead file ends up under the canonical spelling (got ${JSON.stringify(lead23)})`)
 
   // (e) end-to-end: a hand-written file with a stale name is kept and reported.
   const g23c = workspace("gen23c")

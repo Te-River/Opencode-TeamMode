@@ -29,7 +29,7 @@
  * Refuses to touch a file it did not generate unless --force is given.
  */
 
-import { mkdirSync, readFileSync, writeFileSync, existsSync, readdirSync, realpathSync, statSync } from "node:fs"
+import { mkdirSync, readFileSync, writeFileSync, existsSync, readdirSync, realpathSync, renameSync, statSync } from "node:fs"
 import { join } from "node:path"
 import { homedir } from "node:os"
 import { pathToFileURL } from "node:url"
@@ -366,9 +366,45 @@ function reclaimStale(dir, keepNames, label) {
       }
     }
     if (sameAs) {
-      // Same file as a target, stored under a different case.  There is nothing
-      // stale here, and deleting it would delete the file we just wrote.
-      caseNotes.push(`保留 ${file} — 与目标 ${sameAs} 是同一个文件（本机不区分大小写），未删除`)
+      // Same file as a target, stored under a DIFFERENT case.  Nothing here is
+      // stale and deleting it would delete the file we just wrote — but leaving
+      // the old spelling is a real defect, not a cosmetic one: the HOST TAKES AN
+      // AGENT'S ID FROM THE FILE NAME.  A machine that still carries the
+      // pre-1.7 `team.md` registers the lead as `team`, so the installer's own
+      // `default_agent: "Team"` resolves to nothing and the host falls back to
+      // `build` — silently, because that fallback is documented as the normal
+      // move for a default that names an agent it cannot find.  Measured on
+      // 2.0.24 / 2026-10-07 on this very machine: `--agent Team` answered
+      // `Agent not found: "Team"`, `--agent team` resolved, and
+      // `GET /api/agent` listed `{"id":"team","name":"team"}`.
+      //
+      // Windows and APFS keep the EXISTING spelling when a write opens that file
+      // through the other one, which is how the stale name survives every
+      // install, so the rename has to be explicit — and on win32 a case-only
+      // rename is itself a no-op, hence the temporary name in the middle.
+      if (printOnly) {
+        caseNotes.push(`保留 ${file} — 与目标 ${sameAs} 是同一个文件（--print，未修正大小写）`)
+        continue
+      }
+      const target = join(dir, sameAs)
+      const tmp = join(dir, `.${entry}.casefix-${process.pid}`)
+      try {
+        renameSync(file, tmp)
+        renameSync(tmp, target)
+        caseNotes.push(`已修正大小写 ${entry} → ${sameAs} — 与目标是同一个文件；宿主按文件名取 agent id，不改就一直挂在旧 id 上`)
+      } catch (err) {
+        // Never leave a half-rename behind: if the second step failed, put the
+        // file back under the name we found it (the stale spelling is survivable;
+        // a file stranded under the temporary name is not).
+        try {
+          if (existsSync(tmp) && !existsSync(target)) renameSync(tmp, target)
+        } catch {
+          /* it stays under the temporary name, and the note below says so */
+        }
+        caseNotes.push(
+          `大小写未修正 ${entry}（目标 ${sameAs}）：${String((err && err.message) || err).replace(/\s+/g, " ").slice(0, 80)}`,
+        )
+      }
       continue
     }
     if (undecidable) {

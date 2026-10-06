@@ -287,6 +287,7 @@ a hard `deny` with no consent path.
 | Roles are not in the picker | Step 2 never ran, or ran against a different `--dir`. `ls ~/.config/opencode/agents` |
 | The default silently became `build` | `default_agent` names an agent that does not exist — re-run Step 2, then Step 3 |
 | A hand-written `agents/Team.md` was not updated | By design: the generator refuses files it did not create. Move yours aside, or pass `--force` |
+| The picker shows the lead as `team`, or Team is not the default | The host takes an agent's ID from the FILE NAME. A machine that ever carried the pre-1.7 `team.md` registers the lead as `team`, while the installer writes `default_agent: "Team"` — and the documented behaviour for a default naming an agent it cannot find is a silent fall back to `build`. **Fixed in 1.7.2**: the generator renames a case-only entry it has proven is the same file to the canonical spelling. On 1.7.1 or older a re-run does NOT fix it (a write through `Team.md` keeps the old spelling on Windows) — rename by hand in two steps: `team.md` → `Team.md` |
 | `/team-plan` etc. run but not as the specialist | 2.x documents `mode: subagent` as "runs only in a child session"; if a command selecting a specialist does not behave, the fix is `mode: "all"` in the role definition (report it — this is the one item in this flow still unverified on a live host) |
 | `tm_webfetch` on an odd site says it refused **without asking anyone** | Expected on 2.x: a plugin cannot raise a dialog. Use a source that works, or let the host's own permission rule allow it; the address red line (metadata / private) has no consent path at all, on either generation |
 | `task`/`subagent` seems to block the lead | On 2.x the plugin forces `background: true`; if you also set the old `OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS`, unset it — it is a v1 flag and only confuses the picture |
@@ -522,6 +523,7 @@ env-FILE 面是硬 `deny`、没有同意路径。
 | 选择器里没有那六个角色 | 第 2 步没跑，或者 `--dir` 指到了别处。`ls ~/.config/opencode/agents` |
 | 默认 agent 悄悄变成 `build` | `default_agent` 指向了一个不存在的角色——重跑第 2 步，再做第 3 步 |
 | 手写的 `agents/Team.md` 没被更新 | 这是设计：生成器拒绝覆盖不是它生成的文件。把你的文件挪开，或显式加 `--force` |
+| 选择器里领队显示成 `team`，或者 Team 不是默认 | 宿主按**文件名**取 agent id。机器上只要曾经有过 1.7 之前的 `team.md`，领队就以 `team` 注册，而安装器写的是 `default_agent: "Team"`——按文档，默认值指向一个找不到的 agent 时会**静默回退 build**。**1.7.2 已修**：生成器会把"已确认是同一个文件、仅大小写不同"的条目标成规范拼写。1.7.1 及更早版本重跑**修不好**（Windows 上从 `Team.md` 写入会保留旧拼写），需要手工两步改名：`team.md` → `Team.md` |
 | `/team-plan` 能跑但不是以那个专家身份跑 | 2.x 把 `mode: subagent` 文档化为"只在子会话里运行"。如果选定专家的命令行为不对，改法是角色定义里用 `mode: "all"`（请回报——这是本流程里唯一还没在活体宿主上验证过的一项） |
 | `tm_webfetch` 说它"没问任何人就直接拒绝" | v2 的预期行为：插件弹不出对话框。换一个不需要这次访问的源，或让宿主自己的权限规则放行；地址红线（元数据 / 私网）在两代宿主上都没有授权路径 |
 | `subagent` 好像把领队挡住了 | v2 上插件会强制 `background: true`；如果你顺手设了老的 `OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS`，请取消它——那是 v1 的开关，在这里只会误导判断 |
