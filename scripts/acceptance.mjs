@@ -366,8 +366,10 @@ async function groupB() {
   const prompt =
     "请依次执行并简短汇报：1) 用 read 工具读取 big.txt 全文；2) 用 grep 在 big.txt 里搜索 needle；" +
     "3) 用 shell 运行 `echo hi`；4) 用 subagent 派一个后台子代理做一件小事。"
+  // The lead role's file is `Team.md` (the generator keeps the id's case), and the host's
+  // `--agent` lookup is exact — `team` is NOT found, `Team` is.
   const r = await runCli(
-    ["run", "--standalone", "--agent", "team", "--model", MODEL, "--auto", prompt],
+    ["run", "--standalone", "--agent", "Team", "--model", MODEL, "--auto", prompt],
     {
       cwd: ws,
       env: sandboxEnv({
@@ -384,6 +386,11 @@ async function groupB() {
   const compactRows = rows.filter((x) => x.step_id === "v2-compact")
   const kinds = [...new Set(compactRows.map((x) => x.kind))]
   const eventSourced = compactRows.some((x) => x.source === "event")
+  // The turn's own death cause (401/403/429/Model unavailable/…) — a SKIP must say WHY.
+  const errLine = (r.out.split(/\r?\n/).filter((l) => /Error|error|unavailable|401|403|429|quota/i.test(l)).pop() || "")
+    .replace(/\x1b\[[0-9;]*m/g, "")
+    .trim()
+  const turnNote = `exit=${r.code}${errLine ? ` · ${errLine.slice(0, 120)}` : ""}`
 
   // B6 早压缩
   record(
@@ -392,7 +399,7 @@ async function groupB() {
     kinds.includes("measured") && eventSourced ? "PASS" : "SKIP",
     compactRows.length
       ? `v2-compact rows=${compactRows.length} kinds=[${kinds.join(",")}] source=event:${eventSourced}`
-      : `无 v2-compact 行（exit=${r.code}；模型可能未触发或配额失败）`,
+      : `无 v2-compact 行（${turnNote}）`,
   )
 
   // B7 JIT 卸载
@@ -401,7 +408,7 @@ async function groupB() {
     "B7",
     "JIT 卸载：原生大结果被卸载（native_offloaded>0）",
     offloaded ? "PASS" : "SKIP",
-    offloaded ? `native_offloaded=${offloaded.native_offloaded} native_tokens_saved=${offloaded.native_tokens_saved}` : "轨迹里没有 native_offloaded>0 的行",
+    offloaded ? `native_offloaded=${offloaded.native_offloaded} native_tokens_saved=${offloaded.native_tokens_saved}` : `轨迹里没有 native_offloaded>0 的行（${turnNote}）`,
   )
 
   // B8 session.usage.updated 仍在
@@ -410,7 +417,7 @@ async function groupB() {
     "B8",
     "session.usage.updated 仍在（compact_source=event 或 event_unknown_types 命中）",
     usage ? "PASS" : "SKIP",
-    usage ? "命中" : "轨迹里没有 compact_source=event，也没有 event_unknown_types 命中",
+    usage ? "命中" : `轨迹里没有 compact_source=event，也没有 event_unknown_types 命中（${turnNote}）`,
   )
 
   // B9 permission.evaluate 动作集
@@ -422,7 +429,7 @@ async function groupB() {
     "B9",
     "permission.evaluate 动作集含 read/grep/subagent",
     hasRead && hasGrep ? "PASS" : "SKIP",
-    `guard_actions="${actions.trim().slice(0, 160)}"（read:${hasRead} grep:${hasGrep} subagent:${hasSub}）`,
+    `guard_actions="${actions.trim().slice(0, 160)}"（read:${hasRead} grep:${hasGrep} subagent:${hasSub} · ${turnNote}）`,
   )
 }
 
