@@ -471,3 +471,19 @@ survivors were written. Each is recorded here so the next reader does not re-der
   farthest→closest with every `.opencode/` dir overriding every direct config — and
   no per-session layer. So a layered `team-mode` config can only be global + project.
   `[L]`
+
+- **The env-FILE red line leaked on `grep` until #58** (measured on 2.0.24). `pathGuard` reads
+  `permission.evaluate`'s `resources`, and the host's `grep` reports the **pattern**, not the
+  search path, as its resource (the tools page says so verbatim). So `read .env` was denied while
+  `grep SECRET .env` returned `SECRET_TOKEN=abc123`. The check now also runs on
+  `tool.hook("execute.before")`, the only seam that sees the whole input, over the path-bearing
+  fields per tool — and the field names were read out of the host binary rather than guessed
+  (`read`/`write`/`edit` → `filePath`; `glob` → `pattern`; `grep` → `path`/`include`).
+  `grep`'s own pattern is deliberately NOT judged: it is a regex, and `isEnvFilePath` would
+  misfire on a search for the text `.env`. Residual boundary, stated rather than papered over: a
+  `grep` that passes only a pattern and no `path`/`include` cannot be judged at this seam.
+  `[L]`
+
+- **`tools_in_request` was unobservable in a CLI run** (measured on 2.0.24): it was written only
+  on `v2-shutdown`, and a CLI process never reaches dispose. It now rides the throttled
+  `v2-surface` row too, which is the row a CLI run actually writes. `[L]`

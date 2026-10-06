@@ -143,7 +143,10 @@ through our tools. R6's env-file rule is likewise hard — and it is enforced **
 whose resource is an env-file path (`guard_envfile_denied` counts it). Before that the v2 port
 classified only the shell command line, so a Team role could `read` a `.env` outright while this
 file claimed otherwise. Templates stay readable (`ENV_TEMPLATE_SUFFIX` = `example|sample|template|dist`,
-`src/envprotect/path-classify.ts`). A gate must have an exit the user
+`src/envprotect/path-classify.ts`). The resource alone was not enough: the host's `grep` reports the
+**pattern** as its resource, so `grep SECRET .env` slipped through until #58 added the same check on
+`tool.hook("execute.before")`, where the whole input is visible (path-bearing fields per tool, read
+out of the host binary; `grep`'s own pattern is not judged, being a regex). A gate must have an exit the user
 can walk through; a red line must not.
 
 ### 7. Determinism over model discretion
