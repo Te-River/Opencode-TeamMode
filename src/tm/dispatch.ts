@@ -401,6 +401,20 @@ export function summarizeStates(children: readonly ChildRecord[]): { running: nu
 }
 
 /**
+ * The children of ONE caller that are still running — the concurrency cap's
+ * data source (#49 feature 2).  Pure, and reads the SAME registry `tm_join`
+ * uses rather than a second bookkeeping table: the rows already carry
+ * `parentSessionID`, so "how many of THIS session's children are live" is a
+ * filter, not a new store.  An empty caller id matches nothing (never "all"),
+ * because a missing session id must not turn one session's cap into a global one.
+ */
+export function runningChildrenOf(children: readonly ChildRecord[], callerSessionID: string): ChildRecord[] {
+  const caller = String(callerSessionID ?? "").trim()
+  if (!caller) return []
+  return children.filter((c) => c.parentSessionID === caller && c.state === "running")
+}
+
+/**
  * Sleep used only by tm_join's bounded wait.  Deliberately a plain timer:
  * it never holds the event loop (the wait is awaited, not spun) and it is
  * capped by `maxWaitMs` so a hung child cannot hang the lead.

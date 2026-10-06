@@ -157,6 +157,44 @@ export function shellGuard(command: string | undefined, mode: EnvProtectMode): G
   return null
 }
 
+/** One running child, as the concurrency refusal renders it. */
+export interface RunningChild {
+  sessionID: string
+  agent?: string
+  elapsedMs?: number
+}
+
+/**
+ * The concurrency cap (#49 feature 2).  `permission.evaluate` fires for
+ * `subagent` (measured live: `guard_actions: … subagent=16 …`), so the cap is a
+ * HARD gate on the same seam as the env-file / address red lines — not a prompt
+ * hint a model can talk itself past.
+ *
+ * When the caller's OWN running children reach the cap, the next dispatch is
+ * denied with a Chinese, actionable refusal that names the running ids and the
+ * two ways out (collect with `tm_join`, or stop with `tm_join {cancel:true}`).
+ *
+ * Pure and total: `cap <= 0` disables it (never denies), an empty running list
+ * never denies, and it never throws.  Only ever stricter — the caller applies it
+ * through the same `rank` floor as every other guard.
+ */
+export function concurrencyGuard(action: string, running: readonly RunningChild[], cap: number): GuardDecision | null {
+  if (action !== "subagent") return null
+  if (!Number.isFinite(cap) || cap <= 0) return null
+  if (running.length < cap) return null
+  const list = running
+    .map((c) => {
+      const secs = typeof c.elapsedMs === "number" && c.elapsedMs >= 0 ? ` 运行中 ${Math.round(c.elapsedMs / 1000)}s` : ""
+      return `${c.sessionID}${secs}`
+    })
+    .join("、")
+  return {
+    effect: "deny",
+    why: "concurrency-cap",
+    message: `本会话已有 ${running.length} 个子代理在跑（上限 ${cap}）：${list}。先 tm_join 收取已结算的，或 tm_join {cancel:true} 停掉不需要的，再派新的。`,
+  }
+}
+
 export interface GuardReport {
   seen: number
   byAction: Record<string, number>
@@ -185,6 +223,15 @@ export interface GuardReport {
   envFileInputForeignSkipped: number
   /** …where the guard itself threw and the call was allowed through. */
   envFileInputThrew: number
+  /** #49 feature 2: `subagent` evaluations the concurrency cap looked at. */
+  concurrencySeen: number
+  /** …where the cap fired and the dispatch was denied. */
+  concurrencyDenied: number
+  /** The largest number of the caller's running children seen at one evaluation
+   *  — the peak the cap is measured against, so "we never hit it" is a number. */
+  concurrencyRunningMax: number
+  /** …where the running-children read threw and the call was allowed through. */
+  concurrencyThrew: number
 }
 
 export interface BackgroundForceReport {
@@ -235,9 +282,22 @@ export async function applyV2BackgroundForce(
 
 export async function applyV2PermissionGuards(
   ctx: V2Context,
-  opts: { envProtectMode: EnvProtectMode; scope?: TeamScope },
+  opts: {
+    envProtectMode: EnvProtectMode
+    scope?: TeamScope
+    /** #49 feature 2: the caller's own running children, read from the plugin's
+     *  ONE children registry.  Absent = the cap is not enforced (a host with no
+     *  registry to read must not be denied on a guess). */
+    runningChildren?: (callerSessionID: string) => RunningChild[]
+    /** The cap.  `<= 0` disables it.  Defaults to 0 (off) so a caller that does
+     *  not opt in keeps the pre-#49 behaviour byte-exactly. */
+    maxConcurrent?: number
+    /** Fired once per denial so the personality can write the `v2-concurrency`
+     *  trajectory line — the guard owns no store. */
+    onConcurrencyDenied?: (info: { caller: string; running: RunningChild[]; cap: number }) => void
+  },
 ): Promise<{ registrations: V2Registration[]; report: GuardReport; installed: boolean }> {
-  const report: GuardReport = { seen: 0, byAction: {}, strictened: 0, denied: 0, shellMatched: 0, foreignSkipped: 0, envFileDenied: 0, envFileDeniedByInput: 0, envFileInputSeen: 0, envFileInputForeignSkipped: 0, envFileInputThrew: 0 }
+  const report: GuardReport = { seen: 0, byAction: {}, strictened: 0, denied: 0, shellMatched: 0, foreignSkipped: 0, envFileDenied: 0, envFileDeniedByInput: 0, envFileInputSeen: 0, envFileInputForeignSkipped: 0, envFileInputThrew: 0, concurrencySeen: 0, concurrencyDenied: 0, concurrencyRunningMax: 0, concurrencyThrew: 0 }
   const permission = ctx.permission
   if (!permission || typeof permission.hook !== "function") {
     return { registrations: [], report, installed: false }
@@ -264,16 +324,46 @@ export async function applyV2PermissionGuards(
           : action === "shell"
             ? shellGuard(resources[0], opts.envProtectMode)
             : pathGuard(action, resources, opts.envProtectMode)
-      if (!decision) return
+
+      // #49 feature 2: the concurrency cap.  `permission.evaluate` fires for
+      // `subagent` (measured live), so this is a hard gate on the same seam as the
+      // red lines.  A read that throws is swallowed and counted — a throughput cap
+      // that fails OPEN is the honest failure mode, and it never loosens a host
+      // decision (the `rank` floor below still applies).
+      let concurrency: GuardDecision | null = null
+      if (action === "subagent") {
+        report.concurrencySeen++
+        try {
+          const caller = String((event as { sessionID?: unknown })?.sessionID ?? "")
+          const running = opts.runningChildren ? opts.runningChildren(caller) : []
+          if (running.length > report.concurrencyRunningMax) report.concurrencyRunningMax = running.length
+          concurrency = concurrencyGuard(action, running, opts.maxConcurrent ?? 0)
+          if (concurrency) {
+            report.concurrencyDenied++
+            try {
+              opts.onConcurrencyDenied?.({ caller, running, cap: opts.maxConcurrent ?? 0 })
+            } catch {
+              /* the trajectory line is an extra, never a reason to fail the call */
+            }
+          }
+        } catch {
+          report.concurrencyThrew++
+        }
+      }
+
+      // The stricter of the two wins; a null on either side is not a decision.
+      const chosen =
+        !decision ? concurrency : !concurrency ? decision : rank[concurrency.effect] > rank[decision.effect] ? concurrency : decision
+      if (!chosen) return
 
       if (action === "shell") report.shellMatched++
-      if (decision.why === "env-file-path") report.envFileDenied++
+      if (chosen.why === "env-file-path") report.envFileDenied++
       // Only ever stricter.  A host that already decided to ask or deny keeps
       // that decision — our classifier is a floor, not an override of the user.
-      if (rank[decision.effect] <= rank[event.effect ?? "allow"]) return
-      event.effect = decision.effect
-      if (decision.message) event.message = decision.message
-      if (decision.effect === "deny") report.denied++
+      if (rank[chosen.effect] <= rank[event.effect ?? "allow"]) return
+      event.effect = chosen.effect
+      if (chosen.message) event.message = chosen.message
+      if (chosen.effect === "deny") report.denied++
       else report.strictened++
     }),
   ]

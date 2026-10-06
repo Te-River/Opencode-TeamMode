@@ -68,12 +68,13 @@ export {
   type LedgerStore,
 } from "./ledger.js"
 import { buildTmMemoryTool } from "./memory.js"
-import { buildDispatchTools } from "./dispatch.js"
+import { buildDispatchTools, runningChildrenOf } from "./dispatch.js"
 export {
   buildDispatchTools,
   DISPATCH_TARGETS,
   lastAssistantText,
   renderChildLine,
+  runningChildrenOf,
   sessionApiOf,
   summarizeStates,
 } from "./dispatch.js"
@@ -103,6 +104,10 @@ export interface TmRuntime {
   hasOpenHostChild: () => boolean
   /** Open async dispatches this plugin started (tests + observability). */
   dispatches: () => Array<{ sessionID: string; agent: string; label: string; state: string }>
+  /** #49 feature 2: the caller's OWN still-running children — the concurrency
+   *  cap's data source.  Reads the SAME registry `tm_join` uses (no second
+   *  bookkeeping) and returns only what the refusal needs to render. */
+  runningChildren: (callerSessionID: string) => Array<{ sessionID: string; agent: string; elapsedMs: number }>
 }
 
 export interface CreateTmToolsOptions {
@@ -560,6 +565,14 @@ export async function createTmTools(
     settleHostChild: dispatch.settle,
     hasOpenHostChild: dispatch.hasOpen,
     dispatches: () => dispatch.children().map((c) => ({ sessionID: c.sessionID, agent: c.agent, label: c.label, state: c.state })),
+    runningChildren: (callerSessionID: string) => {
+      const at = Date.now()
+      return runningChildrenOf(dispatch.children(), callerSessionID).map((c) => ({
+        sessionID: c.sessionID,
+        agent: c.agent,
+        elapsedMs: Math.max(0, at - c.startedAt),
+      }))
+    },
   }
 }
 

@@ -3465,6 +3465,81 @@ console.log("28. Context Pruning — settled history becomes pointers, evidence 
 }
 console.log("   OK (threshold derived from limit.context; settled bodies become self-explaining pointers; skeleton/handle/GOAL/tail byte-exact; no_limit and foreign counted; throws swallowed; idempotent)")
 
+console.log("29. the concurrency cap — a hard gate on permission.evaluate (#49 feature 2)")
+{
+  const { concurrencyGuard, applyV2PermissionGuards } = await import("./dist/host/v2-guard.js")
+  const { createTeamScope } = await import("./dist/host/v2-scope.js")
+
+  // (a) the pure function — 0/1/2 running pass, 3 denies, 0 = off
+  const run = (n) => Array.from({ length: n }, (_, i) => ({ sessionID: `ses_c${i}`, agent: "architect", elapsedMs: 1000 * (i + 1) }))
+  assert.equal(concurrencyGuard("subagent", run(0), 3), null, "0 running → allowed")
+  assert.equal(concurrencyGuard("subagent", run(1), 3), null, "1 running → allowed")
+  assert.equal(concurrencyGuard("subagent", run(2), 3), null, "2 running → allowed")
+  const denied = concurrencyGuard("subagent", run(3), 3)
+  assert.equal(denied?.effect, "deny", "3 running at cap 3 → denied")
+  assert.ok(denied.message.includes("ses_c0") && denied.message.includes("ses_c2"), "the refusal names the running ids")
+  assert.ok(denied.message.includes("tm_join"), "…and the collect path")
+  assert.ok(denied.message.includes("cancel:true"), "…and the stop path")
+  assert.equal(concurrencyGuard("subagent", run(9), 0), null, "cap 0 = off → never denies")
+  assert.equal(concurrencyGuard("subagent", run(9), -1), null, "a negative cap is off, not a deny")
+  assert.equal(concurrencyGuard("read", run(9), 3), null, "a non-subagent action is never judged")
+
+  // (b) the hook, on the fake host
+  const ws = workspace("concurrency")
+  const f = makeFakeCtx({ directory: ws, agents: [] })
+  const scope = createTeamScope(["team", "architect", "implementer", "reviewer", "tester", "researcher"])
+  let running = []
+  let threw = false
+  const g = await applyV2PermissionGuards(f.ctx, {
+    envProtectMode: "off",
+    scope,
+    maxConcurrent: 3,
+    runningChildren: (caller) => {
+      if (threw) throw new Error("registry exploded")
+      return caller === "ses_lead" ? running : []
+    },
+  })
+  const fire = (ev) => f.hook("permission.evaluate").fire(ev)
+
+  // 3 running → the 4th dispatch is denied, with the running ids and the exits
+  running = run(3)
+  const fourth = { sessionID: "ses_lead", agent: "team", action: "subagent", resources: [], effect: "allow" }
+  await fire(fourth)
+  assert.equal(fourth.effect, "deny", "the 4th dispatch is denied at the cap")
+  assert.ok(String(fourth.message).includes("ses_c0"), "the refusal names a running id")
+  assert.ok(String(fourth.message).includes("tm_join"), "…and the collect path")
+  assert.equal(g.report.concurrencyDenied, 1, "the denial is counted")
+  assert.equal(g.report.concurrencyRunningMax, 3, "the peak running count is recorded")
+
+  // under the cap → left as the host decided
+  running = run(2)
+  const third = { sessionID: "ses_lead", agent: "team", action: "subagent", resources: [], effect: "allow" }
+  await fire(third)
+  assert.equal(third.effect, "allow", "under the cap the dispatch is left as the host decided")
+
+  // a foreign session is not ours to cap (#22)
+  running = run(9)
+  const foreign = { sessionID: "ses_build", agent: "build", action: "subagent", resources: [], effect: "allow" }
+  await fire(foreign)
+  assert.equal(foreign.effect, "allow", "a build session's dispatch is not ours to cap")
+
+  // a host that already denied keeps its decision — the guard only gets stricter
+  running = run(3)
+  const already = { sessionID: "ses_lead", agent: "team", action: "subagent", resources: [], effect: "deny" }
+  await fire(already)
+  assert.equal(already.effect, "deny", "a host that already denied keeps its decision")
+
+  // a throwing registry read is swallowed and counted, and the call fails OPEN
+  threw = true
+  const boom = { sessionID: "ses_lead", agent: "team", action: "subagent", resources: [], effect: "allow" }
+  await fire(boom)
+  assert.equal(boom.effect, "allow", "a throwing registry read fails OPEN, never denies on a guess")
+  assert.equal(g.report.concurrencyThrew, 1, "…and the throw is counted")
+
+  for (const r of g.registrations) await r.dispose()
+}
+console.log("   OK (cap 3 denies the 4th with the running ids + tm_join paths; under-cap and foreign sessions untouched; host deny preserved; a throwing read fails open and is counted)")
+
 // B5: the group count is DERIVED from the numbered group headers this file
 // actually printed, never hand-written — the last hand-written number was
 // already stale while the file had more.  The self-scan reads THIS file by its
