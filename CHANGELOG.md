@@ -88,6 +88,16 @@ registry saw 1.5.0 as the install-script fix release).
   no_limit/foreign_skipped/threw` ride the boot, surface and shutdown rows with a `v2-prune`
   trajectory line. Team-scoped, never throws, idempotent by sentinel, and the untouched messages
   are asserted byte-exact.
+- **A hard cap on concurrent sub-agents.** Nothing bounded how many children a lead could have
+  running — the quota deaths in one session were the symptom. `permission.evaluate` **does** fire
+  for the `subagent` action (measured: 16 times in one session), so the cap is a gate rather than
+  a hint: at `TM_MAX_CONCURRENT_SUBAGENTS` (default 3, `0` disables) the next dispatch is denied
+  with a message naming the running ids and both ways out (`tm_join` to collect,
+  `tm_join {cancel:true}` to stop). The count comes from the plugin's own children registry
+  through a per-caller query, not a second registry; the guard only ever gets stricter, is
+  Team-scoped, and fails **open** on its own errors — the honest direction for a throughput gate.
+  Counters `concurrency_seen/denied/running_max/threw` ride the surface and shutdown rows with a
+  `v2-concurrency` trajectory line.
 
 ### Changed
 
