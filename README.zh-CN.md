@@ -438,6 +438,10 @@ env 文件 URL 和非 http(s) 协议保持硬拦截、无弹窗——R6 红线�
 
 ### 安全：R6 + R2 审批门禁
 
+**在 OpenCode 2.x 上，R6 默认开启。** Team 角色用原生 `read` 读 `.env` 会被直接拒——没有同意路径；读环境变量的 shell 命令
+走宿主自己的权限提示（2.x 上插件弹不出对话框，所以 shell 面是宿主的 `ask`，env-FILE 面是硬 `deny`）。
+关闭方式：插件选项 `envProtect: false`，或 `TM_ENV_PROTECT=off`。
+
 **R6 环境变量保护。** TeamMode 激活时，模型不能悄悄读环境变量。env 读取
 （`printenv`、`env`、`Get-ChildItem env:` 等）和 env 文件（`.env`、shell rc）
 走 OpenCode **官方确认弹窗**；没人应答的弹窗在 `TM_ASK_TIMEOUT_MIN`（默认

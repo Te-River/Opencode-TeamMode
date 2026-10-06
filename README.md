@@ -503,6 +503,12 @@ remain hard-rejected with no dialog — R6 red lines are never consentable.
 
 ### Security: the R6 + R2 approval gate
 
+**On OpenCode 2.x, R6 is armed by default.** A Team role's native `read` of a `.env` is denied
+outright — no consent path — and a shell command that reads the environment goes to the host's own
+permission prompt (a plugin cannot raise a dialog on 2.x, so the shell face is the host's `ask`
+while the env-file face is a hard `deny`). Turn it off with the plugin option
+`envProtect: false` or with `TM_ENV_PROTECT=off`.
+
 **R6 environment protection.** With TeamMode active, the model cannot read
 environment variables silently. Env reads (`printenv`, `env`, `Get-ChildItem
 env:`, …) and env files (`.env`, shell rc) route through OpenCode's official

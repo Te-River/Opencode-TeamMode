@@ -246,6 +246,12 @@ ignored and reported. A file that fails to parse is skipped **whole** (half a co
 none), while a single bad key loses only itself. Unknown keys warn at boot and are never applied.
 `tm_stats` shows which layer each key came from.
 
+**R6 (env protection) is armed by default.** A Team role's native `read` of a `.env` is denied
+outright, and a shell command that reads the environment goes to the host's own permission prompt.
+Turn it off with the plugin option `envProtect: false` or with `TM_ENV_PROTECT=off`; on 2.x the
+shell face is an `ask` (the host's dialog — a plugin cannot raise one) while the env-FILE face is
+a hard `deny` with no consent path.
+
 ### Uninstalling
 
 1. Remove the plugin entry (`opencode plugin remove @te-river/opencode-team-mode`).
@@ -462,6 +468,10 @@ opencode reload
 `envProtect`、`r6FineAsk`、`privateSpace`、`webfetchAllowedDomains`、`browserAskEval`、`bashReadonlyAllowed`；文件里写了也会被忽略并报告。
 解析失败的那一层**整层跳过**（半份配置比没有配置更危险），单个坏键只丢它自己。未知键在启动时告警、**不应用**。
 `tm_stats` 会显示每个键最终来自哪一层。
+
+**R6（环境变量保护）默认开启。** Team 角色用原生 `read` 读 `.env` 会被直接拒；读环境变量的 shell 命令会走宿主自己的权限提示。
+关闭方式：插件选项 `envProtect: false`，或 `TM_ENV_PROTECT=off`。2.x 上 shell 面是 `ask`（宿主的对话框——插件弹不出来），
+env-FILE 面是硬 `deny`、没有同意路径。
 
 ### 卸载
 
