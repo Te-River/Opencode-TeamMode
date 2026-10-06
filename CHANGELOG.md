@@ -66,6 +66,15 @@ registry saw 1.5.0 as the install-script fix release).
   plugin ctx does not expose it on this host (both the nested `session.inbox.list` and the flat
   `session["inbox.list"]` spellings were tried and recorded). A documented route is not a
   delivered seam, and the tool now says which one it found.
+- **A Code Mode adoption hint.** The efficiency mandate says one wide call beats three narrow ones, but
+  nothing in the runtime noticed a model walking the native ladder one call at a time.
+  `src/host/v2-probe-chain.ts` rides `tool.hook("execute.after")` and, once a run of native
+  `read`/`grep`/`glob`/`shell` calls passes the threshold, appends **one line** to the next result
+  naming `execute` (Code Mode) and what it would save. It is a hint, not a gate: the original body
+  is preserved verbatim (asserted), nothing is rejected, args are untouched, it is Team-scoped, and
+  it swallows its own failures into a counted verdict. Knobs `TM_PROBE_CHAIN_AFTER` (default 3,
+  `0` disables) and `TM_PROBE_CHAIN=off`; counters `probe_chain_seen/advised/reset/
+  foreign_skipped/threw` ride the surface and shutdown rows with their own trajectory line.
 
 ### Changed
 
