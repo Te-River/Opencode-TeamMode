@@ -3666,6 +3666,121 @@ console.log("30. 错峰重试 — recognise a provider throttle, inject an exact
 }
 console.log("   OK (explicit signatures only; base→×2→cap with jitter in [1-j,1+j]; the Nth error trips the breaker; the next request carries the EXACT seconds once; cooldown denies only a Team dispatch and names TM_RETRY=off; foreign/other actions untouched; a throw is swallowed and counted)")
 
+console.log("31. 拆分任务 — a big brief arms ONE advice line for the lead's next request (#49 feature 4)")
+{
+  const { applyV2SessionLayer, resolveSplitConfig, briefTextOf, splitAdviceText, SPLIT_MARKER } =
+    await import("./dist/host/v2-session.js")
+  const { createTeamScope } = await import("./dist/host/v2-scope.js")
+
+  // (a) the pure knobs — defaults on, only an explicit off disables, numbers clamped
+  assert.equal(resolveSplitConfig({}).enabled, true, "default is on")
+  assert.equal(resolveSplitConfig({}).briefTokens, 4000, "the default brief threshold is 4000")
+  assert.equal(resolveSplitConfig({}).maxCriteria, 3, "the default criteria cap is 3")
+  assert.equal(resolveSplitConfig({ TM_SPLIT_ADVICE: "off" }).enabled, false, "only an explicit off disables")
+  assert.equal(resolveSplitConfig({ TM_SPLIT_BRIEF_TOKENS: "abc" }).briefTokens, 4000, "an illegal threshold falls back")
+  assert.equal(resolveSplitConfig({ TM_SPLIT_BRIEF_TOKENS: "10" }).briefTokens, 200, "a below-floor threshold is clamped up")
+  assert.equal(resolveSplitConfig({ TM_SPLIT_MAX_CRITERIA: "999" }).maxCriteria, 50, "an above-cap criteria count is clamped down")
+
+  // (b) the brief reader — only a real subagent input yields text
+  assert.equal(briefTextOf({ prompt: "do the thing" }), "do the thing", "the prompt is the brief")
+  assert.equal(briefTextOf({ description: "short" }), "short", "description is the fallback")
+  assert.equal(briefTextOf({ prompt: "p", description: "d" }), "p", "prompt wins over description")
+  assert.equal(briefTextOf(null), "", "a non-object input is not a brief")
+  assert.equal(briefTextOf({}), "", "an input with no text is not a brief")
+
+  // (c) the advice text names the split rule and the escape hatch
+  const advice = splitAdviceText(9000, 4000, 3)
+  assert.ok(advice.includes(SPLIT_MARKER), "the advice carries the recognisable marker")
+  assert.ok(advice.includes("可独立验收"), "the advice names the property that separates splitting from chopping")
+  assert.ok(advice.includes("TM_SPLIT_ADVICE=off"), "the advice names the escape hatch")
+
+  // (d) the hooks, on the fake host
+  const ws31 = workspace("split")
+  const f = makeFakeCtx({ directory: ws31, agents: [] })
+  const scope = createTeamScope(["team", "architect", "implementer", "reviewer", "tester", "researcher"])
+  const rows = []
+  const layer = await applyV2SessionLayer(f.ctx, {
+    temperature: false, note: "", noteAgents: [], plan: new Map(), scope,
+    split: resolveSplitConfig({}), onSplit: (row) => rows.push(row),
+  })
+  const fireCtx = (ev) => f.hook("session.context").fire(ev)
+  const fireBefore = (ev) => f.hook("tool.execute.before").fire(ev)
+  const ctxEvent = () => ({ sessionID: "ses_lead", agent: "team", system: [], messages: [], tools: {}, options: {} })
+
+  // a SHORT brief arms nothing
+  await fireBefore({ tool: "subagent", sessionID: "ses_lead", agent: "team", input: { prompt: "small brief" } })
+  const shortCtx = ctxEvent()
+  await fireCtx(shortCtx)
+  assert.equal(shortCtx.system.length, 0, "a short brief injects nothing")
+  assert.equal(layer.report.splitSeen, 1, "the brief was still measured")
+  assert.equal(layer.report.splitAdvised, 0, "…and nothing was advised")
+
+  // a LONG brief arms the advice for the NEXT request
+  const big = "x".repeat(20000)
+  await fireBefore({ tool: "subagent", sessionID: "ses_lead", agent: "team", input: { prompt: big } })
+  const bigCtx = ctxEvent()
+  await fireCtx(bigCtx)
+  assert.equal(bigCtx.system.length, 1, "the next request carries the advice")
+  assert.ok(String(bigCtx.system[0].text).includes(SPLIT_MARKER), "the injected line is the split advice")
+  assert.equal(layer.report.splitSeen, 2, "the big brief was measured")
+  assert.equal(layer.report.splitAdvised, 1, "the injection is counted")
+
+  // consumed once — a replayed hook cannot duplicate it
+  const replay = ctxEvent()
+  await fireCtx(replay)
+  assert.equal(replay.system.length, 0, "the advice is consumed once, so a replay injects nothing")
+
+  // a non-subagent tool is never measured
+  await fireBefore({ tool: "read", sessionID: "ses_lead", agent: "team", input: { prompt: big } })
+  assert.equal(layer.report.splitSeen, 2, "a non-subagent call is not a brief")
+
+  // a foreign session's dispatch is not ours to advise
+  await fireBefore({ tool: "subagent", sessionID: "ses_build", agent: "build", input: { prompt: big } })
+  const foreignCtx = { sessionID: "ses_build", agent: "build", system: [], messages: [], tools: {}, options: {} }
+  await fireCtx(foreignCtx)
+  assert.equal(foreignCtx.system.length, 0, "a build session's request is not ours to touch")
+  assert.equal(layer.report.splitSeen, 2, "…and its brief was not even measured")
+
+  // a specialist's request never receives the lead's advice
+  await fireBefore({ tool: "subagent", sessionID: "ses_lead", agent: "team", input: { prompt: big } })
+  const childCtx = { sessionID: "ses_kid", agent: "implementer", system: [], messages: [], tools: {}, options: {} }
+  await fireCtx(childCtx)
+  assert.equal(childCtx.system.length, 0, "a child session's request does not get the lead's advice")
+  const leadCtx = ctxEvent()
+  await fireCtx(leadCtx)
+  assert.equal(leadCtx.system.length, 1, "…the lead's next request still does")
+
+  assert.ok(rows.some((r) => r.event === "advised"), "arming the advice emits a row")
+  assert.ok(rows.some((r) => r.event === "injected"), "the injection emits a row")
+
+  // (e) TM_SPLIT_ADVICE=off registers no trigger at all
+  const fOff = makeFakeCtx({ directory: workspace("split-off"), agents: [] })
+  const offLayer = await applyV2SessionLayer(fOff.ctx, {
+    temperature: false, note: "", noteAgents: [], plan: new Map(), scope,
+    split: resolveSplitConfig({ TM_SPLIT_ADVICE: "off" }),
+  })
+  await fOff.hook("tool.execute.before").fire({ tool: "subagent", sessionID: "ses_lead", agent: "team", input: { prompt: big } })
+  const offCtx = ctxEvent()
+  await fOff.hook("session.context").fire(offCtx)
+  assert.equal(offCtx.system.length, 0, "off means no advice, even for a huge brief")
+  assert.equal(offLayer.report.splitSeen, 0, "…and the trigger is not even registered")
+
+  // (f) a throw inside the trigger is swallowed and counted
+  const fBoom = makeFakeCtx({ directory: workspace("split-boom"), agents: [] })
+  const boomLayer = await applyV2SessionLayer(fBoom.ctx, {
+    temperature: false, note: "", noteAgents: [], plan: new Map(), scope, split: resolveSplitConfig({}),
+  })
+  const boomEvent = { tool: "subagent", sessionID: "ses_lead", agent: "team" }
+  Object.defineProperty(boomEvent, "input", { get() { throw new Error("boom") } })
+  await fBoom.hook("tool.execute.before").fire(boomEvent)
+  assert.equal(boomLayer.report.splitThrew, 1, "a throwing brief read is swallowed and counted")
+
+  for (const r of layer.registrations) await r.dispose()
+  for (const r of offLayer.registrations) await r.dispose()
+  for (const r of boomLayer.registrations) await r.dispose()
+}
+console.log("   OK (defaults on / off disables / numbers clamped; only a subagent brief is measured; a big brief arms ONE advice line for the lead's next request and a short one arms none; consumed once; foreign and child sessions untouched; a throw is swallowed and counted)")
+
 // B5: the group count is DERIVED from the numbered group headers this file
 // actually printed, never hand-written — the last hand-written number was
 // already stale while the file had more.  The self-scan reads THIS file by its

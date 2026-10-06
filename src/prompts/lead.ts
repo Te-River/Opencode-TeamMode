@@ -78,6 +78,22 @@ evidence standard, or the approval gate — an unverified "done" is the single
 most expensive thing this team can produce, because the user pays for the
 round AND the bug.
 
+## Task splitting — one dispatch, one verifiable deliverable
+A dispatch is a unit of VERIFIABLE work, not a bucket for everything related.
+- One dispatch owns ONE deliverable with its own acceptance check.  If you
+  cannot say how a child's result will be verified on its own, it is not a
+  dispatch yet — it is a wish.
+- A brief carrying more than three acceptance criteria is a signal to split:
+  cut it into N self-contained dispatches, each with its own verbatim data
+  contract and its own acceptance line.
+- Every piece must be independently verifiable — a slice a reviewer can accept
+  or reject without waiting on a sibling.  Cutting one deliverable into pieces
+  that only make sense together is chopping, not splitting, and it costs the
+  user more rounds than it saves.
+- Anti-pattern: stuffing a large task into one dispatch to save a round.  The
+  round you save is paid back with interest when the child's single request is
+  too big to succeed and has to be retried.
+
 ## Routing table — pick the row; do not redesign it
 PRODUCT BEHAVIOR CHANGE = any edit that can alter runtime behavior (source
 files — NOT docs, comments, formatting, NOT *.test.* files).

@@ -22,6 +22,7 @@
 
 import { V2_LADDER_ACTIONS } from "./v2-permissions.js"
 import { normalizeAgentName } from "../identity.js"
+import { estimateTokens } from "../tm/config.js"
 import type { V2Registration, V2SessionContext, V2Context } from "./v2-types.js"
 
 /**
@@ -70,6 +71,69 @@ const TOOL_RENAMES: Readonly<Record<string, string>> = {
 export const BROWSER_CATALOG = "browser_*"
 
 const isDeny = (value: unknown): boolean => value === "deny"
+
+/**
+ * #49 feature 4 — task splitting (拆大化小), the cheap mechanical half.
+ *
+ * The prompt discipline (`## Task splitting` in the lead prompt) says a dispatch
+ * owns ONE independently verifiable deliverable.  This is the trigger that makes
+ * the discipline visible at the moment it is being broken: a `subagent` brief
+ * whose text exceeds `TM_SPLIT_BRIEF_TOKENS` arms ONE advice line, injected into
+ * the lead's NEXT request.  It only ever ADVISES — nothing is rejected, no input
+ * is rewritten — because the dupe-guard lesson is that a model can ignore a
+ * directive, and a hard gate here would block legitimate large-but-single work.
+ *
+ * The brief text is read at `tool.hook("execute.before")`, the only seam that
+ * sees the `subagent` call's own `input` (the host's field is `input`, and it IS
+ * the argument object — measured in v2-subagent.ts).  `session.hook("context")`
+ * cannot see it: its `messages` are the parent's assembled history, not the
+ * dispatch brief.  So the trigger lives on `execute.before` and the injection on
+ * `context`, both owned by this layer.
+ */
+export const SPLIT_MARKER = "## Team Split"
+
+export interface SplitConfig {
+  enabled: boolean
+  /** A brief above this many tokens arms the advice. */
+  briefTokens: number
+  /** The criteria count the prompt names as "split past this". */
+  maxCriteria: number
+}
+
+export const SPLIT_DEFAULTS: SplitConfig = { enabled: true, briefTokens: 4000, maxCriteria: 3 }
+
+const isOff = (value: unknown): boolean => typeof value === "string" && /^(off|0|false|no)$/i.test(value.trim())
+
+const clampNum = (raw: unknown, fallback: number, min: number, max: number): number => {
+  const n = Number(raw)
+  if (!Number.isFinite(n)) return fallback
+  return Math.min(max, Math.max(min, Math.round(n)))
+}
+
+/** `TM_SPLIT_ADVICE=off` disables; the two numbers are clamped, never trusted raw. */
+export function resolveSplitConfig(env: Record<string, string | undefined> = process.env): SplitConfig {
+  return {
+    enabled: !isOff(env.TM_SPLIT_ADVICE),
+    briefTokens: clampNum(env.TM_SPLIT_BRIEF_TOKENS, SPLIT_DEFAULTS.briefTokens, 200, 200_000),
+    maxCriteria: clampNum(env.TM_SPLIT_MAX_CRITERIA, SPLIT_DEFAULTS.maxCriteria, 1, 50),
+  }
+}
+
+/** The brief text of a `subagent` dispatch, or "" when the input is not one.
+ *  `prompt` is the brief; `description` is the fallback the host also carries. */
+export function briefTextOf(input: unknown): string {
+  if (!input || typeof input !== "object" || Array.isArray(input)) return ""
+  const a = input as Record<string, unknown>
+  const prompt = typeof a.prompt === "string" ? a.prompt : ""
+  const desc = typeof a.description === "string" ? a.description : ""
+  return prompt || desc
+}
+
+/** The ONE advice line.  It names the measured size, the split rule, and the
+ *  escape hatch — a directive the user can turn off is not a silent behaviour. */
+export function splitAdviceText(briefTokens: number, briefTokensLimit: number, maxCriteria: number): string {
+  return `${SPLIT_MARKER}\n上一次派发的 brief 约 ${briefTokens} token（阈值 ${briefTokensLimit}，验收标准上限 ${maxCriteria} 条）：请把它拆成可独立验收的小片——每个 dispatch 只服务一条可验收的交付，各自带 verbatim 数据契约；每片都要能独立验收，否则不是拆分而是切碎。可 TM_SPLIT_ADVICE=off 关闭。`
+}
 
 /**
  * The tools one agent must never be offered.  Only a literal `deny` removes:
@@ -140,6 +204,11 @@ export interface SessionLayerInput {
    *  trim is already keyed by agent (a foreign role is not in the plan, so nothing
    *  is deleted); this closes the other three. */
   scope?: import("./v2-scope.js").TeamScope
+  /** #49 feature 4: the split-advice knobs.  Absent = the defaults (on). */
+  split?: SplitConfig
+  /** Fired for each observable split outcome so the personality can write the
+   *  `step_id:"v2-split"` trajectory line — the layer owns no store. */
+  onSplit?: (row: Record<string, unknown>) => void
 }
 
 export interface SessionLayerReport {
@@ -154,6 +223,12 @@ export interface SessionLayerReport {
    *  model's own callable list was nine native tools. Reporting the sent flag as if it
    *  were the outcome is the overstated claim this product exists to refuse. */
   tmInRequestSurface: boolean
+  /** #49 feature 4: `subagent` briefs measured on a Team session. */
+  splitSeen: number
+  /** …of those, how many armed the advice AND had it injected into a request. */
+  splitAdvised: number
+  /** A throw inside the split hooks is swallowed and counted, never propagated. */
+  splitThrew: number
 }
 
 /**
@@ -173,11 +248,21 @@ export async function applyV2SessionLayer(
     notePushed: false,
     compactionLines: 0,
     tmInRequestSurface: false,
+    splitSeen: 0,
+    splitAdvised: 0,
+    splitThrew: 0,
   }
   const session = ctx.session
   if (!session || typeof session.hook !== "function") {
     return { registrations, report }
   }
+
+  // #49 feature 4: the pending split advice, armed by a `subagent` brief on
+  // `execute.before` and consumed by the lead's next `context` request.  Held in
+  // this closure so the two hooks share one slot; consumed once so a replayed
+  // hook cannot duplicate it.
+  const split = input.split ?? SPLIT_DEFAULTS
+  let pendingAdvice: string | null = null
 
   // Property-access calls, never a captured reference — a detached `hook` loses
   // its receiver and the host's client throws (see the §10 rule in dispatch.ts).
@@ -232,6 +317,26 @@ export async function applyV2SessionLayer(
           report.notePushed = true
         }
       }
+
+      // #49 feature 4: inject the pending split advice into the LEAD's next
+      // request only.  A child session's agent is also one of ours, so gating on
+      // scope alone would hand the advice to a specialist; the lead is the only
+      // role that dispatches, so it is the only role the advice is for.
+      if (pendingAdvice && agentKey === "team" && Array.isArray(event.system)) {
+        const already = event.system.some(
+          (p) => typeof (p as { text?: unknown })?.text === "string" && (p as { text: string }).text.includes(SPLIT_MARKER),
+        )
+        if (!already) {
+          event.system.push({ type: "text", text: pendingAdvice })
+          report.splitAdvised++
+          try {
+            input.onSplit?.({ event: "injected" })
+          } catch {
+            /* the trajectory line is an extra */
+          }
+        }
+        pendingAdvice = null
+      }
     }),
   )
 
@@ -246,6 +351,34 @@ export async function applyV2SessionLayer(
       }
     }),
   )
+
+  // #49 feature 4: the trigger.  `execute.before` is the only seam that sees the
+  // `subagent` call's own `input`; a brief over the threshold arms ONE advice line
+  // for the lead's next request.  It never rewrites the input and never rejects.
+  const tool = ctx.tool
+  if (split.enabled && tool && typeof tool.hook === "function") {
+    registrations.push(
+      await tool.hook("execute.before", (event) => {
+        try {
+          if (String(event?.tool ?? "") !== "subagent") return
+          if (input.scope && input.scope.count(input.scope.decide(event)) !== "ours") return
+          const brief = briefTextOf(event?.input)
+          if (!brief) return
+          const tokens = estimateTokens(brief)
+          report.splitSeen++
+          if (tokens <= split.briefTokens) return
+          pendingAdvice = splitAdviceText(tokens, split.briefTokens, split.maxCriteria)
+          try {
+            input.onSplit?.({ event: "advised", brief_tokens: tokens })
+          } catch {
+            /* the trajectory line is an extra */
+          }
+        } catch {
+          report.splitThrew++
+        }
+      }),
+    )
+  }
 
   return { registrations, report }
 }

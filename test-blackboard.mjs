@@ -503,6 +503,19 @@ assert.ok(
   leadPrompt.indexOf("## Efficiency first") < leadPrompt.indexOf("## Routing table"),
   "lead: the efficiency mandate is stated BEFORE the table it justifies (a rule after its exception cannot bind)",
 )
+// #49 feature 4: the split discipline.  The section must name the ONE property
+// that separates splitting from chopping — each piece is independently
+// verifiable — because a rule that only says "split big tasks" invites the
+// model to cut a deliverable into pieces that only make sense together.
+assert.ok(leadPrompt.includes("## Task splitting"), "lead: the task-splitting discipline is a named section")
+assert.ok(
+  leadPrompt.includes("independently verifiable"),
+  "lead: splitting names the property that separates it from chopping (each piece stands on its own)",
+)
+assert.ok(
+  leadPrompt.indexOf("## Task splitting") < leadPrompt.indexOf("## Routing table"),
+  "lead: the split rule sits with the efficiency mandate, before the routing table",
+)
 
 assert.ok(leadPrompt.includes("update AGENTS.md"), "lead: AGENTS.md sync duty")
 assert.ok(leadPrompt.includes("Repo hygiene applies to you too"), "lead: repo hygiene rule (temp files deleted / OS temp dir)")

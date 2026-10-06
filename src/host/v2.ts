@@ -48,7 +48,7 @@ import { applyV2SubagentRegistry, applyV2CompletionWatch } from "./v2-subagent.j
 import { applyV2BrowserGate, browserGateSummary } from "./v2-browser-gate.js"
 import { seedWebfetchDomains } from "../tm/webfetch.js"
 import { v2CapabilityRows } from "./v2-capabilities.js"
-import { applyV2SessionLayer, removalPlan } from "./v2-session.js"
+import { applyV2SessionLayer, removalPlan, resolveSplitConfig } from "./v2-session.js"
 import { applyV2RetryGovernor, createRetryGovernor, resolveRetryConfig } from "./v2-retry.js"
 import { applyV2EarlyCompaction, resolveCompactConfig } from "./v2-compaction.js"
 import { applyV2ContextPrune, resolvePruneConfig } from "./v2-prune.js"
@@ -751,7 +751,23 @@ export const v2Personality: V2Plugin = {
       }
     }
 
-    const session = await applyV2SessionLayer(ctx, { temperature, note, noteAgents: ["Team"], plan, scope })
+    const session = await applyV2SessionLayer(ctx, {
+      temperature,
+      note,
+      noteAgents: ["Team"],
+      plan,
+      scope,
+      // #49 feature 4: 拆分任务.  The layer owns no store, so the trajectory sink
+      // is wired here — same shape as the retry governor's `onEvent`.
+      split: resolveSplitConfig(v2Env),
+      onSplit: (row) => {
+        try {
+          tmRuntime.pipelines.store.appendTrajectory({ tool: "host", step_id: "v2-split", api: 2, ...row })
+        } catch {
+          /* the trajectory is an extra, never a reason to fail the call */
+        }
+      },
+    })
     // #58: point the late-bound reader at the real observation now that the
     // request layer exists, so `v2-surface` carries `tools_in_request` too.
     tmInRequestSurface = () => (session.report.tmInRequestSurface ? "tm-in-request" : "catalog-only")
@@ -948,6 +964,9 @@ export const v2Personality: V2Plugin = {
       tools_removed: [...plan.entries()].map(([k, v]) => `${k}=${v.size}`).join(" "),
       note_pushed: session.report.notePushed,
       compaction_lines: session.report.compactionLines,
+      // #49 feature 4: 拆分任务 — briefs measured and advice injected.
+      split_seen: session.report.splitSeen,
+      split_advised: session.report.splitAdvised,
       compact_enabled: compaction.report.enabled,
       compact_at_percent: compaction.report.percent,
       compact_checked: compaction.report.checked,
@@ -1150,6 +1169,9 @@ export const v2Personality: V2Plugin = {
           shell_timeout_threw: shellTimeout.report.threw,
           note_pushed: session.report.notePushed,
           compaction_lines: session.report.compactionLines,
+          // #49 feature 4: 拆分任务 — the same counter set as the surface row.
+          split_seen: session.report.splitSeen,
+          split_advised: session.report.splitAdvised,
           // Early compaction, counted per outcome so the claim is checkable: `fired` is
           // what we admitted, `confirmed` what the host accepted, and a `no_limit` with no
           // `fired` means we never found a denominator — not that the window was empty.
