@@ -515,18 +515,20 @@ Team Lead 自己从不删黑板，你可以随时审计任何一次运行。
 
 **全局安装** —— 把插件条目放进 `~/.config/opencode/opencode.jsonc`，每个项目都有团队。
 
-**不想让 Team 占默认位：** 在 OpenCode 2.x 上做不到，而且这是实测结论不是设计偏好——宿主
-不给 2.x 插件传任何选项：`"plugin": [["…", { "defaultAgent": false }]]` 这种元组下
-`ctx.options` 仍是空的（2026-10-06 实测：带元组启动，boot 行仍写着 `board_ttl_days=5`），
-而把元组写进 `plugins` 数组会被直接拒（`path=$.plugins.1 kind=invalid`）。Team 每次启动都是
-默认。要换掉它，自己改配置键：
+**不想让 Team 占默认位：**
 
 ```jsonc
 {
-  "plugins": ["@te-river/opencode-team-mode@latest"],
-  "default_agent": "build"
+  "plugins": [
+    { "package": "@te-river/opencode-team-mode@latest", "options": { "defaultAgent": false } }
+  ]
 }
 ```
+
+注意形状：2.x 的插件条目要么是字符串，要么是带 `package` 与 `options` 的**对象**。1.x 那种
+`["@te-river/opencode-team-mode@latest", { … }]` 元组会被直接拒（`path=$.plugins.1 kind=invalid`，
+2026-10-06 实测）。选项确实能传进来——用对象形状时 `{ "ttlDays": 7 }` 的 boot 行读出
+`board_ttl_days=7`，这是实测不是文档承诺。
 
 你自己定义的同名 agent 永远优先；插件从不覆盖用户定义。覆盖、加人、停用
 见[自定义](#-自定义)。
@@ -651,9 +653,18 @@ Team Lead 自己从不删黑板，你可以随时审计任何一次运行。
 
 **停用一个：** `"researcher": { "disable": true }`。
 
-**黑板保留期** 在 OpenCode 2.x 上固定 5 天：`ttlDays` 这个插件选项根本送不进来（实测——元组
-要么被拒要么被忽略，boot 行始终是 `board_ttl_days=5`）。空闲任务目录在启动时和每小时各扫一次；
-暂时没有 2.x 旋钮可调这一项。
+**黑板保留期** 用插件条目的 `options`：
+
+```jsonc
+{
+  "plugins": [
+    { "package": "@te-river/opencode-team-mode@latest", "options": { "ttlDays": 7 } }
+  ]
+}
+```
+
+有效区间 (0, 365]，非法值回退 5。2026-10-06 实测：这样写时 `ttlDays: 9` 的 boot 行读出
+`board_ttl_days=9`。（1.x 的元组形状在 2.x 会被拒：`path=$.plugins.1 kind=invalid`。）
 
 ---
 

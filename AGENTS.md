@@ -327,6 +327,29 @@ re-deriving any of this, and append findings there (dated, with an evidence tag)
 
 All test suites must pass before committing.
 
+## Official references — the 2.x host, read not guessed
+
+Verified by opening each page in the host's own browser (`browser.tabs.open` + `evaluate`; note
+the native `browser.*` convention differs from `tm_browser`: `evaluate` takes `{tabID, script}`
+where `script` is an **expression** and the return value must be a scalar you
+`JSON.stringify` yourself).
+
+| URL | What it settles |
+|---|---|
+| `https://opencode.ai/v2/docs/` | 2.x docs root |
+| `https://opencode.ai/v2/docs/config` | **Config layering, authoritative**: global `~/.config/opencode/opencode.json(c)`; project `<dir>/opencode.json(c)` or `<dir>/.opencode/opencode.json(c)`; OpenCode searches from the current directory up to the filesystem root, merges direct files farthest→closest and then `.opencode/` dirs in the same order, and **every discovered `.opencode` config overrides every direct config**. There is **no session layer** in the host's own config |
+| `https://opencode.ai/v2/docs/plugins/` | **Plugin entry shapes**: an item is a string **or an object** `{ "package": …, "options": { … } }`; relative paths resolve from the config file containing the entry; plugin arrays from applicable config files are **applied lowest→highest rather than replacing one another**; entries are processed in order, `-<id>` disables, `*` matches all, `.*` matches an id prefix, and a later id re-enables. Also: `.opencode/plugins/` is auto-discovered, and `opencode.config.policy` / `opencode.provider.opencode` ignore removals so a repository cannot switch policy off |
+| `https://opencode.ai/v2/docs/api` | Route inventory (141 operations, 256 schemas). Directly relevant to us: `POST /api/session/{id}/compact` (what `ctx.session.compact` calls), `GET /api/session/{id}/context`, `GET /api/experimental/session/stats`, `PUT /api/experimental/session/{id}/instructions/entries/{key}` (the host's own per-session instruction store), `POST /api/session/{id}/background`, and the `plugin` resource (`GET /api/plugin`, `check`, `update`) |
+| `https://opencode.ai/v2/docs/tools/` | Native tool semantics: `read` pages at 2 000 lines / 50 KiB and passes PNG/JPEG/GIF/WebP/PDF up to 20 MiB; `glob` and `grep` default to 100 results with a 30 s search timeout; each tool states the **resource** used for permission (`read` → normalized path, `glob` → pattern, `grep` → pattern, not the search path) — that resource is what our `pathGuard` and `webGuard` classify |
+| `https://opencode.ai/config.json` | The config schema (256 `$defs`). `$defs.Config.properties` is the source of truth for key names; `additionalProperties: false` on most objects is why an invented key is rejected rather than ignored |
+| `https://opencode.ai/v2/openapi.json` | Message and session schemas |
+
+Two facts from those pages that **corrected** claims in this file, both re-measured afterwards:
+plugin options on 2.x use the object form (`{package, options}`) and DO arrive — the 1.x tuple
+`["spec", {…}]` is rejected with `path=$.plugins.1 kind=invalid`, which is what made an earlier
+revision of this file claim 2.x delivers no plugin options at all; and config layering has no
+session layer, so a layered `team-mode` config can only be global + project.
+
 ## Live verification recipes
 
 The rule these serve: **a write is not an arrival** — verify at the symptom layer (a host log

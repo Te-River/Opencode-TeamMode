@@ -48,7 +48,7 @@ implied:
 |---|---|---|
 | The six roles | injected by the plugin at boot | `~/.config/opencode/agents/*.md`, written by the generator below — a plugin cannot add an agent |
 | The six `/team-*` commands | injected by the plugin | `~/.config/opencode/commands/*.md`, same generator |
-| Default agent | filled only if the user left it alone | **Team is the default on every boot** (the API has no getter), plus `default_agent: "Team"` in config, which is the checkable one. There is no opt-out via plugin options on 2.x: the host delivers none — a `"plugin": [["…", { "defaultAgent": false }]]` tuple leaves `ctx.options` empty (measured 2026-10-06: `board_ttl_days=5` with the tuple present) and a tuple inside `plugins` is rejected (`$.plugins.1 kind=invalid`). Set `default_agent` yourself to move off Team |
+| Default agent | filled only if the user left it alone | **Team is the default on every boot** (the API has no getter), plus `default_agent: "Team"` in config, which is the checkable one. Opt out with `{ "package": "@te-river/opencode-team-mode@latest", "options": { "defaultAgent": false } }` in `plugins` — the object form, not the 1.x tuple (measured 2026-10-06: a tuple is rejected with `path=$.plugins.1 kind=invalid`, the object form is delivered) |
 | Non-blocking commands | `tm_pty` — **removed with v1 support** | **not registered at all** — the v2 plugin context has no pty domain, so the tool could only ever report its own missing seam. Run a slow step as its own `shell` call (one per call, each with its own `timeout`) and tee the output to a log you can read back |
 | File access | `tm_read` / `tm_grep` / `tm_bash` — **removed with v1 support** | the host's own `read` / `grep` / `glob` / `shell` — **governed anyway**: oversized results are offloaded through `tool.execute.after`, and out-of-project paths go through the host's own `external_directory` permission (a dialog, where v1 had a hard refusal) |
 | Batch calls | `tm_ptc_run` — **removed with v1 support** | the host's own `execute` (Code Mode) |
@@ -271,7 +271,7 @@ before concluding the install is broken.
 |---|---|---|
 | 六个角色 | 插件启动时注入 | `~/.config/opencode/agents/*.md`，由下面的生成器写出——插件没有"造 agent"的接口 |
 | 六条 `/team-*` 命令 | 插件注入 | 同一个生成器写 `commands/*.md` |
-| 默认 agent | 只在用户没动过时补位 | **每次启动都把 Team 设成默认**（v2 没有读取接口），再加配置里的 `default_agent: "Team"`（这一条才是你核对得动的）。2.x 上**没有**靠插件选项退出的办法：宿主不给插件传选项——实测 `"plugin": [["…", { "defaultAgent": false }]]` 元组下 `ctx.options` 仍是空的（带元组启动时 `board_ttl_days=5`），而把元组写进 `plugins` 会被拒（`$.plugins.1 kind=invalid`）。要换默认就自己改 `default_agent` |
+| 默认 agent | 只在用户没动过时补位 | **每次启动都把 Team 设成默认**（v2 没有读取接口），再加配置里的 `default_agent: "Team"`（这一条才是你核对得动的）。退出方式：`plugins` 里写 `{ "package": "@te-river/opencode-team-mode@latest", "options": { "defaultAgent": false } }`——必须是对象形状，不是 1.x 的元组（2026-10-06 实测：元组被拒 `path=$.plugins.1 kind=invalid`，对象形状能送达） |
 | 读文件 / 搜代码 / 跑命令 | `tm_read` / `tm_grep` / `tm_bash`——**已随 v1 支持一起移除** | 宿主的 `read` / `grep` / `glob` / `shell`，**治理照旧**：超大结果照样在 `tool.execute.after` 被卸载成预览 + 句柄，跨出项目的路径走宿主自己的 `external_directory` 权限（v1 是硬拒，v2 是弹窗） |
 | 批量调用 | `tm_ptc_run`——**已随 v1 支持一起移除** | 宿主自己的 `execute`（Code Mode） |
 | 入口文件（v2 主机的硬要求） | — | 宿主把插件**目录**解析成 `<目录>/index.js`；只写 `package.json#exports` 的目录会被**静默忽略**（连错误都没有）。本包根目录的 `index.js` 就是为这条存在的——`plugins: ["./vendor/team-mode"]` 这类官方写法能加载，靠的是它 |
@@ -463,4 +463,4 @@ opencode reload
 | `TM_NATIVE_OFFLOAD` | on | 用 `tool.execute.after` 治理宿主原生工具的结果；off 就退回宿主原样 |
 | `TM_R6_FINE_ASK` | on（v2） | 由按命令分类器决定哪条 shell 要问；`off` 回到"每条 shell 都问"，宿主没有 `permission.hook` 时也自动回到这一档 |
 | `TM_V2_PROBE` | 未设 | 把宿主真实工具面/动作名记成 JSONL（只有名字和计数） |
-| `"@te-river/opencode-team-mode": { "defaultAgent": false }` | **2.x 上无效**（实测 2026-10-06：宿主不给插件传选项，`ctx.options` 仍为空；元组写进 `plugins` 会被 `$.plugins.1 kind=invalid` 拒） | Team 每次启动都为默认；要换默认请自己改配置里的 `default_agent` |
+| `{ "package": "@te-river/opencode-team-mode@latest", "options": { "defaultAgent": false } }` | 不设置 = Team 永远默认 | 退出默认位抢占（2.x 必须用对象形状；1.x 的元组会被宿主拒：`path=$.plugins.1 kind=invalid`） |

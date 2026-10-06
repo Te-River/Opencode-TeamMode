@@ -597,20 +597,21 @@ The plugin injects everything at startup — no agent files to copy.
 
 **Global install** — put the plugin entry in `~/.config/opencode/opencode.jsonc` and every project gets the team.
 
-**Keep Team off the default slot:** on OpenCode 2.x you cannot — and that is a measured
-fact, not a policy. The host delivers no plugin options to a 2.x plugin: a
-`"plugin": [["…", { "defaultAgent": false }]]` tuple leaves `ctx.options` empty (verified
-2026-10-06 — the plugin booted with `board_ttl_days=5` while the tuple was present), and a
-tuple inside `plugins` is rejected outright (`path=$.plugins.1 kind=invalid`). Team is the
-default on every boot by standing design. To change the default yourself, edit the config
-key directly:
+**Keep Team off the default slot:**
 
 ```jsonc
 {
-  "plugins": ["@te-river/opencode-team-mode@latest"],
-  "default_agent": "build"
+  "plugins": [
+    { "package": "@te-river/opencode-team-mode@latest", "options": { "defaultAgent": false } }
+  ]
 }
 ```
+
+Note the shape: on 2.x a plugin entry is either a string or an **object** with `package` and
+`options`. The 1.x tuple form `["@te-river/opencode-team-mode@latest", { … }]` is rejected
+(`path=$.plugins.1 kind=invalid`, measured 2026-10-06). Options do arrive — with the object
+form the boot row reads `board_ttl_days=7` for `{ "ttlDays": 7 }`, so this is measured, not
+documented-and-hoped.
 
 Your own agents named `team` / `architect` / … always take precedence; the
 plugin never clobbers user definitions. See [Customization](#-customization)
@@ -741,10 +742,19 @@ not the rule: a deliverable over ~50 lines goes to ONE named board file under
 
 **Disable one:** `"researcher": { "disable": true }`.
 
-**Board retention** is fixed at 5 days on OpenCode 2.x: the `ttlDays` plugin option is never
-delivered (measured — the tuple is either rejected or ignored, and the boot row reads
-`board_ttl_days=5` regardless). Idle task folders are swept at startup and hourly; there is no
-2.x knob for the window yet.
+**Board retention** via the plugin entry's `options`:
+
+```jsonc
+{
+  "plugins": [
+    { "package": "@te-river/opencode-team-mode@latest", "options": { "ttlDays": 7 } }
+  ]
+}
+```
+
+Valid range (0, 365], invalid values fall back to 5. Measured 2026-10-06: with this shape the
+boot row reads `board_ttl_days=9` for `ttlDays: 9`. (The 1.x tuple form is rejected on 2.x:
+`path=$.plugins.1 kind=invalid`.)
 
 ---
 
