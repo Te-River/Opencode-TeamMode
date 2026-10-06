@@ -129,6 +129,11 @@ const run = (file) =>
         TM_STORE_RECLAIM: "off",
         TM_BLACKBOARD_DIR: path.join(storeRoot, "blackboard"),
         TM_TRAJECTORY_DIR: path.join(storeRoot, "trajectory"),
+        // The layered config reads `~/.config/opencode/team-mode.jsonc` unless told otherwise,
+        // so a suite that builds the runtime would otherwise read the DEVELOPER'S real config
+        // file — green here (this machine has none) and flaky on a machine that has one.
+        // Point it at an empty directory: a suite that wants a config file passes its own root.
+        OPENCODE_CONFIG_DIR: path.join(storeRoot, "config"),
       },
     })
     let out = ""
