@@ -368,6 +368,30 @@ function countersSourceLine(line: Record<string, unknown>): string {
   return `观察计数器来源=${at}（${gloss}）`
 }
 
+/** #49 Context Pruning: the counters the prune layer writes on the boot / surface /
+ *  shutdown rows.  Rendered here because a counter that is recorded but never printed
+ *  is the exact defect this section exists to remove — and because the two zeroes a
+ *  reader must not confuse are "we looked and it was under the threshold" (没裁) and
+ *  "we could not even compute the threshold" (没得裁, `no_limit`).  `pruned_tokens` is
+ *  OUR estimate (`estimateTokens`), never a number the host reported, and the line
+ *  says so out loud. */
+export function pruneLine(line: Record<string, unknown>): string {
+  if (line.prune_enabled === undefined) return ""
+  if (line.prune_enabled === false) return "裁剪：TM_PRUNE=off（操作员关的，不是坏）"
+  const n = (v: unknown) => Number(v ?? 0)
+  const parts = [
+    `裁剪：阈值 ${line.prune_at_percent}% · 保留尾部 ${line.prune_keep_tail_percent}%`,
+    `装配检查 ${n(line.prune_checked)} 次`,
+    `裁掉 ${n(line.prune_pruned_messages)} 条消息（省 ${n(line.prune_pruned_tokens).toLocaleString("en-US")} token，估算，非宿主上报）`,
+    `未到阈值 ${n(line.prune_below)} 次（没裁：看过了，没超）`,
+    `读不到窗口上限 ${n(line.prune_no_limit)} 次（没得裁：连阈值都算不出来）`,
+  ]
+  if (n(line.prune_foreign_skipped)) parts.push(`非本会话跳过 ${n(line.prune_foreign_skipped)} 次`)
+  if (n(line.prune_threw)) parts.push(`抛错 ${n(line.prune_threw)} 次`)
+  if (n(line.prune_last_percent)) parts.push(`最近一次用量 ${n(line.prune_last_percent)}%`)
+  return parts.join(" · ")
+}
+
 /** Markdown, in the shapes the host renders fastest (tables, not prose). */
 export function renderStats(
   stats: TmStats,
@@ -541,6 +565,10 @@ export function renderStats(
           : "",
       ].filter(Boolean)
       out.push(`- \`${s}\` · ${stamp} · ${bits.join(" · ")}`)
+      // #49: the prune counters ride the same rows; a fact that is recorded but never
+      // printed is the defect this section was added to remove.
+      const pruneTxt = pruneLine(line)
+      if (pruneTxt) out.push(`  - ${pruneTxt}`)
       // The attach-time row says out loud the counters were not wired yet; that note is
       // the only thing standing between a missing `guard_seen` and a reader who takes it
       // for "never fired", so it is printed verbatim and never folded into a 0.

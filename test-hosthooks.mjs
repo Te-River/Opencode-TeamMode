@@ -137,7 +137,7 @@ console.log("  7. capability probe: SKIPPED — v1 createCapabilityProbe removed
     const boot = summarizeEvents([
       { ts: iso(0), tool: "host", step_id: "v2-boot", event: "personality", api: 2, tools_registered: 12, tools_total: 12, tools_v1_only: "tm_ptc_run", agents_default: "team", request_hooks: 2, request_temperature: 0.2, subagent_background: "forced-true", guard_hooks: 1, note: "参数表是推导的" },
       { ts: iso(1), tool: "host", step_id: "v2-shutdown", event: "personality", api: 2, counters_at: "shutdown", guard_seen: 7, guard_actions: "shell=5 read=2", guard_shell_matched: 1, subagent_seen: 2, subagent_forced: 2, tools_removed: "architect=19 team=8" },
-      { ts: iso(2), run_id: "rA", tool: "host", step_id: "v2-surface", event: "personality", api: 2, counters_at: "surface", native_offload_active: true, native_seen: 1, native_offloaded: 1, native_tokens_saved: 12824, scope_ours: 9, scope_foreign: 2, scope_unknown: 1, guard_foreign_skipped: 1, probe_tool_count: 6, probe_agents: "team", probe_executed: "shell", probe_actions: "shell", probe_evaluations: 1 },
+      { ts: iso(2), run_id: "rA", tool: "host", step_id: "v2-surface", event: "personality", api: 2, counters_at: "surface", native_offload_active: true, native_seen: 1, native_offloaded: 1, native_tokens_saved: 12824, scope_ours: 9, scope_foreign: 2, scope_unknown: 1, guard_foreign_skipped: 1, probe_tool_count: 6, probe_agents: "team", probe_executed: "shell", probe_actions: "shell", probe_evaluations: 1, prune_enabled: true, prune_at_percent: 70, prune_keep_tail_percent: 40, prune_checked: 5, prune_pruned_messages: 3, prune_pruned_tokens: 4200, prune_below: 1, prune_no_limit: 2, prune_foreign_skipped: 1, prune_threw: 0, prune_last_percent: 82 },
       { ts: iso(3), run_id: "rA", tool: "host", step_id: "v2-agents", event: "personality", api: 2, agents_default: "team", agents_normalized: true },
     ])
     const bmd = renderStats(boot, { runDirs: 1, roots: [] })
@@ -160,6 +160,16 @@ console.log("  7. capability probe: SKIPPED — v1 createCapabilityProbe removed
     // The native-offload counters ride the snapshot line, and a counter that is
     // written but never printed is the same defect this section was added to fix.
     ok(bmd.includes("原生工具治理 开") && bmd.includes("卸载 1 次") && bmd.includes("省 12824 token"), "…and the JIT-over-native-tools evidence prints, not just persists")
+    // #49 Context Pruning: the counters ride the same rows, and the token figure is
+    // OUR estimate — printing it as a host number would be the overstated claim this
+    // product exists to refuse.  The two zeroes stay apart: "we looked and it was
+    // under the threshold" (没裁) vs "we could not compute the threshold" (没得裁).
+    ok(bmd.includes("裁剪：阈值 70%") && bmd.includes("裁掉 3 条消息") && bmd.includes("省 4,200 token，估算，非宿主上报"), "…and the Context-Pruning counters print, with the token figure labelled as OUR estimate")
+    ok(bmd.includes("未到阈值 1 次（没裁") && bmd.includes("读不到窗口上限 2 次（没得裁"), "…and 'we looked and it was under' is kept apart from 'we could not compute the threshold'")
+    {
+      const offBoot = summarizeEvents([{ ts: iso(0), tool: "host", step_id: "v2-boot", event: "personality", api: 2, prune_enabled: false }])
+      ok(renderStats(offBoot, { runDirs: 1, roots: [] }).includes("TM_PRUNE=off"), "…and an operator opt-out says so instead of looking like a dead layer")
+    }
     ok(bmd.includes("execute.before 见到：shell"), "…naming the tool ids the host actually routed")
     ok(bmd.includes("归一化完成") && !bmd.includes("agents_normalized"), "the transform-time record renders as a sentence, not as raw field names")
     // A run appends an all-zero snapshot at attach; showing it beside (or instead

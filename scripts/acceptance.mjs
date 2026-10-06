@@ -97,9 +97,11 @@ function sandboxEnv(extra = {}) {
   }
 }
 
-function runCli(args, { cwd, env, logFile, timeoutMs = 120000 }) {
+function runProc(exe, args, { cwd, env, logFile, timeoutMs = 120000 }) {
   return new Promise((resolve) => {
-    const child = spawn(CLI, args, { cwd, env, windowsHide: true })
+    // stdin MUST be ignored: with a piped stdin the CLI's `serve --stdio` child keeps the
+    // pipe open and the process never exits (measured: 90s+ hang vs 5.5s with "ignore").
+    const child = spawn(exe, args, { cwd, env, windowsHide: true, stdio: ["ignore", "pipe", "pipe"] })
     let out = ""
     child.stdout.on("data", (d) => (out += String(d)))
     child.stderr.on("data", (d) => (out += String(d)))
@@ -125,6 +127,8 @@ function runCli(args, { cwd, env, logFile, timeoutMs = 120000 }) {
     child.on("error", (e) => done(1, null))
   })
 }
+
+const runCli = (args, opts) => runProc(CLI, args, opts)
 
 /** Read every steps.jsonl under <dir>/runs/* and return the parsed rows. */
 function readTrajectory(dir) {
@@ -289,7 +293,17 @@ async function groupC() {
     if (typeof setup !== "function") throw new Error("副本 dist/index.js 没有导出 setup")
     const { makeFakeCtx } = await import(pathToFileURL(path.join(REPO, "scripts", "lib", "fake-ctx.mjs")).href)
     fake = makeFakeCtx({ directory: ws, options: {} })
-    await setup(fake.ctx)
+    // The plugin's boot notes go to console.warn/error; capture them so the result table stays clean.
+    const origWarn = console.warn
+    const origErr = console.error
+    console.warn = () => {}
+    console.error = () => {}
+    try {
+      await setup(fake.ctx)
+    } finally {
+      console.warn = origWarn
+      console.error = origErr
+    }
   } catch (e) {
     record("C10", "R6 默认 armed：read .env 被拒", "FAIL", `进程内 boot 失败：${String(e?.message ?? e)}`)
     record("C11", "grep/glob 不绕 env-FILE", "FAIL", `进程内 boot 失败：${String(e?.message ?? e)}`)
@@ -338,6 +352,17 @@ async function groupB() {
   fs.mkdirSync(ws, { recursive: true })
   fs.writeFileSync(path.join(ws, "big.txt"), "line of filler text\n".repeat(4000) + "needle here\n")
   const bTraj = path.join(BASE, "b-traj")
+  // A v2 plugin cannot create agents — the six roles are config files.  `--agent team`
+  // resolves only after the generator writes them into the sandbox config dir.
+  const gen = await runProc(process.execPath, [path.join(COPY, "scripts", "gen-v2-config.mjs"), "--dir", BASE], {
+    cwd: COPY,
+    env: sandboxEnv(),
+    logFile: path.join(BASE, "gen.log"),
+  })
+  if (!fs.existsSync(path.join(BASE, "agents", "team.md"))) {
+    record("B0", "生成 Team 角色配置（gen-v2-config）", "FAIL", `未生成 agents/team.md（exit=${gen.code}）`)
+    return
+  }
   const prompt =
     "请依次执行并简短汇报：1) 用 read 工具读取 big.txt 全文；2) 用 grep 在 big.txt 里搜索 needle；" +
     "3) 用 shell 运行 `echo hi`；4) 用 subagent 派一个后台子代理做一件小事。"

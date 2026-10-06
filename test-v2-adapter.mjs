@@ -2822,6 +2822,28 @@ console.log("18. Team compacts EARLY — the 75% trigger is plugin logic, not so
     assert.match(off.note, /TM_COMPACT_TRIGGER=off/, "and it names the knob that did it")
     assert.equal(row(undefined).state, "declared", "a host that gave no compact seam reads declared, never ok")
   }
+
+  {
+    // #49 Context Pruning: the capability row keeps `declared` and `ok` apart the same
+    // way the compaction row does — `ok` only after a message was actually pruned, and
+    // an operator opt-out names the knob instead of looking broken.
+    const { v2CapabilityRows } = await import("./dist/host/v2-capabilities.js")
+    const base = (prune) => ({
+      ctx: { session: {} },
+      probe: { report: { ctxDomains: ["session"], hooksMissing: [], executed: [], executedAfter: [], actions: [], evaluations: 0, agentsSeen: [] } },
+      guardsInstalled: true, backgroundForced: true,
+      offload: { active: true, registrations: [{}], report: { seen: 0, offloaded: 0 } },
+      sessionHooks: 2, temperature: 0.2, hasTodoSeam: false, hasAsk: false, prune,
+    })
+    const row = (prune) => v2CapabilityRows(base(prune)).find((r) => r.seam.startsWith("Context Pruning"))
+    const counts = (o) => ({ enabled: true, atPercent: 70, keepTailPercent: 40, checked: 3, prunedMessages: 0, prunedTokens: 0, below: 1, noLimit: 0, foreignSkipped: 0, threw: 0, lastPercent: 0, ...o })
+    assert.equal(row(counts({ prunedMessages: 2, prunedTokens: 900 })).state, "ok", "a real prune greens the row")
+    assert.equal(row(counts({})).state, "declared", "a layer that ran but found nothing over the threshold stays declared")
+    const off = row(counts({ enabled: false }))
+    assert.equal(off.state, "declared", "an operator opt-out is not a broken host")
+    assert.match(off.note, /TM_PRUNE=off/, "and it names the knob that did it")
+    assert.match(row(counts({ prunedMessages: 2 })).note, /估算/, "the token figure is labelled as our estimate")
+  }
 }
 console.log("   OK (75% is plugin logic; one admission per usage number with a floor interval; the host's formula and both refusal shapes kept distinct; foreign/no-id/no-denominator all counted; declared ≠ ok)")
 

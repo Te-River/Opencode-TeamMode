@@ -767,6 +767,23 @@ export const v2Personality: V2Plugin = {
         offload,
         sessionHooks: 2,
         temperature,
+        // The prune layer's counters, handed to the matrix so its row can earn `ok` on a
+        // process that actually pruned something. Without this the row could only ever read
+        // `declared`, which is the "wired but never observed" shape the matrix exists to
+        // distinguish from "it ran".
+        prune: {
+          enabled: prune.report.enabled,
+          atPercent: prune.report.atPercent,
+          keepTailPercent: prune.report.keepTailPercent,
+          checked: prune.report.checked,
+          prunedMessages: prune.report.prunedMessages,
+          prunedTokens: prune.report.prunedTokens,
+          below: prune.report.below,
+          noLimit: prune.report.noLimit,
+          foreignSkipped: prune.report.foreignSkipped,
+          threw: prune.report.threw,
+          lastPercent: prune.report.lastPercent,
+        },
         // Both derived, not asserted: "we think v2 has no X" has to come from the
         // object we were handed, so a host that grows the seam shows up here
         // automatically instead of leaving a stale "missing" row forever.
