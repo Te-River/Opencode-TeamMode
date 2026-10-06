@@ -636,6 +636,9 @@ for overrides, extra agents and disabling roles.
 | `TM_SEARCH_MAX_HITS` | `10` | hits kept per engine leg and in the fused list |
 | `TM_SEARCH_DISABLED_ENGINES` | unset | engines removed from the roster AND from every `auto` route (`sogou,baidu` style) |
 | `TM_BASH_TIMEOUT_PROBE_MS` | `60000` | ceiling forced onto a `timeout` the model set for a read-only probe command (0 disables) |
+| `TM_PRUNE` | `on` | `off` stops context pruning entirely (settled message bodies stay in the request) |
+| `TM_PRUNE_AT_PERCENT` | `70` | prune once the request reaches this share of the model's window; derived from `limit.context`, never a fixed token count |
+| `TM_PRUNE_KEEP_TAIL_PERCENT` | `40` | share of the window kept verbatim at the tail; the newest message is always kept |
 | `TM_BASH_TIMEOUT_MAX_MS` | `0` | optional global ceiling for every other bash command — off by default so a real build keeps the timeout it asked for |
 | `TM_JOIN_MAX_WAIT_MS` | `60000` | ceiling on `tm_join { waitMs }`. Was 300 000, and a lead parked in it twice in a row (19 min of nothing) while its children worked — waiting is not parallelism, so the default now says "check, then work". A second consecutive wait after nothing settled is cut to 10 s and answered with what to do instead |
 | `TM_STORE_RECLAIM` | `on` | at boot, reclaim what an upgrade left behind: a per-workspace store shard idle past the TTL, and the pre-shard `blackboard/` + `trajectory/` under the temp-dir fallback (503 MB of expired runs on one real machine, with no sweeper pointed at them any more). Only TTL-expired entries are ever removed — a fresh run dir survives, because a session started before the upgrade may still be writing there. `off` leaves the disk exactly as found (the test runner sets it) |

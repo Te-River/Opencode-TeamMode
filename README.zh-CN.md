@@ -552,6 +552,9 @@ Team Lead 自己从不删黑板，你可以随时审计任何一次运行。
 | `TM_SEARCH_DISABLED_ENGINES` | 未设 | 从引擎表与所有 `auto` 路由中移除的引擎（`sogou,baidu` 写法） |
 | `TM_WEB_CACHE_TTL_SEC` | `300` | 受治理抓取在同一 URL 上可复用多久（0 = 关）。tm_webfetch / tm_search 共用一份缓存；条目以哈希命名（带令牌的查询串不落盘），且只在**静态白名单**放行的那一跳读写——弹窗授权仍是逐请求的，复用命中会标注 缓存命中 |
 | `TM_BASH_TIMEOUT_PROBE_MS` | `60000` | 对只读探针命令（P3 白名单内）强制夹顶模型自设的 `timeout`（0 关闭） |
+| `TM_PRUNE` | `on` | `off` 完全关闭上下文裁剪（已结算的消息正文留在请求里） |
+| `TM_PRUNE_AT_PERCENT` | `70` | 请求达到模型窗口的这个比例就开始裁；从 `limit.context` 推导，不是写死的 token 数 |
+| `TM_PRUNE_KEEP_TAIL_PERCENT` | `40` | 尾部逐字保留的窗口比例；最新一条永远保留 |
 | `TM_BASH_TIMEOUT_MAX_MS` | `0` | 其它 bash 命令的可选全局上限——默认关闭，真实构建保留它要的超时 |
 | `TM_JOIN_MAX_WAIT_MS` | `60000` | `tm_join { waitMs }` 的上限。过去是 300 000，于是有了一次"连续两次各等 5 分钟、期间 lead 什么都没做"的实测——等待不是并行，所以默认改成"看一眼就去干活"。上一次没等到任何结算时，第二次等待被截到 10 秒并附替代动作 |
 | `TM_STORE_RECLAIM` | `on` | 启动时回收“升级留下的遗产”：超过 TTL 没动静的分片，以及临时目录回退点上分片之前的 `blackboard/` + `trajectory/`（一台真实机器上实测滞留 503 MB 过期 run，而搬家后没有任何清扫器指向那里）。只删超过 TTL 的条目——新鲜的 run 一定留着，因为升级前起来的会话可能还在往里写。设 `off` 就完全不碰磁盘（测试执行器会设它） |

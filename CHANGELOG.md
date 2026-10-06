@@ -75,6 +75,19 @@ registry saw 1.5.0 as the install-script fix release).
   it swallows its own failures into a counted verdict. Knobs `TM_PROBE_CHAIN_AFTER` (default 3,
   `0` disables) and `TM_PROBE_CHAIN=off`; counters `probe_chain_seen/advised/reset/
   foreign_skipped/threw` ride the surface and shutdown rows with their own trajectory line.
+- **Context pruning: settled weight leaves the request, evidence does not.** `src/host/v2-prune.ts`
+  rides `session.hook("context")` and replaces a **settled** message body with a self-explaining
+  pointer — a `tm_fetch` handle for an offloaded tool result, a `tm_join` id for a settled child
+  report, a plain note for a command echo. The threshold is derived from `limit.context`
+  (`TM_PRUNE_AT_PERCENT`, default 70) with a verbatim tail (`TM_PRUNE_KEEP_TAIL_PERCENT`,
+  default 40), never a hard-coded token count; with no limit it prunes nothing and counts
+  `no_limit`. Nothing that carries evidence is touched: the reply skeleton, GOAL/ACCEPTANCE,
+  provenance, system messages, the board note, a still-running child and an uncollected child id
+  are protected whole, and a handle message keeps its `ref`/`access_token`/`expire_at` verbatim in
+  the stub. `TM_PRUNE=off` disables it; counters `prune_checked/pruned_messages/pruned_tokens/
+  no_limit/foreign_skipped/threw` ride the boot, surface and shutdown rows with a `v2-prune`
+  trajectory line. Team-scoped, never throws, idempotent by sentinel, and the untouched messages
+  are asserted byte-exact.
 
 ### Changed
 
