@@ -5,7 +5,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 versioning is semver (the 1.4.x train shipped under working labels; the
 registry saw 1.5.0 as the install-script fix release).
 
-## [Unreleased]
+## [1.7.0] - 2026-10-06
 
 ### Added
 
@@ -247,6 +247,14 @@ registry saw 1.5.0 as the install-script fix release).
   `.profile`, a `*.env` grep include and a `**/.env` glob all deny, while `src/.env.example`,
   `README.md`, `package.json`, a bare `TODO` pattern, `process.env` and `src/env.ts` are
   untouched — a false denial here would itself have been the regression.
+
+### Not verified on a live host
+
+- **The retry governor's `session.error` subscription.** The layer is installed and its
+  classification / backoff / cooldown are unit-tested, but no real quota or rate-limit error could
+  be produced on demand (38 concurrent turns all returned `ok`), so whether the host actually routes
+  `session.error` to a plugin subscriber on 2.0.24 is **unverified**. Everything else in this
+  release was exercised on a live 2.0.24 host, including the four context-budget features.
 
 ## [1.6.2] - 2026-10-04
 
