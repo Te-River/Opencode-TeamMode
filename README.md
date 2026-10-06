@@ -637,7 +637,7 @@ for overrides, extra agents and disabling roles.
 | `TM_SEARCH_DISABLED_ENGINES` | unset | engines removed from the roster AND from every `auto` route (`sogou,baidu` style) |
 | `TM_BASH_TIMEOUT_PROBE_MS` | `60000` | ceiling forced onto a `timeout` the model set for a read-only probe command (0 disables) |
 | `TM_PRUNE` | `on` | `off` stops context pruning entirely (settled message bodies stay in the request) |
-| `TM_PRUNE_AT_PERCENT` | `70` | prune once the request reaches this share of the model's window; derived from `limit.context`, never a fixed token count |
+| `TM_PRUNE_AT_PERCENT` | `70` | prune once the request reaches this share of the model's window; derived from `limit.context`, never a fixed token count. **Clamped to 40–95** — a lower value is silently raised to 40, so a reproduction that sets 5 is really testing 40 |
 | `TM_PRUNE_KEEP_TAIL_PERCENT` | `40` | share of the window kept verbatim at the tail; the newest message is always kept |
 | `TM_RETRY` | `on` | `off` stops the retry governor (no backoff directive, no cooldown) |
 | `TM_RETRY_BASE_MS` | `5000` | first backoff after a quota/rate-limit error; doubles per consecutive error |
@@ -646,7 +646,7 @@ for overrides, extra agents and disabling roles.
 | `TM_RETRY_BREAK_AFTER` | `5` | consecutive errors before the cooldown starts |
 | `TM_RETRY_COOLDOWN_MS` | `60000` | how long new sub-agent dispatches are refused once the breaker trips |
 | `TM_SPLIT_ADVICE` | `on` | `off` stops the split hint (the prompt discipline stays) |
-| `TM_SPLIT_BRIEF_TOKENS` | `4000` | a dispatch brief above this size earns a split hint on the next request |
+| `TM_SPLIT_BRIEF_TOKENS` | `4000` | a dispatch brief above this size earns a split hint on the next request. **Clamped to ≥200** — a lower value is silently raised, so a reproduction that sets 50 is really testing 200 |
 | `TM_SPLIT_MAX_CRITERIA` | `3` | the prompt's own rule: more acceptance criteria than this is a signal to split |
 | `TM_BASH_TIMEOUT_MAX_MS` | `0` | optional global ceiling for every other bash command — off by default so a real build keeps the timeout it asked for |
 | `TM_JOIN_MAX_WAIT_MS` | `60000` | ceiling on `tm_join { waitMs }`. Was 300 000, and a lead parked in it twice in a row (19 min of nothing) while its children worked — waiting is not parallelism, so the default now says "check, then work". A second consecutive wait after nothing settled is cut to 10 s and answered with what to do instead |
