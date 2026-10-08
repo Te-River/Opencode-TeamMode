@@ -79,13 +79,14 @@ function directoryOf(ctx: V2Context): string {
 /** #49 feature 2: the concurrency cap.  Default 3 (matches "at most 3 parallel
  *  reviewers" and leaves a normal user headroom); `0` disables it.  A missing or
  *  unparseable value falls back to the default rather than to 0, because a typo
- *  must not silently turn a safety cap off. */
-export function resolveMaxConcurrentSubagents(env: Record<string, string | undefined> = process.env): number {
-  const raw = String(env.TM_MAX_CONCURRENT_SUBAGENTS ?? "").trim()
-  if (!raw) return 3
-  const n = Number.parseInt(raw, 10)
-  if (!Number.isFinite(n) || n < 0) return 3
-  return n
+ *  must not silently turn a safety cap off.  A NEGATIVE is "off" too: the
+ *  registry already clamps it to `min: 0` before this function sees it, so the
+ *  `Math.max(0, …)` below is the defensive half of that same rule — a direct
+ *  caller must not get a different answer than the file path. */
+export function resolveMaxConcurrentSubagents(config: { maxConcurrentSubagents: number }): number {
+  const n = Number(config.maxConcurrentSubagents)
+  if (!Number.isFinite(n)) return 3
+  return Math.max(0, Math.floor(n))
 }
 
 export const v2Personality: V2Plugin = {
@@ -140,8 +141,7 @@ export const v2Personality: V2Plugin = {
     // (the host's own dialog) and the env-FILE face is `deny`; the resolved mode
     // rides the boot row's `env_protect` field so the user can see which world
     // they are in.
-    const envProtectMode = options.envProtect === false ? "off" : resolveEnvProtectMode(process.env.TM_ENV_PROTECT)
-    const envProtectExtra = parseExtraDeny(process.env.TM_ENV_PROTECT_EXTRA_DENY)
+    const envProtectOff = options.envProtect === false
 
     // ---------- the v2 network policy: no domain gate, IP red line only ----------
     // The user's standing instruction (2026-09-25): do not block network
@@ -149,27 +149,22 @@ export const v2Personality: V2Plugin = {
     // raise the host's official per-request dialog, so an allowlist would be a
     // set of pages the agent can never see and no one can approve -- a gate with
     // no door.  `"*"` therefore
-    // replaces the DEFAULT here, and what still holds absolutely is `checkWebUrl`'s
+    // replaces the DEFAULT here (via `configDefaults`, so a file value still
+    // wins), and what still holds absolutely is `checkWebUrl`'s
     // address policy underneath it: link-local / metadata / reserved ranges are a hard
     // deny no config can open (and were never consentable), and private space
     // (loopback / RFC1918 / CGNAT / .localhost) stays gated — refused through our
     // tools, which have no dialog to ask with, and opened only by the host's own
     // `effect:"ask"` for the native tools.  IPv4-mapped and DNS64 spellings are
     // unwrapped before that check, so the notation is not a way around it.
-    // An explicit TM_WEBFETCH_ALLOWED_DOMAINS always wins; this only changes
-    // which default applies, and it is resolved from a COPY of the env so the
-    // process env itself is untouched.
-    const v2Env: Record<string, string | undefined> = { ...process.env }
-    if (!String(v2Env.TM_WEBFETCH_ALLOWED_DOMAINS ?? "").trim()) v2Env.TM_WEBFETCH_ALLOWED_DOMAINS = "*"
     // The DOMAIN gate is off on this personality (see the note above): 2.x gives a
     // plugin no dialog, so "approve to proceed" is an instruction to wait for a
     // window that never opens.  Private space is NOT opened by the same logic,
     // because that is not a whitelist question — a default that let a governed tool
     // GET 192.168.1.1 would put the user's router in the trajectory for a mistake the
     // model made.  So the answer here is a refusal that names both exits
-    // (TM_PRIVATE_SPACE=allow, or the one host in TM_WEBFETCH_ALLOWED_DOMAINS) instead
+    // (privateSpace=allow, or the one host in webfetchAllowedDomains) instead
     // of promising a dialog, and `deny` is what a quiet v2 host gets.
-    const privateSpace = setPrivateSpacePolicy(String(v2Env.TM_PRIVATE_SPACE ?? "").trim() || "deny")
 
     // ---------- how our tools reach the model at all (measured in the binary) ----------
     // 2.0.16 decides tool visibility with `options.codemode`: a tool whose value is
@@ -198,7 +193,6 @@ export const v2Personality: V2Plugin = {
     // never gave. `direct` stays available as an experiment for a build that honours it,
     // and the shutdown line reports both halves: `tools_codemode` (sent) and
     // `tools_in_request` (what the assembled request actually carried).
-    const v2CodeModeDirect = /^(1|true|yes|on|direct)$/i.test(String(v2Env.TM_V2_CODEMODE ?? "").trim())
 
     // No SDK client.  The v2 plugin ctx carries no `file.read` / `find.text` /
     // `session.*` / `pty.*` object, and the fs shim that used to stand in for the
@@ -215,9 +209,13 @@ export const v2Personality: V2Plugin = {
     const tmRuntime = await createTmTools(
       { directory, project: "", client: sessionReader.client, $: undefined } as unknown as PluginInput,
       {
-        mode: envProtectMode,
-        extra: envProtectExtra,
-        env: v2Env,
+        mode: envProtectOff ? "off" : undefined,
+        // The v2 personality opens the domain allowlist by DEFAULT (a plugin
+        // cannot raise the dialog an allowlist would need).  `configDefaults` is
+        // BELOW the file layers, so an explicit `webfetchAllowedDomains` in the
+        // global file still wins.
+        configDefaults: { webfetchAllowedDomains: ["*"] },
+        autoCreate: options.autoCreate !== false,
         // The matrix is built from observations that do not exist yet at this line
         // (the probe, the guards, the offloader all register below), so it is a
         // LATE-BOUND closure rather than a snapshot taken too early — a row read
@@ -234,6 +232,14 @@ export const v2Personality: V2Plugin = {
       },
     )
     let v2Matrix: () => ReturnType<typeof v2CapabilityRows> = () => []
+
+    // The resolved runtime config — the ONE source every host layer reads from
+    // (no more `process.env` reads scattered across the modules).
+    const cfg = tmRuntime.config
+    const envProtectMode = envProtectOff ? "off" : resolveEnvProtectMode(cfg.envProtect)
+    const envProtectExtra = parseExtraDeny(cfg.envProtectExtraDeny)
+    const privateSpace = setPrivateSpacePolicy(cfg.privateSpace || "deny")
+    const v2CodeModeDirect = /^(1|true|yes|on|direct)$/i.test(cfg.v2CodeMode.trim())
 
     const registrations: V2Registration[] = []
     const notes: string[] = []
@@ -288,8 +294,8 @@ export const v2Personality: V2Plugin = {
     // `tools_in_request` (or tm_stats), never from this flag.
     notes.push(
       v2CodeModeDirect
-        ? "TM_V2_CODEMODE=direct：我们发了 options.codemode=false。宿主是否因此改成直接交付，要看 tm_stats 的 tools_in_request（2.0.16 实测：仍然只在 Code Mode 目录里，模型可直接调用的是那九个原生工具）"
-        : "tm_* 未带 options.codemode=false：宿主把它们放进 Code Mode 目录，模型看到的只有描述首行（≤120 字）——我们写在下面的治理文案大部分没送到。2.0.16 实测：TM_V2_CODEMODE=direct 也不改变这一点，所以默认留在此状态，真实交付情况以 tools_in_request 为准",
+        ? "v2CodeMode: \"direct\"：我们发了 options.codemode=false。宿主是否因此改成直接交付，要看 tm_stats 的 tools_in_request（2.0.16 实测：仍然只在 Code Mode 目录里，模型可直接调用的是那九个原生工具）"
+        : "tm_* 未带 options.codemode=false：宿主把它们放进 Code Mode 目录，模型看到的只有描述首行（≤120 字）——我们写在下面的治理文案大部分没送到。2.0.16 实测：v2CodeMode: \"direct\" 也不改变这一点，所以默认留在此状态，真实交付情况以 tools_in_request 为准",
     )
     registrations.push(
       await ctx.tool.transform((editor) => {
@@ -321,7 +327,7 @@ export const v2Personality: V2Plugin = {
       // registry (the same rows tm_join collects), so a session cannot exceed the
       // cap by dispatching faster than the lead collects.  `0` disables it.
       runningChildren: (caller) => tmRuntime.runningChildren(caller),
-      maxConcurrent: resolveMaxConcurrentSubagents(v2Env),
+      maxConcurrent: resolveMaxConcurrentSubagents(cfg),
       onConcurrencyDenied: (info) => {
         try {
           tmRuntime.pipelines.store.appendTrajectory({
@@ -385,14 +391,14 @@ export const v2Personality: V2Plugin = {
     // per-tool promise is no promise).  Registered BEFORE the probe so the probe's
     // throttled snapshot can carry its counters — a counter that only lands at
     // teardown is a counter that does not exist.
-    const offload = await applyV2NativeOffload(ctx, { pipelines: tmRuntime.pipelines, scope })
+    const offload = await applyV2NativeOffload(ctx, { pipelines: tmRuntime.pipelines, scope, config: cfg })
     registrations.push(...(await Promise.all(offload.registrations)))
     // #35: the Code Mode adoption hint.  Registered AFTER the offloader so its
     // append lands on whatever text the offloader left (a rewritten body or the
     // host's verbatim one) — the hint only ever ADDS a line, never rewrites.
     const probeChain = applyV2ProbeChain(ctx, {
       scope,
-      env: v2Env,
+      config: cfg,
       onAdvise: (info) => {
         try {
           tmRuntime.pipelines.store.appendTrajectory({
@@ -445,7 +451,7 @@ export const v2Personality: V2Plugin = {
     const browserGate = applyV2BrowserGate(ctx, {
       allowlist: seedWebfetchDomains(tmRuntime.config.webfetchAllowedDomains),
       scope,
-      env: v2Env,
+      config: cfg,
       // #14: the SERP rate limit's trajectory line.  The gate has no store, so the
       // sink is wired here — same shape as the shell-timeout clamp's `onClamp`.
       onSerp: (info) => {
@@ -559,7 +565,7 @@ export const v2Personality: V2Plugin = {
     if (offload.registrations.length === 0) {
       notes.push('这个宿主没有 tool.hook("execute.after")：原生 read/shell 的大输出不会被卸载，JIT 承诺只在 tm_* 上成立')
     } else if (!offload.active) {
-      notes.push("TM_NATIVE_OFFLOAD=off：原生工具的大输出按宿主原样进上下文（承诺退回 tm_* 范围）")
+      notes.push("nativeOffload: \"off\"：原生工具的大输出按宿主原样进上下文（承诺退回 tm_* 范围）")
     }
     if (!guards.installed) {
       notes.push("ctx.permission.hook 不存在：原生 webfetch 的元数据/私网红线和 R6 的按命令行判定都没地方落")
@@ -575,7 +581,7 @@ export const v2Personality: V2Plugin = {
     // the COARSE escalation (every command asks) only as the fallback:
     // `TM_R6_FINE_ASK=off`, or no hook installed to hand the decision to.
     const escalateShellAsk =
-      envProtectMode !== "off" && needsCoarseShellAsk(process.env, guards.installed)
+      envProtectMode !== "off" && needsCoarseShellAsk(cfg, guards.installed)
     // Team is ALWAYS the default (the user's standing instruction — see the
     // header for why there is no conservative form).  `default()` on
     // an agent that does not exist would just make the host fall back to build
@@ -701,7 +707,7 @@ export const v2Personality: V2Plugin = {
     if (escalateShellAsk) {
       notes.push(
         guards.installed
-          ? "R6 已开，但 TM_R6_FINE_ASK=off 显式要回粗粒度：shell 在配置里升为 ask（每条命令都问），按命令行判定的 evaluate 钩子不再决定这件事。"
+          ? "R6 已开，但 r6FineAsk: \"off\" 显式要回粗粒度：shell 在配置里升为 ask（每条命令都问），按命令行判定的 evaluate 钩子不再决定这件事。"
           : "R6 已开，但这个宿主没给 permission.hook：按命令行的红线无处可挂，只能把 shell 整体升为 ask（每条命令都问）——这是退路，不是设计。",
       )
     }
@@ -758,7 +764,7 @@ export const v2Personality: V2Plugin = {
       scope,
       // #49 feature 4: 拆分任务.  The layer owns no store, so the trajectory sink
       // is wired here — same shape as the retry governor's `onEvent`.
-      split: resolveSplitConfig(v2Env),
+      split: resolveSplitConfig(cfg),
       onSplit: (row) => {
         try {
           tmRuntime.pipelines.store.appendTrajectory({ tool: "host", step_id: "v2-split", api: 2, ...row })
@@ -777,7 +783,7 @@ export const v2Personality: V2Plugin = {
     // guards so its `evaluate` hook runs after the concurrency cap — both only
     // ever deny, so whichever fires first keeps its message and the stricter
     // effect (deny) stands either way.
-    const retryConfig = resolveRetryConfig(v2Env)
+    const retryConfig = resolveRetryConfig(cfg)
     // The layer owns no store, so the trajectory sink is wired here — same shape
     // as the shell-timeout clamp's `onClamp` and the SERP guard's `onSerp`.
     const retrySink = (row: Record<string, unknown>): void => {
@@ -801,7 +807,7 @@ export const v2Personality: V2Plugin = {
     // on the same assembled request, and it never touches a message outside its
     // plan (the newest message and every hard-protected one stay byte-exact).
     const prune = await applyV2ContextPrune(ctx, {
-      config: resolvePruneConfig(process.env),
+      config: resolvePruneConfig(cfg),
       scope,
       onEvent: (row) => {
         try {

@@ -5,6 +5,53 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 versioning is semver (the 1.4.x train shipped under working labels; the
 registry saw 1.5.0 as the install-script fix release).
 
+## [Unreleased]
+
+## [1.7.3] - 2026-10-07
+
+### Changed
+
+- **`team-mode.jsonc` is the only configuration source; the `TM_*` configuration environment
+  variables are gone (2026-10-07).** The plugin resolves exactly two layers — global
+  (`~/.config/opencode/team-mode.jsonc`, honouring `OPENCODE_CONFIG_DIR`) then project
+  (`<repo>/team-mode.jsonc` or `<repo>/.opencode/team-mode.jsonc`, the `.opencode` one wins) —
+  with no env layer and no `TM_CONFIG_ENV_ONLY` escape hatch. `src/tm/config-layers.ts`'s
+  `CONFIG_KEYS` registry is the single source of truth (59 keys, each `{key, type, default,
+  doc, redLine?, redLineReason?, min?, max?, enum?}`; the old `env` field is gone), and the
+  registry IS the known-key set: a key absent from it is reported as unknown, warned and never
+  applied.
+- **The global file is auto-created at boot.** When it is absent, the plugin writes an INERT
+  template — every registry key as a comment (`// "key": <default>,`) under its one-line doc,
+  so the file sets nothing until the user uncomments a line. Idempotent, atomic, never
+  overwrites an existing file; the plugin option `autoCreate` (default true) and the internal
+  `TM_CONFIG_AUTOCREATE=off` turn it off, and the boot row records `config_autocreate`
+  (`created` / `present` / `off` / `failed`).
+- **The red-line keys are global-only.** `envProtect`, `r6FineAsk`, `privateSpace`,
+  `webfetchAllowedDomains` and `bashReadonlyAllowed` are settable ONLY in the global file; a
+  project file's value is ignored and reported (`config_redline_ignored`). `browserAskEval`
+  is no longer a registry key.
+- **`envProtect` defaults to `"strict"`** (was `"on"`; behaviour-identical —
+  `resolveEnvProtectMode` maps both to strict). Canonical values: `strict` / `standard` /
+  `off`.
+- **Three throughput rules now govern the lead prompt (2026-10-07).** A measured session
+  showed the plugin's own runtime cost is millisecond-scale (boot ~1.7s, per-request hooks
+  ~7ms on a 527-message request) while the ORCHESTRATION dominated — 7 dispatches and one
+  92-minute implementer run. So: (1) one dispatch owns ONE independently verifiable
+  deliverable, and more than ~3 acceptance criteria means split; (2) the architect is
+  dispatched only when the design is genuinely unknown — with the root cause already verified
+  the lead skips it (keep it when the fix moves a contract or the strategy is undecided), and
+  tester + reviewer may now run in the SAME round (serialize only when a fix invalidates
+  both); (3) the lead's own recon batching — ≥3 native probes go out as parallel calls in one
+  message, ≥3 governed `tm_*` probes collapse into one `execute` program.
+
+### Removed
+
+- **Every `TM_*` configuration environment variable.** The three survivors are internal/test
+  switches, not configuration: `TM_STORE_RECLAIM` (overrides the `storeReclaim` key),
+  `TM_V2_PROBE` (name-level JSONL dump) and `TM_CONFIG_AUTOCREATE` (the auto-create off
+  switch). `tm_stats` renders the layered-config section: per-key source, red-line ignores,
+  unknown keys, skipped layers, and the auto-create state.
+
 ## [1.7.2] - 2026-10-07
 
 ### Fixed

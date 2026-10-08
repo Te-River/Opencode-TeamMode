@@ -1,10 +1,16 @@
 /**
  * JIT layer-2 tools (T1.2 + T1.3) — configuration surface.
  *
- * Every knob resolves from the process environment with a typed default;
- * invalid values never crash plugin startup, they fall back to the default
- * (same fail-soft philosophy as blackboard.resolveTtlMs and
- * envprotect.resolveEnvProtectMode).
+ * `team-mode.jsonc` is the ONLY configuration source.  The registry in
+ * `config-layers.ts` carries each key's default and doc; `resolveConfig`
+ * validates, clamps and fills defaults from it.  There is no `TM_*` config
+ * env var any more (the three internal/test switches — TM_STORE_RECLAIM,
+ * TM_V2_PROBE, TM_CONFIG_AUTOCREATE — are read where they are used, not here).
+ *
+ * Invalid values never crash plugin startup: a non-numeric number falls back to
+ * its default, an out-of-range number is CLAMPED to `min`/`max`, a wrong
+ * type falls back to the default (same fail-soft philosophy as
+ * blackboard.resolveTtlMs and envprotect.resolveEnvProtectMode).
  *
  * Token 口径 (estimate basis): CJK-range code points ≈ one token each,
  * everything else tokens ≈ chars/4, ceil.  Pure chars/4 under-counted CJK
@@ -14,80 +20,22 @@
  * (estimate == threshold still offloads) and the hard preview cap.  This
  * 口径 is pinned by test-tm-tools.mjs.
  *
- * Naming note: TM_BLACKBOARD_DIR (this module, run-payload store, default
+ * Naming note: `blackboardDir` (this module, run-payload store, default
  * AUTO = `<repo>/.git/opencode-team/blackboard`) is a DIFFERENT artifact
  * from the team blackboard in blackboard.ts (`.git/opencode-team/`,
  * plugin options).  They share a root philosophy (TTL sweeper is the sole
  * cleanup path), not code.
  */
 
-/** Default tm_bash read-only allowlist (P3, command-level).  The PS
- *  -Object entries are pure pipeline formatters — no write capability. */
-export const DEFAULT_BASH_READONLY_ALLOWED: readonly string[] = [
-  "ls", "cat", "head", "tail", "grep", "rg", "find", "awk", "sort", "uniq",
-  "wc", "cut", "dir", "Get-Content", "Get-ChildItem", "Select-String",
-  "Measure-Object", "Select-Object", "Where-Object", "Sort-Object",
-  "Group-Object", "Test-Path",
-  // Process LISTING, read-only and write-free.  An agent verifying that a
-  // process really exited (a leftover browser, a stray server) had no allowed
-  // way to ask the OS, and a claim the user cannot check is worth less than one
-  // they can.  findstr joins it for the same reason: `tasklist | findstr /i
-  // msedge` is the natural Windows spelling of that check, and refusing it only
-  // turned one call into two (live evidence: refused, then re-run with
-  // Select-String).
-  "tasklist", "ps", "findstr",
-]
+import {
+  CONFIG_KEYS,
+  DEFAULT_BASH_READONLY_ALLOWED,
+  DEFAULT_WEBFETCH_DOMAINS,
+  isPlainObject,
+  type ConfigKeySpec,
+} from "./config-layers.js"
 
-/**
- * Seeded tm_webfetch / tm_search domain allowlist — every host the search
- * engines and data sources ride (all reachable from mainland China without
- * API keys): wiki term / bilibili search / bing CN + international / baidu /
- * sogou / 360, the npm registry (JSON search + package metadata) and the
- * GitHub (search API + repo pages + raw/gist content), its ghproxy.net
- * mainland mirror, and PARENT domains for baidu/moegirl so every sibling
- * subdomain (baike./tieba./mzh./mobile.) is covered — real sessions showed
- * agents bouncing off baike.baidu.com and mzh.moegirl.org.cn (the agent-install flow points
- * agents at the installation guide on exactly these hosts).  A site's OWN
- * asset CDN on a brand-unrelated domain has to be seeded too — same-site
- * cannot infer it, and blocking it is what makes a page render blank
- * (bdimg.com below is that case, measured).  Subdomains of
- * an entry are included;
- * TM_WEBFETCH_ALLOWED_DOMAINS overrides the list (comma/semicolon
- * separated; a lone "*" opens every host — keep the engine hosts or
- * tm_search's engines lose their targets).
- */
-export const DEFAULT_WEBFETCH_DOMAINS: readonly string[] = [
-  // CN search engines + content (parent domains cover every sibling subdomain)
-  "baidu.com", // www. search / baike. encyclopedia / tieba. — real sessions hit baike.baidu.com
-  // Baidu's OWN static + anti-spam CDN.  Not a subdomain of baidu.com, so a
-  // same-site subresource policy can never infer it, and a page whose own
-  // bundle we block is a blank page we then report as "no content" — that is
-  // the bug this seed closes (measured 2026-09-23: baike.baidu.com/ rendered 0
-  // addressable nodes while the identical client with this host allowed
-  // rendered 260).
-  "bdimg.com", // bkssl. challenge scripts / resource. / static. asset bundles
-  "moegirl.org.cn", // mobile. term / mzh. main site — real sessions hit mzh
-  "bilibili.com", // search. / www. video pages / space.
-  "www.sogou.com",
-  "www.so.com",
-  "cn.bing.com",
-  "www.bing.com",
-  "zhihu.com", // CN Q&A
-  "juejin.cn", // CN dev community
-  "csdn.net", // CN dev blogs
-  "cnblogs.com", // CN dev blogs
-  "gitee.com", // CN code hosting
-  // international dev sources (reachable from CN, no API keys)
-  "github.com",
-  "api.github.com",
-  "raw.githubusercontent.com",
-  "gist.githubusercontent.com",
-  "ghproxy.net", // mainland mirror for github raw
-  "stackoverflow.com",
-  "npmjs.org", // registry. + www. package pages
-  "pypi.org",
-  "learn.microsoft.com",
-]
+export { DEFAULT_BASH_READONLY_ALLOWED, DEFAULT_WEBFETCH_DOMAINS }
 
 export interface TmConfig {
   /** Offload boundary in estimated tokens (estimate == threshold offloads). */
@@ -115,188 +63,118 @@ export interface TmConfig {
   memoryGlobalDir: string
 
   // ---- TeamMode upgrade P0 knobs (design 20260915 §② contract) ----
-  // Declared HERE, consumed by their owning packages downstream (T1-T6);
-  // P0 is the single landing point so parallel packages never edit this file.
-  /** tm_memory session-scope entry TTL in minutes (lazy + boot sweep).
-   *  Consumed by memory.ts (T1). */
+  /** tm_memory session-scope entry TTL in minutes (lazy + boot sweep). */
   memorySessionTtlMin: number
   /** tm_memory max entries per scope (project / global); over the cap,
-   *  add fails with a compact/forget hint.  Consumed by memory.ts (T1). */
+   *  add fails with a compact/forget hint. */
   memoryMaxEntries: number
-  /** tm_memory staleness marker age in days; 0 disables `[stale Nd]`
-   *  tagging on search hits.  Consumed by memory.ts (T1). */
+  /** tm_memory staleness marker age in days; 0 disables `[stale Nd]`. */
   memoryStaleDays: number
   /** tm_memory session persistence: "" (default) = ephemeral in-process
-   *  Map only; "1" = also write under <storeBase>/memories/sessions/<sid>/.
-   *  Consumed by memory.ts (T1). */
+   *  Map only; "1" = also write under <storeBase>/memories/sessions/<sid>/. */
   memorySessionPersist: string
-  /** tm_search default engine when no explicit `engine` arg is given
-   *  ("auto" = current first-engine behavior).  Consumed by search.ts (T4). */
+  /** tm_search default engine when no explicit `engine` arg is given. */
   searchDefaultEngine: string
-  /** Hits kept per engine leg AND in the final fused list.  Consumed by
-   *  search.ts. */
+  /** Hits kept per engine leg AND in the final fused list. */
   searchMaxHits: number
-  /** Per-engine fusion weight overrides (`bing=0.2,hn=0.3`).  Anything not
-   *  listed keeps the built-in table.  Consumed by search.ts. */
+  /** Per-engine fusion weight overrides (`bing=0.2,hn=0.3`). */
   searchWeights: Record<string, number>
-  /** Engines removed from the roster AND from every auto route
-   *  (comma/semicolon separated).  Consumed by search.ts. */
+  /** Engines removed from the roster AND from every auto route. */
   searchDisabledEngines: string[]
-  /** Weight multiplier applied to a ZERO-overlap hit (no query token in the
-   *  title/snippet/host).  bing used to own ranks 1-10 purely on its 0.4
-   *  trust weight, so its junk outranked every engine's best hit; the floor
-   *  keeps such a hit in play at a fraction of the weight instead of
-   *  deleting an engine the user cannot afford to lose.  Consumed by
-   *  search.ts. */
+  /** Weight multiplier applied to a ZERO-overlap hit. */
   searchRelevanceFloor: number
   /** Offload boundary (estimated tokens) for the markdown/text/log prose
-   *  class.  Defaults to 4000 when NOTHING is set; but if the user only set
-   *  the global `TM_OFFLOAD_THRESHOLD` (no `TM_OFFLOAD_THRESHOLD_TEXT`),
-   *  this tier INHERITS the global so a prose-heavy session that raised the
-   *  boundary is not silently capped back to 4000.  An explicit
-   *  `TM_OFFLOAD_THRESHOLD_TEXT` always wins.  Consumed by pipelines.ts
-   *  `offloadThresholdFor` (T4 tiering — now live). */
+   *  class.  Inherits an explicitly-set `offloadThreshold` when this key is
+   *  not set; an explicit value always wins. */
   offloadThresholdText: number
-  /** Offload boundary for the json/csv/code/binary data class.  Defaults to
-   *  2000 (= the historical global baseline) when NOTHING is set; inherits
-   *  an explicitly-set `TM_OFFLOAD_THRESHOLD` exactly like the text tier; an
-   *  explicit `TM_OFFLOAD_THRESHOLD_DATA` always wins.  Consumed by
-   *  pipelines.ts `offloadThresholdFor` (T4 tiering — now live). */
+  /** Offload boundary for the json/csv/code/binary data class.  Inherits the
+   *  global exactly like the text tier. */
   offloadThresholdData: number
-  /** TM_WEB_CACHE_TTL_SEC (default 300; 0 disables) — how long a governed
-   *  fetch body may be re-served for the SAME URL.  The web channel is the
-   *  slowest thing the team does and the most duplicated (lead + researcher
-   *  issuing overlapping queries, `auto` re-fanning engine legs), so this is
-   *  a throughput knob, not a convenience one.  Freshness is the price, which
-   *  is why a hit is announced in the reply and counted by tm_stats.  A cache
-   *  entry is only ever consulted after the STATIC allowlist admits the hop
-   *  (see cache.ts) — dialog consent is per-request and is never cached. */
+  /** URL-level cache TTL in seconds (0 disables). */
   webCacheTtlSec: number
-  /** TM_JOIN_MAX_WAIT_MS (default 60 000) — the ceiling on tm_join's bounded
-   *  wait.  It was 300 000, and a live session used exactly that twice in a
-   *  row: ten minutes of a lead sitting inside a tool call while six
-   *  researchers worked.  A wait is not parallelism — the lead's turn is
-   *  blocked either way — so the default now says "check, then go do lead
-   *  work" instead of "park here".  Raise it only deliberately. */
+  /** The ceiling on tm_join's bounded wait (ms). */
   joinMaxWaitMs: number
-  /** tm_board_write: one board file's character cap and one session folder's file cap.
-   *  The board is the ONLY oversized-deliverable channel, and the roles that
-   *  need it most (architect / researcher) own no write-capable file tool, so the caps
-   *  are what keeps a governed writer from becoming a disk leak. */
+  /** tm_board_write: one board file's character cap and one session folder's file cap. */
   boardMaxChars: number
   boardMaxFiles: number
-  /** TM_TASK_OFFLOAD (default on) — keep the HOST's own background sub-agent
-   *  (`task {background:true}`, needs OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS)
-   *  inside our context budget: when the host injects the finished child's full
-   *  reply into the parent session, swap the oversized body for a preview plus a
-   *  `tm_join` pointer (see src/task-offload.ts). Synthetic parts carrying the
-   *  host's own task envelope ONLY — never a message the user typed, and no
-   *  disk copy. `off` restores the host's verbatim injection. */
+  /** Keep the HOST's own background sub-agent reply inside our context budget. */
   taskOffload: "on" | "off"
-  /** Reclaim the store layout an upgrade left behind: a sibling `w-*` shard
-   *  idle past the TTL, and the pre-shard `blackboard/`+`trajectory/` at the
-   *  shared tmpdir base (which no sweeper points at any more).  Only ever
-   *  TTL-expired entries — never a live run.  `off` keeps the disk as is; the
-   *  test runner sets it so a suite cannot mutate the developer's real Temp. */
+  /** Reclaim the store layout an upgrade left behind. */
   storeReclaim: "on" | "off"
-  /** Floor (minutes) for the (v1) approval-gate ask timeout.  ORPHANED: its
-   *  only consumer, approval-gate.ts `resolveAskTimeoutMs`, was deleted with
-   *  the v1 personality (v2 raises no plugin dialog, so there is no timer to
-   *  floor).  The knob is still parsed so an existing config keeps resolving;
-   *  nothing reads it.  DEFAULTED TO 1. */
+  /** Floor (minutes) for the (v1) approval-gate ask timeout.  ORPHANED. */
   askTimeoutFloorMin: number
-  /** Ceiling (ms) forced onto the built-in bash tool's `timeout` ARG through
-   *  the official `tool.execute.before` hook.  0 (default) = no cap: a build
-   *  or test run stays whatever the model asked for.  Consumed by
-   *  src/host/v2-guard.ts (applyV2ShellTimeoutClamp). */
+  /** Ceiling (ms) forced onto the built-in bash tool's `timeout` ARG. */
   bashTimeoutMaxMs: number
-  /** Ceiling (ms) for a bash command that the P3 read-only allowlist already
-   *  classifies as a pure probe (ls/grep/rg/cat/Get-ChildItem …).  Those
-   *  never legitimately need the host's 120 s default, and models routinely
-   *  set 120000+ on them, so this one ships ENABLED.  0 disables.
-   *  Consumed by src/host/v2-guard.ts (applyV2ShellTimeoutClamp). */
+  /** Ceiling (ms) for a bash command the P3 read-only allowlist accepts. */
   bashTimeoutProbeMs: number
+
+  // ---- knobs that used to be read straight from process.env ----
+  /** JIT governance over the HOST's own tools (read/grep/shell…). */
+  nativeOffload: "on" | "off"
+  /** (v1-only) tm_ptc_run's web bridge. */
+  ptcWebBridge: "on" | "off"
+  /** Extra hit-domain blacklist entries (merged with the built-in default). */
+  hitBlacklist: string[]
+  /** R6 extra deny rules (raw `K=V;K2=V2`-style string). */
+  envProtectExtraDeny: string
+  /** (v1-only) shell env passthrough. */
+  shellEnv: string
+  /** (v1-only) per-agent temperature overrides. */
+  agentTemperature: string
+  /** (v1-only) compaction survival list. */
+  compactionContext: "on" | "off"
+  /** R6 mode (strict/standard/off). */
+  envProtect: string
+  /** R6 fine-grained ask policy; "off" = every shell command asks. */
+  r6FineAsk: string
+  /** Private-space policy (allow/deny/ask). */
+  privateSpace: string
+
+  // ---- v2 request layers (were read straight from process.env) ----
+  /** Concurrency cap on `subagent`; 0 disables. */
+  maxConcurrentSubagents: number
+  /** v2 tool delivery: "direct" sends options.codemode=false; "" = catalog. */
+  v2CodeMode: string
+  /** Context pruning (settled messages → pointers). */
+  prune: "on" | "off"
+  /** Percent of the window at which pruning starts. */
+  pruneAtPercent: number
+  /** Percent of the window kept verbatim at the tail. */
+  pruneKeepTailPercent: number
+  /** Retry governor (recognise throttle + inject wait + cooldown). */
+  retry: "on" | "off"
+  retryBaseMs: number
+  retryMaxMs: number
+  retryJitter: number
+  retryBreakAfter: number
+  retryCooldownMs: number
+  /** Split advice when a dispatch brief is oversized. */
+  splitAdvice: "on" | "off"
+  splitBriefTokens: number
+  splitMaxCriteria: number
+  /** Code Mode adoption hint after a run of native calls. */
+  probeChain: "on" | "off"
+  probeChainAfter: number
+  /** Token budget a native browser snapshot keeps (addressing lines). */
+  nativeSnapshotMaxTokens: number
+  /** Token budget a native report keeps (tables). */
+  nativeReportMaxTokens: number
+  /** The native `browser_*` catalog gate. */
+  v2BrowserGate: "on" | "off"
+  /** tm_ledger per-session item cap. */
+  ledgerMaxItems: number
 }
 
-export const TM_CONFIG_DEFAULTS = {
-  offloadThreshold: 2000,
-  previewLines: 20,
-  previewMaxTokens: 80,
-  fetchMaxLines: 2000,
-  // Empty string = AUTO: resolve git-aware at runtime —
-  // <repo>/.git/opencode-team/{blackboard,trajectory} (tmpdir fallback for
-  // non-git workspaces).  Keeps the payload/trajectory stores out of the
-  // user's working tree (user projects never had .blackboard/.trajectory
-  // gitignore entries).  An explicit TM_BLACKBOARD_DIR / TM_TRAJECTORY_DIR
-  // keeps the old semantics: absolute, or relative to the project root.
-  blackboardDir: "",
-  trajectoryDir: "",
-  blackboardTtlDays: 7,
-  // ---- P0 upgrade knobs (see TmConfig doc comments for ownership) ----
-  memorySessionTtlMin: 240,
-  memoryMaxEntries: 200,
-  memoryStaleDays: 30,
-  memorySessionPersist: "",
-  searchDefaultEngine: "auto",
-  searchMaxHits: 10,
-  searchWeights: {},
-  searchDisabledEngines: [],
-  // 0.35: a hit with zero query overlap keeps just over a third of its
-  // engine weight — demoted, never deleted (see TmConfig.searchRelevanceFloor).
-  searchRelevanceFloor: 0.35,
-  // Literal fallbacks used ONLY when the global TM_OFFLOAD_THRESHOLD is
-  // unset.  When the global IS set and a tier env is not, resolveTmConfig
-  // derives that tier from the global (inherit — Wave B M1) instead of
-  // applying these.
-  offloadThresholdText: 4000,
-  offloadThresholdData: 2000,
-  webCacheTtlSec: 300,
-  joinMaxWaitMs: 60_000,
-  boardMaxChars: 200_000,
-  boardMaxFiles: 200,
-  taskOffload: "on",
-  storeReclaim: "on",
-  // ORPHANED: approval-gate.ts resolveAskTimeoutMs (its only consumer) was
-  // deleted with the v1 personality.  Kept so an existing config still parses.
-  askTimeoutFloorMin: 1,
-  // The GENERAL bash cap stays off by default (a real build may legitimately
-  // need minutes); the probe cap ships on because a read-only probe never
-  // needs the host's 120 s default.  Both are ms; 0 = off.
-  bashTimeoutMaxMs: 0,
-  bashTimeoutProbeMs: 60_000,
-} as const
-
-type EnvLike = Record<string, string | undefined>
-
-function envInt(env: EnvLike, key: string, def: number, min: number, max: number): number {
-  const raw = env[key]
-  if (typeof raw !== "string" || raw.trim() === "") return def
-  const n = Number(raw.trim())
-  if (!Number.isFinite(n)) return def
-  const i = Math.trunc(n)
-  if (i < min || i > max) return def
-  return i
-}
-
-function envStr(env: EnvLike, key: string, def: string): string {
-  const raw = env[key]
-  if (typeof raw !== "string") return def
-  const v = raw.trim()
-  return v === "" ? def : v
-}
-
-/** Float sibling of envInt (fraction knobs like the relevance floor). */
-function envNum(env: EnvLike, key: string, def: number, min: number, max: number): number {
-  const raw = env[key]
-  if (typeof raw !== "string" || raw.trim() === "") return def
-  const n = Number(raw.trim())
-  if (!Number.isFinite(n) || n < min || n > max) return def
-  return n
-}
+/** The registry's defaults, keyed by canonical key.  Derived from
+ *  `CONFIG_KEYS` so a default can never drift from its spec. */
+export const TM_CONFIG_DEFAULTS: Record<string, unknown> = Object.fromEntries(
+  CONFIG_KEYS.map((k) => [k.key, k.default]),
+)
 
 /** TM_SEARCH_WEIGHTS — `bing=0.2,hn=0.3` into a partial weight table.  A
  *  malformed pair is dropped (not the whole var), so one typo cannot silently
- *  flatten every custom weight back to the built-in table. */
+ *  flatten every custom weight back to the built-in table.  Kept for the
+ *  string form; a file value is native JSON and skips this. */
 export function parseWeightsEnv(raw: unknown): Record<string, number> {
   const out: Record<string, number> = {}
   if (typeof raw !== "string") return out
@@ -310,10 +188,10 @@ export function parseWeightsEnv(raw: unknown): Record<string, number> {
 }
 
 /**
- * Parse a comma/semicolon-separated allowlist env var.  Unset/absent -> null
+ * Parse a comma/semicolon-separated allowlist string.  Unset/absent -> null
  * (caller applies the default).  An explicitly EMPTY string parses to []
- * (deny-all) — an explicit user choice is respected.  Shared by
- * TM_BASH_READONLY_ALLOWED and TM_WEBFETCH_ALLOWED_DOMAINS.
+ * (deny-all) — an explicit user choice is respected.  Kept for the string
+ * form; a file value is native JSON and skips this.
  */
 export function parseAllowlistEnv(raw: unknown): string[] | null {
   if (typeof raw !== "string") return null
@@ -323,62 +201,79 @@ export function parseAllowlistEnv(raw: unknown): string[] | null {
 /** Historical alias — identical grammar to parseAllowlistEnv. */
 export const parseWebfetchAllowlistEnv = parseAllowlistEnv
 
-/** Resolve the full tm-tools config from an env-like record (default: process.env). */
-export function resolveTmConfig(env: EnvLike = process.env): TmConfig {
-  const allowlist = parseAllowlistEnv(env.TM_BASH_READONLY_ALLOWED)
-  const globalOffload = envInt(env, "TM_OFFLOAD_THRESHOLD", TM_CONFIG_DEFAULTS.offloadThreshold, 0, 10_000_000)
-  // Wave B M1 fix — TIER INHERITANCE.  The TEXT/DATA classes inherit the
-  // global boundary when the user set TM_OFFLOAD_THRESHOLD but left a tier
-  // env UNSET: a user who raised the global to 8000 to save tokens must not
-  // have prose silently capped back to 4000 (and json to 2000).  With the
-  // global ALSO unset the documented per-class defaults stand (4000 text /
-  // 2000 data — data equals the old baseline so the no-env behavior is the
-  // T4 tiering the §6m-t tests pin).  An explicit tier env always wins.
-  const globalOffloadSet = typeof env.TM_OFFLOAD_THRESHOLD === "string" && env.TM_OFFLOAD_THRESHOLD.trim() !== ""
-  const textTierDefault = globalOffloadSet ? globalOffload : TM_CONFIG_DEFAULTS.offloadThresholdText
-  const dataTierDefault = globalOffloadSet ? globalOffload : TM_CONFIG_DEFAULTS.offloadThresholdData
-  return {
-    offloadThreshold: globalOffload,
-    previewLines: envInt(env, "TM_PREVIEW_LINES", TM_CONFIG_DEFAULTS.previewLines, 1, 1000),
-    previewMaxTokens: envInt(env, "TM_PREVIEW_MAX_TOKENS", TM_CONFIG_DEFAULTS.previewMaxTokens, 10, 100_000),
-    fetchMaxLines: envInt(env, "TM_FETCH_MAX_LINES", TM_CONFIG_DEFAULTS.fetchMaxLines, 1, 1_000_000),
-    blackboardDir: envStr(env, "TM_BLACKBOARD_DIR", TM_CONFIG_DEFAULTS.blackboardDir),
-    trajectoryDir: envStr(env, "TM_TRAJECTORY_DIR", TM_CONFIG_DEFAULTS.trajectoryDir),
-    blackboardTtlDays: envInt(env, "TM_BLACKBOARD_TTL", TM_CONFIG_DEFAULTS.blackboardTtlDays, 1, 365),
-    bashReadonlyAllowed: allowlist ?? [...DEFAULT_BASH_READONLY_ALLOWED],
-    webfetchAllowedDomains:
-      parseAllowlistEnv(env.TM_WEBFETCH_ALLOWED_DOMAINS) ?? [...DEFAULT_WEBFETCH_DOMAINS],
-    memoryGlobalDir: envStr(env, "TM_MEMORY_GLOBAL_DIR", ""),
-    // ---- P0 upgrade knobs (fail-soft like the rest: invalid -> default) ----
-    memorySessionTtlMin: envInt(env, "TM_MEMORY_SESSION_TTL_MIN", TM_CONFIG_DEFAULTS.memorySessionTtlMin, 1, 100_000),
-    memoryMaxEntries: envInt(env, "TM_MEMORY_MAX_ENTRIES", TM_CONFIG_DEFAULTS.memoryMaxEntries, 1, 100_000),
-    memoryStaleDays: envInt(env, "TM_MEMORY_STALE_DAYS", TM_CONFIG_DEFAULTS.memoryStaleDays, 0, 3650),
-    memorySessionPersist: envStr(env, "TM_MEMORY_SESSION_PERSIST", TM_CONFIG_DEFAULTS.memorySessionPersist),
-    searchDefaultEngine: envStr(env, "TM_SEARCH_DEFAULT_ENGINE", TM_CONFIG_DEFAULTS.searchDefaultEngine),
-    searchMaxHits: envInt(env, "TM_SEARCH_MAX_HITS", TM_CONFIG_DEFAULTS.searchMaxHits, 3, 30),
-    searchWeights: parseWeightsEnv(env.TM_SEARCH_WEIGHTS),
-    searchDisabledEngines: parseAllowlistEnv(env.TM_SEARCH_DISABLED_ENGINES) ?? [],
-    searchRelevanceFloor: envNum(env, "TM_SEARCH_RELEVANCE_FLOOR", TM_CONFIG_DEFAULTS.searchRelevanceFloor, 0, 1),
-    offloadThresholdText: envInt(env, "TM_OFFLOAD_THRESHOLD_TEXT", textTierDefault, 0, 10_000_000),
-    offloadThresholdData: envInt(env, "TM_OFFLOAD_THRESHOLD_DATA", dataTierDefault, 0, 10_000_000),
-    webCacheTtlSec: envInt(env, "TM_WEB_CACHE_TTL_SEC", TM_CONFIG_DEFAULTS.webCacheTtlSec, 0, 86_400),
-    joinMaxWaitMs: envInt(env, "TM_JOIN_MAX_WAIT_MS", TM_CONFIG_DEFAULTS.joinMaxWaitMs, 0, 600_000),
-    boardMaxChars: envInt(env, "TM_BOARD_MAX_CHARS", TM_CONFIG_DEFAULTS.boardMaxChars, 1_000, 2_000_000),
-    boardMaxFiles: envInt(env, "TM_BOARD_MAX_FILES", TM_CONFIG_DEFAULTS.boardMaxFiles, 4, 2_000),
-    taskOffload: resolveOnOff(env.TM_TASK_OFFLOAD),
-    storeReclaim: resolveOnOff(env.TM_STORE_RECLAIM),
-    askTimeoutFloorMin: envInt(env, "TM_ASK_TIMEOUT_FLOOR_MIN", TM_CONFIG_DEFAULTS.askTimeoutFloorMin, 1, 1440),
-    bashTimeoutMaxMs: envInt(env, "TM_BASH_TIMEOUT_MAX_MS", TM_CONFIG_DEFAULTS.bashTimeoutMaxMs, 0, 3_600_000),
-    bashTimeoutProbeMs: envInt(env, "TM_BASH_TIMEOUT_PROBE_MS", TM_CONFIG_DEFAULTS.bashTimeoutProbeMs, 0, 600_000),
-  }
-}
-
 /** TM_PTC_WEB_BRIDGE — off only on an explicit off-ish value; unset or
  *  invalid keeps the bridge on (fail-soft toward the newer default). */
-function resolveOnOff(raw: unknown): "on" | "off" {
+export function resolveOnOff(raw: unknown): "on" | "off" {
   const v = typeof raw === "string" ? raw.trim().toLowerCase() : ""
   return v === "off" || v === "0" || v === "false" ? "off" : "on"
 }
+
+/**
+ * Coerce ONE raw value against its spec.  `undefined`/`null` -> the default.
+ * A `number` is truncated when the default is an integer, then clamped to
+ * `min`/`max`; a non-numeric value falls back to the default.  A `string`
+ * with an `enum` must match (case-insensitively; on/off also accept the
+ * 0/1/false/true/no/yes spellings); otherwise the default.  A `string[]`
+ * must be an array of strings; a `record` a plain object of numbers.
+ */
+export function coerceValue(spec: ConfigKeySpec, raw: unknown): unknown {
+  if (raw === undefined || raw === null) return spec.default
+  switch (spec.type) {
+    case "number": {
+      if (typeof raw === "string" && raw.trim() === "") return spec.default
+      const n = typeof raw === "number" ? raw : Number(String(raw).trim())
+      if (!Number.isFinite(n)) return spec.default
+      let v = Number.isInteger(spec.default) ? Math.trunc(n) : n
+      if (spec.min !== undefined) v = Math.max(spec.min, v)
+      if (spec.max !== undefined) v = Math.min(spec.max, v)
+      return v
+    }
+    case "string": {
+      // A non-string raw (a number, a boolean) is a wrong TYPE, not a value
+      // to stringify: `searchDefaultEngine: 5` must fall back to the default,
+      // not become the string "5".
+      if (typeof raw !== "string") return spec.default
+      const s = raw.trim()
+      if (spec.enum) {
+        const hit = spec.enum.find((e) => e.toLowerCase() === s.toLowerCase())
+        if (hit) return hit
+        if (spec.enum.includes("on") && spec.enum.includes("off")) {
+          if (/^(0|false|no)$/i.test(s)) return "off"
+          if (/^(1|true|yes)$/i.test(s)) return "on"
+        }
+        return spec.default
+      }
+      return s === "" ? spec.default : s
+    }
+    case "string[]": {
+      if (!Array.isArray(raw) || !raw.every((x) => typeof x === "string")) return spec.default
+      return raw.map((x) => x)
+    }
+    case "record": {
+      if (!isPlainObject(raw) || !Object.values(raw).every((x) => typeof x === "number")) return spec.default
+      return { ...raw }
+    }
+  }
+}
+
+/**
+ * Resolve the full tm-tools config from an already-merged JSON value record
+ * (the file layers, plus any programmatic `configDefaults`).  Registry-driven:
+ * every key gets its coerced value or its default.  The two offload tiers
+ * INHERIT an explicitly-set `offloadThreshold` when they are not set
+ * themselves (Wave B M1) — a user who raised the global to save tokens must
+ * not have prose silently capped back to 4000.
+ */
+export function resolveConfig(values: Record<string, unknown> = {}): TmConfig {
+  const out: Record<string, unknown> = {}
+  for (const spec of CONFIG_KEYS) out[spec.key] = coerceValue(spec, values[spec.key])
+  if (values.offloadThreshold !== undefined) {
+    if (values.offloadThresholdText === undefined) out.offloadThresholdText = out.offloadThreshold
+    if (values.offloadThresholdData === undefined) out.offloadThresholdData = out.offloadThreshold
+  }
+  return out as unknown as TmConfig
+}
+
 /** Token cost of ONE code point — CJK-range ≈ 1 token (kana / Hangul /
  *  fullwidth / CJK punctuation all sit above U+2E80), everything else ≈ 0.25
  *  (chars/4).  Shared by estimateTokens and preview.capTokens so the two

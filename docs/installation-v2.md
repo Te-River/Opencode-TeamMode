@@ -56,7 +56,7 @@ implied:
 | Sub-agent settlement | the host `event` hook | `ctx.event.subscribe()` — zero-dependency async iterable, filtered by event-type name (`src/host/v2-events.ts`). Without it `tm_join` cannot tell a settled child from a running one; `tm_stats` reports what the feed forwarded and which type names went unrecognised (names only, never payloads) |
 | The task ledger | the host's `todowrite` | **`tm_ledger`**, stored in the host's `ctx.storage` (v2 has no `todowrite`) |
 | Asking the user | the host's official per-request dialog | **a plugin cannot open a dialog on v2.** Governed calls that would have asked instead **fail closed** with a refusal that says why. The dialogs you do see are raised by the host itself (permission rules, out-of-project access) |
-| Web access | a 22-host allowlist + the confirm dialog | **the domain gate is off** (`TM_WEBFETCH_ALLOWED_DOMAINS` defaults to `"*"`): a 2.x plugin cannot raise a dialog, so "approve to proceed" was an instruction to wait for a window that never opens. Address classes are still policed — cloud-metadata / link-local / reserved ranges are refused under every setting, and private space (RFC1918, CGNAT, ULA, IPv6 link-local, `.localhost`) is refused too, but the refusal now names both exits instead of promising a click: `TM_PRIVATE_SPACE=allow` (opens the class) or that one hostname in `TM_WEBFETCH_ALLOWED_DOMAINS` (opens exactly it). **Loopback (`127/8`, `::1`, `localhost`) is served by default** — it reaches only a service the user started on their own machine, and a gate whose only exit is a dialog the plugin cannot raise is a wall, not a gate |
+| Web access | a 22-host allowlist + the confirm dialog | **the domain gate is off** (`webfetchAllowedDomains` defaults to `["*"]` on v2): a 2.x plugin cannot raise a dialog, so "approve to proceed" was an instruction to wait for a window that never opens. Address classes are still policed — cloud-metadata / link-local / reserved ranges are refused under every setting, and private space (RFC1918, CGNAT, ULA, IPv6 link-local, `.localhost`) is refused too, but the refusal now names both exits instead of promising a click: `"privateSpace": "allow"` in the global `team-mode.jsonc` (opens the class) or that one hostname in `webfetchAllowedDomains` (opens exactly it). **Loopback (`127/8`, `::1`, `localhost`) is served by default** — it reaches only a service the user started on their own machine, and a gate whose only exit is a dialog the plugin cannot raise is a wall, not a gate |
 | Sub-agents | needs `OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS=true` | native; the plugin forces `background: true` on every `subagent` call, so **do not set that env var for 2.x** (it is a v1 workaround and changes nothing here) |
 | Effect on your other modes | the plugin's hooks are global | **none.** Every hook checks the session's owner first, so `build`, `plan` and any agent you installed yourself stay exactly as a fresh OpenCode leaves them — no tool is deleted from their requests, no temperature is set, nothing is offloaded, no permission is tightened, no dispatch is converted to background |
 
@@ -246,29 +246,40 @@ env-file line). It is zero-token by default; `--turns` adds the checks that need
 
 ### Layered configuration (`team-mode.jsonc`)
 
-Settings can live in a file instead of the environment. Two layers, mirroring the host's own config:
+`team-mode.jsonc` is the **only** configuration source — every `TM_*` configuration environment
+variable is gone. Two layers, mirroring the host's own config:
 
 | layer | file |
 |---|---|
-| global | `~/.config/opencode/team-mode.jsonc` |
+| global | `~/.config/opencode/team-mode.jsonc` (honours `OPENCODE_CONFIG_DIR`) |
 | project | `<project>/team-mode.jsonc`, or `<project>/.opencode/team-mode.jsonc` (the `.opencode` one wins) |
 
-Precedence is `env < global < project`, and **a file beats an environment variable** — a value you
-put in a file wins over the matching `TM_*`. To get the environment back for one run, set
-`TM_CONFIG_ENV_ONLY=1`: it is read before any file, and a file cannot switch it off.
+Precedence is `global < project`. **The plugin writes the global file for you at boot** when it is
+absent: a fully-commented, INERT template — every key appears as a comment (`// "key": <default>,`)
+under its one-line doc, so the file sets nothing until you uncomment a line. It is idempotent and
+never overwrites an existing file. Turn it off with the plugin option `autoCreate: false` (or the
+internal `TM_CONFIG_AUTOCREATE=off`); the boot row records `config_autocreate` as
+`created` / `present` / `off` / `failed`.
 
-Keys are the `TM_*` names in camelCase (`offloadThreshold`, `searchDefaultEngine`, …). Six keys are
-**red lines a file may not change** — `envProtect`, `r6FineAsk`, `privateSpace`,
-`webfetchAllowedDomains`, `browserAskEval`, `bashReadonlyAllowed`; a file value for one of them is
-ignored and reported. A file that fails to parse is skipped **whole** (half a config is worse than
-none), while a single bad key loses only itself. Unknown keys warn at boot and are never applied.
-`tm_stats` shows which layer each key came from.
+Keys are camelCase (`offloadThreshold`, `searchDefaultEngine`, …) — the registry in
+`src/tm/config-layers.ts` is the single source of truth (59 keys, each with its type, default and
+doc). Five keys are **red lines a PROJECT file may not change** — `envProtect`, `r6FineAsk`,
+`privateSpace`, `webfetchAllowedDomains`, `bashReadonlyAllowed`; they are settable only in the
+global file, and a project value is ignored and reported. A file that fails to parse is skipped
+**whole** (half a config is worse than none), while a single bad key loses only itself. Unknown keys
+warn at boot and are never applied. `tm_stats` shows which layer each key came from, the red-line
+keys a file tried to set and lost, the unknown keys, the skipped layers, and the auto-create state.
 
-**R6 (env protection) is armed by default.** A Team role's native `read` of a `.env` is denied
+**R6 (env protection) is armed by default** (`envProtect` defaults to `"strict"`; the canonical
+values are `strict` / `standard` / `off`). A Team role's native `read` of a `.env` is denied
 outright, and a shell command that reads the environment goes to the host's own permission prompt.
-Turn it off with the plugin option `envProtect: false` or with `TM_ENV_PROTECT=off`; on 2.x the
-shell face is an `ask` (the host's dialog — a plugin cannot raise one) while the env-FILE face is
-a hard `deny` with no consent path.
+Turn it off with the plugin option `envProtect: false` or with `"envProtect": "off"` in the
+**global** file (it is a red-line key); on 2.x the shell face is an `ask` (the host's dialog — a
+plugin cannot raise one) while the env-FILE face is a hard `deny` with no consent path.
+
+The only `TM_*` environment variables left are internal/test switches, not configuration:
+`TM_STORE_RECLAIM` (test override of the `storeReclaim` key), `TM_V2_PROBE` (name-level JSONL
+dump) and `TM_CONFIG_AUTOCREATE` (the auto-create off switch).
 
 ### Uninstalling
 
@@ -291,8 +302,8 @@ a hard `deny` with no consent path.
 | `/team-plan` etc. run but not as the specialist | 2.x documents `mode: subagent` as "runs only in a child session"; if a command selecting a specialist does not behave, the fix is `mode: "all"` in the role definition (report it — this is the one item in this flow still unverified on a live host) |
 | `tm_webfetch` on an odd site says it refused **without asking anyone** | Expected on 2.x: a plugin cannot raise a dialog. Use a source that works, or let the host's own permission rule allow it; the address red line (metadata / private) has no consent path at all, on either generation |
 | `task`/`subagent` seems to block the lead | On 2.x the plugin forces `background: true`; if you also set the old `OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS`, unset it — it is a v1 flag and only confuses the picture |
-| A tool's output arrives un-offloaded | `TM_NATIVE_OFFLOAD=off` (or a missing `tool.execute.after` seam on an older 2.x build) — `tm_stats` names which |
-| Sessions used to compact at 75% on their own; they do not any more | That trigger was **removed in 1.7.1** (it shipped in 1.7.0). The host owns when a conversation is summarized again, exactly as if the plugin were not installed. The three knobs that drove it (`TM_COMPACT_TRIGGER`, `TM_COMPACT_AT_PERCENT`, `TM_COMPACT_MIN_MS`) are gone, and a `team-mode.jsonc` that still names them reports them as unknown keys at boot instead of applying them. What stays is additive and only runs when the HOST compacts: `TM_COMPACTION_CONTEXT` pushes the must-survive list, `TM_COMPACTION_AUTOCONTINUE` controls the host's silent resume |
+| A tool's output arrives un-offloaded | `"nativeOffload": "off"` in the config file (or a missing `tool.execute.after` seam on an older 2.x build) — `tm_stats` names which |
+| Sessions used to compact at 75% on their own; they do not any more | That trigger was **removed in 1.7.1** (it shipped in 1.7.0). The host owns when a conversation is summarized again, exactly as if the plugin were not installed. The three knobs that drove it (`TM_COMPACT_TRIGGER`, `TM_COMPACT_AT_PERCENT`, `TM_COMPACT_MIN_MS`) are gone, and a `team-mode.jsonc` that still names them reports them as unknown keys at boot instead of applying them. What stays is additive and only runs when the HOST compacts: the survival list is pushed on `session.hook("compaction")` (the `compactionContext` key is a v1-only parse-compat entry) |
 | The plugin behaves oddly — two dialogs, doubled hooks, tools registered twice | It is loaded twice. `opencode.json` and `opencode.jsonc` are merged, and the host's dedupe matches only an identical string, so the same package under two spellings (or in both files) is two personalities. Count the Team entries across BOTH files; `msg="loading plugin"` appearing twice for one id is the proof |
 | You wrote the entry and the host says nothing at all about it | Two silent causes, both by design: the key is singular `plugin` (2.x reads `plugins`), or a directory entry without a root `index.js`. The loader resolves a directory as `<dir>/index` only and drops it with no message when that fails — absence of an error is not a success signal here |
 | A background sub-agent's reply is huge | The child is registered, collectable AND readable: `tm_join` lists it (marked 宿主 subagent 派发), reads its report back through `ctx.session.context`, and credits the seam it came from (`正文来源=ctx.session.context`) — so the reply arrives through the same JIT pipeline as everything else (offload + ≤80-token preview + `tm_fetch` handle when it is oversized). What v2 still never gives a plugin is the injected message BEFORE the host persists it, so we can read a report but cannot rewrite the injection — which is why a >~50-line DELIVERABLE still belongs on the blackboard file with its path in the reply |
@@ -324,7 +335,7 @@ a hard `deny` with no consent path.
 | 子代理结算检测 | 宿主的 `event` 钩子 | `ctx.event.subscribe()`——零依赖的 async iterable，按事件类型名过滤（`src/host/v2-events.ts`）。没有它 `tm_join` 分不清「已结算」和「仍在跑」；`tm_stats` 会给出转发了多少、哪些类型名没认出来（只记名字，绝不记负载） |
 | 任务清单 | 宿主 `todowrite` | **`tm_ledger`**，存在宿主的 `ctx.storage` 里（v2 不给插件 `todowrite`） |
 | 征求用户同意 | 宿主官方逐次弹窗 | **插件在 v2 弹不出对话框。** 原本该问的受治理调用一律**直接拒绝**，并说明是"没人可问"而不是"问了被拒"。你看到的弹窗都来自宿主自己（权限规则、越出项目目录） |
-| 联网 | 22 个域名白名单 + 确认弹窗 | **域名门禁关掉**（`TM_WEBFETCH_ALLOWED_DOMAINS` 默认 `"*"`）：2.x 插件弹不出确认框，"批准后放行"等于让 agent 去等一个永远不会出现的窗口。地址类别照管——元数据 / 链路本地 / 保留网段在任何设置下都拒；私网（RFC1918、CGNAT、ULA、IPv6 链路本地、`.localhost`）也拒，但拒绝语现在给出两条出口而不是承诺点击：`TM_PRIVATE_SPACE=allow`（放开整段），或把那一台主机名写进 `TM_WEBFETCH_ALLOWED_DOMAINS`（只放开它自己）。**回环（`127/8`、`::1`、`localhost`）默认放行**——它只打到用户自己机器上的服务，而一道唯一出口是"插件弹不出来的确认框"的门禁，是墙不是门 |
+| 联网 | 22 个域名白名单 + 确认弹窗 | **域名门禁关掉**（`webfetchAllowedDomains` 在 v2 上默认 `["*"]`）：2.x 插件弹不出确认框，"批准后放行"等于让 agent 去等一个永远不会出现的窗口。地址类别照管——元数据 / 链路本地 / 保留网段在任何设置下都拒；私网（RFC1918、CGNAT、ULA、IPv6 链路本地、`.localhost`）也拒，但拒绝语现在给出两条出口而不是承诺点击：在全局 `team-mode.jsonc` 里写 `"privateSpace": "allow"`（放开整段），或把那一台主机名写进 `webfetchAllowedDomains`（只放开它自己）。**回环（`127/8`、`::1`、`localhost`）默认放行**——它只打到用户自己机器上的服务，而一道唯一出口是"插件弹不出来的确认框"的门禁，是墙不是门 |
 | 非阻塞命令 | `tm_pty`——**已随 v1 支持一起移除** | **完全不注册**——v2 插件上下文没有 pty 域，这个工具只能报自己缺缝。慢步骤请一条一个 `shell` 调用（各自带 `timeout`），并把输出 tee 到日志好回读 |
 | 子代理 | 需要 `OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS=true` | 原生能力；插件对每次 `subagent` 强制 `background: true`，所以 **2.x 不要去设那个环境变量**（那是 v1 的补丁，在这里什么也不改变，只会让人误判） |
 | 对你其它模式的影响 | 插件钩子是全局的 | **没有影响。** 每个钩子都先看会话归属，所以 `build`、`plan` 和你自己装的 agent 都保持刚装好 OpenCode 时的样子——不会从它们的请求里删工具、不会设温度、不会卸载结果、不会收紧权限、也不会把它们的派发改成后台 |
@@ -487,24 +498,30 @@ opencode reload
 
 ### 分层配置（`team-mode.jsonc`）
 
-设置可以写在文件里，而不是环境变量里。两层，与宿主自己的配置同构：
+`team-mode.jsonc` 是**唯一**的配置源——所有 `TM_*` 配置环境变量都已移除。两层，与宿主自己的配置同构：
 
 | 层 | 文件 |
 |---|---|
-| 全局 | `~/.config/opencode/team-mode.jsonc` |
+| 全局 | `~/.config/opencode/team-mode.jsonc`（认 `OPENCODE_CONFIG_DIR`） |
 | 项目 | `<project>/team-mode.jsonc`，或 `<project>/.opencode/team-mode.jsonc`（后者胜） |
 
-优先级 `env < 全局 < 项目`，并且**文件赢环境变量**——写进文件的值会盖过同名的 `TM_*`。想让某一次运行回到纯环境变量，设
-`TM_CONFIG_ENV_ONLY=1`：它在任何文件被读取之前求值，文件关不掉它。
+优先级 `全局 < 项目`。**全局文件由插件在启动时自动生成**（文件不存在时）：一份全注释的**惰性**模板——
+每个键都以注释形式出现（`// "key": <默认值>,`），注释行就是它的一行说明，所以在你取消注释之前，这个文件什么都不设置。
+幂等、原子写入，绝不覆盖已存在的文件。关闭方式：插件选项 `autoCreate: false`（或内部开关 `TM_CONFIG_AUTOCREATE=off`）；
+启动行会记录 `config_autocreate`（`created` / `present` / `off` / `failed`）。
 
-键名就是 `TM_*` 的 camelCase 写法（`offloadThreshold`、`searchDefaultEngine` …）。有六个键是**文件不许改写的红线**——
-`envProtect`、`r6FineAsk`、`privateSpace`、`webfetchAllowedDomains`、`browserAskEval`、`bashReadonlyAllowed`；文件里写了也会被忽略并报告。
+键名是 camelCase（`offloadThreshold`、`searchDefaultEngine` …）——`src/tm/config-layers.ts` 里的注册表是唯一事实来源
+（59 个键，每个都带类型、默认值与说明）。有五个键是**项目文件不许改写的红线**——`envProtect`、`r6FineAsk`、
+`privateSpace`、`webfetchAllowedDomains`、`bashReadonlyAllowed`；它们只能在全局文件里设置，项目文件里写了会被忽略并报告。
 解析失败的那一层**整层跳过**（半份配置比没有配置更危险），单个坏键只丢它自己。未知键在启动时告警、**不应用**。
-`tm_stats` 会显示每个键最终来自哪一层。
+`tm_stats` 会显示每个键最终来自哪一层、被忽略的红线键、未知键、被跳过的层，以及自动生成的状态。
 
-**R6（环境变量保护）默认开启。** Team 角色用原生 `read` 读 `.env` 会被直接拒；读环境变量的 shell 命令会走宿主自己的权限提示。
-关闭方式：插件选项 `envProtect: false`，或 `TM_ENV_PROTECT=off`。2.x 上 shell 面是 `ask`（宿主的对话框——插件弹不出来），
-env-FILE 面是硬 `deny`、没有同意路径。
+**R6（环境变量保护）默认开启**（`envProtect` 默认 `"strict"`；规范取值 `strict` / `standard` / `off`）。Team 角色用原生 `read` 读 `.env` 会被直接拒；
+读环境变量的 shell 命令会走宿主自己的权限提示。关闭方式：插件选项 `envProtect: false`，或在**全局**文件里写 `"envProtect": "off"`（它是红线键）。
+2.x 上 shell 面是 `ask`（宿主的对话框——插件弹不出来），env-FILE 面是硬 `deny`、没有同意路径。
+
+仅存的 `TM_*` 环境变量是内部/测试开关，不是配置：`TM_STORE_RECLAIM`（测试覆盖 `storeReclaim` 键）、
+`TM_V2_PROBE`（只记名字的 JSONL 转储）、`TM_CONFIG_AUTOCREATE`（自动生成的关闭开关）。
 
 ### 卸载
 
@@ -527,8 +544,8 @@ env-FILE 面是硬 `deny`、没有同意路径。
 | `/team-plan` 能跑但不是以那个专家身份跑 | 2.x 把 `mode: subagent` 文档化为"只在子会话里运行"。如果选定专家的命令行为不对，改法是角色定义里用 `mode: "all"`（请回报——这是本流程里唯一还没在活体宿主上验证过的一项） |
 | `tm_webfetch` 说它"没问任何人就直接拒绝" | v2 的预期行为：插件弹不出对话框。换一个不需要这次访问的源，或让宿主自己的权限规则放行；地址红线（元数据 / 私网）在两代宿主上都没有授权路径 |
 | `subagent` 好像把领队挡住了 | v2 上插件会强制 `background: true`；如果你顺手设了老的 `OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS`，请取消它——那是 v1 的开关，在这里只会误导判断 |
-| 某个工具的输出没被卸载 | `TM_NATIVE_OFFLOAD=off`（或者那个 2.x 构建没有 `tool.execute.after` 缝）——`tm_stats` 会告诉你是哪一种 |
-| 会话不再自己提前压缩了（1.7.0 曾是模型窗口的 75%） | 那个触发器在 **1.7.1 已整体移除**（它随 1.7.0 发布）。压缩时机重新完全归宿主，跟没装插件一样。驱动它的三个开关（`TM_COMPACT_TRIGGER`、`TM_COMPACT_AT_PERCENT`、`TM_COMPACT_MIN_MS`）已删除；`team-mode.jsonc` 里若还留着它们，启动时会报为未知键而不是照旧生效。保留下来的是"只在宿主自己压缩时"才追加的两项：`TM_COMPACTION_CONTEXT` 推送必须存活清单，`TM_COMPACTION_AUTOCONTINUE` 控制宿主压缩后是否静默续跑 |
+| 某个工具的输出没被卸载 | 配置文件里写 `"nativeOffload": "off"`（或者那个 2.x 构建没有 `tool.execute.after` 缝）——`tm_stats` 会告诉你是哪一种 |
+| 会话不再自己提前压缩了（1.7.0 曾是模型窗口的 75%） | 那个触发器在 **1.7.1 已整体移除**（它随 1.7.0 发布）。压缩时机重新完全归宿主，跟没装插件一样。驱动它的三个开关（`TM_COMPACT_TRIGGER`、`TM_COMPACT_AT_PERCENT`、`TM_COMPACT_MIN_MS`）已删除；`team-mode.jsonc` 里若还留着它们，启动时会报为未知键而不是照旧生效。保留下来的是"只在宿主自己压缩时"才追加的一项：必须存活清单在 `session.hook("compaction")` 上推送（`compactionContext` 键是 v1-only 的解析兼容项） |
 | 插件行为怪：两次弹窗、钩子重复、工具像注册了两遍 | 它被加载了两次。`opencode.json` 与 `opencode.jsonc` 是合并读取的，而宿主去重只认完全相同的字符串，所以同一个包换两种写法（或者同时躺在两个文件里）就是两套人格。把两个文件里指向 Team 的条目一起数一遍；`msg="loading plugin"` 对同一个 id 出现两条就是证据 |
 | 写了条目，但宿主日志里关于它一个字都没有 | 两个"设计上静默"的原因：键名写成了单数 `plugin`（2.x 读 `plugins`），或者目录条目缺根 `index.js`。宿主解析目录只试 `<dir>/index`，试不出来就直接丢掉、不留任何消息 —— 在这里"没报错"不是成功信号 |
 | 后台子代理的回复太长 | 子会话现在会被登记、可被收集（`tm_join` 会列出它，行上标着「宿主 subagent 派发」），但它的**正文**仍然是宿主的注入消息，v2 不会在落盘前把这条消息交给插件；我们也不改写发出的消息（猜错那一层的形状等于静默删证据）。所以超限交付走黑板文件：正文进文件、回复里带路径，领队读那个文件 |
@@ -538,10 +555,14 @@ env-FILE 面是硬 `deny`、没有同意路径。
 
 ### v2 专属的开关
 
-| 变量 / 配置 | 默认 | 作用 |
+配置键写在 `team-mode.jsonc` 里（红线键只能在全局文件里设）；环境变量只剩三个内部/测试开关。
+
+| 键 / 变量 | 默认 | 作用 |
 |---|---|---|
-| `TM_WEBFETCH_ALLOWED_DOMAINS` | `*`（**仅 v2**） | 域名门禁默认关掉，只留地址红线；显式给了值就以它为准（v1 仍是 24 个种子域名） |
-| `TM_NATIVE_OFFLOAD` | on | 用 `tool.execute.after` 治理宿主原生工具的结果；off 就退回宿主原样 |
-| `TM_R6_FINE_ASK` | on（v2） | 由按命令分类器决定哪条 shell 要问；`off` 回到"每条 shell 都问"，宿主没有 `permission.hook` 时也自动回到这一档 |
-| `TM_V2_PROBE` | 未设 | 把宿主真实工具面/动作名记成 JSONL（只有名字和计数） |
+| `webfetchAllowedDomains`（配置） | `["*"]`（**仅 v2**） | 域名门禁默认关掉，只留地址红线；显式给了值就以它为准（v1 仍是 24 个种子域名） |
+| `nativeOffload`（配置） | on | 用 `tool.execute.after` 治理宿主原生工具的结果；off 就退回宿主原样 |
+| `r6FineAsk`（配置） | `""`（自动） | 由按命令分类器决定哪条 shell 要问；`off` 回到"每条 shell 都问"，宿主没有 `permission.hook` 时也自动回到这一档 |
+| `TM_V2_PROBE`（环境，内部） | 未设 | 把宿主真实工具面/动作名记成 JSONL（只有名字和计数） |
+| `TM_STORE_RECLAIM`（环境，内部） | on | 测试覆盖 `storeReclaim` 键：off 时启动不回收存储分片 |
+| `TM_CONFIG_AUTOCREATE`（环境，内部） | on | off 时不在启动时自动生成全局 `team-mode.jsonc` |
 | `{ "package": "@te-river/opencode-team-mode@latest", "options": { "defaultAgent": false } }` | 不设置 = Team 永远默认 | 退出默认位抢占（2.x 必须用对象形状；1.x 的元组会被宿主拒：`path=$.plugins.1 kind=invalid`） |

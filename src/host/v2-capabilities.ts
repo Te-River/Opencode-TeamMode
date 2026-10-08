@@ -239,7 +239,7 @@ export function v2CapabilityRows(i: Inputs): CapabilityRow[] {
     state: !pruneEnabled ? "declared" : i.prune && i.prune.prunedMessages > 0 ? "ok" : "declared",
     evidence: i.prune && i.prune.prunedMessages > 0 ? "runtime" : "static",
     note: !pruneEnabled
-      ? "TM_PRUNE=off：操作员关掉了裁剪，不是坏"
+      ? "prune: \"off\"：操作员关掉了裁剪，不是坏"
       : i.prune
         ? `已测 ${i.prune.checked} 次请求装配 · 裁掉 ${i.prune.prunedMessages} 条消息（省 ${i.prune.prunedTokens} token，估算）· 未到阈值 ${i.prune.below} · 读不到上限 ${i.prune.noLimit} · 非本会话跳过 ${i.prune.foreignSkipped} · 抛错 ${i.prune.threw}`
         : "层已装（v2.ts 注册了 prune 的 context 钩子），但本进程没有把它的计数交给能力矩阵——这一格只能读 declared",

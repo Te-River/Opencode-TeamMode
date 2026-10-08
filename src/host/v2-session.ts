@@ -22,7 +22,7 @@
 
 import { V2_LADDER_ACTIONS } from "./v2-permissions.js"
 import { normalizeAgentName } from "../identity.js"
-import { estimateTokens } from "../tm/config.js"
+import { estimateTokens, resolveConfig } from "../tm/config.js"
 import type { V2Registration, V2SessionContext, V2Context } from "./v2-types.js"
 
 /**
@@ -104,18 +104,14 @@ export const SPLIT_DEFAULTS: SplitConfig = { enabled: true, briefTokens: 4000, m
 
 const isOff = (value: unknown): boolean => typeof value === "string" && /^(off|0|false|no)$/i.test(value.trim())
 
-const clampNum = (raw: unknown, fallback: number, min: number, max: number): number => {
-  const n = Number(raw)
-  if (!Number.isFinite(n)) return fallback
-  return Math.min(max, Math.max(min, Math.round(n)))
-}
-
-/** `TM_SPLIT_ADVICE=off` disables; the two numbers are clamped, never trusted raw. */
-export function resolveSplitConfig(env: Record<string, string | undefined> = process.env): SplitConfig {
+/** `splitAdvice: "off"` disables; the two numbers are clamped by `resolveConfig`. */
+export function resolveSplitConfig(
+  config: { splitAdvice: string; splitBriefTokens: number; splitMaxCriteria: number } = resolveConfig(),
+): SplitConfig {
   return {
-    enabled: !isOff(env.TM_SPLIT_ADVICE),
-    briefTokens: clampNum(env.TM_SPLIT_BRIEF_TOKENS, SPLIT_DEFAULTS.briefTokens, 200, 200_000),
-    maxCriteria: clampNum(env.TM_SPLIT_MAX_CRITERIA, SPLIT_DEFAULTS.maxCriteria, 1, 50),
+    enabled: config.splitAdvice !== "off",
+    briefTokens: config.splitBriefTokens,
+    maxCriteria: config.splitMaxCriteria,
   }
 }
 
@@ -132,7 +128,7 @@ export function briefTextOf(input: unknown): string {
 /** The ONE advice line.  It names the measured size, the split rule, and the
  *  escape hatch — a directive the user can turn off is not a silent behaviour. */
 export function splitAdviceText(briefTokens: number, briefTokensLimit: number, maxCriteria: number): string {
-  return `${SPLIT_MARKER}\n上一次派发的 brief 约 ${briefTokens} token（阈值 ${briefTokensLimit}，验收标准上限 ${maxCriteria} 条）：请把它拆成可独立验收的小片——每个 dispatch 只服务一条可验收的交付，各自带 verbatim 数据契约；每片都要能独立验收，否则不是拆分而是切碎。可 TM_SPLIT_ADVICE=off 关闭。`
+  return `${SPLIT_MARKER}\n上一次派发的 brief 约 ${briefTokens} token（阈值 ${briefTokensLimit}，验收标准上限 ${maxCriteria} 条）：请把它拆成可独立验收的小片——每个 dispatch 只服务一条可验收的交付，各自带 verbatim 数据契约；每片都要能独立验收，否则不是拆分而是切碎。可 splitAdvice: "off" 关闭。`
 }
 
 /**

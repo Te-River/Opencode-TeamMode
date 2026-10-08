@@ -4,12 +4,12 @@
  *
  * Package ① (`config-layers.ts`) is the PURE layer: it takes raw JSONC text
  * and returns the merged view.  This module is the IO half — it LOCATES and
- * READS the two file layers, then feeds them to the pure resolver and folds
- * the result back into an env record so `resolveTmConfig` (which only speaks
- * env strings) sees the file values.
+ * READS the two file layers, then hands the merged JSON values to
+ * `resolveConfig` (the registry-driven validator).
  *
- * Two layers only, low→high: `env < 全局 < 项目`.  There is NO session layer
- * (the host's own config has none either — `opencode.ai/v2/docs/config`).
+ * Two layers only, low→high: `全局 < 项目`.  There is NO session layer and
+ * NO env layer (the host's own config has none either —
+ * `opencode.ai/v2/docs/config`).
  *
  * The project layer MIRRORS the host's layering semantics: search from the
  * current directory up to the filesystem root; merge the DIRECT files
@@ -18,8 +18,8 @@
  * ancestor files are merged (closer wins) into ONE text so the pure layer's
  * two project slots (`project` / `project:.opencode`) keep their meaning.
  *
- * `TM_CONFIG_ENV_ONLY=1` is evaluated BEFORE any file is read, so the escape
- * valve costs zero IO and cannot be defeated by a file that fails to parse.
+ * `envOnly` is an explicit parameter (test injection) — it removes every file
+ * layer BEFORE any read, so the escape valve costs zero IO.
  *
  * Every root is INJECTABLE (`ConfigFileRoots`) so tests point at a temp dir
  * and never touch the user's real `~/.config/opencode`.
@@ -29,13 +29,13 @@ import * as fs from "node:fs"
 import * as os from "node:os"
 import * as path from "node:path"
 import {
-  CONFIG_KEYS,
   parseJsonc,
   resolveLayeredConfig,
   type EnvLike,
   type LayeredConfigResult,
 } from "./config-layers.js"
-import { resolveTmConfig, type TmConfig } from "./config.js"
+import { resolveConfig, type TmConfig } from "./config.js"
+import type { AutoCreateState } from "./config-template.js"
 
 /** The file name both layers use. */
 export const CONFIG_FILE_NAME = "team-mode.jsonc"
@@ -50,6 +50,8 @@ export interface ConfigFileRoots {
 }
 
 export interface ConfigFileRead {
+  /** The resolved global dir (whether or not the file exists). */
+  globalDir: string
   /** Global file raw JSONC, or null when it does not exist / is unreadable. */
   globalLayer: string | null
   /** Absolute path of the global file when it was read. */
@@ -113,11 +115,26 @@ function mergeTexts(
   return any ? JSON.stringify(merged) : null
 }
 
-/** Locate and read both file layers.  Pure IO — no env, no globals beyond the
- *  injected roots. */
-export function readConfigFiles(roots: ConfigFileRoots = {}): ConfigFileRead {
+/**
+ * The resolved global config dir.  The host's global config dir is
+ * `~/.config/opencode`, overridable by `OPENCODE_CONFIG_DIR` — the global
+ * `team-mode.jsonc` lives beside the host's own global config, so honor the
+ * same override (and it keeps a test that redirects OPENCODE_CONFIG_DIR
+ * hermetic).  `OPENCODE_CONFIG_DIR` is the host's own variable, not ours.
+ */
+export function resolveGlobalDir(roots: ConfigFileRoots = {}, env: EnvLike = process.env): string {
   const home = roots.home ?? os.homedir()
-  const globalDir = roots.globalDir ?? path.join(home, ".config", "opencode")
+  const override =
+    typeof env.OPENCODE_CONFIG_DIR === "string" && env.OPENCODE_CONFIG_DIR.trim()
+      ? env.OPENCODE_CONFIG_DIR.trim()
+      : undefined
+  return roots.globalDir ?? override ?? path.join(home, ".config", "opencode")
+}
+
+/** Locate and read both file layers.  Pure IO — no globals beyond the
+ *  injected roots. */
+export function readConfigFiles(roots: ConfigFileRoots = {}, env: EnvLike = process.env): ConfigFileRead {
+  const globalDir = resolveGlobalDir(roots, env)
   const projectDir = roots.projectDir ?? process.cwd()
   const skipped: Array<{ name: string; reason: string }> = []
 
@@ -145,6 +162,7 @@ export function readConfigFiles(roots: ConfigFileRoots = {}): ConfigFileRead {
   }
 
   return {
+    globalDir,
     globalLayer,
     globalPath: globalLayer !== null ? globalPath : null,
     projectLayer: [mergeTexts(directEntries, skipped), mergeTexts(opencodeEntries, skipped)],
@@ -163,57 +181,44 @@ export interface LayeredTmConfig {
   files: ConfigFileRead
 }
 
-function envOnlyFromEnv(env: EnvLike): boolean {
-  const raw = env.TM_CONFIG_ENV_ONLY
-  return typeof raw === "string" && /^(1|true|on|yes)$/i.test(raw.trim())
+export interface ResolveLayeredTmConfigOptions {
+  /** Remove every file layer (test injection). */
+  envOnly?: boolean
+  /** Lowest-priority default overrides (BELOW the file layers).  v2 uses it to
+   *  default `webfetchAllowedDomains` to `["*"]` when no file sets it.  The
+   *  auto-created global file is INERT (every key commented), so it sets
+   *  nothing and never shadows these; a user-edited file still wins. */
+  configDefaults?: Record<string, unknown>
+  /** Env used only for `OPENCODE_CONFIG_DIR` (the host's own variable). */
+  env?: EnvLike
 }
 
-/** A file value back to the env STRING `resolveTmConfig` parses.  Only
- *  FILE-sourced values go through here — an env-sourced value is already the
- *  raw string and must not be re-encoded (a `record` env string would iterate
- *  its characters). */
-function stringifyForEnv(type: string, value: unknown): string {
-  if (type === "string[]") return Array.isArray(value) ? value.map(String).join(",") : String(value)
-  if (type === "record") {
-    if (value && typeof value === "object" && !Array.isArray(value)) {
-      return Object.entries(value as Record<string, unknown>)
-        .map(([k, v]) => `${k}=${v}`)
-        .join(",")
-    }
-    return String(value)
-  }
-  return String(value)
-}
+const EMPTY_FILES = (globalDir: string): ConfigFileRead => ({
+  globalDir,
+  globalLayer: null,
+  globalPath: null,
+  projectLayer: [null, null],
+  projectPaths: [],
+  opencodePaths: [],
+  skipped: [],
+})
 
 /**
  * Resolve the runtime config through the layered pipeline: read the files
- * (unless `TM_CONFIG_ENV_ONLY`), merge with the pure resolver, fold the
- * file-sourced values back into an env record, then hand that to
- * `resolveTmConfig`.  The returned `layered`/`files` are what `tm_stats`
- * renders so the user can see WHERE each key came from.
+ * (unless `envOnly`), merge with the pure resolver, then hand the merged JSON
+ * values (plus any `configDefaults`) to `resolveConfig`.  The returned
+ * `layered`/`files` are what `tm_stats` renders so the user can see WHERE
+ * each key came from.
  */
 export function resolveLayeredTmConfig(
-  env: EnvLike = process.env,
   roots: ConfigFileRoots = {},
+  opts: ResolveLayeredTmConfigOptions = {},
 ): LayeredTmConfig {
-  const envOnly = envOnlyFromEnv(env)
-  // The host's global config dir is `~/.config/opencode`, overridable by
-  // OPENCODE_CONFIG_DIR — the global `team-mode.jsonc` lives beside the host's
-  // own global config, so honor the same override (and it keeps a test that
-  // redirects OPENCODE_CONFIG_DIR hermetic).
-  const configDirOverride =
-    typeof env.OPENCODE_CONFIG_DIR === "string" && env.OPENCODE_CONFIG_DIR.trim()
-      ? env.OPENCODE_CONFIG_DIR.trim()
-      : undefined
-  const effectiveRoots: ConfigFileRoots = {
-    ...roots,
-    globalDir: roots.globalDir ?? configDirOverride,
-  }
-  const files: ConfigFileRead = envOnly
-    ? { globalLayer: null, globalPath: null, projectLayer: [null, null], projectPaths: [], opencodePaths: [], skipped: [] }
-    : readConfigFiles(effectiveRoots)
+  const env = opts.env ?? process.env
+  const envOnly = opts.envOnly ?? false
+  const globalDir = resolveGlobalDir(roots, env)
+  const files: ConfigFileRead = envOnly ? EMPTY_FILES(globalDir) : readConfigFiles(roots, env)
   const base = resolveLayeredConfig({
-    env,
     globalLayer: files.globalLayer,
     projectLayer: files.projectLayer,
     envOnly,
@@ -222,38 +227,50 @@ export function resolveLayeredTmConfig(
     ...base,
     skippedLayers: [...files.skipped, ...base.skippedLayers],
   }
-  const specByKey = new Map(CONFIG_KEYS.map((k) => [k.key, k]))
-  const synthetic: EnvLike = { ...env }
-  for (const [key, source] of Object.entries(layered.perKeySource)) {
-    if (source === "env") continue
-    const spec = specByKey.get(key)
-    if (!spec) continue
-    synthetic[spec.env] = stringifyForEnv(spec.type, layered.values[key])
-  }
-  return { cfg: resolveTmConfig(synthetic), layered, files }
+  // `configDefaults` sits BELOW the file layers: a file value always wins.
+  const merged: Record<string, unknown> = { ...(opts.configDefaults ?? {}), ...layered.values }
+  return { cfg: resolveConfig(merged), layered, files }
+}
+
+/** The four auto-create states in the user's words — the boot row records the
+ *  token, the report must not make the user decode it. */
+const AUTO_CREATE_LABEL: Record<AutoCreateState, string> = {
+  created: "已创建",
+  present: "已存在",
+  off: "关闭",
+  failed: "创建失败",
 }
 
 /**
  * The `tm_stats` config section.  Renders the per-key source, the red-line
- * keys a file tried to set, the unknown keys (warned, never applied) and the
- * env-only flag — the four facts that make "which layer won" checkable.
+ * keys a PROJECT file tried to set, the unknown keys (warned, never applied),
+ * the env-only flag and the auto-create outcome — the facts that make "which
+ * layer won" checkable.  `autoCreate` is the state the boot row recorded
+ * (`ensureGlobalConfig`); omitted only by a caller that never ran it.
  */
-export function renderConfigSection(layered: LayeredConfigResult, files: ConfigFileRead): string {
+export function renderConfigSection(
+  layered: LayeredConfigResult,
+  files: ConfigFileRead,
+  autoCreate?: AutoCreateState,
+): string {
   const lines: string[] = ["", "### 分层配置（team-mode.jsonc）", ""]
   lines.push(
-    `- 层序 env < 全局 < 项目 · 全局文件 ${files.globalPath ? "有" : "无"} · ` +
+    `- 层序 全局 < 项目 · 全局文件 ${files.globalPath ? "有" : "无"} · ` +
       `项目文件 ${files.projectPaths.length} 个（其中 .opencode ${files.opencodePaths.length} 个）· ` +
-      `TM_CONFIG_ENV_ONLY ${layered.envOnlyActive ? "开（文件层已全部忽略）" : "关"}`,
+      `envOnly ${layered.envOnlyActive ? "开（文件层已全部忽略）" : "关"}`,
   )
+  if (autoCreate) {
+    lines.push(`- 全局文件自动创建：${AUTO_CREATE_LABEL[autoCreate]}（${autoCreate}）`)
+  }
   const sources = Object.entries(layered.perKeySource)
   lines.push(
     sources.length
       ? `- 每键来源：${sources.map(([k, s]) => `${k}=${s}`).join(" · ")}`
-      : "- 每键来源：（没有任何键来自 env 或文件，全部走默认）",
+      : "- 每键来源：（没有任何键来自文件，全部走默认）",
   )
   if (layered.ignoredRedLineKeys.length) {
     lines.push(
-      `- 红线豁免（文件不得改写，已忽略）：${layered.ignoredRedLineKeys.map((r) => `${r.key}（${r.layer}）`).join(" · ")}`,
+      `- 红线键被项目文件尝试设置（已忽略，仅全局生效）：${layered.ignoredRedLineKeys.map((r) => `${r.key}（${r.layer}）`).join(" · ")}`,
     )
   }
   if (layered.unknownKeys.length) {

@@ -24,6 +24,7 @@
  * idempotent under the host's in-process hook replay.
  */
 
+import { resolveConfig } from "../tm/config.js"
 import type { TeamScope } from "./v2-scope.js"
 import type { V2Context, V2PermissionEvaluation, V2Registration, V2SessionContext } from "./v2-types.js"
 
@@ -96,20 +97,26 @@ const isOff = (raw: unknown): boolean => /^(off|false|0|no)$/i.test(String(raw ?
 /**
  * Resolve the knobs.  An ILLEGAL value falls back to its default �?it never
  * silently disables the feature ("非法值回退默认，不静默关闸").  Only an explicit
- * `TM_RETRY=off` turns it off.
+ * `retry: "off"` turns it off.
  */
-export function resolveRetryConfig(env: Record<string, string | undefined> = process.env): RetryConfig {
-  const enabled = !isOff(env.TM_RETRY)
-  const num = (raw: unknown, fallback: number, min: number, max: number): number => {
-    const n = Number(raw)
-    return Number.isFinite(n) && n >= min && n <= max ? n : fallback
+export function resolveRetryConfig(
+  config: {
+    retry: string
+    retryBaseMs: number
+    retryMaxMs: number
+    retryJitter: number
+    retryBreakAfter: number
+    retryCooldownMs: number
+  } = resolveConfig(),
+): RetryConfig {
+  return {
+    enabled: config.retry !== "off",
+    baseMs: config.retryBaseMs,
+    maxMs: config.retryMaxMs,
+    jitter: config.retryJitter,
+    breakAfter: config.retryBreakAfter,
+    cooldownMs: config.retryCooldownMs,
   }
-  const baseMs = num(env.TM_RETRY_BASE_MS, RETRY_DEFAULTS.baseMs, 1, 3_600_000)
-  const maxMs = num(env.TM_RETRY_MAX_MS, RETRY_DEFAULTS.maxMs, 1, 3_600_000)
-  const jitter = num(env.TM_RETRY_JITTER, RETRY_DEFAULTS.jitter, 0, 0.95)
-  const breakAfter = Math.round(num(env.TM_RETRY_BREAK_AFTER, RETRY_DEFAULTS.breakAfter, 1, 1000))
-  const cooldownMs = num(env.TM_RETRY_COOLDOWN_MS, RETRY_DEFAULTS.cooldownMs, 0, 3_600_000)
-  return { enabled, baseMs, maxMs, jitter, breakAfter, cooldownMs }
 }
 
 /**
@@ -214,8 +221,8 @@ export function createRetryGovernor(opts: RetryGovernorOptions = {}): RetryGover
   const buildDirective = (kind: ProviderErrorKind, delayMs: number): RetryDirective => {
     const secs = Math.max(1, Math.round(delayMs / 1000))
     const text = inCooldown()
-      ? `${RETRY_MARKER}（配额保护，不是故障）\n连续 ${cfg.breakAfter} 次配�?限流错误，已进入冷却：请等待 ${secs} 秒后再发下一次请求，期间新的子代理派发会被拒绝。这是配额保护，不是插件故障；可�?TM_RETRY=off 关闭。`
-      : `${RETRY_MARKER}（配额保护，不是故障）\n检测到 provider ${kindLabel(kind)} 错误：请等待 ${secs} 秒后再发下一次请求。这是配额保护，不是插件故障；可�?TM_RETRY=off 关闭。`
+      ? `${RETRY_MARKER}（配额保护，不是故障）\n连续 ${cfg.breakAfter} 次配�?限流错误，已进入冷却：请等待 ${secs} 秒后再发下一次请求，期间新的子代理派发会被拒绝。这是配额保护，不是插件故障；可�?retry: "off" 关闭。`
+      : `${RETRY_MARKER}（配额保护，不是故障）\n检测到 provider ${kindLabel(kind)} 错误：请等待 ${secs} 秒后再发下一次请求。这是配额保护，不是插件故障；可�?retry: "off" 关闭。`
     return { text, delayMs }
   }
 
@@ -385,7 +392,7 @@ export async function applyV2RetryGovernor(ctx: V2Context, input: RetryLayerInpu
             /* the trajectory line is an extra */
           }
           const secs = Math.max(1, Math.round(governor.cooldownRemainingMs() / 1000))
-          const message = `配额保护：连�?${governor.breakAfter} 次配�?限流错误，已进入冷却（剩余约 ${secs} 秒）。期间不派发新的子代理；这是配额保护，不是故障。可�?TM_RETRY=off 关闭。`
+          const message = `配额保护：连�?${governor.breakAfter} 次配�?限流错误，已进入冷却（剩余约 ${secs} 秒）。期间不派发新的子代理；这是配额保护，不是故障。可�?retry: "off" 关闭。`
           // Only ever stricter: a host that already denied keeps its decision.
           if (rank.deny <= rank[event.effect ?? "allow"]) return
           event.effect = "deny"

@@ -94,7 +94,7 @@ interface GovernOptions {
  *   fallback; every govern call site passes a known detectContentType
  *   result, so this branch is belt-and-braces).
  * Wave B M1 — the global TM_OFFLOAD_THRESHOLD is NOT dead here: config.ts
- * resolveTmConfig makes both tiers INHERIT it when it is explicitly set and
+ * resolveConfig makes both tiers INHERIT it when it is explicitly set and
  * the tier env is not, so a user who raised the global is honored on every
  * class (an explicit tier env still wins).  See config.ts offloadThreshold*.
  */

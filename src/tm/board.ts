@@ -242,7 +242,7 @@ export function buildBoardWriteTool(deps: {
         tmError(
           tool,
           "args",
-          `content ${content.length} 字符超过上限 ${maxChars}（TM_BOARD_MAX_CHARS）。拆成多个 topic 各写一个文件，别把一份超长文档塞进一次交付——超限的部分不会写盘。`,
+          `content ${content.length} 字符超过上限 ${maxChars}（boardMaxChars）。拆成多个 topic 各写一个文件，别把一份超长文档塞进一次交付——超限的部分不会写盘。`,
         ),
       )
     }
@@ -317,7 +317,7 @@ export function buildBoardWriteTool(deps: {
   }
 }
 
-const DESCRIPTION = `Blackboard file writer — the deliverable channel for roles that own no write-capable file tool (architect and researcher carry no write/edit/bash, so a board write through the host's file tools is impossible for them by construction). Writes ONE new markdown file at <board-root>/<session-key>/<task-slug>/NN-<role>-<topic>[-rN].md, where NN and -rN are chosen by this tool (never overwritten: a revision is a new round file, so the board keeps its audit trail). Args: task (slug), topic (slug), content, and optionally session — pass the folder the lead already created so every role in this conversation writes into the SAME folder; omit it and the tool stamps yyyyMMdd-HHmmss for you. The role in the filename comes from the host's ctx, not from what you claim. Scope is enforced, not polite: segments are sanitized, the target's realpath must stay under the board root (a symlinked task dir pointing outside is refused), the name always ends in .md so no .env/rc file can be produced, and content is capped by TM_BOARD_MAX_CHARS with a per-session file cap. The reply is the absolute path plus the byte count and NEVER the content — pasting the deliverable back is the exact thing this channel exists to prevent, so after a successful write the report carries skeleton + path, not the document.`
+const DESCRIPTION = `Blackboard file writer — the deliverable channel for roles that own no write-capable file tool (architect and researcher carry no write/edit/bash, so a board write through the host's file tools is impossible for them by construction). Writes ONE new markdown file at <board-root>/<session-key>/<task-slug>/NN-<role>-<topic>[-rN].md, where NN and -rN are chosen by this tool (never overwritten: a revision is a new round file, so the board keeps its audit trail). Args: task (slug), topic (slug), content, and optionally session — pass the folder the lead already created so every role in this conversation writes into the SAME folder; omit it and the tool stamps yyyyMMdd-HHmmss for you. The role in the filename comes from the host's ctx, not from what you claim. Scope is enforced, not polite: segments are sanitized, the target's realpath must stay under the board root (a symlinked task dir pointing outside is refused), the name always ends in .md so no .env/rc file can be produced, and content is capped by boardMaxChars with a per-session file cap. The reply is the absolute path plus the byte count and NEVER the content — pasting the deliverable back is the exact thing this channel exists to prevent, so after a successful write the report carries skeleton + path, not the document.`
 
 const FALLBACK_ARGS: Record<string, unknown> = {
   task: { descriptor: "task: task-slug folder (the one the dispatch named)" },

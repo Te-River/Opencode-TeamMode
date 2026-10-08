@@ -2,7 +2,7 @@ import type { V2Registration } from "./v2-types.js"
 import type { TeamScope } from "./v2-scope.js"
 import { capTokens, capKeepingAddressing, capKeepingTables, detectContentType, hasMarkdownTable } from "../tm/preview.js"
 import { parseHostEnvelope, renderOffloadedSubagent } from "../task-offload.js"
-import { estimateTokens } from "../tm/config.js"
+import { estimateTokens, resolveConfig } from "../tm/config.js"
 
 /**
  * JIT context governance over the HOST's own tools.
@@ -127,6 +127,8 @@ interface OffloadDeps {
     govern: (stepId: string, tool: string, content: string, opts: { contentType: ReturnType<typeof detectContentType>; clue?: string }) => unknown
   }
   env?: Record<string, string | undefined>
+  /** The resolved runtime config (nativeOffload + the two token budgets). */
+  config?: { nativeOffload: string; nativeSnapshotMaxTokens: number; nativeReportMaxTokens: number }
   /** Team-scope isolation (#22): a non-Team session's result is nobody's to rewrite
    *  but the host's, and an unknown owner is treated as not-ours and COUNTED — a
    *  governance layer that silently stopped applying is the same overstated claim
@@ -168,8 +170,8 @@ function locatableText(result: unknown): { parts: unknown[]; index: number; text
 export const ADDRESSING_NATIVE_TOOLS: ReadonlySet<string> = new Set(["browser_snapshot", "browser_find"])
 export const NATIVE_SNAPSHOT_MAX_TOKENS = 1200
 
-export function snapshotTokenBudget(env: Record<string, string | undefined> | undefined): number {
-  const raw = Number(String(env?.TM_NATIVE_SNAPSHOT_MAX_TOKENS ?? "").trim())
+export function snapshotTokenBudget(config: { nativeSnapshotMaxTokens: number } | undefined): number {
+  const raw = Number(config?.nativeSnapshotMaxTokens)
   return Number.isFinite(raw) && raw >= 100 ? Math.min(20_000, Math.floor(raw)) : NATIVE_SNAPSHOT_MAX_TOKENS
 }
 
@@ -194,8 +196,8 @@ export function renderAddressingCap(
  *  the snapshot budget because a report has more prose per table. */
 export const NATIVE_REPORT_MAX_TOKENS = 1600
 
-export function reportTokenBudget(env: Record<string, string | undefined> | undefined): number {
-  const raw = Number(String(env?.TM_NATIVE_REPORT_MAX_TOKENS ?? "").trim())
+export function reportTokenBudget(config: { nativeReportMaxTokens: number } | undefined): number {
+  const raw = Number(config?.nativeReportMaxTokens)
   return Number.isFinite(raw) && raw >= 200 ? Math.min(20_000, Math.floor(raw)) : NATIVE_REPORT_MAX_TOKENS
 }
 
@@ -236,8 +238,8 @@ export function applyV2NativeOffload(
   ctx: unknown,
   deps: OffloadDeps,
 ): { registrations: Promise<V2Registration>[]; report: V2OffloadReport; active: boolean } {
-  const env = deps.env ?? process.env
-  const off = /^(0|false|no|off)$/i.test(String(env.TM_NATIVE_OFFLOAD ?? "").trim())
+  const cfg = deps.config ?? resolveConfig()
+  const off = cfg.nativeOffload === "off"
   const report: V2OffloadReport = { seen: 0, ours: 0, unmatched: 0, considered: 0, offloaded: 0, capped: 0, reportCapped: 0, envelopes: 0, degraded: 0, tokensSaved: 0, byTool: {} }
   const hook = (ctx as { tool?: { hook?: unknown } })?.tool?.hook
   if (typeof hook !== "function") {
@@ -305,7 +307,7 @@ export function applyV2NativeOffload(
       // The snapshot is an addressing table, not a document: replacing it with a
       // handle would strand the next click. Cap it, keep the handle for the tail,
       // and count the tokens that DID enter.
-      const budget = snapshotTokenBudget(deps.env)
+      const budget = snapshotTokenBudget(cfg)
       const cut = capKeepingAddressing(found.text, budget)
       const capped = `${cut.text}${
         cut.fellBack
@@ -332,7 +334,7 @@ export function applyV2NativeOffload(
       // 2 917 tokens) leaves the lead describing a table it cannot see and the user
       // reading prose about numbers instead of the numbers. So the tables stay, the
       // prose goes, and the handle still carries the whole thing.
-      const budget = reportTokenBudget(deps.env)
+      const budget = reportTokenBudget(cfg)
       const cut = capKeepingTables(found.text, budget)
       const rendered = renderReportCap(tool, cut.text, g, cut.tablesDropped)
       parts[found.index] = { type: "text", text: rendered }

@@ -232,7 +232,7 @@ assert.deepEqual(cfg.agent["researcher"].permission.tm_webfetch, { "*": "ask" },
 assert.equal(cfg.agent["Team"].permission.browser, undefined, "lead: the native browser catalog is left to the host (no blanket deny)")
 assert.equal(cfg.agent["implementer"].permission.browser, "deny", "implementer is NOT a network role (native browser denied)")
 assert.equal(cfg.agent["implementer"].permission.tm_memory, "allow", "memory store: all roles (not a network channel)")
-assert.equal(cfg.agent["Team"].permission.tm_ledger, undefined, "the ledger is NOT named in the matrix — v2-permissions grants tm_ledger by role name, so a second source of truth here would drift")
+assert.equal(cfg.agent["Team"].permission.tm_ledger, undefined, "the ledger is NOT named in the matrix — v2-permissions grants tm_ledger by role name, so a second source of the rule would drift")
 assert.equal(cfg.agent["Team"].permission.question, "allow", "lead: question granted (batched blocking questions)")
 assert.equal(cfg.agent["implementer"].permission.question, "deny", "specialists: question denied (lead-only)")
 assert.equal(Object.keys(cfg.agent).length, 6, "exactly 6 agents injected")
@@ -516,6 +516,36 @@ assert.ok(
   leadPrompt.indexOf("## Task splitting") < leadPrompt.indexOf("## Routing table"),
   "lead: the split rule sits with the efficiency mandate, before the routing table",
 )
+// The split rule's two load-bearing halves: the >3-criteria trigger and the
+// price of ignoring it.  A section that only says "split big tasks" leaves
+// the oversized dispatch looking like a saving.  (Both sentences predate the
+// speed-lever change — these two are PRE-EXISTING pins, not new ones.)
+assert.ok(leadPrompt.includes("more than three acceptance criteria"), "lead: >3 acceptance criteria is the named split trigger (pre-existing pin)")
+assert.ok(leadPrompt.includes("paid back with interest"), "lead: the anti-pattern prices the oversized dispatch (pre-existing pin)")
+// The architect is conditional, and the routing table has to say so: the
+// "Skip the ceremony" fast path and a table that mandates the architect for
+// every multi-module change cannot both be true.
+assert.ok(leadPrompt.includes("architect (only when the design is genuinely unknown)"), "lead: the routing table makes the architect conditional")
+assert.ok(leadPrompt.includes("The architect is CONDITIONAL"), "lead: the conditional-architect rule is stated, not implied")
+assert.ok(leadPrompt.includes("dispatch architect/researcher/reviewer"), "lead: the skip-the-ceremony list names the architect too")
+assert.ok(
+  leadPrompt.includes("if the fix moves a contract or the strategy is undecided, keep the\n  architect"),
+  "lead: a proven root cause does not skip the architect when the fix moves a contract",
+)
+// Verification and review are independent, so they may share a round; the
+// serialize rule survives only for the case where a fix invalidates both.
+assert.ok(leadPrompt.includes("Tester and\n  reviewer may run in the SAME round"), "lead: tester + reviewer may share a round")
+assert.ok(leadPrompt.includes("serialize them only when a fix\n  invalidates both"), "lead: the serialize rule survives for the invalidating-fix case")
+// The lead's own recon is rounds too — the measured failure is named, and the
+// rule names the SHAPE per tool family: native probes cannot fold into `execute`
+// (measured: `tools["read"]` → `Unknown tool 'read'`), so they batch as
+// parallel calls in one message; only governed tm_* probes fold into a program.
+assert.ok(leadPrompt.includes("≥3 native recon probes"), "lead: native recon batches as parallel calls in one message")
+assert.ok(leadPrompt.includes("PARALLEL calls in ONE message"), "lead: the native half of the batching rule names the shape")
+assert.ok(leadPrompt.includes("the native file/shell tools are not callable there"), "lead: the batching rule says why native probes cannot fold into execute")
+assert.ok(!leadPrompt.includes("when ≥3 of your own reads / greps"), "lead: the old (wrong) batching sentence is gone")
+assert.ok(leadPrompt.includes("collapse into ONE `execute` (Code Mode)"), "lead: governed tm_* probes collapse into one Code Mode program")
+assert.ok(leadPrompt.includes("~400 narrow calls"), "lead: the batching rule carries the measured failure it prevents")
 
 assert.ok(leadPrompt.includes("update AGENTS.md"), "lead: AGENTS.md sync duty")
 assert.ok(leadPrompt.includes("Repo hygiene applies to you too"), "lead: repo hygiene rule (temp files deleted / OS temp dir)")

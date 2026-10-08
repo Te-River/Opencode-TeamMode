@@ -377,7 +377,7 @@ function countersSourceLine(line: Record<string, unknown>): string {
  *  says so out loud. */
 export function pruneLine(line: Record<string, unknown>): string {
   if (line.prune_enabled === undefined) return ""
-  if (line.prune_enabled === false) return "裁剪：TM_PRUNE=off（操作员关的，不是坏）"
+  if (line.prune_enabled === false) return "裁剪：prune: \"off\"（操作员关的，不是坏）"
   const n = (v: unknown) => Number(v ?? 0)
   const parts = [
     `裁剪：阈值 ${line.prune_at_percent}% · 保留尾部 ${line.prune_keep_tail_percent}%`,
@@ -760,7 +760,7 @@ export function buildStatsTool(deps: StatsDeps): ToolDefinition {
       capabilities: { descriptor: "capabilities: false to omit the host-capability matrix" },
       recent: { descriptor: "recent: number (optional, 1..50 — append a newest-first recap of governed calls with their handle refs and payload paths)" },
     },
-    execute: async (rawArgs): Promise<ToolResult> => {
+    execute: async (rawArgs, ctx): Promise<ToolResult> => {
       try {
         const args = (rawArgs ?? {}) as Record<string, unknown>
         const limit = Math.max(1, Math.min(50, Math.round(num(args.runs)) || 10))

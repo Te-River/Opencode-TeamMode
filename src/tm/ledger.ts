@@ -29,6 +29,7 @@
 import type { ToolDefinition, ToolResult } from "../types.js"
 import { sameAgent } from "../identity.js"
 import { tmError, toToolResult } from "./result.js"
+import { resolveConfig } from "./config.js"
 
 export const LEDGER_STATUSES = ["open", "doing", "done", "blocked"] as const
 export type LedgerStatus = (typeof LEDGER_STATUSES)[number]
@@ -153,8 +154,8 @@ export function emptyLedger(sessionID: string): Ledger {
  *  when they were only hidden. */
 export const LEDGER_MAX_ITEMS_DEFAULT = 200
 
-export function ledgerMaxItems(env: Record<string, string | undefined> = process.env): number {
-  const n = Number(String(env.TM_LEDGER_MAX_ITEMS ?? "").trim())
+export function ledgerMaxItems(config: { ledgerMaxItems: number } = resolveConfig()): number {
+  const n = Number(config.ledgerMaxItems)
   return Number.isFinite(n) && n >= 10 ? Math.floor(n) : LEDGER_MAX_ITEMS_DEFAULT
 }
 
@@ -279,8 +280,8 @@ export interface LedgerToolDeps {
    *  in a unit test that calls `execute` directly.  It stays as defence-in-depth
    *  for a host that stops honouring the request-layer removal. */
   onlyAgent?: string
-  /** Resolved from the personality's own env copy, so v1 and v2 can differ. */
-  env?: Record<string, string | undefined>
+  /** Resolved from the personality's own config, so v1 and v2 can differ. */
+  config?: { ledgerMaxItems: number }
   /** Called after a successful write so the host (index.ts) can log the trajectory. */
   onWrite?: (sessionID: string, event: string) => void
   now?: () => number
@@ -353,13 +354,13 @@ export function buildLedgerTool(deps: LedgerToolDeps): ToolDefinition {
         if (!texts.length) {
           return toToolResult(tmError(tool, "args", "add 需要 text —— 空的一条要求只会让清单变长，不会让活变少"))
         }
-        const max = ledgerMaxItems(deps.env)
+        const max = ledgerMaxItems(deps.config)
         if (ledger.items.length + texts.length > max) {
           return toToolResult(
             tmError(
               tool,
               "args",
-              `清单已有 ${ledger.items.length} 条，再加 ${texts.length} 条会超过上限 ${max}（TM_LEDGER_MAX_ITEMS）。` +
+              `清单已有 ${ledger.items.length} 条，再加 ${texts.length} 条会超过上限 ${max}（ledgerMaxItems）。` +
                 `宿主的 ctx.storage 不设 TTL，也不会替你回收：先把已完成的条目在回复里总结掉，或显式清一次，别让它无声涨下去。`,
             ),
           )

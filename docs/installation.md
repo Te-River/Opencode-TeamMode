@@ -97,7 +97,7 @@ Report which checks passed. If verification fails, see Troubleshooting.
 OpenCode's own `task { background: true }` is the only sub-agent its interface
 can **show**: the card links to the live child session, it does not block the
 lead, and the host wakes the parent with the result. TeamMode then keeps that
-result inside the token budget (`TM_TASK_OFFLOAD`).
+result inside the token budget (`taskOffload`).
 
 It rides an OpenCode **experimental flag** read from the host process
 environment at startup, so a plugin cannot set it — the installer writes it for
@@ -273,7 +273,7 @@ never re-resolved on its own).
 | Version is old despite `@latest` | Plugin cache never invalidates | See Updating — delete the cache dir (recursively; both layouts) |
 | Still the old version after bumping the version or re-running the installer | The scoped cache `packages/@te-river/opencode-team-mode@latest` is nested below the top-level `packages/*opencode-team-mode*` glob, so the stale copy was never purged | Recursively delete that cache dir (`Get-ChildItem -Recurse -Filter '*opencode-team-mode*'` / `find -type d -name '*opencode-team-mode*' -prune`), then restart — the current installers already recurse |
 | Node version error on startup | npm needs Node ≥ 18 | Upgrade Node |
-| Env-var commands suddenly prompt for confirmation | That's the plugin's R6 protection working as designed | Approve once per operation, or set `TM_ENV_PROTECT=off` (not recommended) |
+| Env-var commands suddenly prompt for confirmation | That's the plugin's R6 protection working as designed | Approve once per operation, or set `envProtect: "off"` in `team-mode.jsonc` (not recommended) |
 | A user-defined agent named `team`/`architect`/… got shadowed | Plugin injects defaults; your own definitions always win | The plugin never clobbers user agents — check for typos in your agent names |
 
 ---
@@ -342,7 +342,7 @@ never re-resolved on its own).
 
 OpenCode 自带的 `task { background: true }` 是唯一能在它界面上**看见**的子代理：
 卡片直接链到那个子会话、不阻塞 lead、完成时宿主把父会话唤醒。TeamMode 再把
-回来的结果压在 token 预算内（`TM_TASK_OFFLOAD`）。
+回来的结果压在 token 预算内（`taskOffload`）。
 
 它依赖一个 OpenCode 的**实验性开关**，由宿主进程启动时读环境变量决定，插件无法
 自己打开——所以安装脚本替你写：
@@ -501,5 +501,5 @@ https://raw.githubusercontent.com/Te-River/Opencode-TeamMode/main/docs/installat
 | 用着 `@latest` 版本还是旧的 | 插件缓存永不失效 | 见"更新"——递归删除缓存目录（两种布局） |
 | 改了版本/重跑安装器后仍是旧版 | 作用域缓存 `packages/@te-river/opencode-team-mode@latest` 嵌在顶层 `packages/*opencode-team-mode*` 通配符扫不到的下一层，旧副本根本没被清掉 | 递归删除该缓存目录（`Get-ChildItem -Recurse -Filter '*opencode-team-mode*'` / `find -type d -name '*opencode-team-mode*' -prune`）后重启——当前安装器已改为递归清理 |
 | 启动报 Node 版本错误 | npm 需要 Node ≥ 18 | 升级 Node |
-| 环境变量命令突然弹确认框 | 这是插件的 R6 保护在正常工作 | 每个操作选"一次"，或设 `TM_ENV_PROTECT=off`（不推荐） |
+| 环境变量命令突然弹确认框 | 这是插件的 R6 保护在正常工作 | 每个操作选"一次"，或设 `envProtect: "off"`（不推荐） |
 | 用户自定义的 `team`/`architect` 等 agent 被遮蔽 | 插件注入默认值；你的定义永远优先 | 插件从不覆盖用户 agent——检查你的 agent 名字有没有拼错 |

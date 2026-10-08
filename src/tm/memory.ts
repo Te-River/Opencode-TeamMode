@@ -1222,12 +1222,12 @@ export function buildTmMemoryTool(deps: {
   const DESCRIPTION = `Project/global/session memory store (Markdown files with frontmatter — persistent across conversations, except the ephemeral session tier). Actions: add | search | list | forget | compact.
 - add: { title, content (≤4000 chars, one condensed fact), category?, keywords?, usage_scenario?, scope? ("project" default | "global" | "session") }.  Seeded categories: ${MEMORY_CATEGORIES.join(" / ")}; free-form allowed.
 - Near-duplicate merge: an add that hits an existing entry in the SAME scope+category (same dedupKey = category + stopword-stripped title token set, or title∪keywords Jaccard ≥ ${MEMORY_DEDUP_JACCARD}) MERGES into that entry instead of creating a second file — content takes the new value, keywords union, frontmatter \`supersedes:\` records the folded slug.  The reply says "已合并：path".
-- search: { query } — deterministic substring scoring (title > keywords > usage_scenario > body), top ${MEMORY_SEARCH_RESULTS}.  Use BEFORE assuming project conventions.  Entries older than cfg.memoryStaleDays (TM_MEMORY_STALE_DAYS, 0 = off) carry a \`[stale Nd]\` marker.
+- search: { query } — deterministic substring scoring (title > keywords > usage_scenario > body), top ${MEMORY_SEARCH_RESULTS}.  Use BEFORE assuming project conventions.  Entries older than cfg.memoryStaleDays (memoryStaleDays, 0 = off) carry a \`[stale Nd]\` marker.
 - list: { scope? } — everything, grouped.
 - forget: { title } — delete by title (all layers unless scope narrows it).
 - compact: { scope? ("project" default | "global" | "session" | "all"), apply? } — consolidate the near-duplicates that already exist.  DRY-RUN by default (reports the planned merges, changes nothing); apply:true performs them after copying every original to \`memories/.compact-backup/<UTC ts>/<scope>/…\`, which is the rollback path.
-- Layers: session — transients for THIS conversation only (in-process, TTL-swept, not persisted unless TM_MEMORY_SESSION_PERSIST=1); project (default) — facts about THIS repo (build commands, environment quirks, architecture decisions); global — user-level conventions and preferences that follow the user across repos (preferred toolchain, commit style).  search walks EVERY layer with session > project > global precedence: scope weight, same-title lower-layer entries shadowed.
-- Bloat guard: over TM_MEMORY_MAX_ENTRIES per scope, add fails and points at compact/forget.
+- Layers: session — transients for THIS conversation only (in-process, TTL-swept, not persisted unless memorySessionPersist: "1"); project (default) — facts about THIS repo (build commands, environment quirks, architecture decisions); global — user-level conventions and preferences that follow the user across repos (preferred toolchain, commit style).  search walks EVERY layer with session > project > global precedence: scope weight, same-title lower-layer entries shadowed.
+- Bloat guard: over memoryMaxEntries per scope, add fails and points at compact/forget.
 - What does NOT belong: task state (todo list owns that), oversized docs (board files own those).`
 
   return {

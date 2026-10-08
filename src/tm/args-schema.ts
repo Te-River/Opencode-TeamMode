@@ -9,7 +9,7 @@
  * times), even though flat args reached execute fine.
  */
 
-import { resolveTmConfig } from "./config.js"
+import { resolveConfig } from "./config.js"
 import { resolveLayeredTmConfig, type ConfigFileRoots } from "./config-files.js"
 import type { EnvLike } from "./config-layers.js"
 
@@ -92,7 +92,7 @@ async function buildArgsSchemas(): Promise<Record<string, Record<string, unknown
         .int()
         .min(1)
         .optional()
-        .describe("Max lines per fetch, capped at TM_FETCH_MAX_LINES (default 2000)."),
+        .describe("Max lines per fetch, capped at fetchMaxLines (default 2000)."),
       mode: zz
         .enum(["lines", "structure"])
         .optional()
@@ -153,7 +153,7 @@ export async function buildWebfetchArgsSchema(): Promise<Record<string, unknown>
       .boolean()
       .optional()
       .describe(
-        "Bypass the URL cache (TM_WEB_CACHE_TTL_SEC) and fetch the network again — use when you specifically need the page as it is NOW, e.g. you expect it changed since a cached read.",
+        "Bypass the URL cache (webCacheTtlSec) and fetch the network again — use when you specifically need the page as it is NOW, e.g. you expect it changed since a cached read.",
       ),
   }
 }
@@ -170,7 +170,7 @@ export async function buildWebfetchArgsSchema(): Promise<Record<string, unknown>
  * buildTmSearchTool uses `deps.args ?? fallback`, this schema IS the
  * model-visible surface in production (the search.ts fallback never fires),
  * so it must not go stale.  `defaultEngine` falls back to
- * resolveTmConfig().searchDefaultEngine so the descriptor states the real
+ * resolveConfig().searchDefaultEngine so the descriptor states the real
  * default (auto) — callers may pass cfg.searchDefaultEngine explicitly.
  * The §6m-s anti-drift test asserts the descriptor names every
  * SEARCH_ENGINE_NAMES entry and none of the removed engines.
@@ -187,8 +187,8 @@ export async function buildSearchArgsSchema(
   const defEngine =
     (defaultEngine && defaultEngine.trim()) ||
     (layeredInput
-      ? resolveLayeredTmConfig(layeredInput.env ?? process.env, layeredInput.roots).cfg.searchDefaultEngine
-      : resolveTmConfig().searchDefaultEngine) ||
+      ? resolveLayeredTmConfig(layeredInput.roots, { env: layeredInput.env }).cfg.searchDefaultEngine
+      : resolveConfig().searchDefaultEngine) ||
     AUTO_ENGINE_KEY
   const engineList = `${AUTO_ENGINE_KEY}|${SEARCH_ENGINE_NAMES.join("|")}`
   const engineDesc =

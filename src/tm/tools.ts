@@ -23,8 +23,8 @@ import { toToolResult } from "./result.js"
 // protocol from the description alone.
 
 const TM_FETCH_DESCRIPTION = `Page through an offloaded tool result by its handle (governed tools return handles for oversized payloads).
-- Args: ref (required, tm://runs/{run_id}/steps/{step_id}/result), access_token (required — from the handle; may also ride the ref fragment), offset (0-based line), limit (lines per fetch, capped at TM_FETCH_MAX_LINES, default 2000), mode ("lines" default | "structure" — a ~100-token TOC / key-tree / error-line map; try it FIRST on big payloads).
-- Handles are run-scoped and HMAC-signed: a foreign-run, tampered or expired handle (TM_BLACKBOARD_TTL, default 7 days) is rejected with "payload cleared or run mismatch — rerun the original tool".
+- Args: ref (required, tm://runs/{run_id}/steps/{step_id}/result), access_token (required — from the handle; may also ride the ref fragment), offset (0-based line), limit (lines per fetch, capped at fetchMaxLines, default 2000), mode ("lines" default | "structure" — a ~100-token TOC / key-tree / error-line map; try it FIRST on big payloads).
+- Handles are run-scoped and HMAC-signed: a foreign-run, tampered or expired handle (blackboardTtlDays, default 7 days) is rejected with "payload cleared or run mismatch — rerun the original tool".
 - Returns the ref, a paging hint (total/returned/remaining/next offset) and the content slice. Aggregate first; fetch further slices only when needed.`
 
 /**

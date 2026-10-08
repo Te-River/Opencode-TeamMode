@@ -32,7 +32,7 @@ import {
   parseMemoryMarkdown,
   MEMORY_DEDUP_JACCARD,
 } from "./dist/tm/memory.js"
-import { resolveTmConfig } from "./dist/tm/config.js"
+import { resolveConfig } from "./dist/tm/config.js"
 
 const MIN = 60_000
 const DAY = 24 * 60 * 60 * 1000
@@ -49,11 +49,11 @@ const out = async (tool, args, ctx = {}) => (await tool.execute(args, ctx)).outp
 
 let CLOCK = BASE
 /** A tool over an isolated store: fresh globalRoot / storeBase / project dir. */
-function makeTool(env = {}, extra = {}) {
+function makeTool(values = {}, extra = {}) {
   const storeBase = tmp("store")
   const globalRoot = tmp("global")
   const directory = tmp("proj")
-  const cfg = resolveTmConfig({ TM_MEMORY_SESSION_TTL_MIN: "240", ...env })
+  const cfg = resolveConfig({ memorySessionTtlMin: 240, ...values })
   const tool = buildTmMemoryTool({
     storeBase,
     globalRoot,
@@ -147,7 +147,7 @@ function seed(t, scope, category, title, content, head = "") {
 // 2. session TTL: lazy expiry in-process, and the PERSIST mirror + sweeps
 // ---------------------------------------------------------------------------
 {
-  const t = makeTool({ TM_MEMORY_SESSION_TTL_MIN: "240" })
+  const t = makeTool({ memorySessionTtlMin: 240 })
   const A = { directory: t.directory, sessionID: "ses_ttl" }
   await out(t.tool, { action: "add", title: "临时变量", content: "debug flag X=1", scope: "session" }, A)
   CLOCK = BASE + 239 * MIN
@@ -159,7 +159,7 @@ function seed(t, scope, category, title, content, head = "") {
   console.log("2. session TTL: OK (lazy sweep at TM_MEMORY_SESSION_TTL_MIN)")
 }
 {
-  const t = makeTool({ TM_MEMORY_SESSION_PERSIST: "1", TM_MEMORY_SESSION_TTL_MIN: "60" })
+  const t = makeTool({ memorySessionPersist: "1", memorySessionTtlMin: 60 })
   const A = { directory: t.directory, sessionID: "ses_persist" }
   const added = await out(t.tool, { action: "add", title: "落盘会话记忆", content: "镜像写盘", scope: "session" }, A)
   assert.ok(added.includes("记忆已保存（session）"), "PERSIST=1: session add reports a real path")
@@ -172,7 +172,7 @@ function seed(t, scope, category, title, content, head = "") {
   // a new process loads it back from disk
   const t2 = buildTmMemoryTool({
     storeBase: t.storeBase, globalRoot: t.globalRoot, directory: t.directory,
-    cfg: resolveTmConfig({ TM_MEMORY_SESSION_PERSIST: "1", TM_MEMORY_SESSION_TTL_MIN: "60" }),
+    cfg: resolveConfig({ memorySessionPersist: "1", memorySessionTtlMin: 60 }),
     pipelines: fakePipelines, now: () => CLOCK,
   })
   assert.ok((await out(t2, { action: "search", query: "镜像写盘" }, A)).includes("落盘会话记忆"), "persisted session tier reloads across instances")
@@ -197,7 +197,7 @@ function seed(t, scope, category, title, content, head = "") {
   fs.writeFileSync(noExp, mdFile("无期限", "内容"), "utf8")
   const t3 = buildTmMemoryTool({
     storeBase: t.storeBase, globalRoot: t.globalRoot, directory: t.directory,
-    cfg: resolveTmConfig({ TM_MEMORY_SESSION_PERSIST: "1", TM_MEMORY_SESSION_TTL_MIN: "60" }),
+    cfg: resolveConfig({ memorySessionPersist: "1", memorySessionTtlMin: 60 }),
     pipelines: fakePipelines, now: () => CLOCK,
   })
   assert.ok(!fs.existsSync(staleFile), "boot sweep deletes an expired persisted session file")
@@ -260,7 +260,7 @@ function seed(t, scope, category, title, content, head = "") {
 // 4. bloat guard: memoryMaxEntries per scope
 // ---------------------------------------------------------------------------
 {
-  const t = makeTool({ TM_MEMORY_MAX_ENTRIES: "3" })
+  const t = makeTool({ memoryMaxEntries: 3 })
   const titles = ["记忆甲", "记忆乙", "记忆丙"]
   for (const title of titles) {
     assert.ok((await out(t.tool, { action: "add", title, category: "notes", content: `事实 ${title}` })).includes("记忆已保存"), `${title} saves under the cap`)
@@ -282,7 +282,7 @@ function seed(t, scope, category, title, content, head = "") {
 // 5. staleness marker
 // ---------------------------------------------------------------------------
 {
-  const t = makeTool({ TM_MEMORY_STALE_DAYS: "30" })
+  const t = makeTool({ memoryStaleDays: 30 })
   const old = seed(t, "project", "notes", "过时构建笔记", "旧内容", "")
   const past = new Date(CLOCK - 60 * DAY)
   fs.utimesSync(old, past, past)
@@ -293,7 +293,7 @@ function seed(t, scope, category, title, content, head = "") {
   const hitFresh = await out(t.tool, { action: "search", query: "新内容" })
   assert.ok(!hitFresh.includes("[stale"), "a fresh entry is never stale")
 
-  const off = makeTool({ TM_MEMORY_STALE_DAYS: "0" })
+  const off = makeTool({ memoryStaleDays: 0 })
   const offOld = seed(off, "project", "notes", "过时构建笔记", "旧内容", "")
   fs.utimesSync(offOld, past, past)
   const hitOff = await out(off.tool, { action: "search", query: "构建笔记" })

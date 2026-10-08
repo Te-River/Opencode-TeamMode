@@ -57,8 +57,8 @@ const TM_NAMES = [
 // left because the v2 plugin ctx has no pty domain to call at all.
 const V2_RETIRED = ["tm_ptc_run", "tm_read", "tm_grep", "tm_bash", "tm_pty"]
 /** v2 adds what v1 never had: the LEDGER's home, because a v2 host has no
- *  `todowrite` for the mandate to attach to.  v1 registers no such tool — the
- *  v1 personality is frozen, so this arrives through `ledgerStore` being handed
+ *  `todowrite` for the mandate to attach to.  v1 registers it not at all — the
+ *  v1 personality is frozen, so it arrives through `ledgerStore` being handed
  *  in by v2 alone (see src/tm/index.ts). */
 const V2_ONLY_TOOLS = ["tm_ledger"]
 const V2_NAMES = [...TM_NAMES.filter((n) => !V2_RETIRED.includes(n)), ...V2_ONLY_TOOLS]
@@ -73,6 +73,11 @@ const ws = workspace("boot")
 // ~/.config/opencode (hermetic — and no warning from a real config leaks into
 // these assertions).  The dedicated group below overrides it per case.
 process.env.OPENCODE_CONFIG_DIR = workspace("cfg")
+// The global config file is the ONLY config source now.  These helpers write it
+// for the cases that used to set a `TM_*` env var.
+const CFG_FILE = () => path.join(process.env.OPENCODE_CONFIG_DIR, "team-mode.jsonc")
+const writeCfg = (obj) => fs.writeFileSync(CFG_FILE(), JSON.stringify(obj))
+const clearCfg = () => fs.rmSync(CFG_FILE(), { force: true })
 fs.writeFileSync(path.join(ws, "sample.txt"), "hello from the v2 adapter test\nsecond line with NEEDLE\n")
 
 const sixAgents = Object.keys(agents).map((id) => ({ id, name: id, permissions: [] }))
@@ -187,10 +192,12 @@ assert.equal(
 )
 {
   const direct = makeFakeCtx({ directory: ws, agents: [] })
-  process.env.TM_V2_CODEMODE = "direct"
+  // v2CodeMode is a config key now: write it into the global file.
+  const cfgFile = path.join(process.env.OPENCODE_CONFIG_DIR, "team-mode.jsonc")
+  fs.writeFileSync(cfgFile, `{ "v2CodeMode": "direct" }`)
   const dr = await withCapturedConsole(() => plugin.setup(direct.ctx))
   const dt = Object.fromEntries(direct.tools.list().map((t) => [t.id ?? t.name, t]))
-  assert.equal(dt.tm_join?.options?.codemode, false, "TM_V2_CODEMODE=direct still sends codemode:false, for a host that honours it")
+  assert.equal(dt.tm_join?.options?.codemode, false, "v2CodeMode=direct still sends codemode:false, for a host that honours it")
   assert.ok(
     (dr.warns ?? []).some((w) => /tm_stats 的 tools_in_request|Code Mode 目录/.test(w)),
     "and the boot note says the outcome is verified, not promised",
@@ -199,7 +206,7 @@ assert.equal(
     warns.some((w) => /Code Mode 目录/.test(w)),
     "the DEFAULT boot says so out loud — the default is catalog-only, and the note points at tools_in_request instead of promising a delivery mode",
   )
-  delete process.env.TM_V2_CODEMODE
+  fs.rmSync(cfgFile, { force: true })
   await dr.value?.()
 }
 // …and the claim is only made when it can be OBSERVED.  A live 2.0.16 standalone
@@ -297,7 +304,8 @@ assert.match(textOf(notLead), /领队/, "the list is the lead's instrument; a sp
 // leave the lead believing its oldest asks were still on the list somewhere.
 {
   const capped = makeFakeCtx({ directory: ws, agents: [] })
-  process.env.TM_LEDGER_MAX_ITEMS = "12"
+  const cfgFile = path.join(process.env.OPENCODE_CONFIG_DIR, "team-mode.jsonc")
+  fs.writeFileSync(cfgFile, `{ "ledgerMaxItems": 12 }`)
   await capped.ctx.storage.set("team-mode/ledger/ses_cap", {
     sessionID: "ses_cap",
     updated: Date.now(),
@@ -309,7 +317,7 @@ assert.match(textOf(notLead), /领队/, "the list is the lead's instrument; a sp
   assert.match(textOf(over), /超过上限 12/, "the ceiling bites before the write, not after")
   assert.match(textOf(over), /不设 TTL/, "…and the refusal names the reason a ceiling exists at all")
   assert.equal((await capped.ctx.storage.get("team-mode/ledger/ses_cap")).items.length, 12, "nothing was appended to the stored list")
-  delete process.env.TM_LEDGER_MAX_ITEMS
+  fs.rmSync(cfgFile, { force: true })
   await cc.value?.()
 }
 {
@@ -370,7 +378,7 @@ for (const [url, why] of [
   // prints what the operator can do (private space: two env exits), or it says in
   // words that NOTHING can open it (the metadata range — an address class, not a
   // whitelist). What is not allowed is a sentence that leaves the reader waiting.
-  assert.match(r, /TM_PRIVATE_SPACE|TM_WEBFETCH_ALLOWED_DOMAINS|不可批准|没有"看起来对不对/, `${url}: the refusal names an exit, or says nothing can`)
+  assert.match(r, /privateSpace|webfetchAllowedDomains|不可批准|没有"看起来对不对/, `${url}: the refusal names an exit, or says nothing can`)
   if (/用户批准|逐次经/.test(r) && !/不给插件弹出确认窗|无法弹出/.test(r)) {
     assert.fail(`${url}: the refusal promises user approval without saying v2 cannot open that dialog`)
   }
@@ -383,7 +391,7 @@ for (const [url, why] of [
 {
   const lb = textOf(await byName.tm_webfetch.execute({ url: "http://localhost:3000/" }, CTX))
   assert.ok(!/回环/.test(lb), "loopback is not gate-refused — any failure here is the connection, not our policy")
-  assert.ok(!/TM_PRIVATE_SPACE/.test(lb), "…and it is not told to go open a gate that no longer applies to it")
+  assert.ok(!/privateSpace/.test(lb), "…and it is not told to go open a gate that no longer applies to it")
 }
 console.log("   OK (public hosts unpoliced by default, metadata and private space refused with a real exit or an honest dead end, loopback served, no promise of a dialog that cannot open)")
 
@@ -440,12 +448,8 @@ await reboot.value?.()
 
 const wsR6 = workspace("r6")
 const r6Fake = makeFakeCtx({ directory: wsR6, options: { envProtect: true }, agents: sixAgents.map((a) => ({ ...a, permissions: [] })) })
-const prevEnv = process.env.TM_ENV_PROTECT
-const prevFine = process.env.TM_R6_FINE_ASK
-delete process.env.TM_R6_FINE_ASK
-process.env.TM_ENV_PROTECT = "on"
+clearCfg()
 const r6 = await withCapturedConsole(() => plugin.setup(r6Fake.ctx))
-process.env.TM_ENV_PROTECT = prevEnv
 const r6Team = r6Fake.agents.get("Team")
 // The classifier is in charge by default now (a live host proved
 // permission.evaluate fires for shell), so the config must NOT blanket-ask every
@@ -460,14 +464,12 @@ assert.ok(
 )
 await r6.value?.()
 
-process.env.TM_R6_FINE_ASK = "off"
-process.env.TM_ENV_PROTECT = "on"
+writeCfg({ r6FineAsk: "off" })
 const r6Coarse = await withCapturedConsole(() => plugin.setup(r6Fake.ctx))
-process.env.TM_ENV_PROTECT = prevEnv
-delete process.env.TM_R6_FINE_ASK
+clearCfg()
 assert.ok(
   r6Fake.agents.get("Team").permissions.some((p) => p.action === "shell" && p.effect === "ask"),
-  "TM_R6_FINE_ASK=off is the explicit way back: shell escalates to `ask` and the host opens its dialog",
+  "r6FineAsk=off is the explicit way back: shell escalates to `ask` and the host opens its dialog",
 )
 assert.ok(
   r6Coarse.warns.some((w) => /每条命令都问/.test(w) && /off/.test(w)),
@@ -477,9 +479,7 @@ await r6Coarse.value?.()
 
 const noHook = makeFakeCtx({ directory: wsR6, options: { envProtect: true }, agents: sixAgents.map((a) => ({ ...a, permissions: [] })) })
 delete noHook.ctx.permission
-process.env.TM_ENV_PROTECT = "on"
 const r6NoHook = await withCapturedConsole(() => plugin.setup(noHook.ctx))
-process.env.TM_ENV_PROTECT = prevEnv
 assert.ok(
   noHook.agents.get("Team").permissions.some((p) => p.action === "shell" && p.effect === "ask"),
   "a host with no permission.hook falls back to coarse REGARDLESS of the knob — fail-closed",
@@ -489,7 +489,6 @@ assert.ok(
   "and says WHICH reason applies, because two causes with one message is how a fallback gets mistaken for a setting",
 )
 await r6NoHook.value?.()
-if (prevFine !== undefined) process.env.TM_R6_FINE_ASK = prevFine
 
 // R6 is ARMED BY DEFAULT (task #56).  The old form made it opt-IN through the
 // plugin option `envProtect`, and docs/installation-v2.md never mentioned the
@@ -503,8 +502,7 @@ if (prevFine !== undefined) process.env.TM_R6_FINE_ASK = prevFine
     for (const h of fake.hook("permission.evaluate").handlers ?? []) await h(ev)
     return ev
   }
-  const prevOff = process.env.TM_ENV_PROTECT
-  delete process.env.TM_ENV_PROTECT
+  clearCfg()
   // (a) no plugin option at all → R6 is ON, and a native read of .env is denied
   const dflt = mkR6(undefined)
   const dfltBoot = await withCapturedConsole(() => plugin.setup(dflt.ctx))
@@ -523,14 +521,13 @@ if (prevFine !== undefined) process.env.TM_R6_FINE_ASK = prevFine
     "envProtect:false turns R6 off — the file-path face classifies nothing",
   )
   await offBoot.value?.()
-  // (c) TM_ENV_PROTECT=off is the other off switch
-  process.env.TM_ENV_PROTECT = "off"
+  // (c) envProtect:off in the file is the other off switch
+  writeCfg({ envProtect: "off" })
   const offEnv = mkR6(undefined)
   const offEnvBoot = await withCapturedConsole(() => plugin.setup(offEnv.ctx))
-  assert.equal((await fireEnvRead(offEnv)).effect, "allow", "TM_ENV_PROTECT=off turns R6 off too")
+  assert.equal((await fireEnvRead(offEnv)).effect, "allow", "envProtect=off turns R6 off too")
   await offEnvBoot.value?.()
-  if (prevOff === undefined) delete process.env.TM_ENV_PROTECT
-  else process.env.TM_ENV_PROTECT = prevOff
+  clearCfg()
 }
 
 const shape = JSON.parse(before)
@@ -602,6 +599,9 @@ const SURFACE = [
 ]
 const event = (agent, options = {}) => ({
   agent,
+  // The request layer keys per session (the board note and the survival list are
+  // session-scoped), so a synthetic event carries one.
+  sessionID: `ses_req_${agent}`,
   system: [],
   messages: [],
   options,
@@ -682,8 +682,7 @@ console.log("   OK (surface trimmed per role, 0.2 restored, board root and survi
 // never a misleading empty string.
 {
   const tjRoot = mktmp("tools-removed")
-  const prevTj = process.env.TM_TRAJECTORY_DIR
-  process.env.TM_TRAJECTORY_DIR = tjRoot
+  writeCfg({ trajectoryDir: tjRoot })
   const f = makeFakeCtx({ directory: workspace("tools-removed"), agents: sixAgents })
   const boot = await withCapturedConsole(() => plugin.setup(f.ctx))
   try {
@@ -717,8 +716,7 @@ console.log("   OK (surface trimmed per role, 0.2 restored, board root and survi
     )
     assert.notEqual(String(shutdown.tools_removed), "", "…and is never the misleading empty string the old field always was")
   } finally {
-    if (prevTj === undefined) delete process.env.TM_TRAJECTORY_DIR
-    else process.env.TM_TRAJECTORY_DIR = prevTj
+    clearCfg()
   }
 }
 
@@ -784,10 +782,10 @@ assert.equal(plain.effect, "allow", "a public fetch is left exactly as the host 
 // remembered why it was conservative is worse than the conservative default, so the
 // reason is pinned in both directions.
 assert.equal(needsCoarseShellAsk({}, true), false, "hook installed → the per-command classifier decides, no blanket config ask")
-assert.equal(needsCoarseShellAsk({ TM_R6_FINE_ASK: "off" }, true), true, "TM_R6_FINE_ASK=off is the explicit way back to coarse")
-assert.equal(needsCoarseShellAsk({ TM_R6_FINE_ASK: "0" }, true), true, "and the 0/false/no spellings mean the same")
-assert.equal(needsCoarseShellAsk({ TM_R6_FINE_ASK: "on" }, false), true, "no hook → nothing to hand it to, so coarse regardless of the knob")
-assert.equal(needsCoarseShellAsk({ TM_R6_FINE_ASK: "garbage" }, true), false, "an unparseable value keeps the supported configuration rather than silently degrading")
+assert.equal(needsCoarseShellAsk({ r6FineAsk: "off" }, true), true, "r6FineAsk=off is the explicit way back to coarse")
+assert.equal(needsCoarseShellAsk({ r6FineAsk: "0" }, true), true, "and the 0/false/no spellings mean the same")
+assert.equal(needsCoarseShellAsk({ r6FineAsk: "on" }, false), true, "no hook → nothing to hand it to, so coarse regardless of the knob")
+assert.equal(needsCoarseShellAsk({ r6FineAsk: "garbage" }, true), false, "an unparseable value keeps the supported configuration rather than silently degrading")
 console.log("   OK (metadata denied-not-asked, notation carriers unwrapped, never loosens, classifier-in-charge by default)")
 
 console.log("7c. every sub-agent dispatch runs in the background")
@@ -891,7 +889,7 @@ const BIG = "x".repeat(9000)
 // A stub pipeline so this group tests THIS layer's decisions (which tool, which
 // part, what shape survives); the threshold/preview/store machinery it calls is
 // the same instance tm_* uses and is covered in test-tm-tools.
-function offloadHarness({ govern, env } = {}) {
+function offloadHarness({ govern, env, config } = {}) {
   const f = makeFakeCtx({ directory: workspace("off"), agents: [] })
   const calls = []
   const pipelines = {
@@ -901,7 +899,7 @@ function offloadHarness({ govern, env } = {}) {
       return govern ? govern(stepId, tool, content, opts) : content
     },
   }
-  const o = applyV2NativeOffload(f.ctx, { pipelines, env: env ?? {} })
+  const o = applyV2NativeOffload(f.ctx, { pipelines, env: env ?? {}, config })
   return { f, o, calls }
 }
 const handled = (tool, result) => {
@@ -954,12 +952,12 @@ const handled = (tool, result) => {
 }
 {
   const off = offloadHarness({
-    env: { TM_NATIVE_OFFLOAD: "off" },
+    config: { nativeOffload: "off" },
     govern: () => ({ offloaded: true, ref: "r", access_token: "a", expire_at: 1, tokens: 1, preview: "p" }),
   })
   const ev = { tool: "shell", result: { content: [{ type: "text", text: BIG }] } }
   off.f.hook("tool.execute.after").handlers.forEach((h) => h(ev))
-  assert.equal(ev.result.content[0].text, BIG, "TM_NATIVE_OFFLOAD=off restores the host's verbatim injection")
+  assert.equal(ev.result.content[0].text, BIG, "nativeOffload=off restores the host's verbatim injection")
   assert.equal(off.o.report.seen, 1, "it still sees the call, so tm_stats can say the switch is why nothing moved")
   assert.equal(off.o.active, false, "and reports itself inactive so the boot note can say so out loud")
 }
@@ -968,7 +966,7 @@ const handled = (tool, result) => {
   const o = applyV2NativeOffload(noHook, { pipelines: { nextStepId: () => "s1", govern: () => "" } })
   assert.equal(o.registrations.length, 0, "a host with no tool.hook yields no seam — reported, not assumed")
   assert.equal(o.active, false, "and `active` means governance IS running, not merely that the switch is on")
-  assert.equal(applyV2NativeOffload({ tool: { hook: () => Promise.resolve({ dispose: async () => {} }) } }, { pipelines: { nextStepId: () => "s1", govern: () => "" }, env: { TM_NATIVE_OFFLOAD: "off" } }).active, false, "switching it off reads the same because the effect is the same: nothing is governed")
+  assert.equal(applyV2NativeOffload({ tool: { hook: () => Promise.resolve({ dispose: async () => {} }) } }, { pipelines: { nextStepId: () => "s1", govern: () => "" }, config: { nativeOffload: "off" } }).active, false, "switching it off reads the same because the effect is the same: nothing is governed")
 }
 const rendered = renderNativeOffload("shell", { offloaded: true, ref: "tm://runs/r/steps/s0001/result", access_token: "tok", expire_at: 1777000000000, tokens: 2400, preview: "PREVIEW" })
 assert.ok(/2400 token 没有进入上下文/.test(rendered), "the sentence states how much did NOT arrive")
@@ -2155,8 +2153,7 @@ console.log("15. the 2.0.20 message shape is normalised AT the seam — a real b
   //     shape, and through the REAL trajectory file, so both the user-visible sentence and
   //     the audit row are checked — not just the pure function.
   const tjRoot = mktmp("a1-trajectory")
-  const prevTj = process.env.TM_TRAJECTORY_DIR
-  process.env.TM_TRAJECTORY_DIR = tjRoot
+  writeCfg({ trajectoryDir: tjRoot })
   const fakeC = makeFakeCtx({
     directory: workspace("a1-2020"),
     agents: sixAgents,
@@ -2248,8 +2245,7 @@ console.log("15. the 2.0.20 message shape is normalised AT the seam — a real b
     assert.ok(!JSON.stringify(missRow).includes("A1-DELIVERED"), "no body text rides the audit row (R6)")
     await bootC.value()
   } finally {
-    if (prevTj === undefined) delete process.env.TM_TRAJECTORY_DIR
-    else process.env.TM_TRAJECTORY_DIR = prevTj
+    clearCfg()
   }
   console.log("   OK (2.0.20's content[]/role item reads as a body, credits its seam, and an empty one still says so with its shape)")
 }
@@ -2550,8 +2546,7 @@ console.log("17. the lead can STEER a running child — three outcomes, parentag
   // (d) R6: the interjection text never rides the trajectory — only ids, counts, shapes.
   {
     const tjRoot = mktmp("steer-trajectory")
-    const prevTj = process.env.TM_TRAJECTORY_DIR
-    process.env.TM_TRAJECTORY_DIR = tjRoot
+    writeCfg({ trajectoryDir: tjRoot })
     try {
       const { by, CTXT, boot } = await bootSteer("steer-r6", { prompt: { id: "msg_r6" } })
       const SENTINEL = "SENTINEL-插话正文-不能进轨迹"
@@ -2571,8 +2566,7 @@ console.log("17. the lead can STEER a running child — three outcomes, parentag
       assert.ok(steerRow.chars > 0, "a LENGTH is recorded")
       assert.ok(!JSON.stringify(rows).includes(SENTINEL), "and the text itself is nowhere in the audit trail (R6 binds a diagnostic)")
     } finally {
-      if (prevTj === undefined) delete process.env.TM_TRAJECTORY_DIR
-      else process.env.TM_TRAJECTORY_DIR = prevTj
+      clearCfg()
     }
   }
 
@@ -2616,7 +2610,7 @@ console.log("18. Context Pruning's capability row (#49) — kept after the compa
     assert.equal(row(counts({})).state, "declared", "a layer that ran but found nothing over the threshold stays declared")
     const off = row(counts({ enabled: false }))
     assert.equal(off.state, "declared", "an operator opt-out is not a broken host")
-    assert.match(off.note, /TM_PRUNE=off/, "and it names the knob that did it")
+    assert.match(off.note, /prune: "off"/, "and it names the knob that did it")
     assert.match(row(counts({ prunedMessages: 2 })).note, /估算/, "the token figure is labelled as our estimate")
   }
 }
@@ -2626,11 +2620,11 @@ console.log("19. the shell timeout clamp came back to 2.x — the same lever, th
 {
   const { applyV2ShellTimeoutClamp, resolveShellTimeout, parseShellTimeout } = await import("./dist/host/v2-guard.js")
   const repoRoot = path.dirname(fileURLToPath(import.meta.url))
-  const { resolveTmConfig } = await import("./dist/tm/config.js")
+  const { resolveConfig } = await import("./dist/tm/config.js")
   // The REAL default allowlist, not a hand-written one: the clamp applies only to a
   // command `classifyReadonlyCommand` already accepts, so testing against a invented list
   // would pin the classifier's opinion rather than the shipped one.
-  const tmCfg = resolveTmConfig({})
+  const tmCfg = resolveConfig({})
   const RO = tmCfg.bashReadonlyAllowed
   const PROBE = "tasklist"
   assert.equal(resolveShellTimeout({ command: PROBE, timeoutMs: null, probeMs: 60_000, maxMs: 0, readonlyAllowed: RO }).changed, false, "sanity: the probe command is in the shipped allowlist")
@@ -3099,34 +3093,24 @@ console.log("28. Context Pruning — settled history becomes pointers, evidence 
 {
   const { resolvePruneConfig, prunePlan, isProtectedMessage, renderPruneStub, applyV2ContextPrune } =
     await import("./dist/host/v2-prune.js")
-  const envKeys = ["TM_PRUNE", "TM_PRUNE_AT_PERCENT", "TM_PRUNE_KEEP_TAIL_PERCENT"]
-  const saved = Object.fromEntries(envKeys.map((k) => [k, process.env[k]]))
-  const clearEnv = () => envKeys.forEach((k) => { delete process.env[k] })
-  try {
-    clearEnv()
-    const d = resolvePruneConfig()
+  const { resolveConfig } = await import("./dist/tm/config.js")
+  const pc = (values) => resolvePruneConfig(resolveConfig(values))
+  {
+    const d = pc({})
     assert.equal(d.enabled, true, "on by default: the user asked for the behaviour, not a knob to remember")
     assert.equal(d.atPercent, 70, "70% of the model's window is the default")
     assert.equal(d.keepTailPercent, 40, "the newest 40% of the window is kept verbatim")
     for (const off of ["off", "false", "0", "no", "OFF"]) {
-      process.env.TM_PRUNE = off
-      assert.equal(resolvePruneConfig().enabled, false, `TM_PRUNE=${off} restores today's behaviour`)
+      assert.equal(pc({ prune: off }).enabled, false, `prune=${off} restores today's behaviour`)
     }
-    clearEnv()
-    for (const junk of ["", "abc", "0"]) {
-      process.env.TM_PRUNE_AT_PERCENT = junk
-      assert.equal(resolvePruneConfig().atPercent, 70, `a garbage percent (${JSON.stringify(junk)}) falls back rather than arming a wild threshold`)
+    for (const junk of ["", "abc"]) {
+      assert.equal(pc({ pruneAtPercent: junk }).atPercent, 70, `a garbage percent (${JSON.stringify(junk)}) falls back rather than arming a wild threshold`)
     }
-    clearEnv()
-    process.env.TM_PRUNE_AT_PERCENT = "50"
-    assert.equal(resolvePruneConfig().atPercent, 50, "a real percent is honoured")
-    process.env.TM_PRUNE_AT_PERCENT = "10"
-    assert.equal(resolvePruneConfig().atPercent, 40, "clamped up to 40")
-    process.env.TM_PRUNE_AT_PERCENT = "101"
-    assert.equal(resolvePruneConfig().atPercent, 90, "an out-of-range percent is clamped, not honoured")
-    process.env.TM_PRUNE_AT_PERCENT = "900"
-    assert.equal(resolvePruneConfig().atPercent, 90, "and a wild one clamps to the same ceiling")
-    clearEnv()
+    assert.equal(pc({ pruneAtPercent: "0" }).atPercent, 40, "a below-floor percent is clamped up to 40")
+    assert.equal(pc({ pruneAtPercent: 50 }).atPercent, 50, "a real percent is honoured")
+    assert.equal(pc({ pruneAtPercent: 10 }).atPercent, 40, "clamped up to 40")
+    assert.equal(pc({ pruneAtPercent: 101 }).atPercent, 90, "an out-of-range percent is clamped, not honoured")
+    assert.equal(pc({ pruneAtPercent: 900 }).atPercent, 90, "and a wild one clamps to the same ceiling")
 
     // ---- pure: the hard-protection list ----
     const msg = (text, role = "assistant") => ({ role, parts: [{ type: "text", text }] })
@@ -3247,8 +3231,6 @@ console.log("28. Context Pruning — settled history becomes pointers, evidence 
     assert.ok(/applyV2ContextPrune\(ctx,/.test(v2src), "the personality installs the prune layer")
     assert.ok(/prune_pruned_tokens: prune\.report\.prunedTokens/.test(v2src), "…and the counter rides the observation rows")
     assert.ok(/step_id: "v2-prune"/.test(v2src), "the trajectory line is wired")
-  } finally {
-    for (const [k, v] of Object.entries(saved)) { if (v === undefined) delete process.env[k]; else process.env[k] = v }
   }
 }
 console.log("   OK (threshold derived from limit.context; settled bodies become self-explaining pointers; skeleton/handle/GOAL/tail byte-exact; no_limit and foreign counted; throws swallowed; idempotent)")
@@ -3491,10 +3473,12 @@ console.log("30. 错峰重试 — recognise a provider throttle, inject an exact
   assert.equal(g.inCooldown(), false, "the window closes at cooldownMs")
 
   // (f) illegal knobs fall back to defaults, and only an explicit off disables
-  assert.equal(resolveRetryConfig({ TM_RETRY_BASE_MS: "abc" }).baseMs, 5000, "an illegal base falls back, it does not disable")
-  assert.equal(resolveRetryConfig({ TM_RETRY_JITTER: "5" }).jitter, 0.3, "an out-of-range jitter falls back")
-  assert.equal(resolveRetryConfig({ TM_RETRY: "off" }).enabled, false, "only an explicit off disables")
-  assert.equal(resolveRetryConfig({}).enabled, true, "default is on")
+  const { resolveConfig } = await import("./dist/tm/config.js")
+  const rc = (values) => resolveRetryConfig(resolveConfig(values))
+  assert.equal(rc({ retryBaseMs: "abc" }).baseMs, 5000, "an illegal base falls back, it does not disable")
+  assert.equal(rc({ retryJitter: 5 }).jitter, 0.95, "an out-of-range jitter is clamped to the ceiling")
+  assert.equal(rc({ retry: "off" }).enabled, false, "only an explicit off disables")
+  assert.equal(rc({}).enabled, true, "default is on")
 
   // (g) the hooks, on the fake host
   const ws30 = workspace("retry")
@@ -3539,7 +3523,7 @@ console.log("30. 错峰重试 — recognise a provider throttle, inject an exact
   await firePerm(dispatch)
   assert.equal(dispatch.effect, "deny", "a dispatch during cooldown is denied")
   assert.ok(String(dispatch.message).includes("配额保护"), "the refusal says it is quota protection, not a fault")
-  assert.ok(String(dispatch.message).includes("TM_RETRY=off"), "…and names the escape hatch")
+  assert.ok(String(dispatch.message).includes('retry: "off"'), "…and names the escape hatch")
   assert.equal(layer.report.cooldownDenied, 1, "the cooldown denial is counted")
   assert.ok(rows.some((r) => r.event === "classified" && r.kind === "quota"), "each recognised error emits a classified row")
   assert.ok(rows.some((r) => r.event === "cooldown"), "the breaker trip emits a cooldown row")
@@ -3568,7 +3552,7 @@ console.log("30. 错峰重试 — recognise a provider throttle, inject an exact
 
   for (const r of layer.registrations) await r.dispose()
 }
-console.log("   OK (explicit signatures only; base→×2→cap with jitter in [1-j,1+j]; the Nth error trips the breaker; the next request carries the EXACT seconds once; cooldown denies only a Team dispatch and names TM_RETRY=off; foreign/other actions untouched; a throw is swallowed and counted)")
+console.log("   OK (explicit signatures only; base→×2→cap with jitter in [1-j,1+j]; the Nth error trips the breaker; the next request carries the EXACT seconds once; cooldown denies only a Team dispatch and names retry: \"off\"; foreign/other actions untouched; a throw is swallowed and counted)")
 
 console.log("31. 拆分任务 — a big brief arms ONE advice line for the lead's next request (#49 feature 4)")
 {
@@ -3577,13 +3561,15 @@ console.log("31. 拆分任务 — a big brief arms ONE advice line for the lead'
   const { createTeamScope } = await import("./dist/host/v2-scope.js")
 
   // (a) the pure knobs — defaults on, only an explicit off disables, numbers clamped
-  assert.equal(resolveSplitConfig({}).enabled, true, "default is on")
-  assert.equal(resolveSplitConfig({}).briefTokens, 4000, "the default brief threshold is 4000")
-  assert.equal(resolveSplitConfig({}).maxCriteria, 3, "the default criteria cap is 3")
-  assert.equal(resolveSplitConfig({ TM_SPLIT_ADVICE: "off" }).enabled, false, "only an explicit off disables")
-  assert.equal(resolveSplitConfig({ TM_SPLIT_BRIEF_TOKENS: "abc" }).briefTokens, 4000, "an illegal threshold falls back")
-  assert.equal(resolveSplitConfig({ TM_SPLIT_BRIEF_TOKENS: "10" }).briefTokens, 200, "a below-floor threshold is clamped up")
-  assert.equal(resolveSplitConfig({ TM_SPLIT_MAX_CRITERIA: "999" }).maxCriteria, 50, "an above-cap criteria count is clamped down")
+  assert.equal(resolveSplitConfig().enabled, true, "default is on")
+  assert.equal(resolveSplitConfig().briefTokens, 4000, "the default brief threshold is 4000")
+  assert.equal(resolveSplitConfig().maxCriteria, 3, "the default criteria cap is 3")
+  const { resolveConfig } = await import("./dist/tm/config.js")
+  const sc = (values) => resolveSplitConfig(resolveConfig(values))
+  assert.equal(sc({ splitAdvice: "off" }).enabled, false, "only an explicit off disables")
+  assert.equal(sc({ splitBriefTokens: "abc" }).briefTokens, 4000, "an illegal threshold falls back")
+  assert.equal(sc({ splitBriefTokens: 10 }).briefTokens, 200, "a below-floor threshold is clamped up")
+  assert.equal(sc({ splitMaxCriteria: 999 }).maxCriteria, 50, "an above-cap criteria count is clamped down")
 
   // (b) the brief reader — only a real subagent input yields text
   assert.equal(briefTextOf({ prompt: "do the thing" }), "do the thing", "the prompt is the brief")
@@ -3596,7 +3582,7 @@ console.log("31. 拆分任务 — a big brief arms ONE advice line for the lead'
   const advice = splitAdviceText(9000, 4000, 3)
   assert.ok(advice.includes(SPLIT_MARKER), "the advice carries the recognisable marker")
   assert.ok(advice.includes("可独立验收"), "the advice names the property that separates splitting from chopping")
-  assert.ok(advice.includes("TM_SPLIT_ADVICE=off"), "the advice names the escape hatch")
+  assert.ok(advice.includes('splitAdvice: "off"'), "the advice names the escape hatch")
 
   // (d) the hooks, on the fake host
   const ws31 = workspace("split")
@@ -3605,7 +3591,7 @@ console.log("31. 拆分任务 — a big brief arms ONE advice line for the lead'
   const rows = []
   const layer = await applyV2SessionLayer(f.ctx, {
     temperature: false, note: "", noteAgents: [], plan: new Map(), scope,
-    split: resolveSplitConfig({}), onSplit: (row) => rows.push(row),
+    split: resolveSplitConfig(), onSplit: (row) => rows.push(row),
   })
   const fireCtx = (ev) => f.hook("session.context").fire(ev)
   const fireBefore = (ev) => f.hook("tool.execute.before").fire(ev)
@@ -3661,7 +3647,7 @@ console.log("31. 拆分任务 — a big brief arms ONE advice line for the lead'
   const fOff = makeFakeCtx({ directory: workspace("split-off"), agents: [] })
   const offLayer = await applyV2SessionLayer(fOff.ctx, {
     temperature: false, note: "", noteAgents: [], plan: new Map(), scope,
-    split: resolveSplitConfig({ TM_SPLIT_ADVICE: "off" }),
+    split: sc({ splitAdvice: "off" }),
   })
   await fOff.hook("tool.execute.before").fire({ tool: "subagent", sessionID: "ses_lead", agent: "team", input: { prompt: big } })
   const offCtx = ctxEvent()
@@ -3672,7 +3658,7 @@ console.log("31. 拆分任务 — a big brief arms ONE advice line for the lead'
   // (f) a throw inside the trigger is swallowed and counted
   const fBoom = makeFakeCtx({ directory: workspace("split-boom"), agents: [] })
   const boomLayer = await applyV2SessionLayer(fBoom.ctx, {
-    temperature: false, note: "", noteAgents: [], plan: new Map(), scope, split: resolveSplitConfig({}),
+    temperature: false, note: "", noteAgents: [], plan: new Map(), scope, split: resolveSplitConfig(),
   })
   const boomEvent = { tool: "subagent", sessionID: "ses_lead", agent: "team" }
   Object.defineProperty(boomEvent, "input", { get() { throw new Error("boom") } })
@@ -3684,6 +3670,25 @@ console.log("31. 拆分任务 — a big brief arms ONE advice line for the lead'
   for (const r of boomLayer.registrations) await r.dispose()
 }
 console.log("   OK (defaults on / off disables / numbers clamped; only a subagent brief is measured; a big brief arms ONE advice line for the lead's next request and a short one arms none; consumed once; foreign and child sessions untouched; a throw is swallowed and counted)")
+
+console.log("32. the v2 personality's configDefaults sit BELOW the file layers (the inert template must not shadow them)")
+{
+  const repoRoot = path.dirname(fileURLToPath(import.meta.url))
+  const v2src = fs.readFileSync(path.join(repoRoot, "src", "host", "v2.ts"), "utf8")
+  // v2 has no domain gate, so the wildcard is the personality's default.  It is
+  // passed as `configDefaults` (BELOW the file layers), never written into the
+  // auto-created file — a file nobody edited must not narrow the allowlist.
+  assert.ok(
+    /configDefaults:\s*\{\s*webfetchAllowedDomains:\s*\["\*"\]\s*\}/.test(v2src),
+    "the personality defaults the allowlist to the wildcard",
+  )
+  const filesSrc = fs.readFileSync(path.join(repoRoot, "src", "tm", "config-files.ts"), "utf8")
+  assert.ok(
+    /\.\.\.\(opts\.configDefaults \?\? \{\}\), \.\.\.layered\.values/.test(filesSrc),
+    "configDefaults is spread FIRST, so a file value always wins",
+  )
+}
+console.log("   OK (the wildcard default is wired; the merge order keeps a user-edited file in charge)")
 
 // B5: the group count is DERIVED from the numbered group headers this file
 // actually printed, never hand-written — the last hand-written number was

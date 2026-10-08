@@ -31,7 +31,7 @@
  *    hook in-process cannot prune the same message twice.
  */
 
-import { estimateTokens } from "../tm/config.js"
+import { estimateTokens, resolveConfig } from "../tm/config.js"
 import { percentOf, readModelKey } from "./v2-usage.js"
 import type { TeamScope } from "./v2-scope.js"
 import type { V2Context, V2Registration, V2SessionContext } from "./v2-types.js"
@@ -58,20 +58,16 @@ export interface PruneConfig {
 const isOff = (v: string | undefined): boolean =>
   typeof v === "string" && ["off", "false", "0", "no"].includes(v.trim().toLowerCase())
 
-function clampPercent(raw: string | undefined, fallback: number, min: number, max: number): number {
-  const n = Number.parseInt(String(raw ?? ""), 10)
-  if (!Number.isFinite(n) || n <= 0) return fallback
-  return Math.min(max, Math.max(min, n))
-}
-
-export function resolvePruneConfig(env: Record<string, string | undefined> = process.env): PruneConfig {
+export function resolvePruneConfig(
+  config: { prune: string; pruneAtPercent: number; pruneKeepTailPercent: number } = resolveConfig(),
+): PruneConfig {
   return {
-    enabled: !isOff(env.TM_PRUNE),
-    // The floor is 40 ON PURPOSE: a value below it (e.g. 5) is clamped UP, so a
-    // reproduction that sets TM_PRUNE_AT_PERCENT=5 and sees no prune is looking
-    // at the clamp, not at a broken layer.
-    atPercent: clampPercent(env.TM_PRUNE_AT_PERCENT, 70, 40, 90),
-    keepTailPercent: clampPercent(env.TM_PRUNE_KEEP_TAIL_PERCENT, 40, 0, 90),
+    enabled: config.prune !== "off",
+    // The floor is 40 ON PURPOSE: a value below it (e.g. 5) is clamped UP by
+    // `resolveConfig`, so a reproduction that sets pruneAtPercent=5 and sees no
+    // prune is looking at the clamp, not at a broken layer.
+    atPercent: config.pruneAtPercent,
+    keepTailPercent: config.pruneKeepTailPercent,
   }
 }
 

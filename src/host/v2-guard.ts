@@ -472,9 +472,9 @@ export async function applyV2EnvFileInputGuard(
  * what a user should reach for if their host build turns out not to fire the hook.
  * An absent hook still forces coarse: no seam, no per-command judgement.
  */
-export function needsCoarseShellAsk(env: NodeJS.ProcessEnv, guardsInstalled: boolean): boolean {
+export function needsCoarseShellAsk(config: { r6FineAsk: string }, guardsInstalled: boolean): boolean {
   if (!guardsInstalled) return true
-  const v = String(env.TM_R6_FINE_ASK ?? "").trim()
+  const v = String(config.r6FineAsk ?? "").trim()
   // Only an EXPLICIT off falls back; an empty or unparseable value keeps the
   // classifier, because "unset" is now the supported configuration.
   if (/^(0|false|no|off)$/i.test(v)) return true

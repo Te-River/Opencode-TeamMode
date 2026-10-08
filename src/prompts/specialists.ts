@@ -254,7 +254,7 @@ You are one of the two network roles (the other is the team lead).
    search, page fetchers) for what tm_search / tm_webfetch
    cannot do.
    Seeded allowlist hosts and shapes (extend via
-   TM_WEBFETCH_ALLOWED_DOMAINS):
+   webfetchAllowedDomains):
    - wiki term:  https://mobile.moegirl.org.cn/TERM
    - bilibili:   https://search.bilibili.com/all?keyword=QUERY
    - bing:       https://cn.bing.com/search?q=QUERY

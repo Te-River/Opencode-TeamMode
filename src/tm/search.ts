@@ -234,7 +234,7 @@ export function resolveAutoRoutes(
   }
   if (!routes.length) {
     routes = ["bing"]
-    notes.push("该路由的引擎都被 TM_SEARCH_DISABLED_ENGINES 关闭，已回退 bing")
+    notes.push("该路由的引擎都被 searchDisabledEngines 关闭，已回退 bing")
   } else if (routes.length === 1) {
     notes.push(`单引擎路由（${routes[0]}）：没有跨引擎共识可用`)
   }
@@ -696,13 +696,13 @@ export function renderFusedHits(query: string, routes: string[], hits: SearchHit
 const SEARCH_DESCRIPTION = `Search the web through a governed multi-engine pipeline — the FIRST choice for open-ended web lookups; tm_webfetch is for a KNOWN URL, the host's native browser tools for JS-rendered pages.
 
 - engine:"auto" (default): classifies the query, fans the matching legs out IN PARALLEL, dedupes by host+path and fuses them with weighted RRF into a top-N list tagged with each hit's source engine(s).  Routing: error/exception/camelCase-API tokens → stackoverflow+github+bing · dev-ecosystem (release/framework/npm/open-source…) → hn+github+npm · Chinese → bing+moegirl+stackoverflow+hn · other → bing+stackoverflow+hn+github.  Every route has ≥2 legs, because a hit two engines agree on is worth more than one engine's opinion of itself.
-- Ranking is NOT raw engine trust: each hit's contribution is scaled by how many query tokens actually appear in its title/snippet/host (floor 0.35 via TM_SEARCH_RELEVANCE_FLOOR).  bing is the only live CN HTML SERP so it stays in the table, but it no longer owns ranks 1-10 by weight alone.  Knobs: TM_SEARCH_WEIGHTS="bing=0.3,hn=0.2" · TM_SEARCH_MAX_HITS · TM_SEARCH_DISABLED_ENGINES · TM_SEARCH_DEFAULT_ENGINE.
+- Ranking is NOT raw engine trust: each hit's contribution is scaled by how many query tokens actually appear in its title/snippet/host (floor 0.35 via searchRelevanceFloor).  bing is the only live CN HTML SERP so it stays in the table, but it no longer owns ranks 1-10 by weight alone.  Knobs: searchWeights ({"bing":0.3,"hn":0.2}) · searchMaxHits · searchDisabledEngines · searchDefaultEngine.
 - ONE SEARCH IS A SAMPLE, NOT A SEARCH.  If the list does not answer the question, do NOT start fetching: re-query 2-3 times with a narrowed or translated phrasing (a Chinese concept often has better material under its English term, and vice versa), or pin an engine for a second opinion.  Say what each query was for in EVIDENCE.
 - explicit engines: bing (cn.bing.com — the ONLY live CN HTML SERP; sogou/so/baidu/bing-int were removed after a live benchmark showed them serving anti-bot shells) · stackoverflow (api.stackexchange.com question search, no key, 300/day/IP — quota tracked, auto degrades to bing when spent) · hn (hn.algolia.com story search, no key) · github (repo search API: stars + description; qualifier pass-through whitelisted, e.g. query "vector db stars:>500 language:rust org:redis" — org:/user:/stars:/language: fold into q=, the rest stays free text) · npm (registry search: name@version + description) · moegirl (MediaWiki API: titles + snippets) · bilibili.
 - Hits carry a 1-2 line snippet WHEN THE ENGINE PROVIDES ONE (bing b_caption when present, SO score/tags composite, HN points/comments, npm/github descriptions) — never fabricated.  A hit tagged （域名不在白名单，需批准）is readable only after an approval dialog — prefer a hit you can fetch, or open it in the host's native browser.
 - CJK tip: multi-word Chinese queries are auto-quoted on their core phrase for bing; if still noisy, search a single canonical term first (or quote it yourself).
 - Baidu/sogou-style anti-bot shells are gone from the table; empty results still name alternative engines — switch, don't retry the same one.
-- Governance: the engine hosts are asked directly unless the operator narrowed TM_WEBFETCH_ALLOWED_DOMAINS (on 1.18.x an off-list engine goes to the host dialog; on 2.x there is no dialog, so it is skipped and the reply says so). Redirects are re-checked per hop; env-file URLs, non-http(s) schemes and the cloud-metadata / link-local ranges are refused under every setting.
+- Governance: the engine hosts are asked directly unless the operator narrowed webfetchAllowedDomains (on 1.18.x an off-list engine goes to the host dialog; on 2.x there is no dialog, so it is skipped and the reply says so). Redirects are re-checked per hop; env-file URLs, non-http(s) schemes and the cloud-metadata / link-local ranges are refused under every setting.
 - URL-encode nothing yourself — pass the raw query; this tool encodes it.`
 
 /** Build the tm_search ToolDefinition over the SHARED main pipelines
@@ -805,7 +805,7 @@ export function buildTmSearchTool(deps: {
                 tmError(
                   tool,
                   "execute",
-                  `auto(${queryClass}: ${routes.join("+")}) 的 ${routes.length} 条腿一条都没请求出去——全部在发出请求前就被本站门禁剔除（见上面的原因）。这不是引擎没有结果，是我们没放行。出路：把这些引擎主机加进 TM_WEBFETCH_ALLOWED_DOMAINS（逗号分隔，"*" 放开全部主机，需要重启宿主），或改用显式引擎: ${roster.join(", ")}。`,
+                  `auto(${queryClass}: ${routes.join("+")}) 的 ${routes.length} 条腿一条都没请求出去——全部在发出请求前就被本站门禁剔除（见上面的原因）。这不是引擎没有结果，是我们没放行。出路：把这些引擎主机加进 webfetchAllowedDomains（JSON 数组，"*" 放开全部主机，需要重启宿主），或改用显式引擎: ${roster.join(", ")}。`,
                 ),
               )
             }
@@ -857,7 +857,7 @@ export function buildTmSearchTool(deps: {
             tmError(
               tool,
               "args",
-              `引擎 "${engineKey}" 已被 TM_SEARCH_DISABLED_ENGINES 关闭 —— 可用: ${AUTO_ENGINE_KEY}, ${roster.join(", ")}`,
+              `引擎 "${engineKey}" 已被 searchDisabledEngines 关闭 —— 可用: ${AUTO_ENGINE_KEY}, ${roster.join(", ")}`,
             ),
           )
         }
@@ -883,7 +883,7 @@ export function buildTmSearchTool(deps: {
               tmError(
                 tool,
                 "permission",
-                `主机 "${target.hostname}" 不在白名单内 —— ${askRefusalNote(outcome)} 扩展白名单: TM_WEBFETCH_ALLOWED_DOMAINS`,
+                `主机 "${target.hostname}" 不在白名单内 —— ${askRefusalNote(outcome)} 扩展白名单: webfetchAllowedDomains`,
               ),
             )
           }

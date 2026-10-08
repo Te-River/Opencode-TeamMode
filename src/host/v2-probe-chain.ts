@@ -24,6 +24,7 @@
  *    in-process and a replayed hook must not stack two lines.
  */
 
+import { resolveConfig } from "../tm/config.js"
 import type { V2Registration } from "./v2-types.js"
 import type { TeamScope } from "./v2-scope.js"
 
@@ -120,7 +121,8 @@ export function appendProbeChainNote(result: unknown, line: string): boolean {
 export interface ProbeChainDeps {
   /** Team-scope isolation: a foreign or unattributable session is left alone. */
   scope?: TeamScope
-  env?: Record<string, string | undefined>
+  /** The resolved runtime config (probeChain / probeChainAfter). */
+  config?: { probeChain: string; probeChainAfter: number }
   /** the trajectory sink — wired in v2.ts, same shape as the browser gate's `onSerp` */
   onAdvise?: (info: { tool: string; count: number; sessionID?: unknown }) => void
 }
@@ -129,13 +131,10 @@ export function applyV2ProbeChain(
   ctx: unknown,
   deps: ProbeChainDeps,
 ): { registrations: Promise<V2Registration>[]; report: ProbeChainReport; active: boolean } {
-  const env = deps.env ?? process.env
+  const cfg = deps.config ?? resolveConfig()
   const report: ProbeChainReport = { seen: 0, advised: 0, reset: 0, foreignSkipped: 0, threw: 0 }
-  const off = /^(0|false|no|off)$/i.test(String(env.TM_PROBE_CHAIN ?? "").trim())
-  const raw = String(env.TM_PROBE_CHAIN_AFTER ?? "").trim()
-  const parsed = raw === "" ? DEFAULT_PROBE_CHAIN_AFTER : Number(raw)
-  const threshold = Number.isFinite(parsed) ? Math.max(0, Math.floor(parsed)) : DEFAULT_PROBE_CHAIN_AFTER
-  const disabled = off || threshold <= 0
+  const threshold = Math.max(0, Math.floor(cfg.probeChainAfter))
+  const disabled = cfg.probeChain === "off" || threshold <= 0
   const hook = (ctx as { tool?: { hook?: unknown } })?.tool?.hook
   if (typeof hook !== "function") {
     // No seam at all: report it rather than pretending the hint is live.

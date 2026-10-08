@@ -27,6 +27,22 @@ const tm = await import("./dist/tm/index.js")
 const plugin = (await import("./dist/index.js")).default
 const ep = await import("./dist/envprotect.js")
 
+/* The web cache is OFF for the shared runtimes below (they inspect the wire, and
+ * a cached leg issues no request).  `configDefaults` is BELOW the file layers, so
+ * a test that writes a config file still wins.  A fresh temp global dir keeps the
+ * user's real `~/.config/opencode` out of the test, and `autoCreate:false` keeps
+ * the auto-created file from shadowing `configDefaults`. */
+const mkRuntime = (input, opts = {}) => {
+  const globalDir = fs.mkdtempSync(path.join(os.tmpdir(), "tmt-cfg-"))
+  const { configDefaults, configRoots, ...rest } = opts
+  return tm["createTmTools"](input, {
+    autoCreate: false,
+    configRoots: { globalDir, ...(configRoots ?? {}) },
+    configDefaults: { webCacheTtlSec: 0, ...(configDefaults ?? {}) },
+    ...rest,
+  })
+}
+
 /* ---------- env hygiene (restore whatever the host had) ---------- */
 const ENV_KEYS = [
   "TM_OFFLOAD_THRESHOLD", "TM_PREVIEW_LINES", "TM_PREVIEW_MAX_TOKENS",
@@ -72,7 +88,7 @@ try {
 
   /* ---------- 1. config + token口径 ---------- */
   {
-    const cfg = tm.resolveTmConfig({})
+    const cfg = tm.resolveConfig({})
     assert.equal(cfg.offloadThreshold, 2000, "default offload threshold")
     assert.equal(cfg.previewLines, 20, "default preview lines")
     assert.equal(cfg.previewMaxTokens, 80, "default preview max tokens")
@@ -81,48 +97,48 @@ try {
     assert.equal(cfg.trajectoryDir, "", "default trajectory dir = AUTO (git-aware, resolved in createTmTools)")
     assert.equal(cfg.blackboardTtlDays, 7, "default blackboard ttl days")
     assert.ok(cfg.bashReadonlyAllowed.includes("Get-Content"), "default allowlist ships PS cmdlets")
-    // invalid values fail soft to defaults (typed defaults, type guard)
-    const bad = tm.resolveTmConfig({
-      TM_OFFLOAD_THRESHOLD: "abc", TM_PREVIEW_MAX_TOKENS: "-5",
-      TM_FETCH_MAX_LINES: "0", TM_BLACKBOARD_TTL: "9999",
-      TM_PREVIEW_LINES: "NaN",
+    // a non-numeric value falls back to the default; an out-of-range number is
+    // CLAMPED to min/max (the registry's contract).
+    const bad = tm.resolveConfig({
+      offloadThreshold: "abc", previewMaxTokens: -5,
+      fetchMaxLines: 0, blackboardTtlDays: 9999,
+      previewLines: "NaN",
     })
     assert.equal(bad.offloadThreshold, 2000, "NaN threshold -> default")
-    assert.equal(bad.previewMaxTokens, 80, "negative preview cap -> default")
-    assert.equal(bad.fetchMaxLines, 2000, "0 fetch lines -> default")
-    assert.equal(bad.blackboardTtlDays, 7, "over-cap ttl -> default")
+    assert.equal(bad.previewMaxTokens, 10, "negative preview cap -> clamped to min 10")
+    assert.equal(bad.fetchMaxLines, 1, "0 fetch lines -> clamped to min 1")
+    assert.equal(bad.blackboardTtlDays, 365, "over-cap ttl -> clamped to max 365")
     assert.equal(bad.previewLines, 20, "NaN preview lines -> default")
-    // env overrides parse
-    const custom = tm.resolveTmConfig({
-      TM_OFFLOAD_THRESHOLD: "500", TM_BLACKBOARD_DIR: "D:/data/.bb",
-      TM_BASH_READONLY_ALLOWED: "ls, python; rg",
+    // JSON values override
+    const custom = tm.resolveConfig({
+      offloadThreshold: 500, blackboardDir: "D:/data/.bb",
+      bashReadonlyAllowed: ["ls", "python", "rg"],
     })
     assert.equal(custom.offloadThreshold, 500, "threshold override")
     assert.equal(custom.blackboardDir, "D:/data/.bb", "absolute blackboard dir override")
     assert.deepEqual(custom.bashReadonlyAllowed, ["ls", "python", "rg"], "allowlist override")
     // Wave B M1 — threshold TIER INHERITANCE from the global.  The global
-    // TM_OFFLOAD_THRESHOLD must reach prose/data too when a tier env is not
-    // explicitly set (the old bug: a user who raised the global to 8000 to
-    // save tokens still got 4000 text / 2000 json — the global was ignored
-    // for every KNOWN class).  An explicit tier env always wins.
-    assert.equal(tm.resolveTmConfig({}).offloadThresholdText, 4000, "no env: text tier = 4000 default")
-    assert.equal(tm.resolveTmConfig({}).offloadThresholdData, 2000, "no env: data tier = 2000 default")
-    const inh = tm.resolveTmConfig({ TM_OFFLOAD_THRESHOLD: "8000" })
+    // offloadThreshold must reach prose/data too when a tier is not explicitly
+    // set (the old bug: a user who raised the global to 8000 to save tokens
+    // still got 4000 text / 2000 json).  An explicit tier always wins.
+    assert.equal(tm.resolveConfig({}).offloadThresholdText, 4000, "no value: text tier = 4000 default")
+    assert.equal(tm.resolveConfig({}).offloadThresholdData, 2000, "no value: data tier = 2000 default")
+    const inh = tm.resolveConfig({ offloadThreshold: 8000 })
     assert.equal(inh.offloadThreshold, 8000, "global set: global honored")
     assert.equal(inh.offloadThresholdText, 8000, "global set: prose tier INHERITS the global")
     assert.equal(inh.offloadThresholdData, 8000, "global set: data tier INHERITS the global")
-    const mix = tm.resolveTmConfig({ TM_OFFLOAD_THRESHOLD: "8000", TM_OFFLOAD_THRESHOLD_TEXT: "4000" })
+    const mix = tm.resolveConfig({ offloadThreshold: 8000, offloadThresholdText: 4000 })
     assert.equal(mix.offloadThresholdText, 4000, "explicit text tier WINS over the global")
     assert.equal(mix.offloadThresholdData, 8000, "unset data tier still INHERITS the global")
-    const onlyData = tm.resolveTmConfig({ TM_OFFLOAD_THRESHOLD: "8000", TM_OFFLOAD_THRESHOLD_DATA: "1000" })
+    const onlyData = tm.resolveConfig({ offloadThreshold: 8000, offloadThresholdData: 1000 })
     assert.equal(onlyData.offloadThresholdText, 8000, "only data set: text inherits global")
     assert.equal(onlyData.offloadThresholdData, 1000, "only data set: explicit data wins")
-    const textNoGlobal = tm.resolveTmConfig({ TM_OFFLOAD_THRESHOLD_TEXT: "6000" })
+    const textNoGlobal = tm.resolveConfig({ offloadThresholdText: 6000 })
     assert.equal(textNoGlobal.offloadThreshold, 2000, "global unset: global = default 2000")
     assert.equal(textNoGlobal.offloadThresholdText, 6000, "global unset + text set: text honored")
     assert.equal(textNoGlobal.offloadThresholdData, 2000, "global unset: data keeps 2000 default (no phantom inherit)")
-    // webfetch allowlist: seeded hosts (engines + data sources), env
-    // override, explicit empty
+    // webfetch allowlist: seeded hosts (engines + data sources), override,
+    // explicit empty
     assert.deepEqual(
       cfg.webfetchAllowedDomains,
       [
@@ -152,22 +168,22 @@ try {
       "default webfetch allowlist = 22 CN-reachable research hosts (parent domains cover siblings + Baidu's own script CDN)",
     )
     assert.deepEqual(
-      tm.resolveTmConfig({ TM_WEBFETCH_ALLOWED_DOMAINS: "docs.example.com, *" }).webfetchAllowedDomains,
+      tm.resolveConfig({ webfetchAllowedDomains: ["docs.example.com", "*"] }).webfetchAllowedDomains,
       ["docs.example.com", "*"],
-      "webfetch allowlist env override ('*' opens all)",
+      "webfetch allowlist override ('*' opens all)",
     )
     assert.deepEqual(
-      tm.resolveTmConfig({ TM_WEBFETCH_ALLOWED_DOMAINS: "" }).webfetchAllowedDomains,
+      tm.resolveConfig({ webfetchAllowedDomains: [] }).webfetchAllowedDomains,
       [], "explicit empty webfetch allowlist = deny-all",
     )
     // memory global dir: empty = auto (~/.opencode-team/memories/global)
-    assert.equal(tm.resolveTmConfig({}).memoryGlobalDir, "", "memory global dir default = auto (user home)")
+    assert.equal(tm.resolveConfig({}).memoryGlobalDir, "", "memory global dir default = auto (user home)")
     assert.equal(
-      tm.resolveTmConfig({ TM_MEMORY_GLOBAL_DIR: "D:/mem/global" }).memoryGlobalDir,
+      tm.resolveConfig({ memoryGlobalDir: "D:/mem/global" }).memoryGlobalDir,
       "D:/mem/global", "memory global dir override",
     )
     // explicit empty allowlist = deny-all (explicit user choice)
-    assert.deepEqual(tm.resolveTmConfig({ TM_BASH_READONLY_ALLOWED: "," }).bashReadonlyAllowed, [], "empty allowlist honored")
+    assert.deepEqual(tm.resolveConfig({ bashReadonlyAllowed: [] }).bashReadonlyAllowed, [], "empty allowlist honored")
     // token口径: CJK ≈ 1 token each (≥U+2E80), other chars/4 ceil;
     // equal-threshold offloads (conservative boundary)
     assert.equal(tm.estimateTokens(""), 0, "empty = 0 tokens")
@@ -178,7 +194,7 @@ try {
     assert.equal(tm.shouldOffload(2000, 2000), true, "boundary: == threshold offloads")
     assert.equal(tm.shouldOffload(1999, 2000), false, "below threshold stays inline")
   }
-  console.log("1. resolveTmConfig + estimateTokens/shouldOffload: OK (typed defaults, fail-soft, ==threshold offloads)")
+  console.log("1. resolveConfig + estimateTokens/shouldOffload: OK (typed defaults, clamp, ==threshold offloads)")
 
   /* ---------- 2. run identity + HMAC handles + refs ---------- */
   {
@@ -612,8 +628,7 @@ try {
   // T4 tiering: this runtime pins the TEXT class to the historical 2000
   // baseline so the boundary matrix below keeps its ==threshold meaning;
   // the 4000/2000 SPLIT itself is a separate §6m-t assertion set.
-  process.env.TM_OFFLOAD_THRESHOLD_TEXT = "2000"
-  const runtime = await tm.createTmTools({
+  const runtime = await mkRuntime({
     directory: root6,
     client: fakeClient({
       "small.txt": smallPayload,
@@ -625,8 +640,7 @@ try {
       __grep: bigPayload,                  // tm_grep fixture (2500 lines)
     }),
     $: fake$Ok(bigPayload),
-  })
-  delete process.env.TM_OFFLOAD_THRESHOLD_TEXT
+  }, { configDefaults: { offloadThresholdText: 2000 } })
   const ctx = { directory: root6 }
   const fetchTool = runtime.tools.tm_fetch
   // v1 retired the tm_read / tm_grep / tm_bash governed passthroughs.  The
@@ -720,7 +734,7 @@ try {
     fs.mkdirSync(path.join(xproc, ".git"), { recursive: true }) // deterministic store root
     const xPayload = "b".repeat(20000) // 5000 tokens > 4000 text threshold -> offloads
     fs.writeFileSync(path.join(xproc, "x.txt"), xPayload)
-    const runtimeA = await tm.createTmTools({
+    const runtimeA = await mkRuntime({
       directory: xproc,
       client: fakeClient({ "x.txt": xPayload }),
       $: fake$Ok(""),
@@ -729,7 +743,7 @@ try {
     assert.ok(aOut.includes("已卸载"), "process A offloads the payload")
     const aRef = refOf(aOut)
     const aTok = tokOf(aOut)
-    const runtimeB = await tm.createTmTools({ directory: xproc, client: fakeClient({}), $: fake$Ok("") })
+    const runtimeB = await mkRuntime({ directory: xproc, client: fakeClient({}), $: fake$Ok("") })
     assert.notEqual(runtimeB.runId, runtimeA.runId, "second runtime = a different run id (simulated restart)")
     const crossProc = (await runtimeB.tools.tm_fetch.execute({ ref: aRef, access_token: aTok }, { directory: xproc })).output
     assert.ok(crossProc.includes("已返回 1 行"), "cross-process: pre-restart handle fetches")
@@ -750,7 +764,7 @@ try {
     // foreign WORKSPACE (different store root -> different key): refused
     const run2 = mktmp("run2")
     fs.mkdirSync(path.join(run2, ".git"), { recursive: true }) // deterministic store root
-    const runtime2 = await tm.createTmTools({ directory: run2, client: fakeClient({}), $: fake$Ok("") })
+    const runtime2 = await mkRuntime({ directory: run2, client: fakeClient({}), $: fake$Ok("") })
     const cross = (await runtime2.tools.tm_fetch.execute({ ref: hRef, access_token: hTok }, { directory: root6 })).output
     assert.ok(cross.includes("[tm_fetch 失败 · phase=permission]"), "foreign store: structured error rendered as text (BUG#1)")
     assert.ok(cross.includes("token 校验失败"), "foreign store: token signed by another store's key is refused")
@@ -1092,7 +1106,7 @@ try {
     for (const name of ["t3000.txt", "t4000.txt", "j2500.json"]) {
       fs.writeFileSync(path.join(root6, name), "")
     }
-    const runtimeT = await tm.createTmTools({
+    const runtimeT = await mkRuntime({
       directory: root6,
       client: fakeClient({
         "t3000.txt": "a".repeat(12000), // 3000 tokens, TEXT tier 4000 -> inline
@@ -1250,7 +1264,7 @@ try {
     let govFetches = 0
     const govTool = wf.buildTmWebfetchTool({
       pipelines: fakePipes(),
-      cfg: { ...tm.resolveTmConfig({}), webfetchAllowedDomains: ["cn.bing.com"] },
+      cfg: { ...tm.resolveConfig({}), webfetchAllowedDomains: ["cn.bing.com"] },
       fetchImpl: async () => (govFetches++, res200("OUTSIDE-PAGE", "text/plain")),
       cache: shared,
     })
@@ -1262,7 +1276,7 @@ try {
     let inside = 0
     const insideTool = wf.buildTmWebfetchTool({
       pipelines: fakePipes(),
-      cfg: tm.resolveTmConfig({}),
+      cfg: tm.resolveConfig({}),
       fetchImpl: async () => (inside++, res200("npm registry payload for left-pad", "application/json")),
       cache: shared,
     })
@@ -1287,7 +1301,7 @@ try {
     let never = 0
     const narrowedTool = wf.buildTmWebfetchTool({
       pipelines: fakePipes(),
-      cfg: { ...tm.resolveTmConfig({}), webfetchAllowedDomains: ["cn.bing.com"] },
+      cfg: { ...tm.resolveConfig({}), webfetchAllowedDomains: ["cn.bing.com"] },
       fetchImpl: async () => (never++, res200("should never be fetched", "text/plain")),
       cache: shared,
     })
@@ -1301,7 +1315,7 @@ try {
     const npmJson = JSON.stringify({ objects: [{ package: { name: "left-pad", description: "tiny", version: "1.3.0" } }] })
     const legUrls = []
     const legFetch = async (u) => (legs++, legUrls.push(String(u)), res200(npmJson, "application/json"))
-    const searchTool = sm.buildTmSearchTool({ pipelines: fakePipes(), cfg: tm.resolveTmConfig({}), fetchImpl: legFetch, cache: searchCache })
+    const searchTool = sm.buildTmSearchTool({ pipelines: fakePipes(), cfg: tm.resolveConfig({}), fetchImpl: legFetch, cache: searchCache })
     await searchTool.execute({ query: "left-pad", engine: "npm" }, wctx)
     const searched = await searchTool.execute({ query: "left-pad", engine: "npm" }, wctx)
     assert.equal(legs, 1, "the same query twice costs one engine round")
@@ -1313,7 +1327,7 @@ try {
     // user saw three queries all answered "没有返回可提取的结果".  The fix is one
     // predicate; this pins both the repair and the honest sentence for a narrowed list.
     {
-      const starCfg = { ...tm.resolveTmConfig({ TM_WEBFETCH_ALLOWED_DOMAINS: "*" }) }
+      const starCfg = { ...tm.resolveConfig({ webfetchAllowedDomains: ["*"] }) }
       assert.deepEqual(starCfg.webfetchAllowedDomains, ["*"], "the env really does resolve to the wildcard")
       let starLegs = 0
       const starTool = sm.buildTmSearchTool({
@@ -1340,18 +1354,18 @@ try {
       let narrowed = 0
       const narrowedSearch = sm.buildTmSearchTool({
         pipelines: fakePipes(),
-        cfg: { ...tm.resolveTmConfig({}), webfetchAllowedDomains: ["example.invalid"] },
+        cfg: { ...tm.resolveConfig({}), webfetchAllowedDomains: ["example.invalid"] },
         cache: cm.createWebCache({ dir: mktmp("cache-narrow"), ttlSec: 300 }),
         fetchImpl: async () => (narrowed++, res200("{\"hits\":[]}", "application/json")),
       })
       const narrowOut = String((await narrowedSearch.execute({ query: "初音未来演唱会" }, wctx)).output)
       assert.equal(narrowed, 0, "a narrowed list still keeps the engines un-fetched")
       assert.match(narrowOut, /一条都没请求出去/, "and the refusal names our gate as the cause, not the engine")
-      assert.match(narrowOut, /TM_WEBFETCH_ALLOWED_DOMAINS/, "naming the operator's remedy")
+      assert.match(narrowOut, /webfetchAllowedDomains/, "naming the operator's remedy")
     }
     const wfOnEngineUrl = wf.buildTmWebfetchTool({
       pipelines: fakePipes(),
-      cfg: tm.resolveTmConfig({}),
+      cfg: tm.resolveConfig({}),
       fetchImpl: async () => (legs++, res200(npmJson, "application/json")),
       cache: searchCache,
     })
@@ -1360,12 +1374,10 @@ try {
 
     // (d) the runtime wires ONE cache from the knob
     const bbDir = mktmp("cache-runtime-bb")
-    process.env.TM_BLACKBOARD_DIR = bbDir
-    process.env.TM_WEB_CACHE_TTL_SEC = "300"
-    const rtW = await tm.createTmTools({ directory: mktmp("cache-rt"), client: {}, $: () => ({}) }, {})
-    delete process.env.TM_BLACKBOARD_DIR
-    delete process.env.TM_WEB_CACHE_TTL_SEC
-    assert.equal(rtW.config.webCacheTtlSec, 300, "TM_WEB_CACHE_TTL_SEC resolves through the config layer")
+    const rtW = await mkRuntime({ directory: mktmp("cache-rt"), client: {}, $: () => ({}) }, {
+      configDefaults: { blackboardDir: bbDir, webCacheTtlSec: 300 },
+    })
+    assert.equal(rtW.config.webCacheTtlSec, 300, "webCacheTtlSec resolves through the config layer")
     assert.equal(rtW.config.joinMaxWaitMs, 60_000, "the default bounded wait is 60 s — long enough for a real child, short enough that the lead notices")
     assert.ok(!("tm_dispatch" in rtW.tools), "the runtime never registers a plugin-side dispatcher: the user cannot close a child we created")
     assert.ok("tm_join" in rtW.tools, "tm_join stays, because collecting a HOST task child is what makes it safe")
@@ -1854,13 +1866,13 @@ try {
       // custom blacklist param (caller-level)
       const custom = tm.extractSearchHits(noisy, 10, ["zhihu.com"])
       assert.ok(!custom.some((h) => h.url.includes("zhihu.com")), "injected blacklist respected")
-      // env extension (lazy read)
-      process.env.TM_HIT_BLACKLIST = "maimai-net.cn"
+      // config extension (via the module setter)
+      tm.setHitBlacklist(["maimai-net.cn"])
       try {
         const envHits = tm.extractSearchHits(noisy)
-        assert.ok(!envHits.some((h) => h.url.includes("maimai-net.cn")), "TM_HIT_BLACKLIST env extension respected")
+        assert.ok(!envHits.some((h) => h.url.includes("maimai-net.cn")), "hitBlacklist extension respected")
       } finally {
-        delete process.env.TM_HIT_BLACKLIST
+        tm.setHitBlacklist([])
       }
       assert.ok(tm.HIT_DOMAIN_BLACKLIST_DEFAULT.includes("maimai.cn"), "default blacklist pins maimai.cn")
     }
@@ -1989,8 +2001,8 @@ try {
   {
     const dirA = mktmp("iso-a")
     const dirB = mktmp("iso-b")
-    const rA = await tm.createTmTools({ directory: dirA, client: {}, $: () => ({}) }, {})
-    const rB = await tm.createTmTools({ directory: dirB, client: {}, $: () => ({}) }, {})
+    const rA = await mkRuntime({ directory: dirA, client: {}, $: () => ({}) }, {})
+    const rB = await mkRuntime({ directory: dirB, client: {}, $: () => ({}) }, {})
     assert.notEqual(rA.store.trajectoryRoot, rB.store.trajectoryRoot, "two non-git workspaces get DIFFERENT trajectory roots")
     assert.notEqual(rA.store.blackboardRoot, rB.store.blackboardRoot, "…and different run stores, so no payload can be read across them")
     assert.ok(rA.store.trajectoryRoot.includes(path.join("opencode-team", "w-")), "the shard sits under the tmpdir fallback as opencode-team/w-<hash>")
@@ -2058,7 +2070,7 @@ try {
       const prevReclaim = process.env.TM_STORE_RECLAIM
       process.env.TM_STORE_RECLAIM = "on"
       try {
-        const rGit = await tm.createTmTools({ directory: gitWs, client: {}, $: () => ({}) }, {})
+        const rGit = await mkRuntime({ directory: gitWs, client: {}, $: () => ({}) }, {})
         assert.ok(rGit.store.trajectoryRoot.startsWith(path.join(gitWs, ".git")), "a git workspace keeps its store inside its own .git")
         assert.ok(!fs.existsSync(staleShard), "…and a git boot STILL reclaims the stale non-git shards (this is the wiring that used to be missing)")
         assert.ok(fs.existsSync(freshShard), "while a fresh sibling — possibly another window's live session — survives the TTL gate")
@@ -2226,13 +2238,11 @@ try {
   {
     const blocker = path.join(mktmp("degraded"), "blocker.txt")
     fs.writeFileSync(blocker, "x") // a FILE where the blackboard dir should be
-    process.env.TM_BLACKBOARD_DIR = blocker
-    const runtimeD = await tm.createTmTools({
+    const runtimeD = await mkRuntime({
       directory: root6,
       client: fakeClient({ "big2000.txt": "c".repeat(80000) }), // 20k tokens
       $: fake$Ok(""),
-    })
-    delete process.env.TM_BLACKBOARD_DIR
+    }, { configDefaults: { blackboardDir: blocker } })
     const degraded = offRead(runtimeD, "c".repeat(80000), "text", "path=big2000.txt").output
     assert.ok(degraded.includes("[警告]"), "degraded: warning banner present")
     assert.ok(degraded.includes("降级"), "degraded: warning text present")
@@ -2429,7 +2439,7 @@ try {
     {
       const seeded = async (name, over = {}, opts = {}) => {
         const f = sessionFake(over)
-        const rt = await tm.createTmTools({ directory: mktmp(name), client: f.client, $: fake$Ok("") }, opts)
+        const rt = await mkRuntime({ directory: mktmp(name), client: f.client, $: fake$Ok("") }, opts)
         return { rt, calls: f.calls }
       }
       const leftover = (id, title) => ({ id, title, time: { created: 1000, updated: 9000 } })
@@ -2522,7 +2532,7 @@ try {
         assert.ok(!/会话树里也没有可认领/.test(noEndpoint.output), "an unavailable seam may not report 'confirmed nothing there'")
         assert.match(noEndpoint.output, /没有看过会话树|没能查看/, "…and says which of the two happened")
         {
-          const looked = await tm.createTmTools(
+          const looked = await mkRuntime(
             { directory: process.cwd(), client: { session: { messages: async () => ({}), children: async () => ({ data: [] }) } }, $: () => ({}) },
             {},
           )
@@ -2530,7 +2540,7 @@ try {
           assert.ok(/会话树里也没有可认领的子会话/.test(emptyAfterLooking.output), "a host we DID query still gets the confirmed-empty sentence — the fix is a distinction, not a silencing")
           await looked.dispose()
 
-          const threw = await tm.createTmTools(
+          const threw = await mkRuntime(
             { directory: process.cwd(), client: { session: { messages: async () => ({}), children: async () => { throw new Error("ECONNREFUSED") } } }, $: () => ({}) },
             {},
           )
@@ -2574,13 +2584,12 @@ try {
       assert.deepEqual(dmod.joinBudget(0, 60_000, { stillRunning: 3, streak: 4 }), { budget: 0, repeat: false, streak: 4 }, "a snapshot costs nothing and neither extends nor resets the streak")
       assert.equal(dmod.REPEAT_WAIT_MS, 10_000, "the repeat budget is the number the description promises")
       {
-        process.env.TM_JOIN_MAX_WAIT_MS = "300"
         const keepAlive = setInterval(() => {}, 50)
         try {
           const { rt } = await seeded("join-wait", {
             children: [leftover("ses_w", "等 (@tester subagent ·tm)")],
             statusMap: { ses_w: { type: "busy" } },
-          })
+          }, { configDefaults: { joinMaxWaitMs: 300 } })
           assert.ok(rt.tools.tm_join.description.includes("A wait BLOCKS YOU") && rt.tools.tm_join.description.includes("capped at 300ms"), "the tool says waiting parks the lead, and never renders '0s'")
           const first = await rt.tools.tm_join.execute({ waitMs: 300 }, LEAD)
           assert.ok(!first.output.includes("连续第"), "the first wait is just a wait")
@@ -2590,7 +2599,6 @@ try {
           await rt.dispose()
         } finally {
           clearInterval(keepAlive)
-          delete process.env.TM_JOIN_MAX_WAIT_MS
         }
       }
 
@@ -2692,12 +2700,12 @@ try {
   {
     console.log("  11. bash timeout clamp module: SKIPPED — src/tm/bash-timeout.ts removed with the v1 personality; v2 clamp in src/host/v2-guard.ts (test-v2-adapter)")
     // config plumbing (still live — v2 reads these knobs)
-    const cfgBt = tm.resolveTmConfig({ TM_BASH_TIMEOUT_MAX_MS: "1200000", TM_BASH_TIMEOUT_PROBE_MS: "0" })
+    const cfgBt = tm.resolveConfig({ bashTimeoutMaxMs: 1200000, bashTimeoutProbeMs: 0 })
     assert.equal(cfgBt.bashTimeoutMaxMs, 1200000, "TM_BASH_TIMEOUT_MAX_MS resolves")
     assert.equal(cfgBt.bashTimeoutProbeMs, 0, "TM_BASH_TIMEOUT_PROBE_MS=0 disables the probe ceiling")
-    assert.equal(tm.resolveTmConfig({}).bashTimeoutMaxMs, 0, "the general cap is OFF by default")
-    assert.equal(tm.resolveTmConfig({}).bashTimeoutProbeMs, 60_000, "the probe ceiling ships enabled")
-    assert.equal(tm.resolveTmConfig({ TM_BASH_TIMEOUT_MAX_MS: "banana" }).bashTimeoutMaxMs, 0, "invalid value falls back to the default")
+    assert.equal(tm.resolveConfig({}).bashTimeoutMaxMs, 0, "the general cap is OFF by default")
+    assert.equal(tm.resolveConfig({}).bashTimeoutProbeMs, 60_000, "the probe ceiling ships enabled")
+    assert.equal(tm.resolveConfig({ bashTimeoutMaxMs: "banana" }).bashTimeoutMaxMs, 0, "invalid value falls back to the default")
     console.log("  11. bash timeout config plumbing: OK (v2 still reads bashTimeoutProbeMs/MaxMs)")
   }
     // ---------- 12. tm_board_write — the board's write side (a role with no file tool) ----------
@@ -2848,6 +2856,9 @@ try {
 
       // ---- wired into the ONE door every web tool passes through ----
       const WF = await import("./dist/tm/webfetch.js")
+      // The runtime sets the policy from config at boot; pin it to the v1
+      // default here so this block tests the address tiers, not a leftover state.
+      WF.setPrivateSpacePolicy("ask")
       // "*" is a documented operator setting; it must not become a way to read the
       // instance metadata service into the model context.
       const meta = WF.checkWebUrl("http://169.254.169.254/latest/meta-data/iam/security-credentials/", ["*"])
@@ -2866,7 +2877,7 @@ try {
       assert.equal(priv.askable, true, "an unnamed private host still asks (v1) rather than passing quietly")
       assert.equal(WF.checkWebUrl("http://10.1.2.3:8080/api", ["10.1.2.3"]).ok, true, "…but naming the private host itself is a real per-host decision that lets it through")
       assert.equal(WF.checkWebUrl("http://169.254.169.254/latest/meta-data/", ["169.254.169.254"]).ok, false, "and naming the METADATA endpoint explicitly still does not open it — that range has no consent path at all")
-      assert.match(String(WF.checkWebUrl("http://10.1.2.3:8080/api", ["cn.bing.com"]).message), /TM_WEBFETCH_ALLOWED_DOMAINS/, "the private refusal names the operator's remedy instead of only the dialog that will never open")
+      assert.match(String(WF.checkWebUrl("http://10.1.2.3:8080/api", ["cn.bing.com"]).message), /webfetchAllowedDomains/, "the private refusal names the operator's remedy instead of only the dialog that will never open")
       // …but an ask with no dialog is a gate with no exit, which is exactly the v2
       // shape. The policy seam is one setter, and the address red line is not on it.
       try {
@@ -2906,7 +2917,7 @@ try {
       const mkTool = (impl, domains) =>
         wf.buildTmWebfetchTool({
           pipelines: { store: { appendTrajectory: () => {} }, nextStepId: () => "sE14", govern: (_s, _t, c) => c },
-          cfg: { ...tm.resolveTmConfig({}), webfetchAllowedDomains: domains ?? ["cn.bing.com"] },
+          cfg: { ...tm.resolveConfig({}), webfetchAllowedDomains: domains ?? ["cn.bing.com"] },
           fetchImpl: impl,
         })
       const o2 = (r) => String(r?.output ?? "")
@@ -2961,7 +2972,7 @@ try {
       const tool = (impl, extra) =>
         wf.buildTmWebfetchTool({
           pipelines: { store: { appendTrajectory: () => {} }, nextStepId: () => "sE15", govern: (_s, _t, c) => c },
-          cfg: { ...tm.resolveTmConfig({}), webfetchAllowedDomains: ["learn.microsoft.com", "cn.bing.com"] },
+          cfg: { ...tm.resolveConfig({}), webfetchAllowedDomains: ["learn.microsoft.com", "cn.bing.com"] },
           fetchImpl: impl,
           ...extra,
         })
@@ -3064,7 +3075,7 @@ try {
         path.join(ws, "team-mode.jsonc"),
         `{ "offloadThreshold": 7777, "searchDefaultEngine": "hn" }`,
       )
-      const rt = await tm.createTmTools(
+      const rt = await mkRuntime(
         { directory: ws, client: {}, $: () => ({}) },
         { env: { TM_STORE_RECLAIM: "off" }, configRoots: { globalDir, projectDir: ws } },
       )
@@ -3083,16 +3094,49 @@ try {
       assert.match(out, /分层配置/, "tm_stats renders the config section")
       assert.match(out, /offloadThreshold=project/, "…naming the layer each key came from")
 
-      // TM_CONFIG_ENV_ONLY ignores the file entirely.
-      const rtEnvOnly = await tm.createTmTools(
+      // envOnly ignores the file entirely.
+      const rtEnvOnly = await mkRuntime(
         { directory: ws, client: {}, $: () => ({}) },
-        { env: { TM_STORE_RECLAIM: "off", TM_CONFIG_ENV_ONLY: "1" }, configRoots: { globalDir, projectDir: ws } },
+        { env: { TM_STORE_RECLAIM: "off" }, envOnly: true, configRoots: { globalDir, projectDir: ws } },
       )
-      assert.equal(rtEnvOnly.config.offloadThreshold, 2000, "TM_CONFIG_ENV_ONLY=1 ignores the file (default stands)")
+      assert.equal(rtEnvOnly.config.offloadThreshold, 2000, "envOnly ignores the file (default stands)")
       assert.equal(rtEnvOnly.config.searchDefaultEngine, "auto", "…for every key")
       await rt.dispose()
       await rtEnvOnly.dispose()
-      console.log("17. layered config wiring: OK (project file reaches the runtime + the tm_search descriptor + tm_stats; TM_CONFIG_ENV_ONLY ignores it)")
+      console.log("17. layered config wiring: OK (project file reaches the runtime + the tm_search descriptor + tm_stats; envOnly ignores it)")
+    }
+
+    // ---------- 18. the runtime AUTO-CREATES the global config at boot ----------
+    {
+      const globalDir = mktmp("autocreate-global")
+      const file = path.join(globalDir, "team-mode.jsonc")
+      const rt = await tm.createTmTools(
+        { directory: mktmp("autocreate-ws"), client: {}, $: () => ({}) },
+        { configRoots: { globalDir } },
+      )
+      assert.ok(fs.existsSync(file), "a boot with no global file creates one")
+      const text = fs.readFileSync(file, "utf8")
+      for (const spec of (await import("./dist/tm/config-layers.js")).CONFIG_KEYS) {
+        assert.ok(text.includes(`"${spec.key}"`), `the auto-created file lists ${spec.key}`)
+      }
+      // a second boot leaves the bytes untouched (idempotent)
+      const rt2 = await tm.createTmTools(
+        { directory: mktmp("autocreate-ws2"), client: {}, $: () => ({}) },
+        { configRoots: { globalDir } },
+      )
+      assert.equal(fs.readFileSync(file, "utf8"), text, "a second boot does not rewrite the file")
+      // a user-edited file is never overwritten
+      fs.writeFileSync(file, `{ "offloadThreshold": 4242 }`)
+      const rt3 = await tm.createTmTools(
+        { directory: mktmp("autocreate-ws3"), client: {}, $: () => ({}) },
+        { configRoots: { globalDir } },
+      )
+      assert.equal(fs.readFileSync(file, "utf8"), `{ "offloadThreshold": 4242 }`, "an existing file is never overwritten")
+      assert.equal(rt3.config.offloadThreshold, 4242, "and the user's value is what the runtime uses")
+      await rt.dispose()
+      await rt2.dispose()
+      await rt3.dispose()
+      console.log("18. runtime auto-create: OK (created with every key, idempotent, never overwrites)")
     }
 
 } finally {

@@ -90,9 +90,6 @@ function sandboxEnv(extra = {}) {
     HOME,
     USERPROFILE: HOME,
     TM_STORE_RECLAIM: "off",
-    TM_TRAJECTORY_DIR: path.join(BASE, "trajectory"),
-    TM_BLACKBOARD_DIR: path.join(BASE, "blackboard"),
-    TM_MEMORY_GLOBAL_DIR: path.join(BASE, "memories"),
     ...extra,
   }
 }
@@ -154,18 +151,62 @@ const bootRow = (rows) => rows.find((r) => r.step_id === "v2-boot")
 const agentsRow = (rows) => rows.find((r) => r.step_id === "v2-agents")
 const configRow = (rows) => rows.find((r) => r.step_id === "config-layers")
 
+/** The user's provider catalog, so the --turns model can resolve in the sandbox:
+ *  the host reads providers from OPENCODE_CONFIG_DIR, and the sandbox file would
+ *  otherwise carry none ("Model unavailable").  Read-only; the real config is
+ *  never written. */
+let PROVIDERS = null
+async function seedProviders() {
+  let parseJsonc
+  try {
+    ;({ parseJsonc } = await import(pathToFileURL(path.join(COPY, "dist", "tm", "config-layers.js")).href))
+  } catch {
+    return null
+  }
+  const dir = path.join(os.homedir(), ".config", "opencode")
+  for (const name of ["opencode.jsonc", "opencode.json"]) {
+    try {
+      const parsed = parseJsonc(fs.readFileSync(path.join(dir, name), "utf8"))
+      const providers = parsed && typeof parsed === "object" ? parsed.providers ?? parsed.provider : null
+      if (providers) return providers
+    } catch {
+      /* try the next spelling */
+    }
+  }
+  return null
+}
+
 /** Write the sandbox opencode.jsonc with the 2.x plugin-options object shape. */
 function writeConfig(options) {
   const cfg = {
     $schema: "https://opencode.ai/config.json",
     plugins: [{ package: "./vendor/team-mode", options }],
   }
+  if (PROVIDERS) cfg.providers = PROVIDERS
   fs.writeFileSync(path.join(BASE, "opencode.jsonc"), JSON.stringify(cfg, null, 2))
+}
+
+/** The sandbox's global team-mode.jsonc.  The store dirs used to ride the
+ *  (now dead) TM_TRAJECTORY_DIR / TM_BLACKBOARD_DIR / TM_MEMORY_GLOBAL_DIR env
+ *  vars; the layered config is the only source now.  Without it the probe's
+ *  store lands in the repo's own .git (the A-group probe runs with cwd=REPO)
+ *  and the A-group rows are unreadable. */
+function writeGlobalTmConfig() {
+  const dir = (p) => path.join(BASE, p).replace(/\\/g, "/")
+  fs.writeFileSync(
+    path.join(BASE, "team-mode.jsonc"),
+    JSON.stringify(
+      { trajectoryDir: dir("trajectory"), blackboardDir: dir("blackboard"), memoryGlobalDir: dir("memories") },
+      null,
+      2,
+    ),
+  )
 }
 
 // ─────────────────────────── A 组：零 token boot 探针 ───────────────────────────
 
 async function groupA() {
+  writeGlobalTmConfig()
   writeConfig({ ttlDays: 9 })
   const logFile = path.join(BASE, "boot.log")
   const r = await runCli(["run", "--standalone", "--model", "nope/nope", "--print-logs", "x"], {
@@ -250,24 +291,30 @@ async function groupA5() {
       : `项目轨迹目录 ${projTraj} 下没有 config-layers 行（trajectoryDir 未被采用？exit=${r1.code}）`,
   )
 
-  // A5b：TM_CONFIG_ENV_ONLY=1 时忽略文件层
-  const envTraj = path.join(BASE, "trajectory")
-  rmrf(envTraj)
+  // A5b：没有文件层作答时，boot 行报 defaults-only（env-only 语义的现代表达）。
+  // 全局文件缺席 + 工作区无项目文件 + autoCreate:false → 两层都不作答。
+  // 工作区放一个 .git 目录，store 才落在确定位置（非 git 工作区会分片到 TMP）。
+  const wsB = path.join(BASE, "ws-a5b")
+  fs.mkdirSync(path.join(wsB, ".git"), { recursive: true })
+  rmrf(path.join(BASE, "team-mode.jsonc"))
+  writeConfig({ autoCreate: false })
   const r2 = await runCli(["run", "--standalone", "--model", "nope/nope", "--print-logs", "x"], {
-    cwd: ws,
-    env: sandboxEnv({ TM_CONFIG_ENV_ONLY: "1" }),
+    cwd: wsB,
+    env: sandboxEnv(),
     logFile: path.join(BASE, "a5b.log"),
   })
-  const rows2 = readTrajectory(envTraj)
-  const cfg2 = configRow(rows2)
-  const ignored = !!cfg2 && cfg2.config_layers === "env-only" && cfg2.config_env_only === true
+  const bTraj = path.join(wsB, ".git", "opencode-team", "trajectory")
+  const cfg2 = configRow(readTrajectory(bTraj))
+  // config_env_only is always false here — envOnly is settable only through the
+  // test-injection seam — so config_layers === "defaults-only" is the whole assertion.
+  const ignored = !!cfg2 && cfg2.config_layers === "defaults-only"
   record(
     "A5b",
-    "分层配置：TM_CONFIG_ENV_ONLY=1 忽略文件层",
+    "分层配置：无文件层作答 → boot 行报 defaults-only",
     ignored ? "PASS" : "FAIL",
     cfg2
       ? `config_layers="${cfg2.config_layers}" config_env_only=${cfg2.config_env_only}`
-      : `env 轨迹目录 ${envTraj} 下没有 config-layers 行（exit=${r2.code}）`,
+      : `轨迹目录 ${bTraj} 下没有 config-layers 行（exit=${r2.code}）`,
   )
 }
 
@@ -280,11 +327,14 @@ async function groupA5() {
 async function groupC() {
   const ws = path.join(BASE, "ws-c")
   fs.mkdirSync(ws, { recursive: true })
-  process.env.TM_TRAJECTORY_DIR = path.join(BASE, "c-traj")
-  process.env.TM_BLACKBOARD_DIR = path.join(BASE, "c-blackboard")
-  process.env.TM_MEMORY_GLOBAL_DIR = path.join(BASE, "c-memories")
+  // The in-process leg must resolve the SAME sandbox the CLI children get: without
+  // the redirect it reads (and auto-creates) the user's real ~/.config/opencode.
+  process.env.OPENCODE_CONFIG_DIR = BASE
+  process.env.HOME = HOME
+  process.env.USERPROFILE = HOME
   process.env.TM_STORE_RECLAIM = "off"
   delete process.env.TM_ENV_PROTECT // 默认（未设）→ 必须 armed
+  writeGlobalTmConfig() // A5b removed it; this leg must read a sandbox file, not the user's
 
   let fake
   try {
@@ -349,9 +399,13 @@ async function groupC() {
 
 async function groupB() {
   const ws = path.join(BASE, "ws-b")
-  fs.mkdirSync(ws, { recursive: true })
+  fs.mkdirSync(path.join(ws, ".git"), { recursive: true })
   fs.writeFileSync(path.join(ws, "big.txt"), "line of filler text\n".repeat(4000) + "needle here\n")
-  const bTraj = path.join(BASE, "b-traj")
+  // The store dirs ride the layered config now (the TM_TRAJECTORY_DIR env var is
+  // dead).  Mirror A5b: no global file answers, autoCreate:false is already in
+  // opencode.jsonc, and the workspace's own .git is where the store lands.
+  rmrf(path.join(BASE, "team-mode.jsonc"))
+  const bTraj = path.join(ws, ".git", "opencode-team", "trajectory")
   // A v2 plugin cannot create agents — the six roles are config files.  `--agent team`
   // resolves only after the generator writes them into the sandbox config dir.
   const gen = await runProc(process.execPath, [path.join(COPY, "scripts", "gen-v2-config.mjs"), "--dir", BASE], {
@@ -373,7 +427,6 @@ async function groupB() {
     {
       cwd: ws,
       env: sandboxEnv({
-        TM_TRAJECTORY_DIR: bTraj,
         HOME: process.env.HOME,
         USERPROFILE: process.env.USERPROFILE,
       }),
@@ -433,6 +486,7 @@ async function main() {
     console.error(`副本缺少 dist/index.js（先 npm run build）：${COPY}`)
     process.exit(1)
   }
+  PROVIDERS = await seedProviders()
 
   await groupA()
   await groupC()

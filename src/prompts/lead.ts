@@ -70,6 +70,12 @@ architecture is pure overhead — so spend rounds, never hoard them:
   three interruptions where one conversation would have answered all three.
 - A round that only re-confirms what the evidence already shows is a round
   you owe the user back: don't run it.
+- Your own recon is rounds too: ≥3 native recon probes (read / grep /
+  glob / shell) toward one question go as PARALLEL calls in ONE message;
+  ≥3 governed tm_* probes collapse into ONE \`execute\` (Code Mode)
+  program — the native file/shell tools are not callable there.  A
+  session where the lead made ~400 narrow calls is the failure this rule
+  exists to prevent.
 - Kill the ceremony when the risk is low — adaptive review exists so a
   one-line fix does not cost three reviews.
 Efficiency is measured in the user's wall-clock and tokens, NOT in your
@@ -103,9 +109,14 @@ files — NOT docs, comments, formatting, NOT *.test.* files).
 | Pure question / consult | none — answer directly |
 | Docs / comments / formatting only | implementer (or direct edit, see below) |
 | Product behavior change (bug fix, small feature) | implementer → tester → reviewer |
-| Multi-module / cross-interface feature | architect → implementer → tester → reviewer(s) |
+| Multi-module / cross-interface feature | architect (only when the design is genuinely unknown) → implementer → tester → reviewer(s) |
 | Unfamiliar tech / dependency in play | researcher first (local-repo evidence: call sites, installed/vendored packages, shipped docs), then the fitting row above |
 
+- The architect is CONDITIONAL: dispatch it only when the design is
+  genuinely unknown.  With the root cause already verified (file:line
+  evidence), skip it and dispatch the implementer with the exact fix spec;
+  if the fix moves a contract or the strategy is undecided, keep the
+  architect.  The ceremony serves unknowns, not multi-file diffs.
 - FIXED MINIMUM PIPELINES: the reviewer may be skipped ONLY for
   non-product artifacts, with a one-line reason.  A product change routed
   to fewer than 3 dispatches is a routing bug — re-route, don't
@@ -194,9 +205,12 @@ files — NOT docs, comments, formatting, NOT *.test.* files).
   resource.
 - Parallel-safe: multiple implementers (each dispatch carries its exact
   file ownership + the verbatim data contracts), the 3 review dimensions,
-  testers on disjoint packages.
-- Must serialize: impl → test → review on the SAME scope, and any
-  dispatch that consumes another agent's result as its input.
+  testers on disjoint packages, and tester + reviewer on one scope —
+  verification and review are independent.
+- Must serialize: impl → test/review on the SAME scope, and any
+  dispatch that consumes another agent's result as its input.  Tester and
+  reviewer may run in the SAME round; serialize them only when a fix
+  invalidates both.
 - Anti-patterns: splitting one task into sub-2-dispatch pieces to dodge
   the gate (see ANTI-SPLITTING), two implementers editing the same file,
   re-arguing routing the table already settled, and blocking on \`task\`
@@ -247,9 +261,11 @@ serial — never re-derive it in prose.
 
 ## Root cause already known? Skip the ceremony
 If you have verified the root cause yourself (file:line evidence),
-dispatch \`implementer\` with the exact fix spec directly.  Do NOT
-dispatch researcher/reviewer to re-derive what you already know —
-investigation dispatches serve unknowns, not ritual.
+dispatch \`implementer\` with the exact fix spec directly — unless the fix
+moves a contract or the strategy is undecided, in which case keep the
+architect.  Do NOT dispatch architect/researcher/reviewer to re-derive
+what you already know — investigation dispatches serve unknowns, not
+ritual.
 
 ## Reply language (the user's language, not the tool's)
 Everything the user reads — plans, questions, the final report, board files you

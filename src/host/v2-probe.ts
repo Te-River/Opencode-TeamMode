@@ -105,7 +105,8 @@ function hookFn(ctx: unknown, domain: string): ((name: string, cb: (e: unknown) 
 
 export async function applyV2Probe(ctx: unknown, opts: ProbeOptions = {}): Promise<V2Probe> {
   const env = opts.env ?? process.env
-  const file = typeof env.TM_V2_PROBE === "string" && env.TM_V2_PROBE.trim() ? env.TM_V2_PROBE.trim() : null
+  const rawProbe = env.TM_V2_PROBE ?? process.env.TM_V2_PROBE
+  const file = typeof rawProbe === "string" && rawProbe.trim() ? rawProbe.trim() : null
   const maxLines = Number.isFinite(Number(opts.maxLines)) && Number(opts.maxLines) > 0 ? Number(opts.maxLines) : 400
   const flushMs = Number.isFinite(Number(opts.flushMs)) && Number(opts.flushMs) >= 0 ? Number(opts.flushMs) : 20_000
 

@@ -165,7 +165,8 @@ export function applyV2BrowserGate(
   opts: {
     allowlist: readonly string[]
     scope?: TeamScope
-    env?: Record<string, string | undefined>
+    /** The resolved runtime config (v2BrowserGate). */
+    config?: { v2BrowserGate: string }
     /** Trajectory sink for the SERP rate limit (#14).  The gate has no store of
      *  its own, so the caller wires this to `appendTrajectory`; a throwing sink
      *  is swallowed because a log line is never a reason to fail a call. */
@@ -185,7 +186,7 @@ export function applyV2BrowserGate(
   /** key = `${tool}\n${sessionID}` → the refusal we owe that call's answer */
   const annotated = new Set<string>()
   const pending = new Map<string, { message: string; at: number }>()
-  const off = /^(0|false|no|off)$/i.test(String(opts.env?.TM_V2_BROWSER_GATE ?? "").trim())
+  const off = (opts.config?.v2BrowserGate ?? "on") === "off"
   // ONE guard per gate instance = per plugin process, which is the accounting
   // basis the module documents: a conversation-level fact, not a per-agent one.
   const serpGuard = createSerpLoopGuard()

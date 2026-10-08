@@ -131,8 +131,8 @@ export type PrivateSpacePolicy = "ask" | "allow" | "deny"
  *
  * "ask" is v1's answer, because v1 can raise the host's dialog.  On OpenCode 2.x a
  * plugin cannot raise anything (measured: no `ask` on the tool ctx), so "ask" there
- * is a gate with no exit — which is why the v2 personality sets "allow" unless the
- * operator says otherwise.  Private space is still the user's own network (a NAS,
+ * is a gate with no exit — which is why the v2 personality defaults to "deny" unless
+ * the operator says otherwise.  Private space is still the user's own network (a NAS,
  * a colleague's box, the office intranet) — useful, but it reaches OTHER machines,
  * so it stays gated; the credential-leak class this policy used to conflate with it
  * is handled by the forbidden branch, which comes first and cannot be configured.
@@ -145,9 +145,9 @@ export function setPrivateSpacePolicy(raw: unknown): PrivateSpacePolicy {
   return privateSpace
 }
 
-/** Read at boot from TM_PRIVATE_SPACE so a hand-edited env file works without the
- *  personality calling the setter (the setter wins when both are present). */
-setPrivateSpacePolicy(typeof process !== "undefined" ? process.env?.TM_PRIVATE_SPACE : "")
+/** The default before any personality sets it: "ask" (the v1 default).  The
+ *  runtime sets it from `config.privateSpace` at boot (see createTmTools). */
+setPrivateSpacePolicy("")
 export function privateSpacePolicy(): PrivateSpacePolicy {
   return privateSpace
 }
@@ -218,7 +218,7 @@ export function checkWebUrl(raw: unknown, allowlist: readonly string[]): UrlVerd
         message:
           `目标 ${url.hostname} 属于私网地址段（${egress.via}），本站点策略不放行私网，且这里没有确认窗可弹（OpenCode 2.x 的插件没有弹窗权限）——` +
           `所以这不是"等人批准"，是到此为止。要访问私网里的服务，两条出路（都要操作者自己改，然后重启宿主）：` +
-          `TM_PRIVATE_SPACE=allow 放开整段私网，或把这一台主机名写进 TM_WEBFETCH_ALLOWED_DOMAINS（如 192.168.1.10，只放开它自己）。` +
+          `privateSpace: "allow" 放开整段私网，或把这一台主机名写进 webfetchAllowedDomains（如 192.168.1.10，只放开它自己）。` +
           `回环地址（127.0.0.1 / localhost）默认放行，不受此限制；公网内容也不受此限制。`,
       }
     }
@@ -230,7 +230,7 @@ export function checkWebUrl(raw: unknown, allowlist: readonly string[]): UrlVerd
         `目标 ${url.hostname} 属于私网地址段（${egress.via}），域名白名单——包括 "*"——不能替你放行，只能逐次经用户批准。` +
         `正在请求官方确认窗；批准仅对本次有效。私网服务的 UI 验证更该用宿主原生浏览器（那才是为它设计的通道）。` +
         `如果这个会话的宿主给不出确认窗（OpenCode 2.x 的插件没有弹窗权限），出路只有操作者把这一台主机名写进 ` +
-        `TM_WEBFETCH_ALLOWED_DOMAINS（显式主机名，如 192.168.1.10；"*" 不算）后重启宿主。`,
+        `webfetchAllowedDomains（显式主机名，如 192.168.1.10；"*" 不算）后重启宿主。`,
     }
   }
   if (!hostAllowed(url.hostname, allowlist)) {
@@ -240,7 +240,7 @@ export function checkWebUrl(raw: unknown, allowlist: readonly string[]): UrlVerd
       url,
       message:
         `主机 "${url.hostname}" 不在 tm_webfetch 域名白名单内（预置: ${[...DEFAULT_WEBFETCH_DOMAINS, ...T4_SEEDED_DOMAINS].join(", ")}）。` +
-        `已请求用户批准（官方确认弹窗）——批准后本次放行；用 TM_WEBFETCH_ALLOWED_DOMAINS 可永久扩展（逗号/分号分隔，"*" 放开全部主机）`,
+        `已请求用户批准（官方确认弹窗）——批准后本次放行；用 webfetchAllowedDomains 可永久扩展（JSON 数组，"*" 放开全部主机）`,
     }
   }
   return { ok: true, url }
@@ -337,16 +337,24 @@ const AD_SLOT_RE = /b_ad\b|ads-title|data-kq="dsp\.srp\./i
 /** Domains that collide with common search terms (e.g. maimai.cn is the
  *  Chinese professional-networking site 脉脉, NOT the SEGA maimai DX rhythm
  *  game — a real session showed bing returning 10/10 maimai.cn hits for
- *  every maimai DX query).  Extend via TM_HIT_BLACKLIST (comma/semicolon
- *  separated); read lazily so tests and long-lived processes see updates. */
+ *  every maimai DX query).  Extend via the `hitBlacklist` config key
+ *  (merged with the built-in default). */
 export const HIT_DOMAIN_BLACKLIST_DEFAULT: readonly string[] = ["maimai.cn"]
 
+/** Extra blacklist entries set from the resolved config (`hitBlacklist`). */
+let extraHitBlacklist: string[] = []
+
+/** Set the extra hit-domain blacklist (from `config.hitBlacklist`).  Returns
+ *  the normalized list. */
+export function setHitBlacklist(list: readonly string[]): string[] {
+  extraHitBlacklist = (Array.isArray(list) ? list : [])
+    .map((d) => String(d).trim().toLowerCase())
+    .filter(Boolean)
+  return extraHitBlacklist
+}
+
 export function hitDomainBlacklist(): string[] {
-  const env = process.env.TM_HIT_BLACKLIST ?? ""
-  return [
-    ...HIT_DOMAIN_BLACKLIST_DEFAULT,
-    ...env.split(/[,;]/).map((d) => d.trim().toLowerCase()).filter(Boolean),
-  ]
+  return [...HIT_DOMAIN_BLACKLIST_DEFAULT, ...extraHitBlacklist]
 }
 
 export interface SearchHit {
@@ -717,9 +725,9 @@ const WEBFETCH_DESCRIPTION = `Fetch a web page through the governed pipeline (do
 
 - ANTI-PATTERN: do NOT hand-build search-engine URLs here — that is tm_search's job (multi-engine, extracted hit lists).  Use THIS tool for a page you already know: a direct article/wiki term, a registry JSON endpoint, a raw file.
 - Seeded hosts (CN-reachable, no API keys): moegirl.org.cn (parent — all subdomains: mobile. term https://mobile.moegirl.org.cn/TERM, mzh. main site) · search.bilibili.com · cn.bing.com (search: https://cn.bing.com/search?q=QUERY; &ensearch=1 for international results) · baidu.com (parent: www. search /s?wd=QUERY, baike. encyclopedia entries) · www.sogou.com (https://www.sogou.com/web?query=QUERY) · www.so.com (https://www.so.com/s?q=QUERY) · registry.npmjs.org (package JSON: https://registry.npmjs.org/<pkg>/latest, search: https://registry.npmjs.org/-/v1/search?text=QUERY) · api.github.com (repo search: https://api.github.com/search/repositories?q=QUERY) · api.stackexchange.com (question search: https://api.stackexchange.com/2.3/search/advanced?order=desc&sort=relevance&q=QUERY&site=stackoverflow&pagesize=10) · hn.algolia.com (HN story search: https://hn.algolia.com/api/v1/search?query=QUERY&tags=story) · raw.githubusercontent.com + gist.githubusercontent.com + github.com (docs/code/issues) · ghproxy.net (mainland mirror for github raw).  URL-encode the query (CJK terms too).  Search-engine result pages are auto-extracted to a title+URL hit list.  Expand colloquial/abbreviated terms to canonical forms and fetch BOTH spellings.
-- Governance: only http(s), hosts must be allowlisted (extend via TM_WEBFETCH_ALLOWED_DOMAINS, "*" opens all), redirects re-checked per hop (a refusal names the whole hop chain), HTML stripped to text — some documentation hosts (learn.microsoft.com measured 5.3x smaller) are fetched as Markdown when they honour accept: text/markdown, and the reply says so; output above TM_OFFLOAD_THRESHOLD tokens is offloaded to a handle — page with tm_fetch (try mode:"structure" first).
+- Governance: only http(s), hosts must be allowlisted (extend via webfetchAllowedDomains, "*" opens all), redirects re-checked per hop (a refusal names the whole hop chain), HTML stripped to text — some documentation hosts (learn.microsoft.com measured 5.3x smaller) are fetched as Markdown when they honour accept: text/markdown, and the reply says so; output above offloadThreshold tokens is offloaded to a handle — page with tm_fetch (try mode:"structure" first).
 - Governance: out-of-allowlist hosts route through the OFFICIAL confirmation dialog (approve to proceed once; the 1-min unanswered auto-reject applies); env-file URLs and non-http(s) schemes are hard-rejected with no dialog.
-- Freshness: a repeated URL is served from a local TTL cache (TM_WEB_CACHE_TTL_SEC, default 300 s) and the reply SAYS 缓存命中 with its age.  Need the page as it is NOW?  Pass { fresh: true } to bypass the cache and hit the network.`
+- Freshness: a repeated URL is served from a local TTL cache (webCacheTtlSec, default 300 s) and the reply SAYS 缓存命中 with its age.  Need the page as it is NOW?  Pass { fresh: true } to bypass the cache and hit the network.`
 
 /** Build the tm_webfetch ToolDefinition over the SHARED main pipelines
  *  instance (same step counter as tm_read/tm_grep/tm_bash — refs stay
@@ -799,7 +807,7 @@ export function buildTmWebfetchTool(deps: {
         let cacheNote = ""
         if (typeof res.cachedAt === "number") {
           const ageS = Math.max(0, Math.round((Date.now() - res.cachedAt) / 1000))
-          cacheNote = `\n（缓存命中：${ageS}s 前抓取的同一 URL，TM_WEB_CACHE_TTL_SEC=${deps.cache?.ttlSec ?? 0}；需要最新内容请等 TTL 过期或换 URL）`
+          cacheNote = `\n（缓存命中：${ageS}s 前抓取的同一 URL，webCacheTtlSec=${deps.cache?.ttlSec ?? 0}；需要最新内容请等 TTL 过期或换 URL）`
           pipelines.store.appendTrajectory({ tool, step_id: stepId, event: "cache_hit", age_s: ageS })
         }
         // Search-engine result pages collapse to a clean hit list (title +

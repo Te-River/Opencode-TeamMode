@@ -26,8 +26,9 @@ import {
   resolveEnvProtectMode,
   type EnvProtectMode,
 } from "../envprotect.js"
-import { resolveTmConfig, type TmConfig } from "./config.js"
-import { resolveLayeredTmConfig, renderConfigSection, type ConfigFileRoots } from "./config-files.js"
+import { resolveConfig, resolveOnOff, type TmConfig } from "./config.js"
+import { resolveLayeredTmConfig, renderConfigSection, resolveGlobalDir, type ConfigFileRoots } from "./config-files.js"
+import { ensureGlobalConfig } from "./config-template.js"
 import { hmacToken, loadOrCreateHandleKey, newRunId } from "./refs.js"
 import { RunStore } from "./store.js"
 import { buildTmTools } from "./tools.js"
@@ -38,7 +39,7 @@ import { buildBoardWriteTool } from "./board.js"
 import { buildLedgerTool } from "./ledger.js"
 import { createWebCache } from "./cache.js"
 import type { CapabilityRow } from "../capabilities.js"
-import { buildTmWebfetchTool } from "./webfetch.js"
+import { buildTmWebfetchTool, setHitBlacklist, setPrivateSpacePolicy } from "./webfetch.js"
 import { buildTmSearchTool, SEARCH_ENGINES, SEARCH_ENGINE_NAMES } from "./search.js"
 import { rmForceSafe } from "../fs-safe.js"
 export { rmForceSafe }
@@ -130,6 +131,13 @@ export interface CreateTmToolsOptions {
    *  opens the domain allowlist, which is a personality decision, not a global
    *  one).  Anything the user actually set always wins. */
   env?: Record<string, string | undefined>
+  /** Lowest-priority default overrides (BELOW the file layers): v2 uses it to
+   *  default `webfetchAllowedDomains` to `["*"]` when no file sets it. */
+  configDefaults?: Record<string, unknown>
+  /** Test injection: skip the file layers entirely. */
+  envOnly?: boolean
+  /** Auto-generate the global config file at boot (default true). */
+  autoCreate?: boolean
   /** Where the lead's LEDGER lives.  v2 passes a `ctx.storage` adapter because
    *  that host has no `todowrite` for the mandate to attach to; v1 passes nothing
    *  and therefore registers no `tm_ledger` at all — its tool surface stays the
@@ -286,12 +294,30 @@ export async function createTmTools(
     typeof input?.directory === "string" && input.directory.length > 0
       ? input.directory
       : process.cwd()
-  // Layered config: env < global file < project file(s).  The project search
-  // starts at the workspace root, mirroring the host's own config layering
-  // (direct files farthest→closest, then `.opencode/` files, which win).
-  const layeredConfig = resolveLayeredTmConfig(opts.env ?? process.env, {
+  const env = opts.env ?? process.env
+  // Auto-create the global config file (idempotent, never overwrites).  The
+  // plugin option is primary; `TM_CONFIG_AUTOCREATE=off` is the internal/test
+  // switch.  The file is written BEFORE the read so a fresh install boots with
+  // a fully-commented config on disk.
+  const autoCreateRaw = env.TM_CONFIG_AUTOCREATE ?? process.env.TM_CONFIG_AUTOCREATE
+  const autoCreate = opts.autoCreate ?? autoCreateRaw !== "off"
+  const effectiveRoots: ConfigFileRoots = {
     ...opts.configRoots,
     projectDir: opts.configRoots?.projectDir ?? directory,
+  }
+  const globalDir = resolveGlobalDir(effectiveRoots, env)
+  const configAutocreate = ensureGlobalConfig(globalDir, { autoCreate })
+  // Layered config: global file < project file(s).  The project search starts
+  // at the workspace root, mirroring the host's own config layering (direct
+  // files farthest→closest, then `.opencode/` files, which win).  The
+  // auto-created global file is INERT (every key commented), so it sets
+  // nothing and never shadows a personality's `configDefaults` (v2's
+  // `webfetchAllowedDomains: ["*"]`); a user-edited file is a decision and
+  // wins.
+  const layeredConfig = resolveLayeredTmConfig(effectiveRoots, {
+    envOnly: opts.envOnly,
+    configDefaults: opts.configDefaults,
+    env,
   })
   const cfg = layeredConfig.cfg
   const runId = newRunId()
@@ -328,8 +354,11 @@ export async function createTmTools(
   // Boot-time reclamation of what an upgrade leaves behind.  Both passes are
   // TTL-gated (expired is deletable, fresh is not — a session started before
   // the upgrade may still be writing), and TM_STORE_RECLAIM=off exists so the
-  // test runner never reaches into the developer's real Temp.
-  if (cfg.storeReclaim !== "off") {
+  // test runner never reaches into the developer's real Temp.  The env switch
+  // (an internal/test override) wins over the file value.
+  const storeReclaimRaw = env.TM_STORE_RECLAIM ?? process.env.TM_STORE_RECLAIM
+  const storeReclaim = storeReclaimRaw !== undefined ? resolveOnOff(storeReclaimRaw) : cfg.storeReclaim
+  if (storeReclaim !== "off") {
     const ttlMs = cfg.blackboardTtlDays * 24 * 60 * 60 * 1000
     // Shards live in the TMPDIR bucket and nowhere else — a git workspace's store
     // is inside its own `.git`, which never contains a `w-*`.  So the prune has to
@@ -395,8 +424,9 @@ export async function createTmTools(
         layeredConfig.files.projectPaths.length ? "project" : null,
       ]
         .filter(Boolean)
-        .join(",") || "env-only",
+        .join(",") || "defaults-only",
     config_global: layeredConfig.files.globalPath ? "present" : "absent",
+    config_autocreate: configAutocreate,
     config_project_files: layeredConfig.files.projectPaths.length,
     config_opencode_files: layeredConfig.files.opencodePaths.length,
     config_env_only: layeredConfig.layered.envOnlyActive,
@@ -425,8 +455,13 @@ export async function createTmTools(
     dir: path.join(store.blackboardRoot, "webcache"),
     ttlSec: cfg.webCacheTtlSec,
   })
-  const mode = opts.mode ?? resolveEnvProtectMode(process.env.TM_ENV_PROTECT)
-  const extra = opts.extra ?? parseExtraDeny(process.env.TM_ENV_PROTECT_EXTRA_DENY)
+  const mode = opts.mode ?? resolveEnvProtectMode(cfg.envProtect)
+  const extra = opts.extra ?? parseExtraDeny(cfg.envProtectExtraDeny)
+  // The web channel's two config-driven module globals: the private-space policy
+  // and the extra hit-domain blacklist.  Set from the resolved config so the
+  // tools read ONE source (the v2 personality re-sets the policy, harmlessly).
+  setPrivateSpacePolicy(cfg.privateSpace)
+  setHitBlacklist(cfg.hitBlacklist)
   const expireAt = Date.now() + cfg.blackboardTtlDays * 24 * 60 * 60 * 1000
   // Bun shell ($): try input.$ first (T0.4② verified), then Bun globals
   // (desktop loader may not pass $ through; Bun exposes it globally).
@@ -522,7 +557,7 @@ export async function createTmTools(
       ...tools.tm_stats,
       execute: async (args, ctx) => {
         const res = baseStatsExecute ? await baseStatsExecute(args, ctx) : ""
-        const section = renderConfigSection(layeredConfig.layered, layeredConfig.files)
+        const section = renderConfigSection(layeredConfig.layered, layeredConfig.files, configAutocreate)
         if (typeof res === "string") return `${res}\n${section}`
         if (res && typeof res === "object" && typeof (res as { output?: unknown }).output === "string") {
           const r = res as { output: string } & Record<string, unknown>
@@ -551,7 +586,7 @@ export async function createTmTools(
   // personality is frozen: an extra tool in this record would be a v1 tool-
   // surface change smuggled in through a v2 feature.
   if (opts.ledgerStore) {
-    tools.tm_ledger = buildLedgerTool({ store: opts.ledgerStore, onlyAgent: "Team", env: opts.env ?? process.env })
+    tools.tm_ledger = buildLedgerTool({ store: opts.ledgerStore, onlyAgent: "Team", config: cfg })
   }
   return {
     runId,
@@ -584,7 +619,10 @@ export {
   estimateTokens,
   parseAllowlistEnv,
   parseWebfetchAllowlistEnv,
-  resolveTmConfig,
+  parseWeightsEnv,
+  resolveConfig,
+  resolveOnOff,
+  coerceValue,
   shouldOffload,
   shorten,
   TM_CONFIG_DEFAULTS,
@@ -592,12 +630,14 @@ export {
 export {
   CONFIG_FILE_NAME,
   readConfigFiles,
+  resolveGlobalDir,
   resolveLayeredTmConfig,
   renderConfigSection,
   type ConfigFileRoots,
   type ConfigFileRead,
   type LayeredTmConfig,
 } from "./config-files.js"
+export { renderConfigTemplate, ensureGlobalConfig, type AutoCreateState } from "./config-template.js"
 export {
   buildRef,
   hmacToken,
@@ -638,6 +678,8 @@ export {
   renderSearchHits,
   fetchWebText,
   hitDomainBlacklist,
+  setHitBlacklist,
+  setPrivateSpacePolicy,
   HIT_DOMAIN_BLACKLIST_DEFAULT,
   hostAllowed,
   htmlToText,

@@ -168,7 +168,7 @@ console.log("  7. capability probe: SKIPPED — v1 createCapabilityProbe removed
     ok(bmd.includes("未到阈值 1 次（没裁") && bmd.includes("读不到窗口上限 2 次（没得裁"), "…and 'we looked and it was under' is kept apart from 'we could not compute the threshold'")
     {
       const offBoot = summarizeEvents([{ ts: iso(0), tool: "host", step_id: "v2-boot", event: "personality", api: 2, prune_enabled: false }])
-      ok(renderStats(offBoot, { runDirs: 1, roots: [] }).includes("TM_PRUNE=off"), "…and an operator opt-out says so instead of looking like a dead layer")
+      ok(renderStats(offBoot, { runDirs: 1, roots: [] }).includes('prune: "off"'), "…and an operator opt-out says so instead of looking like a dead layer")
     }
     ok(bmd.includes("execute.before 见到：shell"), "…naming the tool ids the host actually routed")
     ok(bmd.includes("归一化完成") && !bmd.includes("agents_normalized"), "the transform-time record renders as a sentence, not as raw field names")
@@ -229,7 +229,6 @@ console.log("  7. capability probe: SKIPPED — v1 createCapabilityProbe removed
   // the tool itself, over a REAL store (explicit trajectory dir: the AUTO
   // fallback for a non-git workspace is a SHARED tmpdir path)
   const trajDir = mktmp("stats-traj")
-  process.env.TM_TRAJECTORY_DIR = trajDir
   // The v1 createCapabilityProbe is gone (group 7); tm_stats renders whatever
   // `capabilities()` hands it, so a stub row set exercises the SAME renderer path
   // (missing / not-seen badges, the 宿主能力矩阵 heading, the capabilities:false trim).
@@ -239,7 +238,12 @@ console.log("  7. capability probe: SKIPPED — v1 createCapabilityProbe removed
   ]
   const rt = await tm.createTmTools(
     { directory: mktmp("stats-tool"), client: {}, $: () => ({}) },
-    { capabilities: () => stubRows },
+    {
+      capabilities: () => stubRows,
+      autoCreate: false,
+      configRoots: { globalDir: mktmp("stats-cfg") },
+      configDefaults: { trajectoryDir: trajDir },
+    },
   )
   // The runtime now writes a boot record of its own (handle_key: which signing
   // key this store uses, so "why did every handle die" is answerable), which
