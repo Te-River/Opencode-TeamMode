@@ -7,6 +7,18 @@ registry saw 1.5.0 as the install-script fix release).
 
 ## [Unreleased]
 
+### Documentation
+
+- **The host's plugin-loading contract is recorded where it is diagnosed, not only as a
+  symptom (2026-10-09).** `AGENTS.md` now carries the three load traps with the fixes that were
+  measured on a live host, not inferred: (1) a `devDependencies` entry in the user's
+  `~/package.json` shadows the host's own install — the cure is removing it (a HOME
+  `package-lock.json` makes `npm install` a no-op, so an in-range upgrade needs `npm update`);
+  (2) the accepted default-export key names are `setup` / `effect`, and a `{id, server}` default
+  is refused outright; (3) the host's install cache is the cold-start cost (309s → 7s warm here),
+  and its `No matching version found` message is not evidence that a version is missing. A
+  truncated `npm view versions` list is likewise not evidence — read `dist-tags`.
+
 ## [1.7.3] - 2026-10-07
 
 ### Changed

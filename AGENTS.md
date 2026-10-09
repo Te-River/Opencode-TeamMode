@@ -286,7 +286,38 @@ re-deriving any of this, and append findings there (dated, with an evidence tag)
   while the `~/.config/opencode/node_modules` copy is never loaded, and the desktop adds
   `failed to check plugin update … Package is not installed`, because the host's own update
   check cannot see a package it did not install there. Same root cause, different face: the
-  copy you are actually running is the one `entrypoint=` names.
+  copy you are actually running is the one `entrypoint=` names. **RESOLVED on this machine
+  (2026-10-08): removing the `devDependencies` entry from `C:\Users\<user>\package.json` and
+  re-installing makes the host resolve the plugin into its OWN cache —
+  `entrypoint=file:///C:/Users/<user>/.cache/opencode/npm/@te-river/opencode-team-mode@latest/<ts>/node_modules/@te-river/opencode-team-mode/dist/index.js`
+  — the `NpmInstallFailedError` disappears, and the `~/.config/opencode/node_modules` copy is
+  never consulted at all. Two facts cost real time to rediscover: a `package-lock.json` at HOME
+  pinning the old version makes `npm install` a NO-OP (it reuses the lock), so upgrading inside
+  an existing range needs `npm update`; and after removing the entry, `npm install` prunes the
+  orphaned `node_modules` copy — the backup that made this safe was
+  `C:/Users/<user>/package.json.bak-teamshadow`. Back up the file before touching it.
+- **A plugin whose default export uses `server` is refused outright — the key names are
+  `setup` / `effect`.** The host's contract is `{id, setup}` or `{id, effect}`; a `{id, server}`
+  default (the older shape) fails with `Plugin must export a default definition with an id and an
+  effect or setup function` and never loads, whatever its own `main`/`exports` say. Measured
+  2026-10-09: `@slkiser/opencode-quota` 4.10.x exports `{id, server}` and fails on every boot;
+  5.0.2 exports `{id, setup}` and loads clean. This is the host's gate on OUR package too —
+  we export `{id, setup}`.
+- **The host's install cache IS the cold-start cost, and its "no matching version" is not
+  always true.** The host installs into
+  `<cache>/opencode/npm/<pkg>@latest/<ts>/node_modules/`, and a cold cache means the boot pays
+  the whole install: measured 309s → 144s → **7s** warm on this machine. During the cold pass a
+  transient registry error was reported as `NpmInstallFailedError: No matching version found for
+  @slkiser/opencode-quota@5.0.2` while `npm view @slkiser/opencode-quota@5.0.2` answered `5.0.2`
+  — so **do not conclude a version is missing from that message**; re-run before believing it.
+  Clearing one scope's cache (`<cache>/opencode/npm/<scope>`) re-triggers exactly that one
+  install.
+- **Reading a version off a truncated `npm view` list invents a phantom "missing version."**
+  `npm view <pkg> versions --json` is long; reading only its tail missed the real `latest`
+  (4.10.4 shown while `dist-tags.latest` was 5.0.2) and produced a confidently wrong
+  "that version does not exist." Use `npm view <pkg> version` / `dist-tags` as the authority, and
+  `npm view <pkg>@<v> dist --json` for size — `npm pack` on a big package blew a 5-minute
+  timeout where the metadata call answered instantly (5.0.2: 3.1 MB / 663 files).
 - **The lead role is `Team`, and identity is normalised, not matched.** The desktop picker renders `Agent.Info.name`, and for a config-file role that name is the id verbatim (`default:(n)=>({id:n, name:nv.make(n)})`), while `Config.Agent` has no `name` key and `ctx.agent.list()` shows only the 7 built-ins (`agent.get({agentID:"team"})` → `Agent not found: team`) — so a plugin can neither set a display name nor see the roles it is asking about. The only lever was the id: the lead role is `Team`. `src/identity.ts` is the ONE place that normalises agent names, and six former exact-equality checks go through it (scope isOurs/learn/decide, the permission triple generator, the request layer's removal plan and note targets, `tm_join`'s lead lock, `tm_ledger`'s lead-only gate, the boot's wantedIds filter), so `team`, `Team` and `TEAM` are all the lead and an existing install or an in-flight session is not broken by the rename. `agents_default` in the trajectory keeps the lower-case value (pinned by test-hosthooks) — that field is a measurement, not a label.
 - **Compaction timing belongs to the host, not to this plugin (1.7.1).** 1.7.0 shipped a
   75% trigger of our own through `ctx.session.compact`; it was removed a release later by
