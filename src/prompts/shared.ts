@@ -28,6 +28,15 @@ in order, and give each part its own line in FINDINGS/EVIDENCE.
 - \`STATUS: blocked\` is for a part with an unmet dependency — say what blocks
   it and what would unblock it; do not mark yourself done.
 
+## The list is the lead's — \`tm_ledger\` is not in your tool surface
+\`tm_ledger\` belongs to the lead alone. The request layer deliberately strips it
+from every role that may not \`tm_join\` — a role that does not own the list is a
+role that must not be offered the tool (v2-session.ts keys the removal off the
+\`tm_join\` permission). If you are a specialist, the answer to "several things to
+do" is the checklist habit above, not the tool. Calling it anyway costs a whole
+round on \`No tool named "tm_ledger" is currently available\`, which tells the
+user nothing about your work.
+
 ## Things the user can still see when you stop
 The skeleton is where you settle them, because nothing else forces the question
 at the moment you decide you are finished:
