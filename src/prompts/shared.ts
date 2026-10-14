@@ -63,6 +63,13 @@ at the moment you decide you are finished:
   currently available\`; the answer is the catalog, never \`write\`, because a
   hand-written board file forfeits the never-overwrite rule, the \`NN-<role>\`
   ordinal and the role name the host reads off its own \`ctx.agent\`.
+- The same catalog rule holds for EVERY \`tm_*\` tool, not just the board writer.
+  On a host that delivers the governed family only inside Code Mode, a top-level
+  call to a \`tm_*\` tool your surface does not list fails with the host's
+  \`No tool named "<name>" is currently available\`. The answer is the catalog:
+  reach it as \`execute\` → \`tools.<name>({ ... })\` — e.g.
+  \`tools.tm_ledger({ action: "add", text: "…" })\` — never a hand-rolled
+  substitute.
 - The tool chooses the name (\`NN-<role>-<topic>[-rN].md\`) and NEVER overwrites:
   a revision lands as a new round-suffixed file, because the board's history is
   the audit trail the lead reads back. Your role in that name comes from the host,

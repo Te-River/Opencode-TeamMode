@@ -142,6 +142,7 @@ const V2_TEXT = [
    "Assume the card is asynchronous: say who is running instead of pretending to block."],
   ["without it `task` only blocks, so say so rather than pretending to overlap.",
    "There is no flag to check and no synchronous fallback to fall back on."],
+  ["A `task`\n  call with no `sessionID` creates a fresh child session", "A `subagent`\n  call with no `sessionID` creates a fresh child session"],
   ["a background `task` names its own session id", "a background `subagent` names its own session id"],
   ["a synchronous `task` call, so chaining waits", "a synchronous `subagent` call, so chaining waits"],
   ["blocking on `task`", "blocking on `subagent`"],
@@ -159,21 +160,21 @@ const V2_TEXT = [
    * prevent.  The status words move with it: `in_progress`/`completed` are
    * todowrite's enum, and tm_ledger's are open/doing/done/blocked.
    */
-  ["## Hard rule — TodoList discipline (non-negotiable)\nBefore you touch anything on a medium-or-larger task you MUST create a todo\nlist.",
+  ["## Hard rule — LEDGER discipline (non-negotiable)\nBefore you touch anything on a medium-or-larger task you MUST create a ledger.",
    "## Hard rule — LEDGER discipline (`tm_ledger`, non-negotiable)\nBefore you touch anything on a medium-or-larger task you MUST put the list on\nrecord: `tm_ledger { action:\"add\", text:\"…\" }` per work package."],
-  ["- Keep it LIVE: an item is `in_progress` while you or a dispatched child is\n  actually working it, and `completed` only after its work is verified —",
+  ["- Keep it LIVE: an item is `doing` while you or a dispatched child is\n  actually working it, and `done` only after its work is verified —",
    "- Keep it LIVE: an item is `doing` while you or a dispatched child is\n  actually working it, and `done` only after its work is verified —"],
-  ["genuinely are in_progress at once; that is the intended shape, not a\n  violation of single-task focus (one worker, one in_progress).",
+  ["genuinely are in `doing` at once; that is the intended shape, not a\n  violation of single-task focus (one worker, one `doing`).",
    "genuinely are `doing` at once; that is the intended shape, not a\n  violation of single-task focus (one worker, one `doing`)."],
-  ["- The goal travels with the work: it goes in the todo list, into every dispatch",
+  ["- The goal travels with the work: it goes in the ledger, into every dispatch",
    "- The goal travels with the work: it goes in `tm_ledger`, into every dispatch"],
-  ["NO MANIFEST.md — your state memory is the todo list.", "NO MANIFEST.md — your state memory is `tm_ledger`."],
-  ["  todo list, dispatched to `implementer` with the exact finding text.",
+  ["NO MANIFEST.md — your state memory is the ledger.", "NO MANIFEST.md — your state memory is `tm_ledger`."],
+  ["  ledger, dispatched to `implementer` with the exact finding text.",
    "  ledger, dispatched to `implementer` with the exact finding text."],
   ["  list, lay out the merge structure,", "  ledger (`tm_ledger { action:\"list\" }` marks what the round finished), lay out the merge structure,"],
   ["Do NOT store task state or oversized content there — todo list and\nboard files own those.",
    "Do NOT store task state or oversized content there — the lead's `tm_ledger`\nand board files own those."],
-  ["dropped: the list is the user's audit surface (pending / in_progress /\n  completed / blocked)", "dropped: the list is the user's audit surface (open / doing /\n  done / blocked — `tm_ledger` keeps the states, and `blocked` carries the note\n  naming what blocked it)"],
+  ["dropped: the list is the user's audit surface (open / doing /\n  done / blocked)", "dropped: the list is the user's audit surface (open / doing /\n  done / blocked — `tm_ledger` keeps the states, and `blocked` carries the note\n  naming what blocked it)"],
   /* The browser fork entries are GONE (user decision 2026-10-06): the self-built
    * tm_browser was removed outright, so the shared source prompts now name the
    * host's native browser_* tools natively and there is nothing left to fork.

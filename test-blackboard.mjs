@@ -163,7 +163,7 @@ const leadPrompt = lead.prompt
 assert.ok(note9.includes("/board/root"), "the board note carries the resolved root it was handed")
 assert.ok(note9.includes("idle for more than 9 days"), "…and the TTL the sweep promise names")
 assert.ok(leadPrompt.includes("Hybrid blackboard"), "hybrid blackboard protocol present")
-assert.ok(leadPrompt.includes("TodoList discipline"), "ledger hard rule stays a prompt mandate")
+assert.ok(leadPrompt.includes("LEDGER discipline"), "ledger hard rule stays a prompt mandate")
 assert.ok(leadPrompt.includes("BLACKBOARD WRITE FAILED"), "lead fallback rule")
 assert.equal(lead.mode, "primary", "team visible in Desktop switcher")
 assert.ok(cfg.command["team-run"].template.includes("Approval gate"), "team-run template updated")
@@ -277,6 +277,14 @@ assert.ok(
   "lead: background is only for work the lead actually keeps following up on",
 )
 assert.ok(leadPrompt.includes("the host wakes you with the result"), "lead: the background contract says who delivers the answer")
+// A dispatch that carries a stale/foreign sessionID hard-fails at the host with
+// "Subagent session not found" — the model has to be told to OMIT it for a new
+// child and to take a reuse id only from the host ack or tm_join.
+assert.ok(
+  leadPrompt.includes("New child = omit `sessionID`") &&
+    leadPrompt.includes("Subagent session not found"),
+  "lead: a new dispatch omits sessionID; a stale id hard-fails with the host's own error",
+)
 assert.ok(leadPrompt.includes("Write a SELF-CONTAINED brief"), "lead: dispatch briefs must stand alone (child sees no history)")
 assert.ok(leadPrompt.includes("quick / standard /"), "lead: the brief carries an expected thoroughness level")
 assert.ok(leadPrompt.includes("While they run, keep working — on lead work only"), "lead: the leader works during the wait, and only on lead work")
@@ -770,6 +778,17 @@ console.log("\n8. board-write call shape (A5) + write-capable wording (A8)")
     assert.match(p, /write-capable file tool/, `${id}: the no-file-tool claim is scoped to writing`)
     assert.ok(!/no file tool at all|without a file tool|with no file tool/.test(p),
       `${id}: no prompt claims a role owns no file tool at all`)
+  }
+  // A5 generalised (2026-10-13): the catalog rule is not board-writer-only.
+  // Every role's prompt states that a tm_* tool absent from its surface is
+  // reached through `execute` → tools.<name>({...}), and names the host's
+  // failure sentence for a top-level call.
+  for (const [id, cfg] of Object.entries(agents)) {
+    const p = String(cfg.prompt).replace(/\s+/g, " ")
+    assert.match(p, /execute\` → \`tools\./,
+      `${id}: a tm_* tool absent from the surface is reached through the Code Mode catalog`)
+    assert.match(p, /No tool named "(<name>|tm_ledger)" is currently available/,
+      `${id}: names the host's failure sentence for a top-level tm_* call`)
   }
   // The v1 statement is not polluted: the tool-call shape is still what a role
   // with a top-level tm_board_write is told to use.
