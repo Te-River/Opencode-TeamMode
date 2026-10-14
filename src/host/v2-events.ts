@@ -33,13 +33,22 @@ import type { HostEvent } from "../types.js"
 import type { V2Registration } from "./v2-types.js"
 
 /** The types the dispatcher understands, plus the v2 spellings we have observed.
- *  Anything else is counted, not forwarded. */
+ *  Anything else is counted, not forwarded.
+ *
+ *  The `session.execution.*` entries are the 2.0.28 spellings, read off a live
+ *  `v2-surface` row's `event_unknown_types` (measured, not guessed): the host
+ *  publishes `session.execution.succeeded` / `.failed` / `.interrupted` where
+ *  older generations said `session.idle` / `session.error`.  They are listed
+ *  because they were observed; a name we have not seen still stays counted. */
 export const FEED_TYPES = [
   "session.idle",
   "session.error",
   "session.status",
   "session.statused",
   "session.updated",
+  "session.execution.succeeded",
+  "session.execution.failed",
+  "session.execution.interrupted",
 ] as const
 
 export interface V2EventFeedReport {
@@ -132,7 +141,12 @@ export async function applyV2EventFeed(
     // tap with the same never-throw discipline as the usage tap.  The payload
     // never reaches the trajectory; only the classification count does (R6 binds
     // a diagnostic).
-    if (type === "session.error" && typeof opts.onError === "function") {
+    //
+    // 2.0.28 renamed the failure event: a live `v2-surface` row shows
+    // `session.execution.failed` where older hosts said `session.error`, so the
+    // tap matches BOTH spellings.  The governor's own `errorTextOf` does the
+    // extraction; this only routes the event to it.
+    if ((type === "session.error" || type === "session.execution.failed") && typeof opts.onError === "function") {
       try {
         opts.onError(ev)
       } catch {

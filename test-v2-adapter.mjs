@@ -51,7 +51,7 @@ const TM_NAMES = [
   "tm_board_write",
 ]
 /** v1's roster minus what v2 deliberately does not register. */
-// v2 registers eight of the thirteen: ptc_run left for the host's Code Mode,
+// v2 registers eight of the twelve: ptc_run left for the host's Code Mode,
 // read/grep/bash left because the governed native tools replaced them (the
 // offload layer is what made that possible, so the order matters), and tm_pty
 // left because the v2 plugin ctx has no pty domain to call at all.
@@ -117,7 +117,7 @@ for (const gone of ["tm_read", "tm_grep", "tm_bash"]) {
 assert.equal(
   registered.filter((n) => n.startsWith("tm_")).length,
   V2_NAMES.length,
-  `exactly the nine governed tools v2 ships arrive (got ${registered.filter((n) => n.startsWith("tm_")).join(",")})`,
+  `exactly the eight governed tools v2 ships arrive (got ${registered.filter((n) => n.startsWith("tm_")).join(",")})`,
 )
 for (const name of V2_NAMES) {
   assert.ok(String(byName[name].description ?? "").length > 40, `${name} carries a real description`)
@@ -1475,6 +1475,35 @@ console.log("8d. the event feed (#8): tm_join's settle detection on v2")
   await new Promise((r) => setTimeout(r, 25))
   assert.equal(seen.length, beforeStop, "after stop() nothing more is forwarded")
   assert.ok(FEED_TYPES.includes("session.error") && FEED_TYPES.includes("session.idle"), "the dispatcher's own vocabulary is what the whitelist holds")
+  // The 2.0.28 spellings, read off a live `v2-surface` row's `event_unknown_types`
+  // (measured, not guessed): the host publishes `session.execution.*` where older
+  // generations said `session.idle` / `session.error`.  Pinned so a future edit
+  // cannot quietly drop the names the live host actually emits.
+  assert.ok(
+    FEED_TYPES.includes("session.execution.succeeded") &&
+      FEED_TYPES.includes("session.execution.failed") &&
+      FEED_TYPES.includes("session.execution.interrupted"),
+    "the measured 2.0.28 execution spellings are whitelisted",
+  )
+
+  // (f) the retry error tap fires on the 2.0.28 failure spelling too, and the
+  // event is forwarded (not miscounted as unknown).  The governor's own
+  // `errorTextOf` does the extraction — this only proves the routing.
+  const errs = []
+  const probeFeed = await applyV2EventFeed(
+    {
+      event: {
+        subscribe: async () => ({
+          subscribe: (cb) => cb({ type: "session.execution.failed", properties: { sessionID: "s1", error: { message: "429 Too Many Requests" } } }),
+        }),
+      },
+    },
+    { onEvent: () => {}, onError: (e) => errs.push(e) },
+  )
+  assert.equal(errs.length, 1, "session.execution.failed reaches the retry error tap")
+  assert.match(String(errs[0]?.properties?.error?.message ?? ""), /429/, "and carries the provider text the governor classifies")
+  assert.equal(probeFeed.report.forwarded, 1, "and the whitelisted failure spelling is forwarded, not counted unknown")
+  assert.deepEqual(Object.keys(probeFeed.report.unknown), [], "nothing about it lands in the unknown tally")
 
   // (c) a host that pushes instead of being pulled (callback subscribe on the stream)
   const pulled = []
@@ -1866,6 +1895,28 @@ console.log("13. the host's own sub-agents are collectable (decision 4, 2026-09-
   //     and the row must not be able to say the first while holding the second.
   assert.match(joinLine({ ...row, state: "idle", via: "host-injection", settleSource: "parent-idle" }, 5000), /推定已结算/, "a presumption is printed as one")
   assert.ok(!/推定/.test(joinLine({ ...row, state: "idle", settleSource: "event" }, 5000)), "a child that reported its own idle is not labelled a guess")
+  // (c2) the 2.0.28 completion spellings reach the SAME branches.  The feed
+  //      forwards `session.execution.succeeded` / `.failed` / `.interrupted`
+  //      (measured on 2.0.28), but a forwarded name with no branch in
+  //      `observeEvent` is a silent no-op — settle detection stayed broken while
+  //      `event_forwarded` climbed.  This block goes RED before the mapping: the
+  //      child stays 运行中 (state "running") for all three spellings.
+  {
+    const { buildDispatchTools } = await import("./dist/tm/dispatch.js")
+    const pipes = { store: { appendTrajectory: () => {} }, nextStepId: () => "sEv", govern: (_s, _t, c) => c }
+    const reg = buildDispatchTools({ client: null, pipelines: pipes })
+    const recOf = (sid) => reg.children().find((c) => c.sessionID === sid)
+    reg.register({ sessionID: "ses_ev_ok", parentSessionID: "ses_leadE", agent: "architect", label: "a" })
+    reg.observeEvent({ type: "session.execution.succeeded", properties: { sessionID: "ses_ev_ok" } })
+    assert.equal(recOf("ses_ev_ok")?.state, "idle", "session.execution.succeeded settles like session.idle (before the mapping it stayed 运行中)")
+    reg.register({ sessionID: "ses_ev_int", parentSessionID: "ses_leadE", agent: "tester", label: "b" })
+    reg.observeEvent({ type: "session.execution.interrupted", properties: { sessionID: "ses_ev_int" } })
+    assert.equal(recOf("ses_ev_int")?.state, "idle", "an interrupted execution is a settled one, not a running one")
+    reg.register({ sessionID: "ses_ev_bad", parentSessionID: "ses_leadE", agent: "reviewer", label: "c" })
+    reg.observeEvent({ type: "session.execution.failed", properties: { sessionID: "ses_ev_bad", error: { message: "boom" } } })
+    assert.equal(recOf("ses_ev_bad")?.state, "error", "session.execution.failed takes the error branch, not the settle one")
+    assert.match(String(recOf("ses_ev_bad")?.error ?? ""), /boom/, "and carries the host's error text")
+  }
   const dsrc = fs.readFileSync(fileURLToPath(new URL("./dist/tm/dispatch.js", import.meta.url)), "utf8")
   // The old line read 正文不经本工具 — a claim about the host that turned out to be false
   // (group 12). What the tool may say now is narrower: which seam answered, and which one

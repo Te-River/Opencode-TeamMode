@@ -19,6 +19,24 @@ registry saw 1.5.0 as the install-script fix release).
   and its `No matching version found` message is not evidence that a version is missing. A
   truncated `npm view versions` list is likewise not evidence — read `dist-tags`.
 
+### Fixed
+
+- **The 2.0.28 host renamed the events the settle feed listens for, and the prompt never said
+  the `tm_*` tools are catalog-only (2026-10-13).** Measured on a live 2.0.28 host:
+  `tools_in_request="catalog-only"` — the eight `tm_*` tools are reachable only from inside
+  `execute`, and a top-level call answers `No tool named "<name>" is currently available`; and
+  `event_received=6567 / event_forwarded=0` — the whitelist named `session.idle` /
+  `session.error`, which 2.0.28 no longer emits (it publishes `session.execution.succeeded` /
+  `.failed` / `.interrupted`). Four fixes: `SHARED_RULES` states the catalog-only rule for
+  every `tm_*` tool and the lead's LEDGER rule names `tm_ledger`'s `execute` path;
+  `v2-events.ts` whitelists the measured 2.0.28 spellings and routes
+  `session.execution.failed` to the retry tap; `dispatch.ts`'s `observeEvent` maps the new
+  spellings onto the existing settle/error branches (a forwarded name with no branch was a
+  silent no-op, so the settle leg stayed broken while `event_forwarded` climbed); and the
+  lead's LEDGER section uses the tool's own vocabulary (`open` / `doing` / `done` /
+  `blocked`) instead of the retired `todowrite` names. The stale `nine` / `thirteen` counts
+  in `AGENTS.md` and `test-v2-adapter.mjs` are corrected to `eight` / `twelve`.
+
 ## [1.7.3] - 2026-10-07
 
 ### Changed

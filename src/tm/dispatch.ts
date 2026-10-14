@@ -1484,8 +1484,21 @@ export function buildDispatchTools(deps: DispatchDeps): {
   }
 
   const observeEvent = (event: HostEvent): void => {
-    const type = String(event?.type ?? "")
-    if (!type.startsWith("session.")) return
+    const rawType = String(event?.type ?? "")
+    if (!rawType.startsWith("session.")) return
+    // 2.0.28 renamed the completion/error events (measured off a live `v2-surface`
+    // row, not guessed): the host publishes `session.execution.succeeded` /
+    // `.failed` / `.interrupted` where older generations said `session.idle` /
+    // `session.error`.  The feed forwards the new spellings, but a forwarded name
+    // with no branch below is a silent no-op — settle detection stayed broken while
+    // `event_forwarded` climbed.  Map the measured spellings onto the SAME
+    // branches so the settle/error logic is shared, never duplicated.
+    const type =
+      rawType === "session.execution.succeeded" || rawType === "session.execution.interrupted"
+        ? "session.idle"
+        : rawType === "session.execution.failed"
+          ? "session.error"
+          : rawType
     const props = event?.properties as { sessionID?: unknown; status?: { type?: unknown }; error?: unknown } | undefined
     const sid = String(props?.sessionID ?? "").trim()
     if (!sid) return
