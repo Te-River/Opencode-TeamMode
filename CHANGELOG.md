@@ -7,6 +7,27 @@ registry saw 1.5.0 as the install-script fix release).
 
 ## [Unreleased]
 
+## [1.7.5] - 2026-10-18
+
+### Removed
+
+- **The plugin no longer writes `temperature` into the model request (2026-10-18).** The v2
+  request layer used to fill `0.2` whenever the assembled request carried none — a determinism
+  lever for the reply skeleton and the routing table. **Some providers reject the `temperature`
+  field outright**, and because we added it to requests the host had left without one, we
+  turned a working request into a failing one: for those models the plugin *was* the outage.
+  Gone together: the request-layer write, the `temperature` plugin option and its
+  `request_temperature` boot field, the capability row that reported it, the `温度 …` line in
+  `tm_stats`, the six `temperature: 0.2` entries in `src/agents.ts` (the generator never emitted
+  the field into `agents/*.md`, so they were a claim with no mechanism), `temperature?: number`
+  on `AgentConfig`, and the v1-only `agentTemperature` key. **Consequences:** temperature is now
+  whatever the host or the model default is, so format discipline rests on the prompts and the
+  routing table alone; and a `team-mode.jsonc` that *uncomments* `agentTemperature` is now
+  reported as an unknown key (warned, never applied) — the auto-created inert template keeps it
+  as a comment line, so an existing install sees no change until someone edits that line. The request-layer regression test is inverted to match —
+  it now asserts we write no `temperature`, and that one already on the request is never
+  touched. Evidence and the general lesson: `docs/v2-port-notes.md`, 2026-10-18.
+
 ## [1.7.4] - 2026-10-17
 
 ### Documentation
