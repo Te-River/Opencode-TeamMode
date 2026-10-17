@@ -7,6 +7,8 @@ registry saw 1.5.0 as the install-script fix release).
 
 ## [Unreleased]
 
+## [1.7.4] - 2026-10-17
+
 ### Documentation
 
 - **The host's plugin-loading contract is recorded where it is diagnosed, not only as a
@@ -18,6 +20,17 @@ registry saw 1.5.0 as the install-script fix release).
   is refused outright; (3) the host's install cache is the cold-start cost (309s → 7s warm here),
   and its `No matching version found` message is not evidence that a version is missing. A
   truncated `npm view versions` list is likewise not evidence — read `dist-tags`.
+
+### Removed
+
+- **The concurrent-subagent cap is gone (2026-10-15).** The `maxConcurrentSubagents`
+  key (default 3) and the `permission.evaluate` branch that denied a `subagent`
+  dispatch once the caller's own running children reached it are removed, together with
+  `concurrencyGuard`, the `GuardReport.concurrency*` counters and the
+  `v2-concurrency` trajectory line. The lead now dispatches as many background
+  children as it wants; `tm_join` remains the collect side. A `team-mode.jsonc`
+  that still sets `maxConcurrentSubagents` is reported as an unknown key (warned,
+  not applied).
 
 ### Fixed
 
