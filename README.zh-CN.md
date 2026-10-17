@@ -641,7 +641,6 @@ Team Lead 自己从不删黑板，你可以随时审计任何一次运行。
 
 | 键 | 类型 | 默认 | 含义 |
 |---|---|---|---|
-| `maxConcurrentSubagents` | number | `3` | 并发 `subagent` 调用的硬上限（`0` 关闭）。实测 `permission.evaluate` 对这个动作真的会触发，所以这是道闸而不是建议。 |
 | `prune` | `on`/`off` | `on` | 上下文裁剪：把**已结算**的消息正文替换成一个自解释的指针（卸载句柄、子代理 id、说明）。证据绝不被销毁——回复骨架、GOAL/ACCEPTANCE、来源说明、系统消息、仍在跑的子代理、尚未收集的子代理 id 全部完整保留，被动的消息逐字节不变。`off` 关闭。 |
 | `pruneAtPercent` | number | `70` | 请求达到模型窗口的这份占比时开始裁剪，由 `limit.context` 推导——绝不是写死的 token 数。**夹在 40–90。** |
 | `pruneKeepTailPercent` | number | `40` | 尾部逐字保留的窗口占比；最新一条消息永远保留。 |

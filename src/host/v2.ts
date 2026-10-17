@@ -76,19 +76,6 @@ function directoryOf(ctx: V2Context): string {
   return process.cwd()
 }
 
-/** #49 feature 2: the concurrency cap.  Default 3 (matches "at most 3 parallel
- *  reviewers" and leaves a normal user headroom); `0` disables it.  A missing or
- *  unparseable value falls back to the default rather than to 0, because a typo
- *  must not silently turn a safety cap off.  A NEGATIVE is "off" too: the
- *  registry already clamps it to `min: 0` before this function sees it, so the
- *  `Math.max(0, …)` below is the defensive half of that same rule — a direct
- *  caller must not get a different answer than the file path. */
-export function resolveMaxConcurrentSubagents(config: { maxConcurrentSubagents: number }): number {
-  const n = Number(config.maxConcurrentSubagents)
-  if (!Number.isFinite(n)) return 3
-  return Math.max(0, Math.floor(n))
-}
-
 export const v2Personality: V2Plugin = {
   // #45: the display id (host plugin list) — the npm package name.  NOT the
   // storage/audit names (`team-mode/selfcheck`, `team-mode/ledger/`,
@@ -323,26 +310,6 @@ export const v2Personality: V2Plugin = {
     const guards = await applyV2PermissionGuards(ctx, {
       envProtectMode,
       scope,
-      // #49 feature 2: the concurrency cap reads the plugin's ONE children
-      // registry (the same rows tm_join collects), so a session cannot exceed the
-      // cap by dispatching faster than the lead collects.  `0` disables it.
-      runningChildren: (caller) => tmRuntime.runningChildren(caller),
-      maxConcurrent: resolveMaxConcurrentSubagents(cfg),
-      onConcurrencyDenied: (info) => {
-        try {
-          tmRuntime.pipelines.store.appendTrajectory({
-            tool: "host",
-            step_id: "v2-concurrency",
-            event: "denied",
-            caller: info.caller,
-            cap: info.cap,
-            running: info.running.length,
-            ids: info.running.map((c) => c.sessionID).join(","),
-          })
-        } catch {
-          /* the trajectory is an extra, never a reason to fail the call */
-        }
-      },
     })
     // Said out loud because it is a promise with a boundary: the user's rule is
     // that nothing outside Team may be touched, and the honest consequence is that
@@ -780,9 +747,9 @@ export const v2Personality: V2Plugin = {
     // retry, so this layer only (1) recognises a provider throttle from the event
     // feed, (2) injects an exact wait into the next request, and (3) denies new
     // dispatches during the breaker's cooldown.  Registered AFTER the permission
-    // guards so its `evaluate` hook runs after the concurrency cap — both only
-    // ever deny, so whichever fires first keeps its message and the stricter
-    // effect (deny) stands either way.
+    // guards so its `evaluate` hook runs after them — both only ever deny, so
+    // whichever fires first keeps its message and the stricter effect (deny)
+    // stands either way.
     const retryConfig = resolveRetryConfig(cfg)
     // The layer owns no store, so the trajectory sink is wired here — same shape
     // as the shell-timeout clamp's `onClamp` and the SERP guard's `onSerp`.
@@ -909,12 +876,6 @@ export const v2Personality: V2Plugin = {
       guard_envfile_input_threw: guards.report.envFileInputThrew,
       guard_envfile_input_foreign_skipped: guards.report.envFileInputForeignSkipped,
       guard_foreign_skipped: guards.report.foreignSkipped,
-      // #49 feature 2: the concurrency cap — how many `subagent` evaluations it
-      // looked at, how many it denied, and the peak running count it saw.
-      concurrency_seen: guards.report.concurrencySeen,
-      concurrency_denied: guards.report.concurrencyDenied,
-      concurrency_running_max: guards.report.concurrencyRunningMax,
-      concurrency_threw: guards.report.concurrencyThrew,
       subagent_seen: bgForce.report.seen,
       subagent_forced: bgForce.report.forced,
       shell_timeout_seen: shellTimeout.report.seen,
@@ -1116,10 +1077,6 @@ export const v2Personality: V2Plugin = {
           guard_envfile_input_seen: guards.report.envFileInputSeen,
           guard_envfile_input_threw: guards.report.envFileInputThrew,
           guard_envfile_input_foreign_skipped: guards.report.envFileInputForeignSkipped,
-          concurrency_seen: guards.report.concurrencySeen,
-          concurrency_denied: guards.report.concurrencyDenied,
-          concurrency_running_max: guards.report.concurrencyRunningMax,
-          concurrency_threw: guards.report.concurrencyThrew,
           subagent_seen: bgForce.report.seen,
           subagent_forced: bgForce.report.forced,
           shell_timeout_seen: shellTimeout.report.seen,

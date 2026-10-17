@@ -131,8 +131,6 @@ export interface TmConfig {
   privateSpace: string
 
   // ---- v2 request layers (were read straight from process.env) ----
-  /** Concurrency cap on `subagent`; 0 disables. */
-  maxConcurrentSubagents: number
   /** v2 tool delivery: "direct" sends options.codemode=false; "" = catalog. */
   v2CodeMode: string
   /** Context pruning (settled messages → pointers). */

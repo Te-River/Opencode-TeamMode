@@ -723,7 +723,6 @@ for overrides, extra agents and disabling roles.
 
 | Key | Type | Default | Meaning |
 |---|---|---|---|
-| `maxConcurrentSubagents` | number | `3` | Hard cap on concurrent `subagent` calls (`0` disables). Measured: `permission.evaluate` really fires for that action, so this is a gate and not a suggestion. |
 | `prune` | `on`/`off` | `on` | Context pruning: replace a SETTLED message body with a self-explaining pointer (an offload handle, a child id, a note). Evidence is never destroyed — the reply skeleton, GOAL/ACCEPTANCE, provenance, system messages, a still-running child and an uncollected child id are protected whole, and the untouched messages stay byte-exact. `off` disables. |
 | `pruneAtPercent` | number | `70` | Prune once the request reaches this share of the model's window, derived from `limit.context` — never a hard-coded token count. **Clamped to 40–90.** |
 | `pruneKeepTailPercent` | number | `40` | Share of the window kept verbatim at the tail; the newest message is always kept. |

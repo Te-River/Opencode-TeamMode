@@ -16,7 +16,7 @@
  *      replays the hook in-process cannot duplicate it.
  *   3. COOL DOWN: after `breakAfter` consecutive throttle errors the breaker
  *      trips and new `subagent` dispatches are DENIED for `cooldownMs`, on the
- *      same `permission.evaluate` seam the concurrency cap uses.  Both only ever
+ *      same `permission.evaluate` seam the permission guards use.  Both only ever
  *      make a rule stricter, so they compose without fighting.
  *
  * Discipline (the same as every other v2 layer): Team-scoped, never throws (a

@@ -183,7 +183,6 @@ export const CONFIG_KEYS: readonly ConfigKeySpec[] = [
   { key: "probeChain", type: "string", default: "on", enum: ["on", "off"], doc: "连续原生 read/grep/glob/shell 后追加一行 Code Mode 采用提示；off = 关闭。" },
   { key: "probeChainAfter", type: "number", default: 3, min: 0, max: 1000, doc: "连续多少次原生调用后开始提示；0 = 关闭。" },
   // ---- v2 request layers ----
-  { key: "maxConcurrentSubagents", type: "number", default: 3, min: 0, max: 100, doc: "并发 subagent 上限；0 = 不限（关闭）；负数按 0 处理。" },
   { key: "v2CodeMode", type: "string", default: "", doc: "v2 工具交付：direct = 发送 options.codemode=false；空 = 目录模式。" },
   { key: "prune", type: "string", default: "on", enum: ["on", "off"], doc: "上下文裁剪（已结算消息替换为指针）；off = 关闭。" },
   { key: "pruneAtPercent", type: "number", default: 70, min: 40, max: 90, doc: "上下文裁剪启动的窗口占比（%）。" },
