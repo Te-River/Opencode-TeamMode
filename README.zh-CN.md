@@ -89,7 +89,10 @@ TeamMode 对每一个的回应：
 2.x → https://raw.githubusercontent.com/Te-River/Opencode-TeamMode/main/docs/installation-v2.md
 （2.x 的插件不能创建 agent，六个角色和六条 `/team-*` 命令要靠那份指南里的生成步骤落到
 配置目录——这一步不是可选的。）
-（URL 拉不到时——大陆网络常见——用镜像前缀重试：https://ghproxy.net/ + 同样的路径。）
+（URL 拉不到时——大陆网络常见——用镜像前缀重试：https://ghproxy.net/ + 同样的路径。若 `npm`
+慢或被墙，给这次安装指一个 registry 镜像：
+`npm config set registry https://registry.npmmirror.com`——或在需要的那条命令上加
+`--registry https://registry.npmmirror.com`。）
 然后按该指南里的检查项验证。
 ```
 

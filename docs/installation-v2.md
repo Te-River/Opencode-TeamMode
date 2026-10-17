@@ -78,6 +78,10 @@ is why you may see the entry appear there).
 { "plugins": ["@te-river/opencode-team-mode@latest"] }
 ```
 
+If `npm` is slow or blocked (common on mainland-China networks), point it at a registry
+mirror before the host's first install — the host resolves this entry with npm itself:
+`npm config set registry https://registry.npmmirror.com`.
+
 Two facts about that file, both measured on 2.0.16 / 2.0.18 and both easy to get wrong
 from 1.18.x habits (`docs/research/plugin-loader-contract.md` has the host's own code):
 
@@ -355,6 +359,9 @@ Node 20+ 还会额外启用 Playwright 浏览器引擎）。
 // ~/.config/opencode/opencode.jsonc
 { "plugins": ["@te-river/opencode-team-mode@latest"] }
 ```
+
+若 `npm` 慢或被墙（大陆网络常见），在宿主首次安装前给它指一个 registry 镜像——宿主解析这个条目
+用的就是 npm：`npm config set registry https://registry.npmmirror.com`。
 
 关于这个文件有两件事是实测出来的（2.0.16 / 2.0.18），而且用 1.18.x 的直觉一定会搞错，
 宿主的原始代码见 `docs/research/plugin-loader-contract.md`：

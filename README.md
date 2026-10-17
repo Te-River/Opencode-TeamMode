@@ -95,7 +95,10 @@ only** — the 1.18.x personality was removed in the 1.7.0 line:
 (a 2.x plugin cannot create an agent, so the six roles and six `/team-*` commands come from
 a generator step in that guide — that step is not optional.)
 (If a URL is unreachable — common on mainland-China networks — retry with
-the mirror prefix: https://ghproxy.net/ + the same path.)
+the mirror prefix: https://ghproxy.net/ + the same path. And if `npm` is
+slow or blocked, point it at a registry mirror for this install:
+`npm config set registry https://registry.npmmirror.com` — or add
+`--registry https://registry.npmmirror.com` to the one command that needs it.)
 Then verify the install using the checks in that guide.
 ```
 
