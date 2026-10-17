@@ -8,7 +8,7 @@
  *
  * The PROMPT STRINGS live in ./prompts/ (lead.ts, specialists.ts,
  * shared.ts) — extracted verbatim; test-blackboard.mjs pins them.  This
- * module owns the structure: roles, modes, colors, temperatures, and the
+ * module owns the structure: roles, modes, colors, and the
  * tool-whitelist matrix.
  *
  * Prompt design principles (v1.4.7 — "subtraction" release):
@@ -25,7 +25,6 @@
  *    is explicitly banned.
  *  - Adaptive review: one reviewer by default, three dimensions only for
  *    high-risk profiles.
- *  - All agents run at temperature 0.2 for format discipline.
  */
 
 import type { AgentConfig, AgentPermission } from "./types.js"
@@ -218,7 +217,7 @@ const teamLead: AgentConfig = {
   // prompt mandates — they need their tools).  The ledger itself is
   // `tm_ledger`, allowed for this role by name in the permission layer.
   permission: whitelist("task", "edit", "write", "bash", "question"),
-  temperature: 0.2,
+
 }
 
 const architect: AgentConfig = {
@@ -238,7 +237,7 @@ const architect: AgentConfig = {
   // the lead inline (see Blackboard rules).
   // No bash — unchanged from the pre-T2.1 architect bash:deny posture.
   permission: whitelist(),
-  temperature: 0.2,
+
 }
 
 const implementer: AgentConfig = {
@@ -253,7 +252,7 @@ const implementer: AgentConfig = {
   // verification for the fix: build / typecheck / failing test);
   // tm_webfetch DENIED (not a network role).
   permission: whitelist("edit", "write", "bash"),
-  temperature: 0.2,
+
 }
 
 const reviewer: AgentConfig = {
@@ -273,7 +272,7 @@ const reviewer: AgentConfig = {
   // inline fallback (see Blackboard rules).  bash backs the evidence
   // standard — the reviewer must be able to run npm test / tsc itself.
   permission: whitelist("bash"),
-  temperature: 0.2,
+
 }
 
 const tester: AgentConfig = {
@@ -292,7 +291,7 @@ const tester: AgentConfig = {
   // The host's native browser catalog is granted for governed UI verification;
   // tm_webfetch / tm_search DENIED (open web lookups stay with the lead + researcher).
   permission: whitelist("edit", "write", "bash"),
-  temperature: 0.2,
+
 }
 
 const researcher: AgentConfig = {
@@ -316,7 +315,7 @@ const researcher: AgentConfig = {
   // not tool-less: it keeps the governed tm_* set, and on v2 the host's own
   // read/grep/glob + Code Mode `execute`, which our matrix never denies.
   permission: whitelist(),
-  temperature: 0.2,
+
 }
 
 /* Append the reply contract and shared rules to every specialist prompt. */

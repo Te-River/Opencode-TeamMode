@@ -291,7 +291,7 @@ HMAC 句柄，agent 真需要 payload 时用 `tm_fetch` 分页取。
 > 都跑在宿主的 `permission.evaluate` 上。`tm_ledger` 是领队的清单，落在宿主不给插件
 > `todowrite` 的地方。
 > **我们改的一切都不会溢到 Team 之外。** v2 的每个钩子对宿主上所有会话都会触发，所以工具面
-> 裁剪、0.2 温度、黑板注记、原生结果卸载、R6 与地址红线的收紧、强制后台派发，全都会先问一句
+> 裁剪、黑板注记、原生结果卸载、R6 与地址红线的收紧、强制后台派发，全都会先问一句
 > "这是我们六个角色吗"——`build`、`plan` 和你自己的 agent 保持刚装好时的原样。宿主没告诉我们会话
 > 归属的调用同样不碰，并且会计数（`tm_stats` 里是 `作用域：我们 · 他人 · 未判定`）。
 > 安装器写出的六个角色提示词，
@@ -527,7 +527,7 @@ Team Lead 自己从不删黑板，你可以随时审计任何一次运行。
 ### 它会自己写一份
 
 全局文件**不存在**时，插件在启动时创建它——原子、幂等，且**绝不覆盖已存在的
-文件**。写进去的是一份**惰性**模板：全部 **59** 个注册表键，每个都以*注释*
+文件**。写进去的是一份**惰性**模板：全部 **57** 个注册表键，每个都以*注释*
 形式出现在一行说明下面，所以这个文件解析出来是 `{}`，在你取消注释之前什么
 都不设置。
 
@@ -536,7 +536,7 @@ Team Lead 自己从不删黑板，你可以随时审计任何一次运行。
 {
   // "offloadThreshold": 2000,            // 卸载阈值（估算 token；等于阈值也卸载）。
   // "envProtect": "strict",              // R6 环境防护模式（strict/standard/off）。（红线：仅全局）
-  // …共 59 个键，每个都带一行说明
+  // …共 57 个键，每个都带一行说明
 }
 ```
 
@@ -569,7 +569,6 @@ Team Lead 自己从不删黑板，你可以随时审计任何一次运行。
 | `autoCreate` | `true` | 全局 `team-mode.jsonc` 缺失时在启动时写入那份惰性模板。 |
 | `ttlDays`（别名 `blackboardTtlDays`） | `5` | 黑板保留期，有效区间 (0, 365]。 |
 | `envProtect` | `true` | 插件级总开关；`false` 会把 R6 模式解析成 `off`。 |
-| `temperature` | `false` | `false` = 保持文档承诺的 0.2；给一个数字则覆盖它。 |
 
 2.x 上插件条目要么是**字符串**，要么是带 `package` 和 `options` 的**对象**。
 1.x 的元组形式 `["@te-river/…", { … }]` 会被拒
@@ -595,7 +594,7 @@ Team Lead 自己从不删黑板，你可以随时审计任何一次运行。
 你自己叫 `team` / `architect` / … 的 agent 永远优先——插件从不覆盖用户定义。
 覆盖、加自己的 agent、停用角色见[自定义](#-自定义)。
 
-### 键参考（共 59 个）
+### 键参考（共 57 个）
 
 **卸载、预览与存储**
 
@@ -681,7 +680,6 @@ Team Lead 自己从不删黑板，你可以随时审计任何一次运行。
 | 键 | 默认 | 状态 |
 |---|---|---|
 | `askTimeoutFloorMin` | `1` | **已孤儿。** 它唯一的消费者是 v1 审批门，而那扇门已被删除（2.x 插件弹不出对话框，根本没有可超时的对象）。如实说出来，而不是留一个什么都不干的旋钮。 |
-| `agentTemperature` | `""` | 仅 v1 |
 | `compactionContext` | `on` | 仅 v1 |
 | `shellEnv` | `""` | 仅 v1 |
 | `ptcWebBridge` | `on` | 仅 v1 |
@@ -861,7 +859,7 @@ opencode-team-mode/
 │   ├── envprotect.ts     ← R6 门面（patterns / 分类器 / 门禁谓词 / hook）
 │   ├── identity.ts       ← Agent 名身份（大小写不敏感的 lead 判定）
 │   ├── tm/               ← 受治理工具：pipelines / store / preview / guard / refs /
-│   │                        config-layers（59 键注册表）/ config-files（那两层）/
+│   │                        config-layers（57 键注册表）/ config-files（那两层）/
 │   │                        config-template（自动创建的那份惰性文件）/
 │   │                        webfetch / search / memory / board / ledger / dispatch
 │   ├── host/             ← v2 人格（setup / guard / offload / session / events / …）

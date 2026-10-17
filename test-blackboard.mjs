@@ -5,7 +5,7 @@
  * Section 4's prompt assertions now pin the v1.4.7 contract: deterministic
  * routing, count-based approval gate, structured reply skeleton (hybrid
  * blackboard), adaptive review, static verification, MANIFEST/Ultra-Review
- * removal, and temperature discipline.
+ * removal, and the repo-hygiene rule.
  */
 import assert from "node:assert"
 import * as fs from "node:fs"
@@ -215,7 +215,6 @@ for (const expert of EXPERTS) {
     expert + " bash slot matches the execution-role matrix (the ask escalation lives in the v2 permission layer now)",
   )
   assert.equal(a.permission["tm_*"], "allow", expert + " governed tm_* tools whitelisted")
-  assert.equal(a.temperature, 0.2, expert + " low-temperature format discipline")
 }
 assert.equal(cfg.agent["architect"].permission.bash, "deny", "architect stays bash-denied")
 assert.equal(cfg.agent["Team"].permission.bash, "allow", "lead bash granted — the R6/R2 gate is the guard's job, not the definition's")

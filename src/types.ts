@@ -31,7 +31,6 @@ export interface AgentConfig {
   color?: string
   hidden?: boolean
   steps?: number
-  temperature?: number
   permission?: AgentPermission
   [key: string]: unknown
 }

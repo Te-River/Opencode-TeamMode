@@ -7,7 +7,6 @@
  * `permission.evaluate`, `session.context` fire for every session on the host, not
  * only for ours.  Without one shared answer to "is this ours?", the plugin would
  *  · delete tools from a build agent's request,
- *  · set `temperature` on somebody else's model call,
  *  · offload a stranger's tool result into OUR run store,
  *  · force `background: true` on a dispatch the user made on purpose,
  *  · and tighten a permission the user's own config already decided.

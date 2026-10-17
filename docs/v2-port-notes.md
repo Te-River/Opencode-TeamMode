@@ -575,3 +575,37 @@ both yes here — the two checks the installer prints. What no check covered was
 host derives from it*, and that is the difference between Team being the default and a silent
 `build`. A verifiable claim has to name the artefact the host actually keys on (the FILE NAME),
 not the one we wrote (the path we computed). `[R]`
+
+### 2026-10-18 — the request-layer `temperature` fill is gone, because a field we added broke other models `[L][R]`
+
+Since the v2 port the request layer wrote `temperature: 0.2` into every Team request that
+carried none (`v2-session.ts`, gated on `event.options.temperature === undefined` so a user's
+model variant always outranked us). The reason was determinism — the reply skeleton and the
+routing table both depend on the model following format, and 0.2 was our one lever on that.
+
+**What we had not accounted for: the field is not universally accepted.** Some providers reject
+`temperature` outright, and a request that carries it fails at the provider rather than at our
+gate. Because we wrote the field whenever the host left it absent, we converted a request that
+would have worked into one that could not — for those models the plugin was the outage. `[L]`
+
+So the whole surface is removed rather than defaulted: the request-layer write, the
+`options.temperature` plugin option and its boot field (`request_temperature`), the capability
+row that reported it, the `温度 …` line in `tm_stats`, the six `temperature: 0.2` entries in
+`src/agents.ts` (which never reached the runner anyway — the generator does not emit the field
+into `agents/*.md`, so they were a claim with no mechanism behind it), the `temperature?:
+number` on `AgentConfig`, and the v1-only `agentTemperature` key. A `team-mode.jsonc` that
+*uncomments* `agentTemperature` is now reported as an unknown key (warned, never applied) — the
+registry is the only source of known keys — while the auto-created inert template keeps it as a
+comment line, so an existing install sees nothing change until someone edits that line.
+
+**The regression test runs the other way now.** `test-v2-adapter.mjs` no longer asserts 0.2
+lands on the request; it asserts we write **no** `temperature` at all, and separately that a
+temperature already on the request is never touched. A test that asserted the old behaviour
+would have failed the fix; a test that only asserted absence would not catch us re-adding the
+overwrite path. `[R]`
+
+**The lesson, in the general form.** Adding a field to somebody else's request is not a
+no-op because it is "only a default". The host assembled a request that worked; our fill made
+it a request some providers refuse. A plugin that improves determinism on one model can
+therefore remove compatibility on another, and the compatibility cost is invisible in our own
+logs — it shows up as somebody else's API error. `[R]`

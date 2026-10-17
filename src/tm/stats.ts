@@ -492,7 +492,6 @@ export function renderStats(
         line.tools_registered !== undefined ? `工具 ${line.tools_registered}/${line.tools_total}` : "",
         line.tools_v1_only ? `v1 独有 \`${line.tools_v1_only}\`` : "",
         line.request_hooks ? `请求层 ${line.request_hooks} 钩子` : "",
-        line.request_temperature !== undefined ? `温度 ${line.request_temperature}` : "",
         line.subagent_background ? `子代理 ${line.subagent_background}` : "",
         line.guard_hooks ? `门禁 ${line.guard_hooks} 钩子` : "",
         line.guard_shell_coarse === undefined ? "" : `shell 粗粒度 ask ${line.guard_shell_coarse ? "开" : "关"}`,

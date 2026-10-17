@@ -1,7 +1,7 @@
 /**
  * The v2 session-request layer (goal #4 and #6 of the product).
  *
- * Three things that v1 could only approximate, because 1.18.x gave a plugin one
+ * Two things that v1 could only approximate, because 1.18.x gave a plugin one
  * mutable slot before execution and no way to touch an assembled request:
  *
  *  1. the tool surface.  v1's whitelist was enforced by permission DENY, which
@@ -9,10 +9,7 @@
  *     — the model pays ~9.5K tokens for thirteen governed tools plus the native
  *     catalog it is forbidden to use.  `session.hook("context")` can `delete
  *     event.tools.<name>`, so the whitelist finally decides what the model sees.
- *  2. `temperature`.  It is a documented legacy agent field on v2 (and the
- *     runner "preserves these values but does not yet send them"), so the
- *     all-agents-0.2 invariant has to be set on the outgoing request instead.
- *  3. the blackboard root.  v1 appended the resolved path to the team prompt at
+ *  2. the blackboard root.  v1 appended the resolved path to the team prompt at
  *     config time; a v2 agent is a config FILE, which cannot carry a
  *     per-workspace path, so it goes on the request.
  *
@@ -187,15 +184,13 @@ const removable = (name: string, denied: Set<string>): boolean =>
   denied.has(name) || (denied.has(BROWSER_CATALOG) && name.startsWith("browser_"))
 
 export interface SessionLayerInput {
-  /** 0 disables the temperature write entirely (the host's model default wins). */
-  temperature: number | false
   /** The resolved blackboard addendum, or "" when there is nothing to say. */
   note: string
   /** Which agent ids receive the note — v1 gave it to the lead only. */
   noteAgents: string[]
   plan: Map<string, Set<string>>
   /** Team-scope isolation (#22).  `session.context` fires for EVERY agent on the
-   *  host, so temperature, the board note and the compaction survival list are
+   *  host, so the board note and the compaction survival list are
    *  writes to somebody else's request unless the agent is one of ours.  The tool
    *  trim is already keyed by agent (a foreign role is not in the plan, so nothing
    *  is deleted); this closes the other three. */
@@ -208,7 +203,6 @@ export interface SessionLayerInput {
 }
 
 export interface SessionLayerReport {
-  temperature: number | false
   removed: Record<string, number>
   notePushed: boolean
   compactionLines: number
@@ -239,7 +233,6 @@ export async function applyV2SessionLayer(
 ): Promise<{ registrations: V2Registration[]; report: SessionLayerReport }> {
   const registrations: V2Registration[] = []
   const report: SessionLayerReport = {
-    temperature: input.temperature,
     removed: {},
     notePushed: false,
     compactionLines: 0,
@@ -269,9 +262,9 @@ export async function applyV2SessionLayer(
       // reporting `team` and a config declaring `Team` hit the same entry.
       const agentKey = normalizeAgentName(agent)
       // Anything below this line MUTATES the outgoing request.  On a host where
-      // one plugin serves every agent, an unguarded write here would set a build
-      // session's temperature, push our board note into a plan session's system
-      // prompt, and delete tools the user's own config granted (#22).
+      // one plugin serves every agent, an unguarded write here would push our
+      // board note into a plan session's system prompt and delete tools the user's
+      // own config granted (#22).
       if (input.scope && input.scope.count(input.scope.decide(event)) !== "ours") return
       input.scope?.learn(agent, (event as { sessionID?: unknown }).sessionID)
       const denied = input.plan.get(agentKey)
@@ -295,11 +288,6 @@ export async function applyV2SessionLayer(
             break
           }
         }
-      }
-
-      if (input.temperature !== false && event.options && typeof event.options === "object") {        // Only fill it when the request carries none: a per-session model variant
-        // the user chose outranks our invariant.
-        if (event.options.temperature === undefined) event.options.temperature = input.temperature
       }
 
       if (input.note && input.noteAgents.some((n) => normalizeAgentName(n) === agentKey) && Array.isArray(event.system)) {

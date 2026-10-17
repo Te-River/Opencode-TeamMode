@@ -172,7 +172,6 @@ export const CONFIG_KEYS: readonly ConfigKeySpec[] = [
   // ---- orphaned (kept so an existing config still parses) ----
   { key: "askTimeoutFloorMin", type: "number", default: 1, min: 1, max: 1440, doc: "（已孤儿）v1 审批门 ask 超时的下限（分钟）；保留以便旧配置继续解析。" },
   // ---- v1-only knobs (listed + parseable; no v2 reader) ----
-  { key: "agentTemperature", type: "string", default: "", doc: "（v1-only）按角色覆盖 temperature，如 reviewer=0.05;team=0.4。" },
   { key: "compactionContext", type: "string", default: "on", enum: ["on", "off"], doc: "（v1-only）压缩时推送必须存活的上下文清单。" },
   { key: "shellEnv", type: "string", default: "", doc: "（v1-only）注入 shell 的 K=V;K2=V2 白名单透传。" },
   { key: "ptcWebBridge", type: "string", default: "on", enum: ["on", "off"], doc: "（v1-only）tm_ptc_run 的 web 桥。" },

@@ -119,8 +119,6 @@ export interface TmConfig {
   envProtectExtraDeny: string
   /** (v1-only) shell env passthrough. */
   shellEnv: string
-  /** (v1-only) per-agent temperature overrides. */
-  agentTemperature: string
   /** (v1-only) compaction survival list. */
   compactionContext: "on" | "off"
   /** R6 mode (strict/standard/off). */

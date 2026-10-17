@@ -631,8 +631,8 @@ for (const keep of ["read", "grep", "glob", "tm_fetch", "tm_memory", "tm_board_w
 }
 assert.equal(
   arch.options.temperature,
-  0.2,
-  "the all-agents-0.2 invariant rides the request — agent config cannot carry it on v2 (legacy field, and the runner does not send it)",
+  undefined,
+  "we write NO temperature onto the request — some providers reject the field outright, so the model's own default governs",
 )
 assert.ok(
   !arch.system.some((p) => String(p?.text ?? "").includes("## Team Blackboard")),
@@ -651,7 +651,7 @@ assert.ok(leadLeft.includes("read") && leadLeft.includes("shell"), "the lead rea
 
 const preset = event("tester", { temperature: 0.7 })
 await fake.hook("session.context").fire(preset)
-assert.equal(preset.options.temperature, 0.7, "a temperature already on the request is never overwritten — the user's model variant outranks our default")
+assert.equal(preset.options.temperature, 0.7, "a temperature already on the request is left byte-exact — we never touch it")
 assert.ok(Object.keys(preset.tools).includes("browser_navigate"), "the tester keeps the browser for UI verification")
 assert.ok(!Object.keys(preset.tools).includes("tm_search"), "…but not the open web")
 
@@ -671,7 +671,7 @@ assert.equal(
   1,
   "two registered handlers ran over one request and the board note still landed exactly once",
 )
-console.log("   OK (surface trimmed per role, 0.2 restored, board root and survival list on the request)")
+console.log("   OK (surface trimmed per role, no temperature written, board root and survival list on the request)")
 
 // 7f. `tools_removed` names what it says (task #56).  The old field counted only
 // what THIS layer deleted from `event.tools`, and on a live host that is 0 because
@@ -1381,7 +1381,6 @@ console.log("8c. the capability matrix exists on v2 too, from observations")
     backgroundForced: true,
     offload: { active: true, registrations: [{}], report: { seen: 3, offloaded: 1 } },
     sessionHooks: 2,
-    temperature: 0.2,
     hasTodoSeam: false,
     hasAsk: false,
   })
@@ -1398,7 +1397,7 @@ console.log("8c. the capability matrix exists on v2 too, from observations")
   const after = (await import("./dist/host/v2-capabilities.js")).v2CapabilityRows({
     ctx: f3.ctx, probe: p3, guardsInstalled: true, backgroundForced: true,
     offload: { active: true, registrations: [{}], report: { seen: 3, offloaded: 1 } },
-    sessionHooks: 2, temperature: 0.2, hasTodoSeam: false, hasAsk: false,
+    sessionHooks: 2, hasTodoSeam: false, hasAsk: false,
   })
   assert.equal(after.find((r) => r.seam.includes('session.hook("context")')).state, "ok", "one real request observed, and the row earns ok")
   assert.equal(after.find((r) => r.seam.includes("ctx.storage")).state, "declared", "a domain we have never written to stays declared, whatever else improved")
@@ -1528,7 +1527,7 @@ console.log("8d. the event feed (#8): tm_join's settle detection on v2")
   const base = {
     ctx: f4.ctx, probe: p4, guardsInstalled: true, backgroundForced: true,
     offload: { active: true, registrations: [{}], report: { seen: 3, offloaded: 1 } },
-    sessionHooks: 2, temperature: 0.2, hasTodoSeam: false, hasAsk: false,
+    sessionHooks: 2, hasTodoSeam: false, hasAsk: false,
   }
   const rowOf = (r) => r.find((x) => x.seam.includes("ctx.event"))
   assert.equal(rowOf(v2CapabilityRows({ ...base, eventFeed: { active: true, received: 0, forwarded: 0, unknown: {} } })).state, "not-seen",
@@ -2653,7 +2652,7 @@ console.log("18. Context Pruning's capability row (#49) — kept after the compa
       probe: { report: { ctxDomains: ["session"], hooksMissing: [], executed: [], executedAfter: [], actions: [], evaluations: 0, agentsSeen: [] } },
       guardsInstalled: true, backgroundForced: true,
       offload: { active: true, registrations: [{}], report: { seen: 0, offloaded: 0 } },
-      sessionHooks: 2, temperature: 0.2, hasTodoSeam: false, hasAsk: false, prune,
+      sessionHooks: 2, hasTodoSeam: false, hasAsk: false, prune,
     })
     const row = (prune) => v2CapabilityRows(base(prune)).find((r) => r.seam.startsWith("Context Pruning"))
     const counts = (o) => ({ enabled: true, atPercent: 70, keepTailPercent: 40, checked: 3, prunedMessages: 0, prunedTokens: 0, below: 1, noLimit: 0, foreignSkipped: 0, threw: 0, lastPercent: 0, ...o })
@@ -3566,7 +3565,7 @@ console.log("31. 拆分任务 — a big brief arms ONE advice line for the lead'
   const scope = createTeamScope(["team", "architect", "implementer", "reviewer", "tester", "researcher"])
   const rows = []
   const layer = await applyV2SessionLayer(f.ctx, {
-    temperature: false, note: "", noteAgents: [], plan: new Map(), scope,
+    note: "", noteAgents: [], plan: new Map(), scope,
     split: resolveSplitConfig(), onSplit: (row) => rows.push(row),
   })
   const fireCtx = (ev) => f.hook("session.context").fire(ev)
@@ -3622,7 +3621,7 @@ console.log("31. 拆分任务 — a big brief arms ONE advice line for the lead'
   // (e) TM_SPLIT_ADVICE=off registers no trigger at all
   const fOff = makeFakeCtx({ directory: workspace("split-off"), agents: [] })
   const offLayer = await applyV2SessionLayer(fOff.ctx, {
-    temperature: false, note: "", noteAgents: [], plan: new Map(), scope,
+    note: "", noteAgents: [], plan: new Map(), scope,
     split: sc({ splitAdvice: "off" }),
   })
   await fOff.hook("tool.execute.before").fire({ tool: "subagent", sessionID: "ses_lead", agent: "team", input: { prompt: big } })
@@ -3634,7 +3633,7 @@ console.log("31. 拆分任务 — a big brief arms ONE advice line for the lead'
   // (f) a throw inside the trigger is swallowed and counted
   const fBoom = makeFakeCtx({ directory: workspace("split-boom"), agents: [] })
   const boomLayer = await applyV2SessionLayer(fBoom.ctx, {
-    temperature: false, note: "", noteAgents: [], plan: new Map(), scope, split: resolveSplitConfig(),
+    note: "", noteAgents: [], plan: new Map(), scope, split: resolveSplitConfig(),
   })
   const boomEvent = { tool: "subagent", sessionID: "ses_lead", agent: "team" }
   Object.defineProperty(boomEvent, "input", { get() { throw new Error("boom") } })

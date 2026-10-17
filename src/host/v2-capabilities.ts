@@ -35,7 +35,6 @@ interface Inputs {
   backgroundForced: boolean
   offload: { active: boolean; registrations: unknown[]; report: { seen: number; offloaded: number } }
   sessionHooks: number
-  temperature: number | false | null
   hasTodoSeam: boolean
   hasAsk: boolean
   /** what the boot round-trip self-check found: absent | round-trip | read-back-mismatch | threw */
@@ -244,15 +243,6 @@ export function v2CapabilityRows(i: Inputs): CapabilityRow[] {
         ? `已测 ${i.prune.checked} 次请求装配 · 裁掉 ${i.prune.prunedMessages} 条消息（省 ${i.prune.prunedTokens} token，估算）· 未到阈值 ${i.prune.below} · 读不到上限 ${i.prune.noLimit} · 非本会话跳过 ${i.prune.foreignSkipped} · 抛错 ${i.prune.threw}`
         : "层已装（v2.ts 注册了 prune 的 context 钩子），但本进程没有把它的计数交给能力矩阵——这一格只能读 declared",
   })
-  if (typeof i.temperature === "number") {
-    rows.push({
-      seam: "options.temperature",
-      feature: "所有角色 0.2（v2 上 agent 配置里的 temperature 是 legacy 字段、runner 不发，所以只能走请求层）",
-      state: i.probe.report.agentsSeen.length ? "ok" : "declared",
-      evidence: "runtime",
-      note: `本进程请求里带的温度：${i.temperature}`,
-    })
-  }
   if (!i.hasTodoSeam) {
     rows.push({
       seam: "GET /session/{id}/todo",

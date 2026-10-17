@@ -682,22 +682,15 @@ export const v2Personality: V2Plugin = {
     // ---------- the request layer ----------
     // The whitelist was only ever a DENY, which stops a call but leaves the
     // tool's description in every request.  Here it becomes a request-level
-    // removal, and the resolved board root and the temperature ride the request
-    // instead — a v2 agent is a config FILE and cannot carry a per-workspace
-    // path, and `temperature` is a legacy agent field the runner no longer
-    // sends.  This also starts the blackboard TTL sweeper, which this
+    // removal, and the resolved board root rides the request instead — a v2 agent
+    // is a config FILE and cannot carry a per-workspace path.  This also starts
+    // the blackboard TTL sweeper, which this
     // personality otherwise silently lacked: the note promises a sweep, so
     // shipping it without the sweeper would be the exact overstated claim this
     // product is built to refuse.
     const ttlMs = resolveTtlMs(options as never)
     const ttlDays = Math.round(ttlMs / (24 * 60 * 60 * 1000)) || DEFAULT_TTL_DAYS
     const note = blackboardNote(startBlackboardMaintenance(directory, ttlMs), ttlDays)
-    const temperature: number | false =
-      options.temperature === false
-        ? false
-        : typeof options.temperature === "number"
-          ? options.temperature
-          : 0.2
     const plan = removalPlan(agents as unknown as Record<string, { permission?: Record<string, unknown> }>)
     // ---------- does ctx.storage actually round-trip? ----------
     // The LEDGER needs somewhere to live and `ctx.storage` is the candidate; the
@@ -724,7 +717,6 @@ export const v2Personality: V2Plugin = {
     }
 
     const session = await applyV2SessionLayer(ctx, {
-      temperature,
       note,
       noteAgents: ["Team"],
       plan,
@@ -794,7 +786,6 @@ export const v2Personality: V2Plugin = {
         backgroundForced: true,
         offload,
         sessionHooks: 2,
-        temperature,
         // The prune layer's counters, handed to the matrix so its row can earn `ok` on a
         // process that actually pruned something. Without this the row could only ever read
         // `declared`, which is the "wired but never observed" shape the matrix exists to
@@ -1014,7 +1005,6 @@ export const v2Personality: V2Plugin = {
         event_feed: feed.report.active ? "subscribed" : "absent",
         event_feed_detail: feed.report.stopped ?? "",
         guard_shell_coarse: escalateShellAsk,
-        request_temperature: temperature === false ? "off" : temperature,
         request_removed_plan: removedPlanSizes,
         board_ttl_days: ttlDays,
         // #38: the runtime fallback's verdict — "ok" / "missing-role" / "no-default"
