@@ -266,7 +266,7 @@ internal `TM_CONFIG_AUTOCREATE=off`); the boot row records `config_autocreate` a
 `created` / `present` / `off` / `failed`.
 
 Keys are camelCase (`offloadThreshold`, `searchDefaultEngine`, …) — the registry in
-`src/tm/config-layers.ts` is the single source of truth (59 keys, each with its type, default and
+`src/tm/config-layers.ts` is the single source of truth (57 keys, each with its type, default and
 doc). Five keys are **red lines a PROJECT file may not change** — `envProtect`, `r6FineAsk`,
 `privateSpace`, `webfetchAllowedDomains`, `bashReadonlyAllowed`; they are settable only in the
 global file, and a project value is ignored and reported. A file that fails to parse is skipped
@@ -518,7 +518,7 @@ opencode reload
 启动行会记录 `config_autocreate`（`created` / `present` / `off` / `failed`）。
 
 键名是 camelCase（`offloadThreshold`、`searchDefaultEngine` …）——`src/tm/config-layers.ts` 里的注册表是唯一事实来源
-（59 个键，每个都带类型、默认值与说明）。有五个键是**项目文件不许改写的红线**——`envProtect`、`r6FineAsk`、
+（57 个键，每个都带类型、默认值与说明）。有五个键是**项目文件不许改写的红线**——`envProtect`、`r6FineAsk`、
 `privateSpace`、`webfetchAllowedDomains`、`bashReadonlyAllowed`；它们只能在全局文件里设置，项目文件里写了会被忽略并报告。
 解析失败的那一层**整层跳过**（半份配置比没有配置更危险），单个坏键只丢它自己。未知键在启动时告警、**不应用**。
 `tm_stats` 会显示每个键最终来自哪一层、被忽略的红线键、未知键、被跳过的层，以及自动生成的状态。
