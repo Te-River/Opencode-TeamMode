@@ -263,7 +263,7 @@ const DESCRIPTION = `你自己的任务清单（LEDGER）——这个宿主没�
 const LEDGER_ARGS = {
   action: { descriptor: 'action: "add" | "doing" | "done" | "blocked" | "list"' },
   text: { descriptor: "text: string (add 用：一条要求的原文，越短越好)" },
-  id: { descriptor: 'id: number|string (改状态用：清单编号，或者能唯一对上的一条的片段)' },
+  id: { descriptor: 'id: number|string (改状态用：清单编号，或者能唯一对上的一条的片段；编号写成 "#21" 或 21 都行)' },
   note: { descriptor: "note: string (可选：blocked 被什么卡住 / done 凭什么判定完成)" },
 }
 

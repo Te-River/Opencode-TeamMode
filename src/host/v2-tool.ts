@@ -43,6 +43,41 @@ async function loadZod(): Promise<Record<string, unknown> | null> {
  *  the guidance, so translating it is strictly better than a permissive schema. */
 const DESCRIPTOR_HEAD = /^([A-Za-z_][A-Za-z0-9_]*)\s*:\s*([\s\S]*)$/
 
+/** The JSON Schema type names a descriptor's type head may name.  `int` and
+ *  `integer` are the same JSON Schema type (`number`), so this map is the
+ *  translation AND the dedup step. */
+const TYPE_KEYWORDS: Record<string, string> = {
+  number: "number",
+  int: "number",
+  integer: "number",
+  string: "string",
+  boolean: "boolean",
+  array: "array",
+  object: "object",
+}
+
+/** `number|string` is a TYPE UNION, not an enum of values.  The host's own
+ *  JSON-Schema→validator conversion (`fromJsonSchemaDocument`, read out of the
+ *  2.0.32 binary) turns `type:["number","string"]` into a union of the two, so
+ *  the schema accepts either — which is exactly what the descriptor promises.
+ *  Read as a value enum it produced `enum:["number","string"]` (two literal
+ *  strings), and before this branch existed the number branch won outright:
+ *  `tm_ledger { action:"done", id:"#21" }` was rejected with "id must be a
+ *  number" while the descriptor said 编号 or 片段.  Only a head whose members
+ *  are ALL type keywords is a union; `lines|structure` and
+ *  `project|global|session` stay value enums. */
+function typeUnionOf(head: string): string[] | null {
+  if (!head.includes("|")) return null
+  const mapped: string[] = []
+  for (const member of head.split("|")) {
+    if (!member) return null
+    const type = TYPE_KEYWORDS[member.toLowerCase()]
+    if (!type) return null
+    if (!mapped.includes(type)) mapped.push(type)
+  }
+  return mapped.length > 1 ? mapped : null
+}
+
 /** `typed` is what follows the `name:` in the descriptor — the type is read off
  *  its first token.  Passing the whole line instead would read the parameter
  *  NAME plus its colon (`action:`), which matches no type shape at all, so every
@@ -51,9 +86,12 @@ const DESCRIPTOR_HEAD = /^([A-Za-z_][A-Za-z0-9_]*)\s*:\s*([\s\S]*)$/
  *  after the type is the part the model actually needs. */
 function descriptorToProperty(full: string, typed: string): Record<string, unknown> {
   const head = (typed.trim().match(/^[^\s(,]+/) ?? [""])[0]
-  let type = "string"
+  let type: string | string[] = "string"
   let enumValues: string[] | undefined
-  if (/^[A-Za-z][\w.]*\[\]$/.test(head)) {
+  const union = typeUnionOf(head)
+  if (union) {
+    type = union
+  } else if (/^[A-Za-z][\w.]*\[\]$/.test(head)) {
     type = "array"
   } else if (/^\d+$/.test(head) || /^(number|int|integer)/i.test(head)) {
     type = "number"
@@ -64,7 +102,7 @@ function descriptorToProperty(full: string, typed: string): Record<string, unkno
     type = "string"
   }
   const prop: Record<string, unknown> = { type }
-  if (type === "array") prop.items = { type: "string" }
+  if (type === "array" || (Array.isArray(type) && type.includes("array"))) prop.items = { type: "string" }
   if (enumValues) prop.enum = enumValues
   prop.description = full.trim()
   return prop

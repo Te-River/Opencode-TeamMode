@@ -157,6 +157,43 @@ for (const name of ["tm_join", "tm_stats", "tm_ledger"]) {
   const first = Object.values(byName[name].input.properties ?? {})[0]
   assert.ok(String(first?.description ?? "").length > 10, `${name} keeps the guidance text, not just names`)
 }
+
+// A `number|string` head is a TYPE UNION, not a value enum.  The host's own
+// JSON-Schema→validator conversion (`fromJsonSchemaDocument`) turns
+// `type:["number","string"]` into a union of the two, so a string id passes;
+// read as an enum it would have produced `enum:["number","string"]` — two
+// literal strings, the opposite of the descriptor's promise.  Live symptom:
+// `tm_ledger { action:"done", id:"#21" }` was rejected with "id must be a
+// number" while the descriptor said 编号 or 片段.
+const ledgerId = byName.tm_ledger.input.properties.id
+assert.ok(
+  Array.isArray(ledgerId.type) && ledgerId.type.includes("number") && ledgerId.type.includes("string"),
+  `tm_ledger.id accepts a string as well as a number (got ${JSON.stringify(ledgerId.type)})`,
+)
+assert.equal(ledgerId.enum, undefined, "tm_ledger.id is a type union, not a value enum")
+
+// The union branch must not swallow a VALUE enum: a head whose members are not
+// all type keywords stays an enum of literals, and a union that collapses to one
+// JSON Schema type stays a plain string type.
+const { inputSchemaFor } = await import("./dist/host/v2-tool.js")
+const descriptorCases = [
+  ["mode", "mode: lines|structure (structure = TOC; try it first)", { type: "string", enum: ["lines", "structure"] }],
+  ["scope", "scope: project|global|session (optional, default project)", { type: "string", enum: ["project", "global", "session"] }],
+  [
+    "engine",
+    "engine: auto|bing|bing-int|stackoverflow (optional, default auto)",
+    { type: "string", enum: ["auto", "bing", "bing-int", "stackoverflow"] },
+  ],
+  ["id", 'id: number|string (改状态用：清单编号，或者能唯一对上的一条的片段)', { type: ["number", "string"] }],
+  ["n", "n: int|integer (both spell the same JSON Schema type)", { type: "number" }],
+]
+for (const [key, descriptor, expected] of descriptorCases) {
+  const { schema } = await inputSchemaFor({ [key]: { descriptor } })
+  const prop = schema.properties[key]
+  assert.deepEqual(prop.type, expected.type, `${key}: ${descriptor} → type ${JSON.stringify(expected.type)}`)
+  if (expected.enum) assert.deepEqual(prop.enum, expected.enum, `${key} stays a value enum`)
+  else assert.equal(prop.enum, undefined, `${key} is a type union, not a value enum`)
+}
 assert.match(
   warns.join("\n"),
   /描述符/,
