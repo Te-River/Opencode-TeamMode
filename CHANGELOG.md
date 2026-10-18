@@ -7,6 +7,27 @@ registry saw 1.5.0 as the install-script fix release).
 
 ## [Unreleased]
 
+## [1.7.6] - 2026-10-18
+
+### Fixed
+
+- **A descriptor's type union was read as its first member, so `tm_ledger`'s `id` rejected
+  strings (2026-10-18).** `descriptorToProperty` (`src/host/v2-tool.ts`) classifies a
+  descriptor's type head into a JSON Schema type, and its `number` branch sat **before** the
+  enum branch — so `id: number|string` (the ledger's own descriptor, which promises 编号
+  **or** a fragment) matched `^(number|int|integer)` and became `type:"number"`. A model
+  passing `id:"#21"` was rejected by the host's schema validation and reported it as *"the
+  ledger call failed: id must be a number"* — the schema contradicting the tool's own
+  promise. A type union (every member a type keyword: `number|int|integer|string|boolean|
+  array|object`) is now recognised **before** the scalar branches and emitted as
+  `type:["number","string"]`; the host's own JSON-Schema→validator conversion turns that into
+  a union of the two (read out of the 2.0.32 binary, corroborated by the host's
+  `opencode.tool.input.repair` and by the provider sanitizer emitting `type:["string","null"]`
+  itself). Value unions (`lines|structure`, `project|global|session`, the engine roster) still
+  produce `enum`, and the ledger's runtime needed no change — `findItem` already accepted
+  `string | number` and stripped a leading `#`. The regression test pins both directions: the
+  ledger's `id` accepts a string, and the value unions keep their `enum`.
+
 ## [1.7.5] - 2026-10-18
 
 ### Removed
