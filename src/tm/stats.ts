@@ -368,6 +368,24 @@ function countersSourceLine(line: Record<string, unknown>): string {
   return `观察计数器来源=${at}（${gloss}）`
 }
 
+/** The sub-agent cap's EXCLUDED running rows, appended to its own line.
+ *
+ *  Why this exists: the running side of the cap used to count forever, so a row the
+ *  host never settles (an adopted row, an envelope never read) locked every dispatch
+ *  once the ceiling was reached.  The rows are now excluded — and an exclusion that is
+ *  not printed is an under-count nobody can see, i.e. the ceiling quietly behaving
+ *  looser than the number in the config file. */
+function capExcludedLine(line: Record<string, unknown>): string {
+  const stale = Number(line.subagent_cap_running_stale ?? 0)
+  const adopted = Number(line.subagent_cap_running_adopted ?? 0)
+  if (!stale && !adopted) return ""
+  const bits = [
+    stale ? `超窗运行中 ${stale} 个未计入（无结算观察，久等不来）` : "",
+    adopted ? `接管行 ${adopted} 个未计入（会话树重建，不是本进程观测）` : "",
+  ]
+  return ` · 计数排除：${bits.filter(Boolean).join(" · ")}`
+}
+
 /** #49 Context Pruning: the counters the prune layer writes on the boot / surface /
  *  shutdown rows.  Rendered here because a counter that is recorded but never printed
  *  is the exact defect this section exists to remove — and because the two zeroes a
@@ -499,6 +517,11 @@ export function renderStats(
         line.guard_seen !== undefined ? `门禁看到 ${line.guard_seen} 次评估（${line.guard_actions || "无动作"}）` : "",
         line.guard_shell_matched !== undefined ? `其中 shell 命中分类器 ${line.guard_shell_matched} 次` : "",
         line.subagent_forced !== undefined ? `子代理强制后台 ${line.subagent_forced}/${line.subagent_seen}` : "",
+        line.subagent_cap_limit === undefined || line.subagent_cap_limit === null
+          ? ""
+          : Number(line.subagent_cap_limit) > 0
+            ? `子代理并发上限 ${line.subagent_cap_limit}（拒绝 ${line.subagent_cap_denied ?? 0} 次 · 在飞峰值 ${line.subagent_cap_pending_max ?? 0} · TTL 回收 ${line.subagent_cap_ttl_released ?? 0}${capExcludedLine(line)}）`
+            : `子代理并发不限（subagentConcurrency=0）`,
         line.tools_removed ? `本轮从请求里删掉：${line.tools_removed}` : "",
         line.note_pushed === undefined ? "" : `黑板注记 ${line.note_pushed ? "已送达" : "未触发"}`,
         // #22: the isolation counts are the proof that "we only touch Team" is a

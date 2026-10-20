@@ -310,6 +310,16 @@ export const v2Personality: V2Plugin = {
     const guards = await applyV2PermissionGuards(ctx, {
       envProtectMode,
       scope,
+      // The sub-agent concurrency cap counts what tm_join's own registry knows
+      // is running, plus the dispatches still in flight (see the gate's header:
+      // counting only registered children is exactly the hole that let a burst
+      // of 24 through).
+      subagentConcurrency: cfg.subagentConcurrency,
+      // Rows, not a number: the cap leaves out the ones nothing will ever settle
+      // (adopted rows, and anything older than the staleness window), because a
+      // running row with no observation path used to count forever and turn the
+      // ceiling into a permanent lock.
+      subagentRunning: () => tmRuntime.dispatches(),
     })
     // Said out loud because it is a promise with a boundary: the user's rule is
     // that nothing outside Team may be touched, and the honest consequence is that
@@ -388,7 +398,41 @@ export const v2Personality: V2Plugin = {
     // children the user could see on screen, and the settle events the feed forwards
     // were dropped because the dispatcher ignores ids it has never heard of.
     const hostChildren = applyV2SubagentRegistry(ctx, {
-      register: tmRuntime.registerHostChild,
+      register: (child) => {
+        const opened = tmRuntime.registerHostChild(child)
+        // A real child now exists, so the in-flight slot that admitted the call
+        // is no longer pending.  Without this the cap would count the same work
+        // twice (once as pending, once as running) and halve the user's ceiling.
+        // Released BY ID: a release keyed on the caller alone could free another
+        // in-flight call's slot when the host replays an ack.
+        if (opened) {
+          const id = Number(child.admissionId ?? 0)
+          if (id > 0) guards.cap.release(id, "register")
+          else guards.cap.releaseOldest(child.parentSessionID, "register")
+        }
+        return opened
+      },
+      pairAdmission: (caller) => guards.cap.pair(caller),
+      onCallEnd: (caller, why, admissionId) => {
+        const id = Number(admissionId ?? 0)
+        // `id > 0` means this call's slot is known: release exactly it, and an
+        // already-released id is a harmless no-op.  `id === 0` is the pre-pairing
+        // path (a plugin reload replaying hooks), where the caller's oldest slot is
+        // the only honest guess.
+        if (id > 0) guards.cap.release(id, "call-end")
+        else guards.cap.releaseOldest(caller, "call-end")
+        try {
+          tmRuntime.pipelines.store.appendTrajectory({
+            tool: "host",
+            step_id: "subagent-cap",
+            event: "slot_released",
+            why,
+            sessionID: caller,
+          })
+        } catch {
+          /* the trajectory is an extra, never a reason to fail the call */
+        }
+      },
       scope,
     })
     registrations.push(...(await Promise.all(hostChildren.registrations)))
@@ -854,6 +898,29 @@ export const v2Personality: V2Plugin = {
       for (const id of Object.keys(session.report.removed)) ids.add(id)
       return [...ids].filter((id) => wantedIds.some((w) => normalizeAgentName(w) === normalizeAgentName(id))).sort()
     }
+    // The sub-agent concurrency cap's counters, read through the SAME gate the
+    // permission hook decided with — a second counter would be a second truth.
+    const capCounters = (): Record<string, number> => {
+      try {
+        const c = guards.cap.counts()
+        return {
+          subagent_cap_limit: c.limit,
+          subagent_cap_seen: c.seen,
+          subagent_cap_denied: c.denied,
+          subagent_cap_pending: c.pending,
+          subagent_cap_pending_max: c.pendingMax,
+          subagent_cap_released: c.released,
+          subagent_cap_ttl_released: c.ttlReleased,
+          // The running side's exclusions, so an under-count is a number rather than
+          // a silent loosening of the ceiling (see SUBAGENT_RUNNING_STALE_MS).
+          subagent_cap_running: c.runningCounted,
+          subagent_cap_running_stale: c.runningStale,
+          subagent_cap_running_adopted: c.runningAdopted,
+        }
+      } catch {
+        return {}
+      }
+    }
     observationCounters = (source) => ({
       counters_at: source,
       guard_seen: guards.report.seen,
@@ -869,6 +936,7 @@ export const v2Personality: V2Plugin = {
       guard_foreign_skipped: guards.report.foreignSkipped,
       subagent_seen: bgForce.report.seen,
       subagent_forced: bgForce.report.forced,
+      ...capCounters(),
       shell_timeout_seen: shellTimeout.report.seen,
       shell_timeout_clamped: shellTimeout.report.clamped,
       shell_timeout_foreign_skipped: shellTimeout.report.foreignSkipped,
@@ -1002,6 +1070,7 @@ export const v2Personality: V2Plugin = {
         tools_codemode: v2CodeModeDirect ? "direct" : "catalog",
         guard_foreign_skipped: guards.report.foreignSkipped,
         subagent_background: bgForce.registrations.length ? "forced-true" : "no-hook",
+        subagent_cap_limit: cfg.subagentConcurrency,
         event_feed: feed.report.active ? "subscribed" : "absent",
         event_feed_detail: feed.report.stopped ?? "",
         guard_shell_coarse: escalateShellAsk,
@@ -1069,6 +1138,7 @@ export const v2Personality: V2Plugin = {
           guard_envfile_input_foreign_skipped: guards.report.envFileInputForeignSkipped,
           subagent_seen: bgForce.report.seen,
           subagent_forced: bgForce.report.forced,
+          ...capCounters(),
           shell_timeout_seen: shellTimeout.report.seen,
           shell_timeout_clamped: shellTimeout.report.clamped,
           shell_timeout_foreign_skipped: shellTimeout.report.foreignSkipped,

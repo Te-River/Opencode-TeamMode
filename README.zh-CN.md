@@ -527,7 +527,7 @@ Team Lead 自己从不删黑板，你可以随时审计任何一次运行。
 ### 它会自己写一份
 
 全局文件**不存在**时，插件在启动时创建它——原子、幂等，且**绝不覆盖已存在的
-文件**。写进去的是一份**惰性**模板：全部 **57** 个注册表键，每个都以*注释*
+文件**。写进去的是一份**惰性**模板：全部 **58** 个注册表键，每个都以*注释*
 形式出现在一行说明下面，所以这个文件解析出来是 `{}`，在你取消注释之前什么
 都不设置。
 
@@ -536,7 +536,7 @@ Team Lead 自己从不删黑板，你可以随时审计任何一次运行。
 {
   // "offloadThreshold": 2000,            // 卸载阈值（估算 token；等于阈值也卸载）。
   // "envProtect": "strict",              // R6 环境防护模式（strict/standard/off）。（红线：仅全局）
-  // …共 57 个键，每个都带一行说明
+  // …共 58 个键，每个都带一行说明
 }
 ```
 
@@ -594,7 +594,7 @@ Team Lead 自己从不删黑板，你可以随时审计任何一次运行。
 你自己叫 `team` / `architect` / … 的 agent 永远优先——插件从不覆盖用户定义。
 覆盖、加自己的 agent、停用角色见[自定义](#-自定义)。
 
-### 键参考（共 57 个）
+### 键参考（共 58 个）
 
 **卸载、预览与存储**
 
@@ -611,6 +611,7 @@ Team Lead 自己从不删黑板，你可以随时审计任何一次运行。
 | `blackboardTtlDays` | number | `7` | 句柄 TTL，也是过期运行目录的物理清扫周期。 |
 | `storeReclaim` | `on`/`off` | `on` | 启动时回收升级遗留的东西：空闲超过 TTL 的工作区分片，以及临时目录回退下的前代 `blackboard/` + `trajectory/`。**只删 TTL 已过的条目**——新鲜运行目录会活下来，因为升级前开的会话可能还在往里写。`off` 让磁盘保持原样。 |
 | `taskOffload` | `on`/`off` | `on` | 把宿主的后台子代理压进上下文预算：它完成时注入进来的整篇回复被换成"预览 + `tm_join` 指针"。只动那些带宿主的 `<task id=… state="completed">` / `<subagent … state="completed">` 信封且超过文本阈值的合成 part——即使一条真人消息完美地含有那个信封也绝不被碰，`state="error"` 的子代理也绝不改写。**不往磁盘另存副本**：正文本来就在子会话里。`off` 恢复宿主的原样注入。 |
+| `subagentConcurrency` | number | `8` | 子代理并发上限：**在跑 + 在飞**的派发合计。在飞 = 闸门已放行、宿主尚未登记的派发，所以**一条消息里的并发突发也会被拦住**——旧的"只数已登记"做不到（曾有一次 24 个并派全部通过，之后单独再派才被拒）。`0` = 不限。位子在子代理登记、调用结束未产出、或 60 秒 TTL 到期时释放，丢失的调用不会永久占位。 |
 | `boardMaxChars` | number | `200000` | `tm_board_write` 单个文件的字符上限——超过就**拒绝**（并提示"拆成两个主题"），而不是把交付截断。 |
 | `boardMaxFiles` | number | `200` | 每个会话目录允许的 Markdown 文件数。TTL 清扫器是唯一的回收路径，所以拒绝时会点名它。 |
 | `joinMaxWaitMs` | number | `60000` | `tm_join { waitMs }` 的上限。曾经是 300 000，而有次会话的领队连着两次停在里面（19 分钟什么都不干），子代理却在干活——等待不是并行，所以默认值现在说的是"看一眼，然后干活"。第二次连续等待若仍未结算任何东西，会被砍到 10 秒，并答复接下来该做什么。 |
@@ -859,7 +860,7 @@ opencode-team-mode/
 │   ├── envprotect.ts     ← R6 门面（patterns / 分类器 / 门禁谓词 / hook）
 │   ├── identity.ts       ← Agent 名身份（大小写不敏感的 lead 判定）
 │   ├── tm/               ← 受治理工具：pipelines / store / preview / guard / refs /
-│   │                        config-layers（57 键注册表）/ config-files（那两层）/
+│   │                        config-layers（58 键注册表）/ config-files（那两层）/
 │   │                        config-template（自动创建的那份惰性文件）/
 │   │                        webfetch / search / memory / board / ledger / dispatch
 │   ├── host/             ← v2 人格（setup / guard / offload / session / events / …）

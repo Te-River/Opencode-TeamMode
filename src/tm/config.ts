@@ -107,6 +107,9 @@ export interface TmConfig {
   bashTimeoutMaxMs: number
   /** Ceiling (ms) for a bash command the P3 read-only allowlist accepts. */
   bashTimeoutProbeMs: number
+  /** Sub-agent concurrency ceiling (running children + in-flight dispatches).
+   *  `0` = unlimited, and then no decision is taken at all. */
+  subagentConcurrency: number
 
   // ---- knobs that used to be read straight from process.env ----
   /** JIT governance over the HOST's own tools (read/grep/shell…). */

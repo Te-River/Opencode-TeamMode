@@ -3683,7 +3683,285 @@ console.log("31. 拆分任务 — a big brief arms ONE advice line for the lead'
 }
 console.log("   OK (defaults on / off disables / numbers clamped; only a subagent brief is measured; a big brief arms ONE advice line for the lead's next request and a short one arms none; consumed once; foreign and child sessions untouched; a throw is swallowed and counted)")
 
-console.log("32. the v2 personality's configDefaults sit BELOW the file layers (the inert template must not shadow them)")
+console.log("32. subagentConcurrency — a BURST is really capped, not just the dispatch after it")
+{
+  const { applyV2PermissionGuards, createSubagentCapGate, SUBAGENT_PENDING_TTL_MS } = await import("./dist/host/v2-guard.js")
+  const { applyV2SubagentRegistry } = await import("./dist/host/v2-subagent.js")
+  const { createTeamScope } = await import("./dist/host/v2-scope.js")
+
+  // (a) THE CORE ASSERTION — one message, nine dispatches, an injected clock.
+  // Counting only REGISTERED children (the 1.7.3 mechanism) makes all nine pass,
+  // because registration happens after the call completes; counting in-flight
+  // admissions makes the 9th the first refusal. Drop the pending increment and
+  // this assertion goes red on the very first line.
+  let t = 1_000_000
+  const gate = createSubagentCapGate({ limit: 8, now: () => t })
+  const burst = []
+  for (let i = 0; i < 9; i++) burst.push(gate.admit("ses_lead"))
+  assert.deepEqual(burst.slice(0, 8).map((v) => v.ok), Array(8).fill(true), "前 8 次并派全部放行（上限 8）")
+  assert.equal(burst[8].ok, false, "第 9 次被拒 —— 若只数已登记的 running 子代理，这里会是 true 而变红")
+  assert.equal(gate.counts().pending, 8, "在飞计数停在 8；若放行时不占位，这里会是 0 而变红")
+  assert.equal(gate.counts().pendingMax, 8, "峰值记下 8，突发在事后也可查")
+  assert.equal(gate.counts().denied, 1, "拒绝被计数")
+
+  // (b) a registered child releases the in-flight slot, and the next dispatch passes.
+  // Released BY ID: a replay that released by caller would free another in-flight
+  // call's slot (see Minor 2 / group 32c).
+  assert.equal(gate.release(burst[0].id, "register"), true, "登记成功后能按 admission id 释放一个位子")
+  assert.equal(gate.release(burst[0].id, "register"), false, "同一个 id 再释放是 no-op —— 重放不能放出第二个位子")
+  assert.equal(gate.admit("ses_lead").ok, true, "释放后再派能通过 —— 若 release 是空实现，这里会因 pending 仍为 8 而被拒")
+  assert.equal(gate.counts().released, 1, "释放计入 released，与 TTL 回收分开")
+
+  // (c) TTL: a slot nobody released is reclaimed, and counted on its own
+  const pendingBeforeTtl = gate.counts().pending
+  t += SUBAGENT_PENDING_TTL_MS - 1
+  assert.equal(gate.counts().pending, pendingBeforeTtl, "TTL 未到，位子还在（不是一到点就全清）")
+  t += 1
+  assert.equal(gate.counts().pending, 0, "TTL 到期后位子被回收 —— 若丢了这条兜底，泄漏会让上限永久变紧而这里为 8")
+  assert.equal(gate.counts().ttlReleased, pendingBeforeTtl, "TTL 回收有独立计数（泄漏可排查）")
+  assert.equal(gate.admit("ses_lead").ok, true, "回收后能继续派发")
+
+  // (d) running children count toward the same ceiling
+  const rows = (n) => Array.from({ length: n }, (_, i) => ({ state: "running", startedAt: t }))
+  const busy = createSubagentCapGate({ limit: 8, running: () => rows(8), now: () => t })
+  const v = busy.admit("ses_lead")
+  assert.equal(v.ok, false, "已登记 running 8 个时，第一个在飞派发就被拒")
+  assert.equal(v.running, 8, "拒绝文案里带 running 数")
+  assert.equal(busy.counts().pending, 0, "被拒的派发不占位（否则拒绝本身会让上限越用越紧）")
+
+  // (e) 0 = unlimited, and takes no decision at all
+  const free = createSubagentCapGate({ limit: 0, now: () => t })
+  for (let i = 0; i < 100; i++) assert.equal(free.admit("ses_lead").ok, true, `子代理并发 0 = 不限：第 ${i + 1} 次也不拒`)
+  assert.equal(free.counts().pending, 0, "不限时既不放位也不占位")
+  assert.equal(free.counts().denied, 0, "不限时一条拒绝都没有")
+
+  // (f) the hook: through the fake host, three dispatches with a ceiling of 2
+  const f = makeFakeCtx({ directory: ws, agents: [] })
+  const scope = createTeamScope(["team", "architect", "implementer", "reviewer", "tester", "researcher"])
+  const g = await applyV2PermissionGuards(f.ctx, { envProtectMode: "off", scope, subagentConcurrency: 2 })
+  const dispatch = () => ({ sessionID: "ses_lead", agent: "team", action: "subagent", resources: [], effect: "allow" })
+  const e1 = dispatch(); await f.hook("permission.evaluate").fire(e1)
+  const e2 = dispatch(); await f.hook("permission.evaluate").fire(e2)
+  const e3 = dispatch(); await f.hook("permission.evaluate").fire(e3)
+  assert.equal(e1.effect, "allow", "第 1 次派发放行")
+  assert.equal(e2.effect, "allow", "第 2 次放行")
+  assert.equal(e3.effect, "deny", "同一条消息里的第 3 次被拒 —— 旧机制会全放行，这就是本次要修的那个洞")
+  assert.ok(/子代理并发上限 2/.test(String(e3.message)), "拒绝文案说出上限")
+  assert.ok(/running 0 \+ 在飞 2/.test(String(e3.message)), "…以及当前的 running 与在飞两个数")
+  assert.ok(/tm_join/.test(String(e3.message)) && /0 = 不限/.test(String(e3.message)), "…和三条出路（等结算 / tm_join cancel / 调大或设 0）")
+  assert.match(String(e3.message), /先用 tm_join 确认是不是卡住的运行中行/, "① 先让 agent 去确认是不是卡住的行 —— 旧的“等已结算的收口”在快照永远显示运行中时是空转指令")
+  assert.equal(g.cap.counts().denied, 1, "钩子上的拒绝也进了计数，tm_stats 才看得到")
+  // Minor 5: the cap's refusal is ITS OWN counter.  Folding it into `report.denied`
+  // made tm_stats' `guard_denied` read as "the egress/R6 red line fired".
+  assert.equal(g.report.denied, 0, "cap 拒绝不写进门禁 denied —— 否则 guard_denied 被污染")
+  // a release (registration) frees one slot through the SAME gate instance
+  const paired = g.cap.pair("ses_lead")
+  assert.ok(paired > 0, "execute.before 能把这次调用和它占的 admission 配对")
+  assert.equal(g.cap.release(paired, "register"), true, "按配到的 id 释放")
+  const e4 = dispatch(); await f.hook("permission.evaluate").fire(e4)
+  assert.equal(e4.effect, "allow", "释放后再派能过 —— 若 cap 实例没被共享，这里会仍被拒而变红")
+
+  // (g) 0 through the hook: 100 dispatches, none refused
+  const f2 = makeFakeCtx({ directory: ws, agents: [] })
+  const g2 = await applyV2PermissionGuards(f2.ctx, { envProtectMode: "off", scope, subagentConcurrency: 0 })
+  let refused = 0
+  for (let i = 0; i < 100; i++) {
+    const ev = { sessionID: "ses_lead2", agent: "team", action: "subagent", resources: [], effect: "allow" }
+    await f2.hook("permission.evaluate").fire(ev)
+    if (ev.effect !== "allow") refused++
+  }
+  assert.equal(refused, 0, "subagentConcurrency=0 时 100 次并派一次都不拒")
+  assert.equal(g2.cap.counts().pending, 0, "…也不占位")
+
+  // (h) a dispatch that produced NO child gives its slot back (call-end release)
+  const f3 = makeFakeCtx({ directory: ws, agents: [] })
+  const ended = []
+  applyV2SubagentRegistry(f3.ctx, {
+    register: () => false,
+    onCallEnd: (caller, why) => ended.push(`${caller}:${why}`),
+    scope,
+  })
+  await f3.hook("tool.execute.after").fire({ tool: "subagent", sessionID: "ses_lead", agent: "team", result: { content: [] } })
+  assert.deepEqual(ended, ["ses_lead:no-child"], "没产出子代理的调用会回调 onCallEnd —— 丢掉这个释放，位子只能等 TTL，并发上限会假性变紧")
+
+  for (const r of g.registrations) await r.dispose()
+  for (const r of g2.registrations) await r.dispose()
+}
+console.log("   OK (burst capped at the ceiling by counting in-flight admissions, slot released on register / on a childless call / by a 60s TTL with its own counter, running children counted, 0 takes no decision, refusal names running + pending + the three ways out)")
+
+console.log("32b. the RUNNING side can never lock the cap forever (Major)")
+{
+  const { createSubagentCapGate, SUBAGENT_RUNNING_STALE_MS } = await import("./dist/host/v2-guard.js")
+  let at = 9_000_000
+
+  // (a) ADOPTED rows.  A row rebuilt from the host's session tree is settled only by an
+  // observation this process may never get, so counting it is exactly how the ceiling
+  // became a permanent lock: with limit 2 and one adopted row, the SECOND dispatch was
+  // refused while tm_join kept printing 运行中 and the refusal told the agent to wait.
+  const adopted = createSubagentCapGate({
+    limit: 2,
+    now: () => at,
+    running: () => [{ state: "running", adopted: true, startedAt: at }],
+  })
+  const a1 = adopted.admit("ses_lead")
+  const a2 = adopted.admit("ses_lead")
+  assert.equal(
+    a1.ok && a2.ok,
+    true,
+    "上限 2 + 一条接管行：两笔都放行 —— 修复前接管行永久占一个位子，第二笔必被拒（这条断言在旧实现上是红的）",
+  )
+  assert.equal(adopted.counts().runningAdopted, 1, "接管行被排除，并单独计数（不是静默少算）")
+
+  // (b) A row that simply never settles ages out of the count.  The TTL is disabled here
+  // on purpose, so the pass can only come from the staleness window.
+  const started = at
+  const stuck = createSubagentCapGate({
+    limit: 2,
+    now: () => at,
+    ttlMs: Number.MAX_SAFE_INTEGER,
+    running: () => [{ state: "running", startedAt: started }],
+  })
+  at += SUBAGENT_RUNNING_STALE_MS - 1
+  assert.equal(stuck.admit("ses_lead").ok, true, "窗口未到：这条运行中的行仍然算数")
+  assert.equal(stuck.counts().runningStale, 0, "…也还没被标成陈旧")
+  at += 1
+  assert.equal(stuck.counts().runningStale, 1, "窗口一过，卡住的行被判陈旧并排除")
+  assert.equal(stuck.counts().runningCounted, 0, "…不再计进 running（旧实现这里永远是 1）")
+  assert.equal(
+    stuck.admit("ses_lead").ok,
+    true,
+    "于是派发恢复 —— 修复前这一行永久占位，上限再也放不出位子，拒绝文案还让 agent 去等一个不会来的结算",
+  )
+
+  // (c) the exclusions are VISIBLE: a ceiling that quietly counts fewer rows than it says
+  // is the same class of dishonesty as one that says nothing at all.
+  const { renderStats, summarizeEvents } = await import("./dist/tm/stats.js")
+  const md = renderStats(
+    summarizeEvents([
+      {
+        ts: new Date(1_700_000_000_000).toISOString(),
+        tool: "host",
+        step_id: "v2-surface",
+        event: "personality",
+        api: 2,
+        counters_at: "surface",
+        subagent_cap_limit: 8,
+        subagent_cap_denied: 1,
+        subagent_cap_pending_max: 3,
+        subagent_cap_ttl_released: 0,
+        subagent_cap_running_stale: 2,
+        subagent_cap_running_adopted: 1,
+      },
+    ]),
+    { runDirs: 1, roots: [] },
+  )
+  assert.match(md, /计数排除：超窗运行中 2 个/, "tm_stats 说出被排除的运行中行（不是静默少算）")
+  assert.match(md, /接管行 1 个/, "…并区分接管行，因为两者的下一步完全不同")
+}
+console.log("   OK (adopted rows excluded and counted; a never-settling running row ages out after 3× the in-flight TTL and stops locking the ceiling)")
+
+console.log("32c. a dispatch that cannot run takes no slot; ids are not reused; no silent 'unlimited' (Minor 1/2/3)")
+{
+  const { applyV2PermissionGuards, createSubagentCapGate, normalizeCapLimit, DEFAULT_SUBAGENT_CONCURRENCY } = await import("./dist/host/v2-guard.js")
+  const { applyV2SubagentRegistry } = await import("./dist/host/v2-subagent.js")
+  const { createTeamScope } = await import("./dist/host/v2-scope.js")
+  const scope = createTeamScope(["team", "architect", "implementer", "reviewer", "tester", "researcher"])
+
+  // Minor 1 — `v2-retry`'s cooldown denies exactly at this layer, and a denied call never
+  // reaches execute.after: admitting it leaked one slot per attempt for a whole 60s TTL.
+  const f = makeFakeCtx({ directory: ws, agents: [] })
+  const g = await applyV2PermissionGuards(f.ctx, { envProtectMode: "off", scope, subagentConcurrency: 1 })
+  const denied = { sessionID: "ses_lead", agent: "team", action: "subagent", resources: [], effect: "deny" }
+  await f.hook("permission.evaluate").fire(denied)
+  assert.equal(g.cap.counts().pending, 0, "已经 deny 的派发不占位（它永远不会触发 execute.after，只能等 TTL）")
+  const asked = { sessionID: "ses_lead", agent: "team", action: "subagent", resources: [], effect: "ask" }
+  await f.hook("permission.evaluate").fire(asked)
+  assert.equal(g.cap.counts().pending, 1, "ask 仍占位（选定的取舍）：用户批准后这次调用真的会跑，提前放位会让一串待答问题同时越过上限")
+  for (const r of g.registrations) await r.dispose()
+
+  // Minor 2 — the child-id-equals-caller branch used to return without releasing, so every
+  // such ack cost a slot until the TTL; and a replayed execute.after must not release a
+  // second slot (it used to free another in-flight call's).
+  const f3 = makeFakeCtx({ directory: ws, agents: [] })
+  const ends = []
+  const reg = applyV2SubagentRegistry(f3.ctx, {
+    register: () => false,
+    pairAdmission: () => 7,
+    onCallEnd: (caller, why, id) => ends.push(`${caller}:${why}:${id ?? 0}`),
+    scope,
+  })
+  const before = { tool: "subagent", sessionID: "ses_lead", agent: "team", id: "call_x", input: { agent: "tester" } }
+  const selfChild = { tool: "subagent", sessionID: "ses_lead", agent: "team", id: "call_x", result: { metadata: { sessionID: "ses_lead", status: "running" } } }
+  await f3.hook("tool.execute.before").fire(before)
+  await f3.hook("tool.execute.after").fire(selfChild)
+  assert.deepEqual(ends, ["ses_lead:unusable-child:7"], "子 id == caller 的分支也释放，并且带的是这次调用的 admission id")
+  await f3.hook("tool.execute.after").fire(selfChild)
+  assert.equal(ends.length, 1, "重放同一个 execute.after 不再放第二个位子（旧实现会放掉同一 caller 另一笔）")
+  assert.equal(reg.report.replayed, 1, "重放被单独计数，不是静默忽略")
+  for (const p of reg.registrations) await (await p).dispose()
+
+  // Minor 3 — the default is a CEILING, never "unlimited", and an out-of-range value falls
+  // back to the default instead of clamping to 0 (which means unlimited here).
+  assert.equal(normalizeCapLimit(undefined), DEFAULT_SUBAGENT_CONCURRENCY, "缺省不是“不限”")
+  assert.equal(normalizeCapLimit(-1), 8, "负值回落默认 8，而不是夹到 0（0 = 不限）")
+  assert.equal(normalizeCapLimit(0), 0, "0 依然是不限")
+  assert.equal(normalizeCapLimit(Number.NaN), 8, "NaN 也不是不限")
+  const dflt = createSubagentCapGate({ limit: undefined })
+  let ok = 0
+  for (let i = 0; i < 9; i++) if (dflt.admit("s").ok) ok++
+  assert.equal(ok, 8, "缺省上限就是 8，第 9 笔被拒 —— 旧代码 `?? 0` 会全放行")
+}
+console.log("   OK (denied dispatches take no slot, ask keeps one, self-child acks release by admission id, replays are deduped and counted, the default is 8 and negative values fall back to it)")
+
+console.log("32d. the wiring: guards.cap, subagentRunning and the release keys, end to end")
+{
+  const cfgFile = path.join(process.env.OPENCODE_CONFIG_DIR, "team-mode.jsonc")
+  fs.writeFileSync(cfgFile, `{ "subagentConcurrency": 2 }`)
+  const w = makeFakeCtx({ directory: ws, agents: [] })
+  const boot = await withCapturedConsole(() => plugin.setup(w.ctx))
+  const ev = () => ({ sessionID: "ses_lead", agent: "team", action: "subagent", resources: [], effect: "allow" })
+  const dispatch = async () => {
+    const e = ev()
+    await w.hook("permission.evaluate").fire(e)
+    return e
+  }
+  const ack = async (id, result, agent = "researcher") => {
+    await w.hook("tool.execute.before").fire({ tool: "subagent", sessionID: "ses_lead", agent: "team", id, input: { agent, description: `查证 ${id}`, background: true } })
+    await w.hook("tool.execute.after").fire({ tool: "subagent", sessionID: "ses_lead", agent: "team", id, result })
+  }
+  const openChild = (sid) => ({ metadata: { sessionID: sid, status: "running" }, content: [{ type: "text", text: `The subagent is working in the background (sessionID: ${sid}).` }] })
+
+  assert.equal((await dispatch()).effect, "allow", "第 1 笔放行")
+  assert.equal((await dispatch()).effect, "allow", "第 2 笔放行")
+  const d3 = await dispatch()
+  assert.equal(d3.effect, "deny", "配置里的 subagentConcurrency: 2 真的接到了 permission.evaluate 上")
+
+  // The ack for the call that took a slot: an OPEN child → registered → slot released.
+  await ack("call_1", openChild("ses_kid1"))
+  const d4 = await dispatch()
+  assert.equal(d4.effect, "deny", "1 running + 1 在飞 = 上限，仍被拒")
+  assert.match(String(d4.message), /running 1 \+ 在飞 1/, "两个数都对：running 来自 tm_join 的注册表（若 subagentRunning 没接线，这里会是 running 0），在飞从 2 掉到 1（release 真的发生了）")
+
+  // A call that produced NO child gives its slot back, so the next dispatch passes.
+  await ack("call_2", { content: [{ type: "text", text: "调用失败" }] })
+  const d5 = await dispatch()
+  assert.equal(d5.effect, "allow", "无子代理的调用释放位子后再派能过 —— 删掉 onCallEnd 的 release 这里会 deny")
+
+  // A replayed ack must not free a second slot (it used to loosen the ceiling).
+  await ack("call_2", { content: [{ type: "text", text: "调用失败" }] })
+  assert.equal((await dispatch()).effect, "deny", "重放同一个 ack 不会放位 —— 否则上限被悄悄放松")
+
+  // A duplicate child (register returns false) must not release either: `if (opened)`.
+  await ack("call_3", openChild("ses_kid1"), "tester")
+  assert.equal((await dispatch()).effect, "deny", "同一个子代理重复登记不释放位子 —— 删掉 register 包装里的 if (opened) 这里会放行")
+
+  fs.rmSync(cfgFile, { force: true })
+  await boot.value?.()
+}
+console.log("   OK (the ceiling from config reaches the hook, tm_join's registry feeds the running count, and both release keys are wired — switching either key or dropping if (opened) turns a case red)")
+
+
+console.log("33. the v2 personality's configDefaults sit BELOW the file layers (the inert template must not shadow them)")
 {
   const repoRoot = path.dirname(fileURLToPath(import.meta.url))
   const v2src = fs.readFileSync(path.join(repoRoot, "src", "host", "v2.ts"), "utf8")

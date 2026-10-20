@@ -605,7 +605,7 @@ the auto-create state.
 
 When the global file is **absent**, the plugin creates it at boot — atomically,
 idempotently, and **never overwriting an existing file**. What it writes is an
-**inert** template: all **57** registry keys, each as a *comment* under a
+**inert** template: all **58** registry keys, each as a *comment* under a
 one-line description, so the file parses to `{}` and sets nothing until you
 uncomment what you want.
 
@@ -614,7 +614,7 @@ uncomment what you want.
 {
   // "offloadThreshold": 2000,            // 卸载阈值（估算 token；等于阈值也卸载）。
   // "envProtect": "strict",              // R6 环境防护模式（strict/standard/off）。（红线：仅全局）
-  // …共 57 个键，每个都带一行说明
+  // …共 58 个键，每个都带一行说明
 }
 ```
 
@@ -676,7 +676,7 @@ Your own agents named `team` / `architect` / … always take precedence; the
 plugin never clobbers user definitions. See [Customization](#-customization)
 for overrides, extra agents and disabling roles.
 
-### Key reference (all 57)
+### Key reference (all 58)
 
 **Offload, previews and the store**
 
@@ -693,6 +693,7 @@ for overrides, extra agents and disabling roles.
 | `blackboardTtlDays` | number | `7` | Handle TTL and the physical sweep period for expired run dirs. |
 | `storeReclaim` | `on`/`off` | `on` | At boot, reclaim what an upgrade left behind: a per-workspace shard idle past the TTL, and the pre-shard `blackboard/` + `trajectory/` at the temp-dir fallback. **Only TTL-expired entries are ever removed** — a fresh run dir survives, because a session started before the upgrade may still be writing there. `off` leaves the disk exactly as found. |
 | `taskOffload` | `on`/`off` | `on` | Keep the host's background sub-agent inside the context budget: when it finishes, the injected full reply is replaced by a preview + a `tm_join` pointer. Touches only synthetic parts carrying the host's own `<task id=… state="completed">` / `<subagent … state="completed">` envelope and over the text threshold — a typed message is never touched even if it contains a perfect envelope, and a `state="error"` child is never rewritten. **Nothing is copied to disk**: the text stays where the child session already wrote it. `off` restores the host's verbatim injection. |
+| `subagentConcurrency` | number | `8` | Ceiling on **running + in-flight** sub-agent dispatches per caller. In-flight = a dispatch the gate admitted but the host has not registered yet, so a **burst in one message is capped too** — the old registered-only count could not do that (24 parallel dispatches all passed it, then later ones were refused). `0` disables. A slot is released when the child registers, when the call ends without one, or after a 60 s TTL, so a lost call cannot leak it. |
 | `boardMaxChars` | number | `200000` | `tm_board_write` per-file character cap — over it the write **refuses** (with a "split the topic" hint) rather than truncating a deliverable. |
 | `boardMaxFiles` | number | `200` | Markdown files allowed per session folder. The TTL sweeper is the only reclaim path, so the refusal names it. |
 | `joinMaxWaitMs` | number | `60000` | Ceiling on `tm_join { waitMs }`. Was 300 000, and a lead parked in it twice in a row (19 min of nothing) while its children worked — waiting is not parallelism, so the default now says "check, then work". A second consecutive wait after nothing settled is cut to 10 s and answered with what to do instead. |
@@ -959,7 +960,7 @@ opencode-team-mode/
 │   ├── envprotect.ts     ← R6 facade (patterns / classifiers / gate predicates / hook)
 │   ├── identity.ts       ← Agent-name identity (case-insensitive lead match)
 │   ├── tm/               ← Governed tools: pipelines / store / preview / guard / refs /
-│   │                        config-layers (the 57-key registry) / config-files (the two
+│   │                        config-layers (the 58-key registry) / config-files (the two
 │   │                        layers) / config-template (the inert auto-created file) /
 │   │                        webfetch / search / memory / board / ledger / dispatch
 │   ├── host/             ← v2 personality (setup / guard / offload / session / events / …)

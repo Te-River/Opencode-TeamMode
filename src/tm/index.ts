@@ -102,8 +102,10 @@ export interface TmRuntime {
   settleHostChild: (sessionID: string, state: string) => boolean
   /** Any child still running? Gates the per-request completion scan. */
   hasOpenHostChild: () => boolean
-  /** Open async dispatches this plugin started (tests + observability). */
-  dispatches: () => Array<{ sessionID: string; agent: string; label: string; state: string }>
+  /** Open async dispatches this plugin started (tests + observability).  `adopted` /
+   *  `startedAt` ride along because the sub-agent concurrency cap leaves out the rows
+   *  nothing will ever settle (see `RunningChildLike`). */
+  dispatches: () => Array<{ sessionID: string; agent: string; label: string; state: string; adopted?: boolean; startedAt: number }>
 }
 
 export interface CreateTmToolsOptions {
@@ -594,7 +596,7 @@ export async function createTmTools(
     registerHostChild: dispatch.register,
     settleHostChild: dispatch.settle,
     hasOpenHostChild: dispatch.hasOpen,
-    dispatches: () => dispatch.children().map((c) => ({ sessionID: c.sessionID, agent: c.agent, label: c.label, state: c.state })),
+    dispatches: () => dispatch.children().map((c) => ({ sessionID: c.sessionID, agent: c.agent, label: c.label, state: c.state, adopted: c.adopted, startedAt: c.startedAt })),
   }
 }
 

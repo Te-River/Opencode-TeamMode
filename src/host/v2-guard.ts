@@ -233,17 +233,314 @@ export async function applyV2BackgroundForce(
   return { registrations, report }
 }
 
+/**
+ * How long an in-flight admission may hold a slot without anything to show for
+ * it.  A dispatch whose `execute.after` never fires (an interrupted turn, a host
+ * that dropped the call) would otherwise hold a slot forever, and a leaked slot
+ * is indistinguishable from a busy team: the cap would silently become stricter
+ * than the number the user configured.  The TTL is the last release path, and a
+ * release that comes from it is counted on its own so a leak is a number rather
+ * than a mystery.
+ */
+export const SUBAGENT_PENDING_TTL_MS = 60_000
+
+/** The ceiling when nothing usable was configured (see `normalizeCapLimit`).
+ *  8 is the registry default; a hook that forgot to pass the key must land on the
+ *  documented ceiling, NOT on "unlimited" — a fail-open cap is not a cap. */
+export const DEFAULT_SUBAGENT_CONCURRENCY = 8
+
+/**
+ * The staleness window for the `running` side (3× the in-flight TTL).
+ *
+ * The in-flight side always had a TTL; the RUNNING side did not, and it is fed from
+ * `tm_join`'s registry, whose rows only ever settle through an observation
+ * (`v2-subagent`'s completion scan, or a `session.idle` the v2 feed does not get).
+ * A row nothing ever observes — an `adopted` row, or a `<subagent … state>` that never
+ * enters the parent's history — therefore stayed 运行中 FOREVER: once `limit` such rows
+ * accumulated, every dispatch was refused and the refusal pointed at a snapshot that
+ * kept saying 运行中.  That is a permanent lock, i.e. the cap turning into an outage.
+ * So a running row past this age is not counted (and is COUNTED as excluded, so the
+ * under-count is a number in `tm_stats` rather than a silent loosening).
+ *
+ * Known, accepted trade: a child that legitimately runs longer than this stops counting
+ * against the ceiling. The alternative is a lock no operator action can clear.
+ */
+export const SUBAGENT_RUNNING_STALE_MS = 3 * SUBAGENT_PENDING_TTL_MS
+
+/** The row shape the cap reads off the registry — only these three fields matter. */
+export interface RunningChildLike {
+  state?: string
+  /** Rebuilt from the host's session tree, not observed live. */
+  adopted?: boolean
+  startedAt?: number
+}
+
+export interface SubagentCapCounts {
+  /** `permission.evaluate` calls for `action:"subagent"` (Team only). */
+  seen: number
+  /** admissions refused — this is the number that proves the cap is live. */
+  denied: number
+  /** in-flight dispatch slots currently held, AFTER the TTL sweep. */
+  pending: number
+  /** high-water mark of `pending` — a burst shows up here even if it settles. */
+  pendingMax: number
+  /** slots reclaimed because nothing ever released them (a leak, counted). */
+  ttlReleased: number
+  /** slots released by a real signal (a child registered, or a call that
+   *  produced none).  Kept apart from `ttlReleased` on purpose. */
+  released: number
+  /** running rows that DID count toward the ceiling on the last read. */
+  runningCounted: number
+  /** running rows excluded as stale (older than the window) on the last read. */
+  runningStale: number
+  /** running rows excluded because the row was adopted, not observed (last read). */
+  runningAdopted: number
+  /** the configured ceiling (0 = unlimited). */
+  limit: number
+}
+
+export interface SubagentCapVerdict {
+  ok: boolean
+  /** The admission id, so a release can name THIS call's slot instead of "the first
+   *  slot of that caller" — a replay that released by caller freed somebody else's
+   *  slot and quietly loosened the ceiling.  0 = no slot was taken. */
+  id: number
+  running: number
+  pending: number
+  limit: number
+  /** the refusal sentence, when `ok` is false */
+  message?: string
+}
+
+export interface SubagentCapGate {
+  /** Ask for a slot.  `limit <= 0` answers yes WITHOUT judging or holding one. */
+  admit(sessionID: string): SubagentCapVerdict
+  /** Pair the next unpaired admission of `sessionID` with the call that is about to
+   *  run, returning its id (0 when there is none).  The id is what `release` takes. */
+  pair(sessionID: string): number
+  /** Give ONE admission back, by id.  An already-released id is a no-op, so a host
+   *  that replays `execute.after` cannot release a second slot. */
+  release(id: number, why: "register" | "call-end"): boolean
+  /** Give back the OLDEST slot of a caller — the fallback for a call that carried no
+   *  admission id (a plugin reload replaying hooks). */
+  releaseOldest(sessionID: string, why: "register" | "call-end"): boolean
+  counts(): SubagentCapCounts
+  /** Live pending slots for one caller (tests + diagnostics). */
+  pendingOf(sessionID: string): number
+}
+
+interface PendingAdmission {
+  id: number
+  sessionID: string
+  at: number
+  /** Already attached to a call by `pair`, so the next `pair` takes the following one. */
+  paired: boolean
+}
+
+/**
+ * Turn whatever reached us into a ceiling.
+ *
+ * Out-of-range values FALL BACK to the default rather than clamping: `-1` used to be
+ * clamped to `0`, and `0` means UNLIMITED here — a typo silently switching the cap off
+ * is the opposite of what a typo should do.
+ */
+export function normalizeCapLimit(raw: unknown): number {
+  if (typeof raw !== "number" || !Number.isFinite(raw)) return DEFAULT_SUBAGENT_CONCURRENCY
+  const v = Math.trunc(raw)
+  return v < 0 ? DEFAULT_SUBAGENT_CONCURRENCY : v
+}
+
+/**
+ * The sub-agent concurrency cap (restored as `subagentConcurrency`).
+ *
+ * Why it counts PENDING dispatches and not just running children: the cap used
+ * to be decided at `permission.evaluate`, while a child was only registered
+ * AFTER its call completed — so 24 dispatches in one message all evaluated
+ * against "0 running" and all passed, and only the NEXT dispatch was refused.
+ * A limit that cannot stop the burst it exists for is not a limit.  Counting the
+ * admission itself closes that window: each passing evaluation holds a slot
+ * until (a) the child is registered, (b) the call ended without a child, or
+ * (c) the TTL reclaims it.
+ *
+ * `0` means unlimited and takes NO decision at all — refusing everything at
+ * limit 0 would be the opposite of what the user asked for.
+ */
+export function createSubagentCapGate(opts: {
+  limit: number
+  /** Running children — read from tm_join's registry, never guessed. Rows are
+   *  filtered here so the adopted/stale policy lives with the thing it protects. */
+  running?: () => ReadonlyArray<RunningChildLike>
+  now?: () => number
+  ttlMs?: number
+  /** Running rows older than this are not counted (0 disables the age test;
+   *  adopted rows are always excluded). */
+  staleMs?: number
+}): SubagentCapGate {
+  const limit = normalizeCapLimit(opts.limit)
+  const now = opts.now ?? ((): number => Date.now())
+  const ttlMs = opts.ttlMs ?? SUBAGENT_PENDING_TTL_MS
+  const staleOpt = opts.staleMs
+  const staleMs = typeof staleOpt === "number" && Number.isFinite(staleOpt) ? Math.max(0, Math.trunc(staleOpt)) : SUBAGENT_RUNNING_STALE_MS
+  const pending: PendingAdmission[] = []
+  let nextId = 0
+  const report: SubagentCapCounts = {
+    seen: 0,
+    denied: 0,
+    pending: 0,
+    pendingMax: 0,
+    ttlReleased: 0,
+    released: 0,
+    runningCounted: 0,
+    runningStale: 0,
+    runningAdopted: 0,
+    limit,
+  }
+
+  const sweep = (at: number): void => {
+    // Oldest first: a slot older than the TTL is one nothing will ever release.
+    while (pending.length && at - pending[0].at >= ttlMs) {
+      pending.shift()
+      report.ttlReleased++
+    }
+    report.pending = pending.length
+  }
+
+  /** Count the running rows worth counting, and remember what was left out. */
+  const runningNow = (at: number): number => {
+    let rows: ReadonlyArray<RunningChildLike> = []
+    try {
+      rows = opts.running?.() ?? []
+    } catch {
+      // A registry read that throws must not turn the cap into "0 running"
+      // forever, but it also may not break the permission hook: count the
+      // pending side only and let the pending slots do the limiting.
+      rows = []
+    }
+    let counted = 0
+    let stale = 0
+    let adopted = 0
+    for (const r of rows) {
+      if (!r || (r.state ?? "running") !== "running") continue
+      if (r.adopted) {
+        adopted++
+        continue
+      }
+      const started = typeof r.startedAt === "number" && Number.isFinite(r.startedAt) ? r.startedAt : 0
+      if (staleMs > 0 && started > 0 && at - started >= staleMs) {
+        stale++
+        continue
+      }
+      counted++
+    }
+    report.runningCounted = counted
+    report.runningStale = stale
+    report.runningAdopted = adopted
+    return counted
+  }
+
+  return {
+    admit(sessionID: string): SubagentCapVerdict {
+      const at = now()
+      sweep(at)
+      report.seen++
+      const running = runningNow(at)
+      if (limit <= 0) return { ok: true, id: 0, running, pending: pending.length, limit }
+      if (running + pending.length >= limit) {
+        report.denied++
+        return {
+          ok: false,
+          id: 0,
+          running,
+          pending: pending.length,
+          limit,
+          message:
+            `子代理并发上限 ${limit}：当前 running ${running} + 在飞 ${pending.length} = ${running + pending.length}，` +
+            `这次派发被拒。三条出路：① 先用 tm_join 确认是不是卡住的运行中行（有行永远观测不到结算，别干等）；` +
+            `② tm_join {cancel:true} 停掉不需要的；③ 调大 subagentConcurrency 或设 0 = 不限（team-mode.jsonc）。`,
+        }
+      }
+      const id = ++nextId
+      pending.push({ id, sessionID: String(sessionID ?? ""), at, paired: false })
+      report.pending = pending.length
+      if (pending.length > report.pendingMax) report.pendingMax = pending.length
+      return { ok: true, id, running, pending: pending.length, limit }
+    },
+
+    pair(sessionID: string): number {
+      sweep(now())
+      const key = String(sessionID ?? "")
+      const p = pending.find((x) => x.sessionID === key && !x.paired)
+      if (!p) return 0
+      p.paired = true
+      return p.id
+    },
+
+    release(id: number, _why: "register" | "call-end"): boolean {
+      sweep(now())
+      const idx = pending.findIndex((p) => p.id === id)
+      if (idx < 0) return false
+      pending.splice(idx, 1)
+      report.released++
+      report.pending = pending.length
+      return true
+    },
+
+    releaseOldest(sessionID: string, _why: "register" | "call-end"): boolean {
+      sweep(now())
+      const key = String(sessionID ?? "")
+      const idx = pending.findIndex((p) => p.sessionID === key)
+      if (idx < 0) return false
+      pending.splice(idx, 1)
+      report.released++
+      report.pending = pending.length
+      return true
+    },
+
+    counts(): SubagentCapCounts {
+      const at = now()
+      sweep(at)
+      runningNow(at)
+      return { ...report, pending: pending.length }
+    },
+
+    pendingOf(sessionID: string): number {
+      sweep(now())
+      const key = String(sessionID ?? "")
+      return pending.filter((p) => p.sessionID === key).length
+    },
+  }
+}
+
 export async function applyV2PermissionGuards(
   ctx: V2Context,
   opts: {
     envProtectMode: EnvProtectMode
     scope?: TeamScope
+    /** `subagentConcurrency` — the sub-agent concurrency ceiling. Omitted / invalid
+     *  falls back to `DEFAULT_SUBAGENT_CONCURRENCY` (8); 0 = unlimited. */
+    subagentConcurrency?: number
+    /** Running children of this process (tm_join's registry), as ROWS so the gate can
+     *  leave out the ones nothing will ever settle. */
+    subagentRunning?: () => ReadonlyArray<RunningChildLike>
+    /** Staleness window for the running side (default `SUBAGENT_RUNNING_STALE_MS`). */
+    subagentStaleMs?: number
+    /** Test / wiring injection: share one gate between the guard and the
+     *  release sites instead of minting a private one. */
+    subagentCap?: SubagentCapGate
   },
-): Promise<{ registrations: V2Registration[]; report: GuardReport; installed: boolean }> {
+): Promise<{ registrations: V2Registration[]; report: GuardReport; installed: boolean; cap: SubagentCapGate }> {
   const report: GuardReport = { seen: 0, byAction: {}, strictened: 0, denied: 0, shellMatched: 0, foreignSkipped: 0, envFileDenied: 0, envFileDeniedByInput: 0, envFileInputSeen: 0, envFileInputForeignSkipped: 0, envFileInputThrew: 0 }
+  const cap =
+    opts.subagentCap ??
+    createSubagentCapGate({
+      limit: normalizeCapLimit(opts.subagentConcurrency),
+      running: opts.subagentRunning,
+      staleMs: opts.subagentStaleMs,
+    })
+
   const permission = ctx.permission
   if (!permission || typeof permission.hook !== "function") {
-    return { registrations: [], report, installed: false }
+    return { registrations: [], report, installed: false, cap }
   }
 
   const registrations = [
@@ -259,6 +556,32 @@ export async function applyV2PermissionGuards(
       if (opts.scope && opts.scope.count(opts.scope.decide(event)) !== "ours") {
         report.foreignSkipped++
         return
+      }
+
+      // The sub-agent concurrency cap, BEFORE any classifier work: a burst that
+      // exceeds the ceiling is refused here, and the refusal is the only branch
+      // that ever denies a dispatch.  `limit 0` takes no decision at all.
+      if (action === "subagent") {
+        // A call somebody already DENIED can never reach `execute.after`, so admitting
+        // it would hold a slot that only the 60s TTL ever reclaims — and a cooldown
+        // that denies every attempt would bleed one slot per attempt (`v2-retry` denies
+        // at this very layer).  So a pre-denied dispatch takes no slot at all.
+        //
+        // `ask` still takes one, deliberately: an approved call really runs, and
+        // releasing early would let a burst of pending questions each clear the ceiling
+        // before any of them executes.  A question the user declines leaks one slot to
+        // the TTL — bounded, and it errs on the side of a shorter burst, not a longer one.
+        if (event.effect === "deny") return
+        const caller = typeof event?.sessionID === "string" ? event.sessionID : ""
+        const verdict = cap.admit(caller)
+        if (!verdict.ok) {
+          // NOT `report.denied`: that counter is the egress/R6 gate's refusals, and
+          // folding a concurrency refusal into it made `guard_denied` in tm_stats read
+          // as "the red line fired".  The cap keeps its own (`cap.counts().denied`).
+          event.effect = "deny"
+          if (verdict.message) event.message = verdict.message
+          return
+        }
       }
 
       const decision =
@@ -282,7 +605,7 @@ export async function applyV2PermissionGuards(
     }),
   ]
 
-  return { registrations, report, installed: true }
+  return { registrations, report, installed: true, cap }
 }
 
 /**

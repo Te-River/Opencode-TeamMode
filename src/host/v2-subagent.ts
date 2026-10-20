@@ -44,6 +44,13 @@ export interface PendingDispatch {
   agent: string
   label: string
   at: number
+  /** The host's own tool-call id (`execute.before` carries `id`), when present.  It is
+   *  what makes the pairing survive a replayed `execute.after`: the same call cannot
+   *  hand its slot back twice. */
+  callId?: string
+  /** The cap admission this call took, so its slot can be released BY ID instead of
+   *  "the first slot this caller holds" (0 = the cap took no slot, or not paired). */
+  admissionId?: number
 }
 
 /** What `tm_join` needs to open a row for a child it did not dispatch itself. */
@@ -52,6 +59,8 @@ export interface HostChildInput {
   parentSessionID: string
   agent: string
   label: string
+  /** The cap admission that admitted this dispatch (see PendingDispatch.admissionId). */
+  admissionId?: number
 }
 
 /** How many unclaimed acks one caller may have in flight before we stop guessing which
@@ -120,6 +129,10 @@ export interface SubagentRegistryReport {
   /** children registered with a generic label because the caller had >PENDING_PER_CALLER
    *  in flight, so pairing would have been a guess */
   labelGuessed: number
+  /** `execute.after` events carrying a call id we had already processed — a host that
+   *  replays hooks in-process.  Counted because a replay that released a slot would
+   *  silently loosen the ceiling. */
+  replayed: number
 }
 
 export interface V2SubagentRegistry {
@@ -251,16 +264,28 @@ export function applyV2SubagentRegistry(
     /** Open a row in tm_join's registry.  Returns false when the child is already known
      *  (a plugin reload replays hooks) or the id is the caller's own session. */
     register: (child: HostChildInput) => boolean
+    /** A dispatch that produced NO child row still has to give its concurrency
+     *  slot back — otherwise the cap counts phantom in-flight work and tightens
+     *  itself until the TTL saves it.  `why` says which case it was, and
+     *  `admissionId` names the EXACT slot (see `PendingDispatch.admissionId`). */
+    onCallEnd?: (callerSessionID: string, why: "no-child" | "settled-at-once" | "unusable-child", admissionId?: number) => void
+    /** Pair this call with one of the caller's cap admissions, returning its id.
+     *  Called from `execute.before`, i.e. after `permission.evaluate` admitted it. */
+    pairAdmission?: (callerSessionID: string) => number
     scope?: TeamScope
     now?: () => number
   },
 ): V2SubagentRegistry {
-  const report: SubagentRegistryReport = { seen: 0, registered: 0, noChildId: 0, settledAtOnce: 0, unpaired: 0, labelGuessed: 0 }
+  const report: SubagentRegistryReport = { seen: 0, registered: 0, noChildId: 0, settledAtOnce: 0, unpaired: 0, labelGuessed: 0, replayed: 0 }
   const hook = (ctx as { tool?: { hook?: unknown } } | null | undefined)?.tool?.hook
   if (typeof hook !== "function") return { registrations: [], report, active: false }
   const now = deps.now ?? (() => Date.now())
   const pending = new Map<string, PendingDispatch[]>()
   const reg = hook as (n: string, cb: (e: unknown) => void) => Promise<V2Registration>
+  // Bounded memory of processed call ids: the host re-runs hooks in-process, and a
+  // replayed `execute.after` must not hand back a second slot.
+  const seenCalls = new Set<string>()
+  const seenOrder: string[] = []
 
   const ours = (event: { agent?: unknown; sessionID?: unknown }): boolean => {
     if (!deps.scope) return true
@@ -275,7 +300,7 @@ export function applyV2SubagentRegistry(
     // Reading `args` here was the live-round failure: the stash silently stayed empty,
     // so every ack arrived unpaired and the child was registered under a generic label
     // instead of the role and task it was dispatched for.
-    const event = raw as { tool?: string; sessionID?: unknown; input?: unknown }
+    const event = raw as { tool?: string; sessionID?: unknown; id?: unknown; input?: unknown }
     try {
       if (String(event?.tool ?? "") !== "subagent") return
       if (!ours(event)) return
@@ -283,6 +308,14 @@ export function applyV2SubagentRegistry(
       if (!p) return
       const caller = String(event.sessionID ?? "").trim()
       if (!caller) return
+      p.callId = typeof event.id === "string" && event.id ? event.id : undefined
+      // Pair with the admission this call already took at permission.evaluate, so the
+      // release site can name a slot instead of guessing one.
+      try {
+        p.admissionId = deps.pairAdmission?.(caller) ?? 0
+      } catch {
+        p.admissionId = 0
+      }
       const list = pending.get(caller) ?? []
       list.push(p)
       // Bounded, oldest-first: an unbounded map is how a long-lived lead process grows,
@@ -295,24 +328,56 @@ export function applyV2SubagentRegistry(
   })
 
   const after = reg("execute.after", (raw) => {
-    const event = raw as { tool?: string; sessionID?: unknown; result?: unknown }
+    const event = raw as { tool?: string; sessionID?: unknown; id?: unknown; result?: unknown }
     try {
       if (String(event?.tool ?? "") !== "subagent") return
       if (!ours(event)) return
+      const callId = typeof event.id === "string" ? event.id : ""
+      if (callId) {
+        if (seenCalls.has(callId)) {
+          report.replayed++
+          return
+        }
+        seenCalls.add(callId)
+        seenOrder.push(callId)
+        if (seenOrder.length > PENDING_PER_CALLER * 4) seenCalls.delete(seenOrder.shift() as string)
+      }
       report.seen++
+      const caller = String(event.sessionID ?? "").trim()
+      // Pop the pairing entry ONCE per call, before any branch: every way this call can
+      // end has to give its slot back, and the entry carries the admission id.
+      const list = pending.get(caller) ?? []
+      let idx = callId ? list.findIndex((x) => x.callId === callId) : -1
+      if (idx < 0 && list.length) idx = 0
+      const p = idx >= 0 ? list.splice(idx, 1)[0] : undefined
+      if (list.length) pending.set(caller, list)
+      else pending.delete(caller)
+      const admissionId = p?.admissionId ?? 0
+      const endCall = (why: "no-child" | "settled-at-once" | "unusable-child"): void => {
+        try {
+          deps.onCallEnd?.(caller, why, admissionId)
+        } catch {
+          /* a slot release may never break a dispatch */
+        }
+      }
       const child = hostChildIdOf(event?.result)
       if (!child) {
         report.noChildId++
+        endCall("no-child")
         return
       }
-      const caller = String(event.sessionID ?? "").trim()
-      if (!caller || caller === child) return
+      if (!caller || caller === child) {
+        // A child whose id IS the caller is unusable as a row — and the CALL still
+        // ended, so the slot goes back here.  Returning without releasing (the old
+        // behaviour) left it to the TTL on every such ack.
+        endCall("unusable-child")
+        return
+      }
       if (!hostChildIsOpen(event?.result)) {
         report.settledAtOnce++   // a synchronous child: its result IS the reply
+        endCall("settled-at-once")
         return
       }
-      const list = pending.get(caller) ?? []
-      const p = list.shift()
       if (list.length >= PENDING_PER_CALLER) report.labelGuessed++
       if (!p) report.unpaired++
       const opened = deps.register({
@@ -322,10 +387,9 @@ export function applyV2SubagentRegistry(
         // An unpaired ack still deserves a row: the child exists and the user can see
         // it.  What we do not do is invent a task name for it.
         label: p?.label ?? "宿主子代理（未配到派发）",
+        admissionId: admissionId || undefined,
       })
       if (opened) report.registered++
-      if (list.length) pending.set(caller, list)
-      else pending.delete(caller)
     } catch {
       /* never throw into the host's hook */
     }

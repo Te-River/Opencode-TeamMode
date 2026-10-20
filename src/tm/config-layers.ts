@@ -197,6 +197,7 @@ export const CONFIG_KEYS: readonly ConfigKeySpec[] = [
   { key: "splitMaxCriteria", type: "number", default: 3, min: 1, max: 50, doc: "拆分建议里每条交付的验收标准上限。" },
   { key: "v2BrowserGate", type: "string", default: "on", enum: ["on", "off"], doc: "原生 browser_* 目录的域名/地址/R6 门禁；off = 关闭。" },
   { key: "ledgerMaxItems", type: "number", default: 200, min: 10, max: 100_000, doc: "tm_ledger 每个会话的最大条目数。" },
+  { key: "subagentConcurrency", type: "number", default: 8, min: -1, max: 100, doc: "子代理并发上限（running + 在飞派发）；0 = 不限；负值无效，回落默认 8（不夹到 0——0 是“不限”，一个笔误不该把上限关掉）。" },
   // ---- RED-LINE knobs: honored ONLY in the global file (D1) ----
   {
     key: "envProtect",

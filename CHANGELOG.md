@@ -7,6 +7,24 @@ registry saw 1.5.0 as the install-script fix release).
 
 ## [Unreleased]
 
+## [1.7.7] - 2026-10-20
+
+### Added
+
+- **The sub-agent concurrency ceiling is back, under a new key and with a count that a burst
+  cannot slip past (2026-10-20).** 1.7.4 removed the cap outright; it returns as
+  **`subagentConcurrency`** (number, **default 8**, `0` = unlimited) rather than under the old
+  `maxConcurrentSubagents` name. The old mechanism read the count at `permission.evaluate`,
+  while a child is registered only after its call completes — so a burst in ONE message saw
+  "0 running" on every evaluation and passed whole (measured in a live session: 24 parallel
+  dispatches all admitted, then the next single dispatch refused). The ceiling now counts
+  **registered running children + in-flight dispatches** — a slot is taken when the gate
+  admits and released when the child registers, when the call ends without a child, or after a
+  60 s TTL so a lost call cannot hold it forever. Counters (`subagent_cap_limit / _denied /
+  _pending_max / _ttl_released / _released`) ride the boot and surface rows and `tm_stats`.
+  **Behaviour change for anyone who set the old key:** `maxConcurrentSubagents` is not in the
+  registry, so it is reported as an unknown key (warned, never applied).
+
 ## [1.7.6] - 2026-10-18
 
 ### Fixed
