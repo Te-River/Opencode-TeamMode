@@ -7,6 +7,36 @@ registry saw 1.5.0 as the install-script fix release).
 
 ## [Unreleased]
 
+## [1.7.9] - 2026-10-21
+
+### Fixed
+
+- **A HARD quota no longer gets the wait-and-retry ladder (user-reported: a child session
+  died on `Allocated quota exceeded, please increase your quota limit … error-code#token-limit`).**
+  1.7.8's governor named a 5s/10s/20s wait for EVERY classified error — for an allocation that
+  must be raised or reset, that is a promise no wait can keep. `classifyProviderError` now
+  carries a `hardQuota` sub-class (allocated-exceeded / increase-your-limit / token-limit /
+  余额不足; a bare 「quota exceeded」 stays soft — it may already carry a reset). The hard
+  directive names NO wait: it says stop re-asking this provider, wait for the reset or raise
+  the quota / switch model. The breaker trips on the **second** consecutive hard-quota error
+  instead of `retryBreakAfter`, so a dead provider stops receiving new sub-agent dispatches in
+  seconds, not minutes. Rate/transient/soft-quota keep the 5/10/20 ladder byte-exact.
+- **Host 2.1.2's structured `retryAfterMs` is consumed (#57146).** A numeric `retryAfterMs` on
+  the `session.error` payload (top level, `error`, or one nesting level — read defensively,
+  same walk style as `errorTextOf`) is honored as the wait floor over the ladder rung, and the
+  `classified` trajectory row names which source answered (`retry_after_source:
+  structured|text|none`) — an absent field is `none`, never a guessed hint.
+
+### Changed
+
+- **Docs and installers stop recommending two commands that are broken on host 2.1.2:**
+  `opencode reload` crashes the service-attach path (`TypeError: o is not a function` in
+  `ServerProcess.start`/`Worktree.refresh`, reproduces with an empty config and zero plugins;
+  `--standalone` reload works) and `opencode plugin update` reports "Plugin is not configured"
+  for a configured plugin. Filed upstream as anomalyco/opencode#57719; `install.ps1`,
+  `install.sh`, `gen-v2-config.mjs`, `AGENTS.md` and `docs/installation-v2.md` now say
+  **restart the app / re-run the installer**. Evidence: `docs/v2-port-notes.md`, 2026-10-21.
+
 ## [1.7.8] - 2026-10-21
 
 ### Added
