@@ -665,9 +665,13 @@ The desktop UI surfaces the same TypeError on its plugin-update toast, and
 `opencode plugin update <pkg>` reports "Plugin is not configured" for a globally configured
 plugin (both with and without the `@latest` suffix). Upstream issue filed as
 anomalyco/opencode#57719; our docs/installers now tell users to restart the app instead.
-**The gentler path exists, untested:** the command tree carries `opencode service restart`
-("Restart the background server"; `service start|stop|status` beside it) — the first thing to
-try before touching processes at all. It restarts the background server the CLI shares; how
-the DESKTOP app re-attaches to its embedded server afterwards is unmeasured, so it has not
-been adopted into the docs yet — verify it live (accepting a possible session interruption)
-before recommending it.
+**The official restart command — verified 2026-10-21 `[L][B]`:** `opencode service restart`
+("Restart the background server") stops and re-ensures the managed server
+(`restart = Ct.stop({pty:"handoff"}) + Ct.ensure(...)` in the binary); a sandbox lifecycle
+(`service set port 45279` → `start` → `status` → `restart` → `stop`, all exit 0) shows the
+restart really swaps the process (pid 18980 → 17860, same URL), and the sandbox `start` failing
+with "port 45278 already in use" proves the managed service IS the desktop's embedded server.
+It is now the documented activation path in `docs/installation-v2.md` and the installers;
+the desktop's own reconnect after a restart was not exercised live (that would interrupt the
+running session — the command's job is a real stop→start, so treat the open session as
+reconnecting, not surviving).

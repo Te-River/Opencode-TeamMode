@@ -147,6 +147,8 @@ export interface TmConfig {
   retryJitter: number
   retryBreakAfter: number
   retryCooldownMs: number
+  retryMaxRetries: number
+  retryChainGapMs: number
   /** Split advice when a dispatch brief is oversized. */
   splitAdvice: "on" | "off"
   splitBriefTokens: number

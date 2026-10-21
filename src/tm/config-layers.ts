@@ -195,6 +195,8 @@ export const CONFIG_KEYS: readonly ConfigKeySpec[] = [
   { key: "retryJitter", type: "number", default: 0, min: 0, max: 0.95, doc: "重试退避抖动比例（默认 0 = 不抖动，保证第1/2/3次重试精确 5s/10s/20s；设成正数才在 ±比例内随机错峰）。" },
   { key: "retryBreakAfter", type: "number", default: 5, min: 1, max: 1000, doc: "连续多少次错误后触发断路器。" },
   { key: "retryCooldownMs", type: "number", default: 60_000, min: 0, max: 3_600_000, doc: "断路器冷却时长（毫秒）。" },
+  { key: "retryMaxRetries", type: "number", default: 5, min: 0, max: 10, doc: "同一请求的最大重试次数（默认 5：5s/10s/20s/40s/60s；0 = 不重试）。" },
+  { key: "retryChainGapMs", type: "number", default: 600_000, min: 1_000, max: 86_400_000, doc: "同一会话多久没有新错误就视为新请求（重试计数清零），毫秒。" },
   { key: "splitAdvice", type: "string", default: "on", enum: ["on", "off"], doc: "派发 brief 过大时注入拆分建议；off = 关闭。" },
   { key: "splitBriefTokens", type: "number", default: 4000, min: 200, max: 200_000, doc: "触发拆分建议的 brief token 阈值。" },
   { key: "splitMaxCriteria", type: "number", default: 3, min: 1, max: 50, doc: "拆分建议里每条交付的验收标准上限。" },

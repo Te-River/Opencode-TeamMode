@@ -44,6 +44,8 @@ export interface TeamScope {
   isOurs(agent: unknown): boolean
   decide(event: { agent?: unknown; sessionID?: unknown } | null | undefined): ScopeVerdict
   learn(agent: unknown, sessionID: unknown): void
+  /** The normalized agent a session was last seen as ("" when never seen). */
+  agentOf(sessionID: unknown): string
   readonly report: V2ScopeReport
   /** counted at each call site, so a layer that never fires cannot look healthy */
   count(verdict: ScopeVerdict): ScopeVerdict
@@ -65,6 +67,10 @@ export function createTeamScope(names: Iterable<string>): TeamScope {
       if (typeof sessionID !== "string" || !sessionID) return
       const n = normalizeAgentName(agent)
       if (n !== "" && set.has(n)) bySession.set(sessionID, n)
+    },
+    agentOf(sessionID) {
+      const sid = typeof sessionID === "string" ? sessionID : ""
+      return sid ? bySession.get(sid) ?? "" : ""
     },
     decide(event) {
       const n = normalizeAgentName(event?.agent)

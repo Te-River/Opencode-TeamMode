@@ -3441,7 +3441,7 @@ console.log("   OK (tool-call read by shape; a media part is known-but-textless;
 // 30. 错峰重试 — recognise a provider throttle, inject an EXACT wait, cool down (#49 feature 3)
 console.log("30. 错峰重试 — recognise a provider throttle, inject an exact wait, cool down (#49 feature 3)")
 {
-  const { classifyProviderError, backoffMs, createRetryGovernor, resolveRetryConfig, applyV2RetryGovernor, RETRY_MARKER, RETRY_DEFAULTS } =
+  const { classifyProviderError, backoffMs, createRetryGovernor, resolveRetryConfig, applyV2RetryGovernor, RETRY_MARKER, RETRY_DEFAULTS, roleOfSession, isTurnEndEvent } =
     await import("./dist/host/v2-retry.js")
   const { createTeamScope } = await import("./dist/host/v2-scope.js")
 
@@ -3497,6 +3497,9 @@ console.log("30. 错峰重试 — recognise a provider throttle, inject an exact
   assert.equal(RETRY_DEFAULTS.jitter, 0, "the default jitter is 0 — the ladder is fixed, not random")
   assert.equal(RETRY_DEFAULTS.baseMs, 5000, "…and the first wait is 5s")
   assert.equal(rc({}).jitter, 0, "the registry default reaches the resolved config as 0")
+  assert.equal(rc({}).maxRetries, 5, "one request earns FIVE retries by default (user rule)")
+  assert.equal(rc({}).chainGapMs, 600000, "a 10-minute quiet gap starts a new chain")
+  assert.equal(rc({ retryMaxRetries: "abc" }).maxRetries, 5, "an illegal retry budget falls back to 5, it never disables")
   {
     const defaults = resolveRetryConfig(resolveConfig({}))
     const ladderGov = createRetryGovernor({ ...defaults, random: () => 0.37 })
@@ -3540,6 +3543,103 @@ console.log("30. 错峰重试 — recognise a provider throttle, inject an exact
     assert.equal(trow.retry_after_source, "text", "labelled as the text source")
   }
 
+  // (j) THE LADDER IS PER REQUEST — and the agent is never told how many retries
+  // it has had (user rules, 2026-10-21): 5 retries of ONE failing request walk
+  // 5s/10s/20s/40s/60s; the 6th error spends the budget and names no wait; a NEW
+  // error after that starts a fresh chain at 5s; sessions never share a chain.
+  {
+    const pg = createRetryGovernor({ baseMs: 5000, maxMs: 60000, jitter: 0, breakAfter: 99, cooldownMs: 60000, now: () => 0, random: () => 0.5 })
+    const five = Array.from({ length: 5 }, () => pg.observe("HTTP 429 Too Many Requests", { sessionID: "ses_a" }).delayMs)
+    assert.deepEqual(five, [5000, 10000, 20000, 40000, 60000], `one request walks 5s/10s/20s/40s/60s — got ${five}`)
+    assert.equal(pg.observe("HTTP 429 Too Many Requests", { sessionID: "ses_a" }).delayMs, 0, "the 6th error is past the budget — no wait is named")
+    const stop = pg.takeDirective("ses_a")
+    assert.ok(String(stop.text).includes("预算耗尽"), "the stop directive says the budget is spent")
+    assert.ok(/已重试\s*5\s*次/.test(String(stop.text)), "…and names the retry count (approved wording)")
+    assert.equal(pg.report.mainExhausted + pg.report.childExhausted, 1, "the exhaustion is counted exactly once")
+    assert.equal(pg.observe("HTTP 429 Too Many Requests", { sessionID: "ses_a" }).delayMs, 5000, "a post-exhausted error starts a NEW chain at 5s")
+    assert.equal(pg.observe("HTTP 429 Too Many Requests", { sessionID: "ses_b" }).delayMs, 5000, "another session starts its own chain at 5s")
+    assert.equal(pg.observe("HTTP 429 Too Many Requests", { sessionID: "ses_b" }).delayMs, 10000, "…and advances independently of A")
+    assert.ok(pg.directive("ses_a"), "A has a pending directive")
+    assert.equal(pg.directive("ses_c"), null, "a session with no errors has none")
+    pg.observeIdle("ses_b")
+    assert.equal(pg.observe("HTTP 429 Too Many Requests", { sessionID: "ses_b" }).delayMs, 5000, "idle ends the chain — the next failure is retry #1 again")
+    assert.ok(pg.report.chainsReset >= 2, "chain resets are counted (post-exhausted + idle)")
+    const ladder = pg.takeDirective("ses_a")
+    assert.ok(ladder && /尝试\s*1/.test(String(ladder.text)), "the wait directive uses the native 尝试 N wording")
+  }
+
+  // (k) SUB-AGENT vs MAIN-AGENT: a child that spends its budget hands the work back
+  // to the lead; the two sessions never share a chain or a directive.
+  {
+    const ws31 = workspace("retry-roles")
+    const f3 = makeFakeCtx({ directory: ws31, agents: [] })
+    const scope3 = createTeamScope(["team", "architect", "implementer", "reviewer", "tester", "researcher"])
+    const g3 = createRetryGovernor({
+      baseMs: 5000,
+      maxMs: 60000,
+      jitter: 0,
+      breakAfter: 99,
+      cooldownMs: 60000,
+      now: () => 0,
+      random: () => 0.5,
+      roleOf: (sid) =>
+        sid === "ses_child" ? { role: "sub", parentSessionID: "ses_lead", agent: "implementer" } : sid === "ses_lead" ? { role: "main", agent: "team" } : { role: "unknown" },
+    })
+    await applyV2RetryGovernor(f3.ctx, { scope: scope3, governor: g3, onEvent: () => {} })
+    const fire3 = (ev) => f3.hook("session.context").fire(ev)
+    const leadCtx = (system) => ({ sessionID: "ses_lead", agent: "team", system, messages: [], tools: {}, options: {} })
+    const childCtx = (system) => ({ sessionID: "ses_child", agent: "implementer", system, messages: [], tools: {}, options: {} })
+    await fire3(leadCtx([])) // learn the lead's session
+    for (let i = 0; i < 6; i++) g3.observe("HTTP 429 Too Many Requests", { sessionID: "ses_child", role: "sub", parentSessionID: "ses_lead", agent: "implementer" })
+    assert.equal(g3.report.childExhausted, 1, "the child's exhaustion is counted as a child event")
+    assert.equal(g3.report.mainExhausted, 0, "the child's errors never advance a main-agent budget")
+    const leadSys = []
+    await fire3(leadCtx(leadSys))
+    assert.equal(leadSys.length, 1, "the lead's next request carries the notice")
+    assert.ok(String(leadSys[0].text).includes("主代理自己执行"), "…telling the lead to run the step itself")
+    const childSys = []
+    await fire3(childCtx(childSys))
+    assert.equal(childSys.length, 1, "the child's own request carries the stop directive")
+    assert.ok(String(childSys[0].text).includes("预算耗尽") && String(childSys[0].text).includes("交回主代理"), "…saying the budget is spent and the work goes back to the lead")
+    // The user's explicit rule: child exhaustion NEVER denies the lead's dispatch.
+    const dispatch3 = { sessionID: "ses_lead", agent: "team", action: "subagent", resources: [], effect: "allow" }
+    await f3.hook("permission.evaluate").fire(dispatch3)
+    assert.equal(dispatch3.effect, "allow", "child exhaustion never denies the lead's dispatch (user rule)")
+  }
+
+  // (l) HOST-NATIVE RETRIES WIN: when the host schedules its OWN retry
+  // (`session.retry.scheduled` — the desktop renders 「尝试 N - 在 X 秒内重试」 from it),
+  // our ladder directive stands down and the attempt count follows the host's.
+  {
+    const hg2 = createRetryGovernor({ baseMs: 5000, maxMs: 60000, jitter: 0, breakAfter: 99, cooldownMs: 60000, now: () => 0, random: () => 0.5 })
+    hg2.observe("HTTP 429 Too Many Requests", { sessionID: "ses_h" })
+    assert.ok(hg2.directive("ses_h"), "the ladder directive is armed at first")
+    hg2.observeHostRetry({ properties: { sessionID: "ses_h", attempt: 2, at: 47000, error: { type: "Provider", message: "HTTP 524", status: 524, retryAfterMs: 47000 } } })
+    assert.equal(hg2.directive("ses_h"), null, "a host-scheduled retry stands the ladder directive down")
+    assert.equal(hg2.report.hostRetries, 1, "the host retry is counted")
+    assert.equal(hg2.observe("HTTP 429 Too Many Requests", { sessionID: "ses_h" }).delayMs, 20000, "the ladder rung follows the host's attempt count (attempt 2 → 20s)")
+    assert.ok(hg2.directive("ses_h"), "with no host retry for this failure, the ladder directive is back (takeover)")
+    const hq = createRetryGovernor({ baseMs: 5000, maxMs: 60000, jitter: 0, breakAfter: 99, cooldownMs: 60000, now: () => 0, random: () => 0.5 })
+    hq.observe("Allocated quota exceeded, please increase your quota limit", { sessionID: "ses_q" })
+    assert.ok(hq.directive("ses_q"), "the hard-quota directive is armed")
+    hq.observeHostRetry({ properties: { sessionID: "ses_q", attempt: 1, at: 5000 } })
+    assert.ok(hq.directive("ses_q"), "a host retry never silences the hard-quota stop")
+  }
+
+  // (m) the role question is a pure function, and the idle tap covers every host
+  // spelling of "the turn ended" (2.0.28 renamed them — the error tap's lesson).
+  {
+    const kids = [{ sessionID: "ses_kid", parentSessionID: "ses_lead", agent: "implementer" }]
+    assert.deepEqual(roleOfSession("ses_kid", kids, () => ""), { role: "sub", parentSessionID: "ses_lead", agent: "implementer" }, "a registered child is a sub-agent with its parent")
+    assert.equal(roleOfSession("ses_spec", [], () => "implementer").role, "sub", "a Team specialist not yet in the registry is still a SUB-agent")
+    assert.equal(roleOfSession("ses_lead", [], () => "team").role, "main", "the lead is the main agent")
+    assert.equal(roleOfSession("ses_x", [], () => "").role, "unknown", "an unseen session is unknown")
+    assert.equal(isTurnEndEvent("session.idle"), true, "older hosts end a turn with session.idle")
+    assert.equal(isTurnEndEvent("session.execution.succeeded"), true, "2.0.28 ends one with execution.succeeded")
+    assert.equal(isTurnEndEvent("session.execution.interrupted"), true, "…and interrupted")
+    assert.equal(isTurnEndEvent("session.execution.failed"), false, "a failure is not a turn end (the error tap owns it)")
+  }
+
   // (g) the hooks, on the fake host
   const ws30 = workspace("retry")
   const f = makeFakeCtx({ directory: ws30, agents: [] })
@@ -3556,7 +3656,7 @@ console.log("30. 错峰重试 — recognise a provider throttle, inject an exact
   assert.equal(before.system.length, 0, "no directive before any error")
 
   // a quota error arms the next request with the EXACT seconds
-  gov.observe("quota exceeded")
+  gov.observe("quota exceeded", { sessionID: "ses_lead" })
   const after = { sessionID: "ses_lead", agent: "team", system: [], messages: [], tools: {}, options: {} }
   await fireCtx(after)
   assert.equal(after.system.length, 1, "the next request carries the directive")
@@ -3571,14 +3671,14 @@ console.log("30. 错峰重试 — recognise a provider throttle, inject an exact
   assert.equal(replay.system.length, 0, "the directive is consumed once, so a replay injects nothing")
 
   // a foreign session is not ours to inject into
-  gov.observe("quota exceeded")
+  gov.observe("quota exceeded", { sessionID: "ses_lead" })
   const foreignCtx = { sessionID: "ses_build", agent: "build", system: [], messages: [], tools: {}, options: {} }
   await fireCtx(foreignCtx)
   assert.equal(foreignCtx.system.length, 0, "a build session's request is not ours to touch")
 
   // (h) the cooldown denies a new dispatch, and only a dispatch
-  for (let i = 0; i < 5; i++) gov.observe("quota exceeded")
-  assert.equal(gov.inCooldown(), true, "5 consecutive errors trip the breaker")
+  for (let i = 0; i < 5; i++) gov.observe("quota exceeded", { sessionID: "ses_lead" })
+  assert.equal(gov.inCooldown("ses_lead"), true, "5 consecutive errors trip the breaker")
   const dispatch = { sessionID: "ses_lead", agent: "team", action: "subagent", resources: [], effect: "allow" }
   await firePerm(dispatch)
   assert.equal(dispatch.effect, "deny", "a dispatch during cooldown is denied")

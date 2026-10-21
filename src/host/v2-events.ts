@@ -31,6 +31,7 @@
 
 import type { HostEvent } from "../types.js"
 import type { V2Registration } from "./v2-types.js"
+import { isTurnEndEvent, sessionIDOf } from "./v2-retry.js"
 
 /** The types the dispatcher understands, plus the v2 spellings we have observed.
  *  Anything else is counted, not forwarded.
@@ -84,7 +85,7 @@ function eventOf(raw: unknown): HostEvent {
 
 export async function applyV2EventFeed(
   ctx: unknown,
-  opts: { onEvent: (event: HostEvent) => void; types?: readonly string[]; onError?: (data: unknown) => void },
+  opts: { onEvent: (event: HostEvent) => void; types?: readonly string[]; onError?: (data: unknown) => void; onIdle?: (sessionID: string) => void; onRetryScheduled?: (data: unknown) => void },
 ): Promise<V2EventFeed> {
   const allowed = new Set(opts.types ?? FEED_TYPES)
   const report: V2EventFeedReport = { active: false, received: 0, forwarded: 0, unknown: {} }
@@ -148,9 +149,30 @@ export async function applyV2EventFeed(
     // extraction; this only routes the event to it.
     if ((type === "session.error" || type === "session.execution.failed") && typeof opts.onError === "function") {
       try {
-        opts.onError(ev)
+        opts.onError(raw)
       } catch {
         /* an error tap that throws never closes the feed */
+      }
+    }
+    // The retry chains are per REQUEST: a turn ending ends the chain, so the next
+    // failure starts back at retry #1 (the user's "同一次" rule).  2.0.28 renamed the
+    // idle spelling — the same event-name lesson the error tap above records.
+    if (isTurnEndEvent(type) && typeof opts.onIdle === "function") {
+      try {
+        opts.onIdle(sessionIDOf(raw))
+      } catch {
+        /* an idle tap that throws never closes the feed */
+      }
+    }
+    // The host schedules its OWN provider retries (`session.retry.scheduled`:
+    // {sessionID, assistantMessageID, attempt, at, error}) and the desktop renders
+    // `尝试 N - 在 X 秒内重试` from it.  Tap it so the governor can stand its own
+    // ladder directive down instead of contradicting the visible countdown.
+    if (type === "session.retry.scheduled" && typeof opts.onRetryScheduled === "function") {
+      try {
+        opts.onRetryScheduled(raw)
+      } catch {
+        /* a tap that throws never closes the feed */
       }
     }
     if (!type || !allowed.has(type)) {
