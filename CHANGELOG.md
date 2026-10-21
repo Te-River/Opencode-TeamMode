@@ -7,6 +7,54 @@ registry saw 1.5.0 as the install-script fix release).
 
 ## [Unreleased]
 
+## [1.7.8] - 2026-10-21
+
+### Added
+
+- **The fixed retry ladder: a failed request is re-asked for the 1st/2nd/3rd time after exactly
+  5s/10s/20s (user request, 2026-10-21).** One ladder, both request-failure surfaces:
+  **① the provider-error governor** (`v2-retry.ts`) — `retryJitter` default `0.3 → 0`, so
+  consecutive errors #1/#2/#3 inject directives naming exactly 5/10/20 whole seconds (#4/#5 keep
+  doubling to `retryMaxMs`; the `retryBreakAfter` breaker is unchanged). The honest boundary
+  stands: a plugin has no seam to re-issue the model's request, so the governor states the exact
+  wait and the model performs it. **② the HTTP layer** (`fetchWebText`, shared by tm_webfetch and
+  every tm_search engine leg) — a real retry loop: a network throw, a per-attempt timeout, a 429
+  or a 5xx is re-asked up to 3 times, waiting `httpRetryDelayMs` (base `retryBaseMs` doubling,
+  clamped to `retryMaxMs`, no jitter). A POLICY refusal is never re-asked: allowlist, address red
+  lines, env-file URLs, non-429 4xx (403/418 keep their browser directive), and an unparseable
+  redirect `Location` are fatal verdicts that walk zero retries. `retry: "off"` disables both
+  surfaces. Claim discipline: the reply labels what actually happened — `第N次重试后成功 ·
+  已等待…` / `重试3次 · 5s/10s/20s · 仍失败` — on every render path that used the network, including
+  tm_search's auto-fanout legs and explicit-engine route (a leg that waited 35s no longer looks
+  like an instant hit); each retry writes one `http_retry` trajectory row; a cache hit returns
+  before any network and can never carry a retry label. **Costs said out loud:** the 20s timeout
+  is now per attempt (`抓取超时（每次请求 20s）`), so one call can spend ~115 s (4 attempts + 35 s of
+  waits) and a multi-hop redirect chain up to ~165 s, since the attempt budget is per hop while
+  the label counts the whole call.
+
+### Fixed
+
+- **`coerceValue`'s integer heuristic truncated sub-unit knobs.** With `retryJitter` defaulting
+  to `0`, the "default is an integer ⇒ truncate" rule silently flattened a user's `0.42` to `0`
+  (caught by `test-config-layers` going red, not by review). A knob whose registry `max < 1` is
+  now coerced as a fraction — `retryJitter` is the only such key today; integer keys are
+  untouched. Users who had set a fractional jitter keep it (it now actually applies).
+- **`retryAfterNote` no longer contradicts the ladder it just walked** — past a completed retry
+  run the advice becomes 「服务端建议等 N 秒；本工具已按 5s/10s/20s 重试过 M 次仍被限流，换别的来源」
+  instead of teaching 别对同一 URL 原地重试 while the same reply reports having done exactly that.
+- **`resolveHttpRetry` clamps `maxRetries` to 3 and the note renderers drop zero-delay entries**
+  — an injected policy of `maxRetries: 9` could previously render a fabricated 「1s」 wait for the
+  rungs `httpRetryDelayMs` does not exist (latent: all production call sites pass 3).
+
+### Notes
+
+- Pre-release gate on host **2.1.2** (desktop, channel=latest): the full 8-suite `npm test` green
+  and `scripts/acceptance.mjs` 8 pass / 0 fail against a sandbox copy (full env redirection, zero
+  tokens). Host 2.1.x findings — the 2.1.0 `#57260` contract renames (`tool.native`,
+  compaction `native`/`keepID`, event-name changes) and 2.1.2's structured `retryAfterMs` on
+  session errors (the governor still reads the text; consuming the field is a follow-up) — are
+  recorded in `docs/v2-port-notes.md`, 2026-10-21.
+
 ## [1.7.7] - 2026-10-20
 
 ### Added
