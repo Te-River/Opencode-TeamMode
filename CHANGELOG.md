@@ -7,6 +7,25 @@ registry saw 1.5.0 as the install-script fix release).
 
 ## [Unreleased]
 
+## [1.7.10] - 2026-10-21
+
+### Fixed
+
+- **The quota directive and the cooldown refusal now route the work to the MAIN agent (user
+  report: sub-agents were bounced by upstream quota 6 times in one session while the lead's own
+  requests survived — the governor helps with host errors, not upstream quota).** 1.7.9 already
+  blocked new dispatches after two consecutive hard-quota errors; the refusal now says the
+  consequence out loud — sub-agent requests will keep getting bounced, run the step yourself as
+  the main agent, or end the cooldown / raise the quota — and the hard-quota directive carries
+  the same guidance. The refusal also stops claiming 「连续 N 次」 for a hard-quota trip that
+  fires on the second error (count-independent wording).
+- **Eleven lines of `src/host/v2-retry.ts` carried literal U+FFFD replacement characters** (a
+  historical script-written corruption): the injected quota/throttle directive sentences and
+  the cooldown refusal were being sent to models with replacement characters inside them, and
+  the suite stayed green because its assertions only pinned clean substrings. All 11 lines
+  repaired (comment lines and user-visible strings); a scan confirms zero U+FFFD left in
+  `src/` + `scripts/` + the test/docs surface.
+
 ## [1.7.9] - 2026-10-21
 
 ### Fixed
