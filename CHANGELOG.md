@@ -7,6 +7,45 @@ registry saw 1.5.0 as the install-script fix release).
 
 ## [Unreleased]
 
+## [1.8.0] - 2026-10-21
+
+### Changed
+
+- **The retry governor is now a per-request, per-role architecture (user redesign, 2026-10-21).**
+  Each failing request owns its retry chain: `retryMaxRetries` retries (default **5**) waiting
+  **5s/10s/20s/40s/60s**, cumulative WITHIN that request — never across a session's lifetime.
+  Chains are isolated per session, directives are delivered only to the session that earned
+  them, and a chain ends on `session.idle`, `retryChainGapMs` (default 10 min) of quiet, or
+  budget exhaustion (a later error starts a fresh chain; a child's own `session.idle` is not
+  forwarded on 2.0.x, so a child's chain normally ends by gap/exhaustion). **Sub-agents and the
+  main agent get different guidance:** a child whose budget is spent is told to hand the work
+  back, and the LEAD is told to run that step itself; the main agent is told to stop and report
+  with options. Injected text names the retry index (approved wording). No dispatch denial is
+  derived from child exhaustion (user decision). Hard quota (no wait, second-strike breaker)
+  and host 2.1.2's structured `retryAfterMs` keep their intent. New keys: `retryMaxRetries`
+  (5), `retryChainGapMs` (600000).
+- Tests: `test-v2-adapter` group 30 pins the 5-rung ladder, per-session isolation,
+  post-exhaustion + idle chain resets, per-session directive delivery, and the child→lead
+  handoff; `test-config-layers` pins the two new keys' defaults.
+- **Host-native retries are honored (same day, after a live binary read).** The host schedules
+  its OWN provider retries and publishes `session.retry.scheduled`
+  (`{assistantMessageID, attempt, at, error}`); the desktop renders 「尝试 N - 在 X 秒内重试」
+  from it. The governor now taps that event: while the host is retrying, our ladder directive
+  STANDS DOWN (two countdowns fighting is worse than none) and the chain's attempt count follows
+  the host's; our guidance speaks only for the cases the host does NOT retry (hard quota, a
+  spent budget). The ladder text now uses the same 「尝试 N - 在 X 秒内重试」 shape.
+- **Review fixes on the architecture (0 Critical / 2 Major / 6 Minor, all applied):** the
+  turn-end tap covers every host spelling (`session.idle` / `session.execution.succeeded` /
+  `.interrupted` — 2.0.28 renamed them, the error tap already knew); `observeIdle` no longer
+  clears the breaker's `streak`/`hardStreak` (a next-turn hard quota must still trip the
+  second-strike breaker); the lead-notice arming no longer overwrites a pending ladder
+  directive; `pending` is pruned on chain eviction and skipped while `retry:"off"`; a Team
+  specialist not yet in the child registry is classified as SUB (`roleOfSession`, exported and
+  pinned) instead of main; the event taps receive the RAW event so top-level fields survive;
+  the five new counters (`child_exhausted` / `main_exhausted` / `chains_reset` /
+  `lead_notices` / `host_retries`) ride the boot and surface rows; the chain-reset counter no
+  longer double-counts or counts empty idles.
+
 ## [1.7.10] - 2026-10-21
 
 ### Fixed
