@@ -3510,24 +3510,34 @@ console.log("30. 错峰重试 — recognise a provider throttle, inject an exact
     assert.equal(defaults.breakAfter, 5, "the breaker threshold is unchanged by the ladder")
   }
 
-  // (i) THE HARD-QUOTA SPLIT.  "increase your quota limit" is a verdict, not a
-  // transient: the 5/10/20 ladder would burn 35s of waiting on a provider no wait
-  // can revive (the exact error that killed a child session on 2026-10-21).
+  // (i) THE HARD-QUOTA SPLIT — USER CORRECTION 2026-10-21: alibaba's
+  // `Allocated quota exceeded … error-code#token-limit` is a TRANSIENT per-minute
+  // throttle (the window rolls over); it RIDES the ladder like any rate limit.
+  // Hard is the billing family only — no wait revives an unpaid account.
   {
     const alibaba = "Allocated quota exceeded, please increase your quota limit. For details, see: https://www.alibabacloud.com/help/en/model-studio/error-code#token-limit"
     const hc = classifyProviderError(alibaba)
     assert.equal(hc.kind, "quota", "the alibaba token-limit text is quota")
-    assert.equal(hc.hardQuota, true, "…and a HARD quota: waiting cannot fix an allocation that must be raised")
+    assert.equal(hc.hardQuota, false, "…but a SOFT quota — a transient throttle a wait CAN fix (user correction)")
+    const sg0 = createRetryGovernor({ baseMs: 5000, maxMs: 60000, jitter: 0, breakAfter: 99, cooldownMs: 60000, now: () => 0, random: () => 0.5 })
+    assert.equal(sg0.observe(alibaba).delayMs, 5000, "the alibaba throttle rides the ladder's first rung (5s)")
+    const sd0 = sg0.takeDirective()
+    assert.ok(String(sd0.text).includes("秒内重试"), "…with a normal wait-and-retry directive")
+    assert.ok(!String(sd0.text).includes("停止"), "…which does NOT tell the model to stop")
     assert.equal(classifyProviderError("quota exceeded").hardQuota, false, "a bare quota exceeded stays soft")
     assert.equal(classifyProviderError("HTTP 429 Too Many Requests").hardQuota, false, "rate is never hard quota")
+    const hard = "Error: Insufficient balance (code: 余额不足), please top up"
+    assert.equal(classifyProviderError(hard).kind, "quota", "the billing family is quota")
+    assert.equal(classifyProviderError(hard).hardQuota, true, "…and HARD: waiting cannot fix an unpaid account")
+    assert.equal(classifyProviderError("insufficient_quota").hardQuota, true, "OpenAI's billing exhaustion is hard")
     const hg = createRetryGovernor({ baseMs: 5000, maxMs: 60000, jitter: 0, breakAfter: 5, cooldownMs: 60000, now: () => 0, random: () => 0.5 })
-    assert.equal(hg.observe(alibaba).delayMs, 0, "a hard quota names no wait")
+    assert.equal(hg.observe(hard).delayMs, 0, "a hard quota names no wait")
     const hd = hg.takeDirective()
     assert.ok(String(hd.text).includes("停止"), "the hard directive says stop")
     assert.ok(!String(hd.text).includes("请等待"), "…and does NOT tell the model to wait and retry")
     assert.ok(String(hd.text).includes("主代理自己执行"), "…and routes the work to the main agent (sub-agents only get bounced again)")
     assert.equal(hg.inCooldown(), false, "the first hard quota does not cool down yet")
-    hg.observe(alibaba)
+    hg.observe(hard)
     assert.equal(hg.inCooldown(), true, "the SECOND consecutive hard quota trips the breaker immediately (breakAfter is 5)")
     // host 2.1.2 (#57146): the structured retryAfterMs beats the ladder rung, and the
     // row names which source answered — an unqueried shape must not look like a hint.
@@ -3620,7 +3630,7 @@ console.log("30. 错峰重试 — recognise a provider throttle, inject an exact
     assert.equal(hg2.observe("HTTP 429 Too Many Requests", { sessionID: "ses_h" }).delayMs, 20000, "the ladder rung follows the host's attempt count (attempt 2 → 20s)")
     assert.ok(hg2.directive("ses_h"), "with no host retry for this failure, the ladder directive is back (takeover)")
     const hq = createRetryGovernor({ baseMs: 5000, maxMs: 60000, jitter: 0, breakAfter: 99, cooldownMs: 60000, now: () => 0, random: () => 0.5 })
-    hq.observe("Allocated quota exceeded, please increase your quota limit", { sessionID: "ses_q" })
+    hq.observe("Error: Insufficient balance (code: 余额不足), please top up", { sessionID: "ses_q" })
     assert.ok(hq.directive("ses_q"), "the hard-quota directive is armed")
     hq.observeHostRetry({ properties: { sessionID: "ses_q", attempt: 1, at: 5000 } })
     assert.ok(hq.directive("ses_q"), "a host retry never silences the hard-quota stop")
@@ -3687,12 +3697,16 @@ console.log("30. 错峰重试 — recognise a provider throttle, inject an exact
     // an unknown/foreign session is never re-driven — no pushing input into others' chats
     g4.observe("HTTP 429 Too Many Requests", { sessionID: "ses_foreign_x" })
     assert.equal(timersFired.length, 1, "a session the plugin never saw gets no re-drive")
-    // hard quota: no re-drive unless the provider stated a retry time
+    // the alibaba token-limit throttle is SOFT (user correction 2026-10-21): it rides the ladder and re-drives
     g4.observe("Allocated quota exceeded, please increase your quota limit", { sessionID: "ses_rd" })
-    assert.equal(timersFired.length, 1, "hard quota without a retry time names no re-drive")
-    g4.observeEvent({ properties: { sessionID: "ses_rd", message: "Allocated quota exceeded", retryAfterMs: 120000 } })
-    assert.equal(timersFired.length, 2, "hard quota WITH a provider retry time re-drives at that time")
-    assert.equal(timersFired[1].ms, 120000, "…after exactly the provider's 120s")
+    assert.equal(timersFired.length, 2, "the transient quota throttle re-drives too")
+    assert.equal(timersFired[1].ms, 10000, "…at the chain's second rung (10s)")
+    // a true HARD (billing) quota: no re-drive unless the provider stated a retry time
+    g4.observe("Error: Insufficient balance (code: 余额不足), please top up", { sessionID: "ses_rd" })
+    assert.equal(timersFired.length, 2, "hard quota without a retry time names no re-drive")
+    g4.observeEvent({ properties: { sessionID: "ses_rd", message: "Insufficient balance", retryAfterMs: 120000 } })
+    assert.equal(timersFired.length, 3, "hard quota WITH a provider retry time re-drives at that time")
+    assert.equal(timersFired[2].ms, 120000, "…after exactly the provider's 120s")
     // the host scheduling its own retry stands ours down
     layer4.cancelRedrive("ses_rd")
     assert.ok(timersCleared.length >= 1, "a host retry cancels the pending plugin re-drive")

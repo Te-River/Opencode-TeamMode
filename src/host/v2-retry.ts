@@ -17,9 +17,10 @@
  *      5s/10s/20s/40s/60s; the chain never accumulates across requests, and the
  *      host's own `session.retry.scheduled` stands our directive down — the desktop
  *      is already rendering that countdown; jitter applies only when retryJitter > 0) — but ONLY for the
- *      kinds a wait can fix.  A HARD quota (allocated-exceeded / increase-your-limit /
- *      token-limit / 余额不足) names no wait: the directive says stop and raise-or-reset,
- *      and the breaker trips on the SECOND consecutive hard-quota error instead of
+ *      kinds a wait can fix.  A HARD quota (the BILLING family only: insufficient
+ *      balance / 余额不足 / 欠费 / insufficient_quota / billing) names no wait: the
+ *      directive says stop and raise-or-reset, and the breaker trips on the SECOND
+ *      consecutive hard-quota error instead of
  *      `breakAfter`.  The structured `retryAfterMs` host 2.1.2 (#57146) puts on session
  *      errors is honored as the wait floor.  Inject it into the
  *      NEXT request's system prompt as an actionable sentence ("等 N 秒再发"),
@@ -56,7 +57,8 @@ export interface ProviderErrorClass {
   /** A `Retry-After`-style hint parsed out of the text, in ms; 0 when absent. */
   retryAfterMs: number
   /** true only inside the quota kind when the text says waiting cannot fix this
-   *  (allocated quota / increase your limit / token-limit / 余额不足). */
+   *  (the BILLING family: insufficient balance / 余额不足 / 欠费 / insufficient_quota /
+   *  billing — NOT alibaba's transient token-limit throttle, user correction 2026-10-21). */
   hardQuota: boolean
 }
 
@@ -69,10 +71,15 @@ export interface ProviderErrorClass {
  * more than one token (e.g. "quota exceeded (429)") and the most specific class
  * is the useful one.
  */
-/** The exhaustion sub-signature: a wait cannot fix these — the limit must be raised
- *  or the period must roll over.  A bare "quota exceeded" stays SOFT (it may already
- *  carry a reset), per the "explicit signatures only" rule above. */
-const HARD_QUOTA_RE = /allocated quota exceeded|increase your quota|insufficient quota|quota limit|token[- ]limit|余额不足/
+/** The exhaustion sub-signature: a wait cannot fix these — the account must be topped
+ *  up, the plan changed, or the debt cleared.  USER CORRECTION 2026-10-21: alibaba's
+ *  `Allocated quota exceeded … error-code#token-limit` is a TRANSIENT per-minute throttle
+ *  (the window rolls over — the same child got bounced six times and kept coming back),
+ *  so it is NOT hard: it rides the ladder and the ③ re-drive, and a structured
+ *  `retryAfterMs` sets the floor.  Hard is the BILLING family only.  A genuinely dead
+ *  allocation misread as soft stays bounded: the chain exhausts at `maxRetries` into the
+ *  stop directive, and the throttle breaker counts it. */
+const HARD_QUOTA_RE = /insufficient balance|余额不足|欠费|arrears|insufficient_quota|billing|check your plan/
 
 export function classifyProviderError(text: unknown): ProviderErrorClass {
   const s = typeof text === "string" ? text : ""
@@ -80,7 +87,7 @@ export function classifyProviderError(text: unknown): ProviderErrorClass {
   const lower = s.toLowerCase()
   const retryAfterMs = parseRetryAfter(s)
 
-  if (/allocated quota exceeded|quota exceeded|insufficient_quota|exceeded.*quota|quota.*exceed|配额|余额不足/.test(lower)) {
+  if (/allocated quota exceeded|quota exceeded|insufficient_quota|insufficient balance|arrears|exceeded.*quota|quota.*exceed|配额|余额不足/.test(lower)) {
     return { kind: "quota", retryAfterMs, hardQuota: HARD_QUOTA_RE.test(lower) }
   }
   if (/\b429\b|too many requests|rate[ _-]?limit|rate_limit_exceeded|限流|请求过于频繁/.test(lower)) {

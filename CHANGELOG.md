@@ -7,6 +7,22 @@ registry saw 1.5.0 as the install-script fix release).
 
 ## [Unreleased]
 
+## [1.8.2] - 2026-10-21
+
+### Fixed
+
+- **Alibaba's `Allocated quota exceeded … error-code#token-limit` is reclassified from HARD
+  quota to a transient (soft) quota — user correction 2026-10-21.** It is a per-minute TPM
+  throttle: the window rolls over and the same session gets bounced and recovers repeatedly
+  (observed: six bounces), so treating it as "waiting cannot fix this" denied the ladder and
+  the ③ re-drive exactly when they would have worked.  It now rides the 5s/10s/20s/40s/60s
+  chain and the synthetic re-drive, with a structured `retryAfterMs` as the wait floor.
+  HARD is now the BILLING family only: `insufficient balance` / 余额不足 / 欠费 / `arrears` /
+  `insufficient_quota` / billing-plan texts — no wait revives an unpaid account.  The
+  misfire stays bounded the other way too: a genuinely dead allocation misread as soft
+  exhausts its chain at `retryMaxRetries` into the stop directive, and the throttle breaker
+  counts it.
+
 ## [1.8.1] - 2026-10-21
 
 ### Added
