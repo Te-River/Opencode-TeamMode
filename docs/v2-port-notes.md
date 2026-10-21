@@ -665,3 +665,9 @@ The desktop UI surfaces the same TypeError on its plugin-update toast, and
 `opencode plugin update <pkg>` reports "Plugin is not configured" for a globally configured
 plugin (both with and without the `@latest` suffix). Upstream issue filed as
 anomalyco/opencode#57719; our docs/installers now tell users to restart the app instead.
+**The gentler path exists, untested:** the command tree carries `opencode service restart`
+("Restart the background server"; `service start|stop|status` beside it) — the first thing to
+try before touching processes at all. It restarts the background server the CLI shares; how
+the DESKTOP app re-attaches to its embedded server afterwards is unmeasured, so it has not
+been adopted into the docs yet — verify it live (accepting a possible session interruption)
+before recommending it.

@@ -1,5 +1,5 @@
 /**
- * 错峰重试 (#49 feature 3) �?the honest half of "back off when the provider
+ * 错峰重试 (#49 feature 3) — the honest half of "back off when the provider
  * throttles us".
  *
  * THE HONEST BOUNDARY, stated first because everything below is shaped by it:
@@ -8,7 +8,7 @@
  * does exactly three things, and says so:
  *
  *   1. RECOGNISE a provider throttle from the event feed (`session.error`), by
- *      matching explicit signatures only �?never by guessing.  A text that does
+ *      matching explicit signatures only — never by guessing.  A text that
  *      not carry a known signature classifies as `unknown` and changes nothing.
  *   2. COMPUTE an exact wait (the fixed 5s/10s/20s ladder for retries #1/#2/#3, doubling
  *      to the cap after that; jitter applies only when retryJitter > 0) — but ONLY for the
@@ -17,7 +17,7 @@
  *      and the breaker trips on the SECOND consecutive hard-quota error instead of
  *      `breakAfter`.  The structured `retryAfterMs` host 2.1.2 (#57146) puts on session
  *      errors is honored as the wait floor.  Inject it into the
- *      NEXT request's system prompt as an actionable sentence ("�?N 秒再�?),
+ *      NEXT request's system prompt as an actionable sentence ("等 N 秒再发"),
  *      not a vague "try later".  The directive is consumed once, so a host that
  *      replays the hook in-process cannot duplicate it.
  *   3. COOL DOWN: after `breakAfter` consecutive throttle errors the breaker
@@ -50,7 +50,7 @@ export interface ProviderErrorClass {
 
 /**
  * Classify a provider error from its TEXT alone.  Explicit signatures only:
- * a text with no known signature is `unknown` and must never trip anything �? * mislabelling an ordinary error as a quota error is the failure mode the plan
+ * a text with no known signature is `unknown` and must never trip anything —
  * names, and the way to avoid it is to require the signature.
  *
  * Order matters: quota before rate before transient, because a message can carry
@@ -80,7 +80,7 @@ export function classifyProviderError(text: unknown): ProviderErrorClass {
   return { kind: "unknown", retryAfterMs, hardQuota: false }
 }
 
-/** `Retry-After: 30` / `retry after 30 seconds` �?30 000 ms.  Absent �?0. */
+/** `Retry-After: 30` / `retry after 30 seconds` → 30 000 ms.  Absent → 0. */
 function parseRetryAfter(s: string): number {
   const m = /retry[-_ ]?after["'\s:=]+(\d+)/i.exec(s)
   if (!m) return 0
@@ -116,7 +116,7 @@ export const RETRY_DEFAULTS: RetryConfig = {
 const isOff = (raw: unknown): boolean => /^(off|false|0|no)$/i.test(String(raw ?? "").trim())
 
 /**
- * Resolve the knobs.  An ILLEGAL value falls back to its default �?it never
+ * Resolve the knobs.  An ILLEGAL value falls back to its default — it never
  * silently disables the feature ("非法值回退默认，不静默关闸").  Only an explicit
  * `retry: "off"` turns it off.
  */
@@ -245,7 +245,7 @@ export function createRetryGovernor(opts: RetryGovernorOptions = {}): RetryGover
       const hint = cls.retryAfterMs > 0 ? `（错误文本给出的重试时间：约 ${Math.round(cls.retryAfterMs / 1000)} 秒）` : ""
       return {
         text:
-          `${RETRY_MARKER}（配额耗尽，不是故障）\n检测到 provider 配额耗尽（hard quota）：等待与重试都无法解决——请停止向该 provider 重发${hint}，等其配额重置，或请用户提升配额/更换模型。这是配额保护，不是插件故障；可用 retry: "off" 关闭。`,
+          `${RETRY_MARKER}（配额耗尽，不是故障）\n检测到 provider 配额耗尽（hard quota）：等待与重试都无法解决——请停止向该 provider 重发${hint}，等其配额重置，或请用户提升配额/更换模型。需要完成的工作请主代理自己执行（再派子代理只会被同样的配额打回）。这是配额保护，不是插件故障；可用 retry: "off" 关闭。`,
         delayMs: 0,
       }
     }
@@ -255,8 +255,8 @@ export function createRetryGovernor(opts: RetryGovernorOptions = {}): RetryGover
   const buildLadderDirective = (kind: ProviderErrorKind, delayMs: number): RetryDirective => {
     const secs = Math.max(1, Math.round(delayMs / 1000))
     const text = inCooldown()
-      ? `${RETRY_MARKER}（配额保护，不是故障）\n连续 ${cfg.breakAfter} 次配�?限流错误，已进入冷却：请等待 ${secs} 秒后再发下一次请求，期间新的子代理派发会被拒绝。这是配额保护，不是插件故障；可�?retry: "off" 关闭。`
-      : `${RETRY_MARKER}（配额保护，不是故障）\n检测到 provider ${kindLabel(kind)} 错误：请等待 ${secs} 秒后再发下一次请求。这是配额保护，不是插件故障；可�?retry: "off" 关闭。`
+      ? `${RETRY_MARKER}（配额保护，不是故障）\n连续 ${cfg.breakAfter} 次配额/限流错误，已进入冷却：请等待 ${secs} 秒后再发下一次请求，这是配额保护，不是插件故障；可用 retry: "off" 关闭。`
+      : `${RETRY_MARKER}（配额保护，不是故障）\n检测到 provider ${kindLabel(kind)} 错误：请等待 ${secs} 秒后再发下一次请求。这是配额保护，不是插件故障；可用 retry: "off" 关闭。`
     return { text, delayMs }
   }
 
@@ -405,9 +405,9 @@ export interface RetryLayer {
 
 /**
  * Register the two hooks the retry layer owns:
- *  · `session.hook("context")` �?inject the pending directive (exact seconds)
+ *  · `session.hook("context")` — inject the pending directive (exact seconds)
  *    into the NEXT request's system prompt, once, Team-scoped.
- *  · `permission.hook("evaluate")` �?deny a `subagent` dispatch while the
+ *  · `permission.hook("evaluate")` — deny a `subagent` dispatch while the
  *    breaker's cooldown is active, Team-scoped, only ever stricter.
  *
  * Nothing here throws into a hook: a failure is counted and the call is allowed
@@ -460,7 +460,7 @@ export async function applyV2RetryGovernor(ctx: V2Context, input: RetryLayerInpu
             /* the trajectory line is an extra */
           }
           const secs = Math.max(1, Math.round(governor.cooldownRemainingMs() / 1000))
-          const message = `配额保护：连�?${governor.breakAfter} 次配�?限流错误，已进入冷却（剩余约 ${secs} 秒）。期间不派发新的子代理；这是配额保护，不是故障。可�?retry: "off" 关闭。`
+          const message = `配额保护：上游配额/限流已连续打回请求，冷却中（剩余约 ${secs} 秒）。期间不派发新的子代理——子代理的模型请求会继续被打回，需要完成的工作请主代理自己执行，或等冷却结束/提升配额。这是配额保护，不是故障；可用 retry: "off" 关闭。`
           // Only ever stricter: a host that already denied keeps its decision.
           if (rank.deny <= rank[event.effect ?? "allow"]) return
           event.effect = "deny"
