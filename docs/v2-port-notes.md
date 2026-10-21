@@ -652,3 +652,16 @@ three forced-background `subagent` dispatches each settled and their full bodies
 (the completion envelope injection path works on 2.1.2), and the boot probe against the real
 config shows `loading plugin … @te-river/opencode-team-mode@latest` from the host cache with the
 `[team-mode] v2 人格已启动` note and no load failure.
+
+**The reload path is broken on 2.1.2 `[L]`:** `opencode-cli reload` dies with
+`ServiceUnavailableError: TypeError: o is not a function. (In 'o()', 'o' is an instance of Object)`
+inside `ServerProcess.start` (exit 1); from another cwd the same trace shows
+`at Worktree.refresh`. The control that localizes it: `reload --standalone` in a fully
+redirected sandbox with an EMPTY config answers `Configuration reloaded` exit 0, while
+service-attach reload crashes even with an empty `OPENCODE_CONFIG_DIR` and a healthy
+`service status` — so the bug is the background-service attach / worktree-refresh path in the
+host binary, not config content and not plugins (plugin code never runs in the CLI process).
+The desktop UI surfaces the same TypeError on its plugin-update toast, and
+`opencode plugin update <pkg>` reports "Plugin is not configured" for a globally configured
+plugin (both with and without the `@latest` suffix). Upstream issue filed as
+anomalyco/opencode#57719; our docs/installers now tell users to restart the app instead.

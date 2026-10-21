@@ -3470,10 +3470,10 @@ console.log("30. 错峰重试 — recognise a provider throttle, inject an exact
   // (d) the breaker trips on the Nth consecutive throttle error
   let clock = 0
   const g = createRetryGovernor({ baseMs: 5000, maxMs: 60000, jitter: 0, breakAfter: 3, cooldownMs: 1000, now: () => clock, random: () => 0.5 })
-  g.observe("Allocated quota exceeded")
-  g.observe("Allocated quota exceeded")
-  assert.equal(g.inCooldown(), false, "2 errors is below breakAfter 3 → no cooldown")
-  g.observe("Allocated quota exceeded")
+  g.observe("quota exceeded")
+  g.observe("quota exceeded")
+  assert.equal(g.inCooldown(), false, "2 soft-quota errors are below breakAfter 3 → no cooldown")
+  g.observe("quota exceeded")
   assert.equal(g.inCooldown(), true, "the 3rd consecutive error trips the breaker")
   assert.equal(g.report.breakTrips, 1, "the trip is counted")
   assert.equal(g.report.quotaSeen, 3, "every quota error is counted")
@@ -3500,11 +3500,43 @@ console.log("30. 错峰重试 — recognise a provider throttle, inject an exact
   {
     const defaults = resolveRetryConfig(resolveConfig({}))
     const ladderGov = createRetryGovernor({ ...defaults, random: () => 0.37 })
-    const waits = ["HTTP 429 Too Many Requests", "HTTP 429 Too Many Requests", "Allocated quota exceeded"].map((t) => ladderGov.observe(t).delayMs)
+    const waits = ["HTTP 429 Too Many Requests", "HTTP 429 Too Many Requests", "quota exceeded (429)"].map((t) => ladderGov.observe(t).delayMs)
     assert.deepEqual(waits, [5000, 10000, 20000], `three consecutive errors wait exactly 5s/10s/20s — got: ${waits}`)
     assert.equal(backoffMs(3, defaults.baseMs, defaults.maxMs, defaults.jitter, () => 0.9), 40000, "error #4 keeps doubling (40s)")
     assert.equal(backoffMs(4, defaults.baseMs, defaults.maxMs, defaults.jitter, () => 0.1), 60000, "error #5 rests on the 60s cap")
     assert.equal(defaults.breakAfter, 5, "the breaker threshold is unchanged by the ladder")
+  }
+
+  // (i) THE HARD-QUOTA SPLIT.  "increase your quota limit" is a verdict, not a
+  // transient: the 5/10/20 ladder would burn 35s of waiting on a provider no wait
+  // can revive (the exact error that killed a child session on 2026-10-21).
+  {
+    const alibaba = "Allocated quota exceeded, please increase your quota limit. For details, see: https://www.alibabacloud.com/help/en/model-studio/error-code#token-limit"
+    const hc = classifyProviderError(alibaba)
+    assert.equal(hc.kind, "quota", "the alibaba token-limit text is quota")
+    assert.equal(hc.hardQuota, true, "…and a HARD quota: waiting cannot fix an allocation that must be raised")
+    assert.equal(classifyProviderError("quota exceeded").hardQuota, false, "a bare quota exceeded stays soft")
+    assert.equal(classifyProviderError("HTTP 429 Too Many Requests").hardQuota, false, "rate is never hard quota")
+    const hg = createRetryGovernor({ baseMs: 5000, maxMs: 60000, jitter: 0, breakAfter: 5, cooldownMs: 60000, now: () => 0, random: () => 0.5 })
+    assert.equal(hg.observe(alibaba).delayMs, 0, "a hard quota names no wait")
+    const hd = hg.takeDirective()
+    assert.ok(String(hd.text).includes("停止"), "the hard directive says stop")
+    assert.ok(!String(hd.text).includes("请等待"), "…and does NOT tell the model to wait and retry")
+    assert.equal(hg.inCooldown(), false, "the first hard quota does not cool down yet")
+    hg.observe(alibaba)
+    assert.equal(hg.inCooldown(), true, "the SECOND consecutive hard quota trips the breaker immediately (breakAfter is 5)")
+    // host 2.1.2 (#57146): the structured retryAfterMs beats the ladder rung, and the
+    // row names which source answered — an unqueried shape must not look like a hint.
+    const rows9 = []
+    const sg = createRetryGovernor({ baseMs: 5000, maxMs: 60000, jitter: 0, breakAfter: 9, cooldownMs: 600000, now: () => 0, random: () => 0.5, onEvent: (r) => rows9.push(r) })
+    sg.observeEvent({ name: "ProviderError", properties: { message: "HTTP 429 Too Many Requests", retryAfterMs: 90000 } })
+    const srow = rows9.find((r) => r.event === "classified")
+    assert.equal(srow.delay_ms, 90000, "the structured retryAfterMs wins over the 5s rung")
+    assert.equal(srow.retry_after_source, "structured", "and the classified row says the source was structured")
+    sg.observeEvent({ message: "503 Service Unavailable, retry after 30 seconds" })
+    const trow = rows9.filter((r) => r.event === "classified")[1]
+    assert.equal(trow.delay_ms, 30000, "the text-scraped hint still works (streak 2 rung 10s < 30s)")
+    assert.equal(trow.retry_after_source, "text", "labelled as the text source")
   }
 
   // (g) the hooks, on the fake host
@@ -3523,7 +3555,7 @@ console.log("30. 错峰重试 — recognise a provider throttle, inject an exact
   assert.equal(before.system.length, 0, "no directive before any error")
 
   // a quota error arms the next request with the EXACT seconds
-  gov.observe("Allocated quota exceeded")
+  gov.observe("quota exceeded")
   const after = { sessionID: "ses_lead", agent: "team", system: [], messages: [], tools: {}, options: {} }
   await fireCtx(after)
   assert.equal(after.system.length, 1, "the next request carries the directive")
@@ -3538,13 +3570,13 @@ console.log("30. 错峰重试 — recognise a provider throttle, inject an exact
   assert.equal(replay.system.length, 0, "the directive is consumed once, so a replay injects nothing")
 
   // a foreign session is not ours to inject into
-  gov.observe("Allocated quota exceeded")
+  gov.observe("quota exceeded")
   const foreignCtx = { sessionID: "ses_build", agent: "build", system: [], messages: [], tools: {}, options: {} }
   await fireCtx(foreignCtx)
   assert.equal(foreignCtx.system.length, 0, "a build session's request is not ours to touch")
 
   // (h) the cooldown denies a new dispatch, and only a dispatch
-  for (let i = 0; i < 5; i++) gov.observe("Allocated quota exceeded")
+  for (let i = 0; i < 5; i++) gov.observe("quota exceeded")
   assert.equal(gov.inCooldown(), true, "5 consecutive errors trip the breaker")
   const dispatch = { sessionID: "ses_lead", agent: "team", action: "subagent", resources: [], effect: "allow" }
   await firePerm(dispatch)

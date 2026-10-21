@@ -350,7 +350,7 @@ install_v2() {
     echo "              to) — unset it when convenient; it matters only to a 1.18.x host."
   fi
   echo ""
-  echo "✔  Done! Restart OpenCode (or run: opencode reload) to activate."
+  echo "✔  Done! Restart OpenCode to activate. (opencode reload is broken on 2.1.2 - anomalyco/opencode#57719)"
   echo "   Then check, in this order:"
   echo "     1. opencode agents            → team, architect, implementer, reviewer,"
   echo "                                     tester, researcher"

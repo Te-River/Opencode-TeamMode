@@ -359,7 +359,7 @@ function Install-V2 {
         Write-Host "              REG delete HKCU\Environment /v $bgFlag /f" -ForegroundColor Yellow
     }
     Write-Host ""
-    Write-Host "✔  Done! Restart OpenCode (or run: opencode reload) to activate." -ForegroundColor Green
+    Write-Host "✔  Done! Restart OpenCode to activate. (opencode reload is broken on 2.1.2 - anomalyco/opencode#57719)" -ForegroundColor Green
     Write-Host "   Then check, in this order:" -ForegroundColor DarkGray
     Write-Host "     1. opencode agents            → team, architect, implementer, reviewer," -ForegroundColor DarkGray
     Write-Host "                                     tester, researcher" -ForegroundColor DarkGray

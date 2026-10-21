@@ -190,7 +190,8 @@ it applies to new sessions.
 ### Step 4 — Restart and verify
 
 ```bash
-opencode reload      # or just restart the desktop app
+# restart the desktop app — do NOT use `opencode reload`: it crashes on
+# 2.1.2's background-service path (upstream anomalyco/opencode#57719)
 ```
 
 Four checks, in this order:
@@ -211,9 +212,11 @@ Four checks, in this order:
 ### Updating / 更新
 
 ```bash
-opencode plugin update @te-river/opencode-team-mode   # or plugin add …@latest again
+opencode plugin update @te-river/opencode-team-mode   # NOTE: broken on 2.1.2 — says
+# "Plugin is not configured" for a configured plugin (upstream anomalyco/opencode#57719);
+# re-run the installer instead
 node ~/.config/opencode/node_modules/@te-river/opencode-team-mode/scripts/gen-v2-config.mjs
-opencode reload
+# then restart the desktop app (`opencode reload` is broken there too)
 ```
 
 The second command is not optional after an upgrade: the role files carry the prompts, and
@@ -453,7 +456,8 @@ Windows 上的路径是
 ### 第 4 步 — 重启并核对
 
 ```bash
-opencode reload      # 或者直接重启桌面端
+# 重启桌面端——不要用 `opencode reload`：它在 2.1.2 的后台服务路径上崩溃
+# （上游 anomalyco/opencode#57719）
 ```
 
 按顺序做四项核对：
@@ -473,9 +477,10 @@ opencode reload      # 或者直接重启桌面端
 ### 更新
 
 ```bash
-opencode plugin update @te-river/opencode-team-mode   # 或者再跑一次 plugin add …@latest
+opencode plugin update @te-river/opencode-team-mode   # 注意：2.1.2 上这条会报
+# "Plugin is not configured"（插件其实已配置）——请改重跑安装器（上游 anomalyco/opencode#57719）
 node ~/.config/opencode/node_modules/@te-river/opencode-team-mode/scripts/gen-v2-config.mjs
-opencode reload
+# 然后重启桌面端（`opencode reload` 在 2.1.2 上同样会崩）
 ```
 
 第二条命令在升级之后不是可选项：角色文件里装的是提示词，新版本可能改过。重跑很便宜——没变

@@ -11,7 +11,12 @@
  *      matching explicit signatures only �?never by guessing.  A text that does
  *      not carry a known signature classifies as `unknown` and changes nothing.
  *   2. COMPUTE an exact wait (the fixed 5s/10s/20s ladder for retries #1/#2/#3, doubling
- *      to the cap after that; jitter applies only when retryJitter > 0) and inject it into the
+ *      to the cap after that; jitter applies only when retryJitter > 0) — but ONLY for the
+ *      kinds a wait can fix.  A HARD quota (allocated-exceeded / increase-your-limit /
+ *      token-limit / 余额不足) names no wait: the directive says stop and raise-or-reset,
+ *      and the breaker trips on the SECOND consecutive hard-quota error instead of
+ *      `breakAfter`.  The structured `retryAfterMs` host 2.1.2 (#57146) puts on session
+ *      errors is honored as the wait floor.  Inject it into the
  *      NEXT request's system prompt as an actionable sentence ("�?N 秒再�?),
  *      not a vague "try later".  The directive is consumed once, so a host that
  *      replays the hook in-process cannot duplicate it.
@@ -38,6 +43,9 @@ export interface ProviderErrorClass {
   kind: ProviderErrorKind
   /** A `Retry-After`-style hint parsed out of the text, in ms; 0 when absent. */
   retryAfterMs: number
+  /** true only inside the quota kind when the text says waiting cannot fix this
+   *  (allocated quota / increase your limit / token-limit / 余额不足). */
+  hardQuota: boolean
 }
 
 /**
@@ -49,22 +57,27 @@ export interface ProviderErrorClass {
  * more than one token (e.g. "quota exceeded (429)") and the most specific class
  * is the useful one.
  */
+/** The exhaustion sub-signature: a wait cannot fix these — the limit must be raised
+ *  or the period must roll over.  A bare "quota exceeded" stays SOFT (it may already
+ *  carry a reset), per the "explicit signatures only" rule above. */
+const HARD_QUOTA_RE = /allocated quota exceeded|increase your quota|insufficient quota|quota limit|token[- ]limit|余额不足/
+
 export function classifyProviderError(text: unknown): ProviderErrorClass {
   const s = typeof text === "string" ? text : ""
-  if (!s.trim()) return { kind: "unknown", retryAfterMs: 0 }
+  if (!s.trim()) return { kind: "unknown", retryAfterMs: 0, hardQuota: false }
   const lower = s.toLowerCase()
   const retryAfterMs = parseRetryAfter(s)
 
   if (/allocated quota exceeded|quota exceeded|insufficient_quota|exceeded.*quota|quota.*exceed|配额|余额不足/.test(lower)) {
-    return { kind: "quota", retryAfterMs }
+    return { kind: "quota", retryAfterMs, hardQuota: HARD_QUOTA_RE.test(lower) }
   }
   if (/\b429\b|too many requests|rate[ _-]?limit|rate_limit_exceeded|限流|请求过于频繁/.test(lower)) {
-    return { kind: "rate", retryAfterMs }
+    return { kind: "rate", retryAfterMs, hardQuota: false }
   }
   if (/\b50[0-4]\b|overloaded|temporarily unavailable|service unavailable|bad gateway|gateway timeout|timed? ?out|timeout|econnreset|etimedout|socket hang up/.test(lower)) {
-    return { kind: "transient", retryAfterMs }
+    return { kind: "transient", retryAfterMs, hardQuota: false }
   }
-  return { kind: "unknown", retryAfterMs }
+  return { kind: "unknown", retryAfterMs, hardQuota: false }
 }
 
 /** `Retry-After: 30` / `retry after 30 seconds` �?30 000 ms.  Absent �?0. */
@@ -162,7 +175,7 @@ export interface RetryDirective {
 }
 
 export interface RetryGovernor {
-  observe(text: unknown): ProviderErrorClass & { delayMs: number }
+  observe(text: unknown, structuredRetryAfterMs?: number): ProviderErrorClass & { delayMs: number }
   observeEvent(raw: unknown): void
   /** Peek at the pending directive without consuming it. */
   directive(): RetryDirective | null
@@ -221,12 +234,25 @@ export function createRetryGovernor(opts: RetryGovernorOptions = {}): RetryGover
   }
 
   let streak = 0
+  let hardStreak = 0
   let cooldownUntil = 0
   let pending: RetryDirective | null = null
 
   const inCooldown = (): boolean => now() < cooldownUntil
 
-  const buildDirective = (kind: ProviderErrorKind, delayMs: number): RetryDirective => {
+  const buildDirective = (cls: ProviderErrorClass, delayMs: number): RetryDirective => {
+    if (cls.hardQuota) {
+      const hint = cls.retryAfterMs > 0 ? `（错误文本给出的重试时间：约 ${Math.round(cls.retryAfterMs / 1000)} 秒）` : ""
+      return {
+        text:
+          `${RETRY_MARKER}（配额耗尽，不是故障）\n检测到 provider 配额耗尽（hard quota）：等待与重试都无法解决——请停止向该 provider 重发${hint}，等其配额重置，或请用户提升配额/更换模型。这是配额保护，不是插件故障；可用 retry: "off" 关闭。`,
+        delayMs: 0,
+      }
+    }
+    return buildLadderDirective(cls.kind, delayMs)
+  }
+
+  const buildLadderDirective = (kind: ProviderErrorKind, delayMs: number): RetryDirective => {
     const secs = Math.max(1, Math.round(delayMs / 1000))
     const text = inCooldown()
       ? `${RETRY_MARKER}（配额保护，不是故障）\n连续 ${cfg.breakAfter} 次配�?限流错误，已进入冷却：请等待 ${secs} 秒后再发下一次请求，期间新的子代理派发会被拒绝。这是配额保护，不是插件故障；可�?retry: "off" 关闭。`
@@ -234,7 +260,7 @@ export function createRetryGovernor(opts: RetryGovernorOptions = {}): RetryGover
     return { text, delayMs }
   }
 
-  const observe = (text: unknown): ProviderErrorClass & { delayMs: number } => {
+  const observe = (text: unknown, structuredRetryAfterMs = 0): ProviderErrorClass & { delayMs: number } => {
     const cls = classifyProviderError(text)
     if (cls.kind === "unknown") {
       report.unknownSeen++
@@ -245,21 +271,28 @@ export function createRetryGovernor(opts: RetryGovernorOptions = {}): RetryGover
     else report.transientSeen++
 
     streak++
-    const delayMs = Math.max(backoffMs(streak - 1, cfg.baseMs, cfg.maxMs, cfg.jitter, random), cls.retryAfterMs)
+    hardStreak = cls.hardQuota ? hardStreak + 1 : 0
+    const structured = Number.isFinite(structuredRetryAfterMs) && structuredRetryAfterMs > 0 ? structuredRetryAfterMs : 0
+    const retryAfterSource = structured > 0 ? "structured" : cls.retryAfterMs > 0 ? "text" : "none"
+    // A hard quota names NO wait — the ladder would be a promise a reset cannot keep.
+    const delayMs = cls.hardQuota ? 0 : Math.max(backoffMs(streak - 1, cfg.baseMs, cfg.maxMs, cfg.jitter, random), structured, cls.retryAfterMs)
     report.lastDelayMs = delayMs
-    emit({ event: "classified", kind: cls.kind, delay_ms: delayMs, streak })
+    emit({ event: "classified", kind: cls.kind, hard_quota: cls.hardQuota, delay_ms: delayMs, streak, retry_after_source: retryAfterSource })
 
-    // The breaker: consecutive errors, and the current one is a throttle class.
-    if (isThrottle(cls.kind) && streak >= cfg.breakAfter) {
+    // The breaker: consecutive errors of a throttle class.  A hard quota is different
+    // work — two in a row means the provider is out of allocation, and waiting for
+    // breakAfter only burns the user's tokens on a dead endpoint.
+    if (isThrottle(cls.kind) && (cls.hardQuota ? hardStreak >= 2 : streak >= cfg.breakAfter)) {
       const wasIn = inCooldown()
       cooldownUntil = now() + cfg.cooldownMs
       report.cooldowns++
       if (!wasIn) report.breakTrips++
       streak = 0
+      hardStreak = 0
       emit({ event: "cooldown", break_trips: report.breakTrips, cooldowns: report.cooldowns, cooldown_ms: cfg.cooldownMs })
     }
 
-    pending = buildDirective(cls.kind, delayMs)
+    pending = buildDirective(cls, delayMs)
     return { ...cls, delayMs }
   }
 
@@ -267,7 +300,7 @@ export function createRetryGovernor(opts: RetryGovernorOptions = {}): RetryGover
     observe,
     observeEvent(raw: unknown) {
       const text = errorTextOf(raw)
-      if (text) observe(text)
+      if (text) observe(text, structuredRetryAfterOf(raw))
     },
     directive: () => pending,
     takeDirective() {
@@ -281,6 +314,7 @@ export function createRetryGovernor(opts: RetryGovernorOptions = {}): RetryGover
     report,
     reset() {
       streak = 0
+      hardStreak = 0
       cooldownUntil = 0
       pending = null
     },
@@ -326,6 +360,32 @@ export function errorTextOf(raw: unknown): string {
     }
   }
   return parts.join(" ")
+}
+
+/**
+ * Host 2.1.2 (#57146) puts `retryAfterMs` on structured session errors.  Read it
+ * defensively — same walk style as `errorTextOf`: the payload shape is not a promised
+ * interface, so an absent or non-numeric field is simply 0.
+ */
+export function structuredRetryAfterOf(raw: unknown): number {
+  if (!raw || typeof raw !== "object") return 0
+  const pick = (v: unknown): number => (typeof v === "number" && Number.isFinite(v) && v > 0 ? v : 0)
+  const o = raw as Record<string, unknown>
+  const direct = pick(o.retryAfterMs)
+  if (direct) return direct
+  const err = o.error
+  if (err && typeof err === "object") {
+    const e = pick((err as Record<string, unknown>).retryAfterMs)
+    if (e) return e
+  }
+  const props = (o.properties ?? o.payload ?? o.data) as Record<string, unknown> | undefined
+  if (props && typeof props === "object") {
+    const p = pick(props.retryAfterMs)
+    if (p) return p
+    const pe = props.error
+    if (pe && typeof pe === "object") return pick((pe as Record<string, unknown>).retryAfterMs)
+  }
+  return 0
 }
 
 const rank = { allow: 0, ask: 1, deny: 2 } as const

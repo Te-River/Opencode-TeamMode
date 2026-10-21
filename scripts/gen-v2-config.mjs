@@ -480,7 +480,7 @@ function main() {
   for (const u of unverified) console.log(u)
   console.log(
     `\n共 ${written.length} 个文件（角色 ${Object.keys(agents).length} + 命令 ${Object.keys(commands).length}）` +
-      `${printOnly ? "（--print，未落盘）" : ""}。重启桌面端（或 opencode reload）后 Team 出现在 agent 选择器、/team-* 出现在命令列表。`,
+      `${printOnly ? "（--print，未落盘）" : ""}。重启桌面端后 Team 出现在 agent 选择器、/team-* 出现在命令列表（2.1.2 上别用 opencode reload，它会崩——上游 anomalyco/opencode#57719）。`,
   )
   if (unverified.length) {
     console.log(`注意：${unverified.length} 个文件无法确认是否与目标同一文件，已保留不删（#48 fail-safe）。`)
