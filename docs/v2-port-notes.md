@@ -675,3 +675,39 @@ It is now the documented activation path in `docs/installation-v2.md` and the in
 the desktop's own reconnect after a restart was not exercised live (that would interrupt the
 running session — the command's job is a real stop→start, so treat the open session as
 reconnecting, not surviving).
+
+### 2026-10-21 — the plugin ctx's session METHODS surface is richer than we declared: `synthetic` is callable, and it is the retry seam `[L][B]`
+
+Two earlier claims — "there is no seam to retry a failed request" (the retry module header) and
+"deliberately NO prompt point" (`v2-types.ts`) — were about the HOOK surface, and for hooks they
+stand: `session.hook("prompt")` fires 0 on 2.0.x. The METHOD surface was never enumerated:
+`V2SessionDomain` carried an index signature plus three declared members, and nobody had asked
+the host what else it exposes. A zero-token sandbox probe (throwaway plugin under
+`OPENCODE_CONFIG_DIR/plugins`, `run --standalone --model nope/nope`, a bogus sessionID so no
+real session is touched) answers on 2.1.2 `[L]`:
+
+```
+keys: hook list create get remove switchAgent switchModel prompt generate command
+      compact synthetic interrupt update move wait context
+typeof synthetic / prompt / wait / generate = "function"
+synthetic({})                                        → threw: Missing key at ["sessionID"]
+synthetic({sessionID:"ses_probe_nonexistent"})       → threw: Session.NotFoundError
+```
+
+The decode errors ARE the proof of dispatch — the call reaches the host's validator and its
+session store, not a stub. The binary agrees `[B]`: the plugin bridge maps the domain literally
+(`synthetic: t(P["session.synthetic"], e.session.synthetic)`), and the HTTP-API text for the
+same route reads "Durably admit synthetic session input and **schedule execution unless resume
+is false**", schema `{id?, text, description?, metadata?, delivery?, resume?}`.
+
+What this changes: the retry governor no longer only *tells* the model what wait it owes —
+③ this release performs the wait itself. The layer schedules
+`ctx.session.synthetic({sessionID, text:"[Team 自动重试 N] …", resume:true})` at each ladder
+rung — one re-drive per rung within `retryMaxRetries`, never for a session the scope has not
+seen, cancelled the moment `session.retry.scheduled` shows the host retrying or the session
+assembles a request on its own. A hard quota is re-driven only at a provider-stated retry time,
+because waiting is the one thing that cannot help an exhausted allocation otherwise. What stays
+true: a plugin still cannot INTERCEPT the model's own retry — it can only re-drive execution at
+seams the host itself admits. `prompt` exists too and is deliberately unused: a plugin writing
+a user-role message would impersonate the user, where synthetic input is the designed non-user
+channel.

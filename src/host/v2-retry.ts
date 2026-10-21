@@ -3,9 +3,12 @@
  * throttles us".
  *
  * THE HONEST BOUNDARY, stated first because everything below is shaped by it:
- * a plugin has NO seam that intercepts the model's own retry.  We cannot delay a
- * request the model decides to send, and we must not pretend to.  So this layer
- * does exactly three things, and says so:
+ * a plugin has NO seam that INTERCEPTS the model's own retry — we cannot delay a
+ * request the model decides to send, and we must not pretend to.  But the method
+ * surface does let a plugin RE-DRIVE execution: `ctx.session.synthetic` is callable
+ * on 2.1.2 (zero-token probe 2026-10-21, docs/v2-port-notes.md) and the host
+ * documents it as "Durably admit synthetic session input and schedule execution
+ * unless resume is false".  So this layer does four things, and says so:
  *
  *   1. RECOGNISE a provider throttle from the event feed (`session.error`), by
  *      matching explicit signatures only — never by guessing.  A text that
@@ -26,6 +29,13 @@
  *      trips and new `subagent` dispatches are DENIED for `cooldownMs`, on the
  *      same `permission.evaluate` seam the permission guards use.  Both only ever
  *      make a rule stricter, so they compose without fighting.
+ *   4. RE-DRIVE: when a rung's wait is over and nobody moved — the host scheduled no
+ *      retry of its own and the session assembled no request — the layer admits a
+ *      synthetic continuation for that session (`session.synthetic`, resume:true).
+ *      One re-drive per rung, capped by `maxRetries` per chain, NEVER for a session
+ *      the scope has not seen, and cancelled the moment the session or the host
+ *      continues first.  A hard quota is re-driven only when the provider stated a
+ *      retry time — otherwise waiting is the one thing that cannot help.
  *
  * Discipline (the same as every other v2 layer): Team-scoped, never throws (a
  * failure allows the call through and is counted), never rewrites args, and
@@ -192,6 +202,8 @@ export interface RetryReport {
   leadNotices: number
   /** host-native retries observed (`session.retry.scheduled`) — the UI's own countdown */
   hostRetries: number
+  /** re-drives the plugin admitted itself (`session.synthetic` fired successfully) */
+  pluginRetries: number
 }
 
 export interface RetryDirective {
@@ -258,6 +270,16 @@ export interface RetryGovernor {
   reset(): void
 }
 
+/** A plugin-driven re-drive request: wait `delayMs`, then admit synthetic input. */
+export interface RedriveRequest {
+  sessionID: string
+  delayMs: number
+  /** which re-drive of this chain this is (1-based) */
+  attempt: number
+  kind: ProviderErrorKind
+  hardQuota: boolean
+}
+
 export interface RetryGovernorOptions extends Partial<RetryConfig> {
   now?: () => number
   random?: () => number
@@ -265,6 +287,13 @@ export interface RetryGovernorOptions extends Partial<RetryConfig> {
   onEvent?: (row: Record<string, unknown>) => void
   /** The session→role facts the layer owns (scope + the child registry). */
   roleOf?: (sessionID: string) => { role: RetryRole; parentSessionID?: string; agent?: string }
+  /**
+   * The layer wires this to the REAL re-drive (setTimeout + `ctx.session.synthetic`,
+   * verified callable on 2.1.2: "Durably admit synthetic session input and schedule
+   * execution unless resume is false").  The governor decides WHEN and with what
+   * budget; the layer performs the I/O.
+   */
+  redrive?: (req: RedriveRequest) => void
 }
 
 const isThrottle = (kind: ProviderErrorKind): boolean => kind === "quota" || kind === "rate"
@@ -306,6 +335,7 @@ export function createRetryGovernor(opts: RetryGovernorOptions = {}): RetryGover
     chainsReset: 0,
     leadNotices: 0,
     hostRetries: 0,
+    pluginRetries: 0,
   }
 
   // ONE chain per session.  The user's rule: 5s/10s/20s is the CUMULATIVE count
@@ -321,6 +351,8 @@ export function createRetryGovernor(opts: RetryGovernorOptions = {}): RetryGover
     role: RetryRole
     /** this chain's budget was spent and the stop directive was issued */
     done: boolean
+    /** re-drives already scheduled for this chain (survives idle, resets with the chain) */
+    redrives: number
   }
   const ANON = "~anon"
   const MAX_CHAINS = 512
@@ -355,7 +387,7 @@ export function createRetryGovernor(opts: RetryGovernorOptions = {}): RetryGover
         pending.delete(oldest)
       }
     }
-    c = { attempts: 0, lastAt: 0, streak: 0, hardStreak: 0, cooldownUntil: 0, role: "unknown", done: false }
+    c = { attempts: 0, lastAt: 0, streak: 0, hardStreak: 0, cooldownUntil: 0, role: "unknown", done: false, redrives: 0 }
     chains.set(sid, c)
     return c
   }
@@ -422,10 +454,12 @@ export function createRetryGovernor(opts: RetryGovernorOptions = {}): RetryGover
     if (chain.done) {
       chain.attempts = 0
       chain.done = false
+      chain.redrives = 0
       report.chainsReset++
       emit({ event: "chain_reset", session: sid, why: "post-exhausted" })
     } else if (chain.lastAt > 0 && now() - chain.lastAt > cfg.chainGapMs) {
       chain.attempts = 0
+      chain.redrives = 0
       report.chainsReset++
       emit({ event: "chain_reset", session: sid, why: "gap" })
     }
@@ -493,6 +527,21 @@ export function createRetryGovernor(opts: RetryGovernorOptions = {}): RetryGover
           pending.set(target, buildLeadNotice(cls, sid, o.agent))
           report.leadNotices++
         }
+      }
+    }
+    // ③ PLUGIN-DRIVEN RE-DRIVE: the ladder's wait is not just advice — the layer
+    // schedules a synthetic continuation for this session (ctx.session.synthetic,
+    // verified callable on 2.1.2).  Hard quota re-drives ONLY when the provider
+    // stated a retry time; otherwise waiting is futile and the stop directive is
+    // all we can honestly say.  Budget: one re-drive per rung of the chain.
+    if (opts.redrive && cfg.enabled && sid !== ANON) {
+      const floor = Math.max(structured, cls.retryAfterMs)
+      if (!cls.hardQuota && !exhausted && delayMs > 0 && chain.redrives < cfg.maxRetries) {
+        chain.redrives++
+        opts.redrive({ sessionID: sid, delayMs, attempt: chain.redrives, kind: cls.kind, hardQuota: false })
+      } else if (cls.hardQuota && floor > 0 && chain.redrives < cfg.maxRetries) {
+        chain.redrives++
+        opts.redrive({ sessionID: sid, delayMs: floor, attempt: chain.redrives, kind: cls.kind, hardQuota: true })
       }
     }
     return { ...cls, delayMs }
@@ -657,11 +706,17 @@ export interface RetryLayerInput {
   /** Fired for each observable outcome so the personality can write the
    *  `step_id:"v2-retry"` trajectory line — the layer owns no store. */
   onEvent?: (row: Record<string, unknown>) => void
+  /** The governor's re-drive decisions land here (wired by v2.ts through the sink). */
+  bindRedrive?: (fn: (req: RedriveRequest) => void) => void
+  /** Injectable timers so a test can fire the re-drive without sleeping. */
+  timers?: { set: (cb: () => void, ms: number) => unknown; clear: (h: unknown) => void }
 }
 
 export interface RetryLayer {
   registrations: V2Registration[]
   report: RetryReport
+  /** Stand down a pending re-drive (the host scheduled its own retry for this session). */
+  cancelRedrive: (sessionID: unknown) => void
 }
 
 /**
@@ -678,6 +733,74 @@ export async function applyV2RetryGovernor(ctx: V2Context, input: RetryLayerInpu
   const { scope, governor } = input
   const report = governor.report
   const registrations: V2Registration[] = []
+  const timers = input.timers ?? {
+    set: (cb, ms) => setTimeout(cb, ms),
+    clear: (h) => clearTimeout(h as ReturnType<typeof setTimeout>),
+  }
+  // ③ The re-drive machinery lives HERE because this layer owns the session domain,
+  // the scope and the trajectory sink; the governor only decides WHEN (with budget).
+  const pendingRedrive = new Map<string, unknown>()
+  const emit = (row: Record<string, unknown>): void => {
+    try {
+      input.onEvent?.(row)
+    } catch {
+      /* the trajectory line is an extra, never a reason to fail the call */
+    }
+  }
+  const scheduleRedrive = (req: RedriveRequest): void => {
+    // Only sessions this plugin has actually seen as Team (lead or a specialist).
+    // An unknown id is never re-driven — a throughput helper may not push input
+    // into somebody else's conversation.
+    if (!scope || !scope.agentOf(req.sessionID)) return
+    const prev = pendingRedrive.get(req.sessionID)
+    if (prev !== undefined) timers.clear(prev)
+    const secs = Math.max(1, Math.round(req.delayMs / 1000))
+    const text =
+      `[Team 自动重试 ${req.attempt}] 上一次请求因 provider ${kindLabel(req.kind)} 失败` +
+      (req.hardQuota ? "（配额，已按服务端给出的重试时间等待）" : "") +
+      `，已等待 ${secs} 秒。请继续该会话未完成的工作；若再次失败，按 Team Retry 指令处理。`
+    const handle = timers.set(() => {
+      pendingRedrive.delete(req.sessionID)
+      void (async () => {
+        const synthetic = ctx.session?.synthetic as ((i: Record<string, unknown>) => Promise<unknown>) | undefined
+        if (typeof synthetic !== "function") {
+          emit({ event: "plugin_retry_failed", session: req.sessionID, attempt: req.attempt, reason: "no seam: ctx.session.synthetic missing" })
+          return
+        }
+        try {
+          await synthetic.call(ctx.session, { sessionID: req.sessionID, text, description: "Team retry", resume: true })
+          report.pluginRetries++
+          emit({ event: "plugin_retry_admitted", session: req.sessionID, attempt: req.attempt, delay_ms: req.delayMs, kind: req.kind })
+        } catch (err) {
+          emit({ event: "plugin_retry_failed", session: req.sessionID, attempt: req.attempt, reason: String((err as Error)?.message ?? err).slice(0, 140) })
+        }
+      })()
+    }, req.delayMs)
+    pendingRedrive.set(req.sessionID, handle)
+    emit({ event: "plugin_retry_scheduled", session: req.sessionID, attempt: req.attempt, delay_ms: req.delayMs, kind: req.kind, hard_quota: req.hardQuota })
+  }
+  const cancelRedrive = (sessionID: unknown): void => {
+    const sid = typeof sessionID === "string" && sessionID.trim() ? sessionID.trim() : ""
+    if (!sid) return
+    const h = pendingRedrive.get(sid)
+    if (h === undefined) return
+    timers.clear(h)
+    pendingRedrive.delete(sid)
+    emit({ event: "plugin_retry_cancelled", session: sid })
+  }
+  input.bindRedrive?.(scheduleRedrive)
+  registrations.push({
+    dispose: async () => {
+      for (const h of pendingRedrive.values()) {
+        try {
+          timers.clear(h)
+        } catch {
+          /* a timer that will not clear is already gone */
+        }
+      }
+      pendingRedrive.clear()
+    },
+  })
 
   const session = ctx.session
   if (session && typeof session.hook === "function") {
@@ -687,6 +810,9 @@ export async function applyV2RetryGovernor(ctx: V2Context, input: RetryLayerInpu
           if (scope && scope.count(scope.decide(event)) !== "ours") return
           const sid = typeof (event as { sessionID?: unknown }).sessionID === "string" ? String((event as { sessionID?: unknown }).sessionID) : ""
           scope?.learn(event?.agent, sid)
+          // The session is assembling a request on its own (host retry, or the model
+          // re-issued): stand the scheduled re-drive down — the revival happened.
+          cancelRedrive(sid)
           if (!Array.isArray(event?.system)) return
           // Per-session delivery: a child's wait directive must never ride the
           // lead's request (and vice versa) — the two chains are independent.
@@ -737,5 +863,5 @@ export async function applyV2RetryGovernor(ctx: V2Context, input: RetryLayerInpu
     )
   }
 
-  return { registrations, report }
+  return { registrations, report, cancelRedrive }
 }

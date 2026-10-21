@@ -7,6 +7,26 @@ registry saw 1.5.0 as the install-script fix release).
 
 ## [Unreleased]
 
+## [1.8.1] - 2026-10-21
+
+### Added
+
+- **③ Plugin-driven re-drive — the ladder is now real, not just advice.** The v2 plugin
+  ctx's session domain was probed (zero-token sandbox, 2.1.2): `synthetic` is callable
+  (`synthetic({})` → `Missing key at ["sessionID"]`, a bogus id → `Session.NotFoundError`)
+  and the host documents it as "Durably admit synthetic session input and schedule
+  execution unless resume is false". So when a rung's wait is over and nobody moved —
+  the host scheduled no retry, the session assembled no request — the layer admits a
+  synthetic continuation for that session itself (`resume: true`, text labelled
+  `[Team 自动重试 N]`). One re-drive per rung, capped by `retryMaxRetries` per chain,
+  NEVER for a session the scope has not seen, cancelled the moment the host retries or
+  the session continues on its own. Hard quota re-drives only when the provider stated
+  a retry time. Trajectory: `plugin_retry_scheduled|admitted|cancelled|failed`; counter
+  `retry_plugin_retries` rides the surface/shutdown rows. The old module-header claim
+  "there is no seam" was about INTERCEPTING the model's retry — still true — but the
+  re-drive seam exists, and the header now says so (v2-types probe comment +
+  docs/v2-port-notes.md).
+
 ## [1.8.0] - 2026-10-21
 
 ### Changed

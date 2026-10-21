@@ -49,7 +49,8 @@ import { applyV2BrowserGate, browserGateSummary } from "./v2-browser-gate.js"
 import { seedWebfetchDomains } from "../tm/webfetch.js"
 import { v2CapabilityRows } from "./v2-capabilities.js"
 import { applyV2SessionLayer, removalPlan, resolveSplitConfig } from "./v2-session.js"
-import { applyV2RetryGovernor, createRetryGovernor, resolveRetryConfig, roleOfSession } from "./v2-retry.js"
+import { applyV2RetryGovernor, createRetryGovernor, resolveRetryConfig, roleOfSession, sessionIDOf } from "./v2-retry.js"
+import type { RedriveRequest } from "./v2-retry.js"
 import { applyV2ContextPrune, resolvePruneConfig } from "./v2-prune.js"
 import { checkDefaultAgentRole, globalConfigDir, type DefaultAgentCheck } from "./v2-default-agent.js"
 import { createStorageLedgerStore } from "../tm/ledger.js"
@@ -799,14 +800,22 @@ export const v2Personality: V2Plugin = {
     const retryGovernor = createRetryGovernor({
       ...retryConfig,
       onEvent: retrySink,
-      // Sub-agent vs main agent (user rule): a registered host child is a sub-agent
-      // and its failures belong to its OWN chain; the lead's session is the main
-      // agent.  The two get different guidance when a budget runs out.
+      // ③ Re-drive is late-bound: the governor decides WHEN (ladder rung, budget,
+      // hard-quota rules); the LAYER performs it (setTimeout → ctx.session.synthetic,
+      // verified callable on 2.1.2).  Until the layer binds, the decision goes nowhere.
+      redrive: (req) => {
+        try {
+          redriveBound?.(req)
+        } catch {
+          /* a re-drive that cannot be scheduled must not break the classification */
+        }
+      },
       roleOf: (sid) => roleOfSession(sid, tmRuntime.hostChildren(), (id) => scope.agentOf(id)),
     })
+    let redriveBound: ((req: RedriveRequest) => void) | null = null
     const retry = retryConfig.enabled
-      ? await applyV2RetryGovernor(ctx, { scope, governor: retryGovernor, onEvent: retrySink })
-      : { registrations: [], report: retryGovernor.report }
+      ? await applyV2RetryGovernor(ctx, { scope, governor: retryGovernor, onEvent: retrySink, bindRedrive: (fn) => { redriveBound = fn } })
+      : { registrations: [], report: retryGovernor.report, cancelRedrive: () => {} }
     registrations.push(...retry.registrations)
     // Context Pruning (plan 功能 1, #49): the request layer trims the tool
     // surface, the HOST decides WHEN to summarize — the plugin's own 75% trigger was
@@ -893,7 +902,13 @@ export const v2Personality: V2Plugin = {
       // closes the feed (the governor itself never throws).
       onError: (data) => retryGovernor.observeEvent(data),
       onIdle: (sid) => retryGovernor.observeIdle(sid),
-      onRetryScheduled: (data) => retryGovernor.observeHostRetry(data),
+      onRetryScheduled: (data) => {
+        // The host is retrying this session itself — stand down the plugin re-drive
+        // (two countdowns fighting is worse than none), then record the host's attempt.
+        const sid = sessionIDOf(data)
+        if (sid) retry.cancelRedrive(sid)
+        retryGovernor.observeHostRetry(data)
+      },
     })
     if (!feed.report.active) {
       notes.push(`事件流没接通（${feed.report.stopped ?? "原因未知"}）：tm_join 的结算检测只剩等待预算内的轮询，子代理结算了也要等到超时才报告`)
@@ -997,6 +1012,7 @@ export const v2Personality: V2Plugin = {
       retry_chains_reset: retry.report.chainsReset,
       retry_lead_notices: retry.report.leadNotices,
       retry_host_retries: retry.report.hostRetries,
+      retry_plugin_retries: retry.report.pluginRetries,
       scope_ours: scope.report.ours,
       scope_foreign: scope.report.foreign,
       scope_unknown: scope.report.unknown,
@@ -1196,6 +1212,7 @@ export const v2Personality: V2Plugin = {
           retry_chains_reset: retry.report.chainsReset,
           retry_lead_notices: retry.report.leadNotices,
           retry_host_retries: retry.report.hostRetries,
+          retry_plugin_retries: retry.report.pluginRetries,
           // Accumulates for the whole process, so it can only be written at
           // teardown: this is the number that answers "did the feed stay alive, and
           // did the host rename the event types under us after the last upgrade?"

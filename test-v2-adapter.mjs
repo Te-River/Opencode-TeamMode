@@ -3640,6 +3640,68 @@ console.log("30. 错峰重试 — recognise a provider throttle, inject an exact
     assert.equal(isTurnEndEvent("session.execution.failed"), false, "a failure is not a turn end (the error tap owns it)")
   }
 
+  // (n) ③ PLUGIN-DRIVEN RE-DRIVE: the ladder is not just advice — the layer waits out
+  // the rung, then re-drives the dead session itself via ctx.session.synthetic
+  // (verified callable on 2.1.2).  Fake timers fire the schedule without sleeping.
+  {
+    const ws32 = workspace("redrive")
+    const f4 = makeFakeCtx({ directory: ws32, agents: [] })
+    const scope4 = createTeamScope(["team", "architect", "implementer", "reviewer", "tester", "researcher"])
+    const timersFired = []
+    const timersCleared = []
+    let redriveSink = null
+    const rows4 = []
+    const g4 = createRetryGovernor({
+      baseMs: 5000,
+      maxMs: 60000,
+      jitter: 0,
+      breakAfter: 99,
+      cooldownMs: 600000,
+      now: () => 0,
+      random: () => 0.5,
+      redrive: (req) => { redriveSink?.(req) },
+    })
+    const layer4 = await applyV2RetryGovernor(f4.ctx, {
+      scope: scope4,
+      governor: g4,
+      onEvent: (r) => rows4.push(r),
+      bindRedrive: (fn) => { redriveSink = fn },
+      timers: { set: (cb, ms) => { timersFired.push({ cb, ms }); return timersFired.length }, clear: (h) => { timersCleared.push(h) } },
+    })
+    const syntheticCalls = []
+    f4.ctx.session.synthetic = async (input) => { syntheticCalls.push(input) }
+    const fire4 = (ev) => f4.hook("session.context").fire(ev)
+    await fire4({ sessionID: "ses_rd", agent: "team", system: [], messages: [], tools: {}, options: {} })
+    g4.observe("HTTP 429 Too Many Requests", { sessionID: "ses_rd" })
+    assert.equal(timersFired.length, 1, "a rate failure schedules one re-drive")
+    assert.equal(timersFired[0].ms, 5000, "the re-drive waits the ladder's first rung (5s)")
+    assert.ok(rows4.some((r) => r.event === "plugin_retry_scheduled" && r.session === "ses_rd"), "the schedule rides the trajectory")
+    timersFired[0].cb()
+    await new Promise((r) => setImmediate(r))
+    assert.equal(syntheticCalls.length, 1, "the re-drive admitted synthetic input")
+    assert.equal(syntheticCalls[0].sessionID, "ses_rd", "…to the failed session")
+    assert.equal(syntheticCalls[0].resume, true, "…and scheduled execution (resume:true)")
+    assert.ok(String(syntheticCalls[0].text).includes("自动重试"), "…labelled as an auto retry")
+    assert.ok(rows4.some((r) => r.event === "plugin_retry_admitted"), "the admission rides the trajectory")
+    assert.equal(layer4.report.pluginRetries, 1, "the plugin-retry counter moved")
+    // an unknown/foreign session is never re-driven — no pushing input into others' chats
+    g4.observe("HTTP 429 Too Many Requests", { sessionID: "ses_foreign_x" })
+    assert.equal(timersFired.length, 1, "a session the plugin never saw gets no re-drive")
+    // hard quota: no re-drive unless the provider stated a retry time
+    g4.observe("Allocated quota exceeded, please increase your quota limit", { sessionID: "ses_rd" })
+    assert.equal(timersFired.length, 1, "hard quota without a retry time names no re-drive")
+    g4.observeEvent({ properties: { sessionID: "ses_rd", message: "Allocated quota exceeded", retryAfterMs: 120000 } })
+    assert.equal(timersFired.length, 2, "hard quota WITH a provider retry time re-drives at that time")
+    assert.equal(timersFired[1].ms, 120000, "…after exactly the provider's 120s")
+    // the host scheduling its own retry stands ours down
+    layer4.cancelRedrive("ses_rd")
+    assert.ok(timersCleared.length >= 1, "a host retry cancels the pending plugin re-drive")
+    const clearedBefore = timersCleared.length
+    g4.observe("HTTP 429 Too Many Requests", { sessionID: "ses_rd" })
+    await fire4({ sessionID: "ses_rd", agent: "team", system: [], messages: [], tools: {}, options: {} })
+    assert.ok(timersCleared.length > clearedBefore, "a session assembling its own request stands the re-drive down")
+  }
+
   // (g) the hooks, on the fake host
   const ws30 = workspace("retry")
   const f = makeFakeCtx({ directory: ws30, agents: [] })

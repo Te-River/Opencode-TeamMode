@@ -214,6 +214,14 @@ export interface V2SessionHooks {
    * survival list so it stays reachable, but it cannot swap the body before it
    * lands the way v1's `chat.message` allowed.  Anything that reads a `prompt`
    * hook as the v2 answer is wrong.
+   *
+   * CORRECTION 2026-10-21: this paragraph is about the HOOK surface, which indeed
+   * has no prompt point.  The METHOD surface is richer than we declared — the
+   * session domain exposes callable `prompt`/`synthetic`/`wait` and more (probe in
+   * V2SessionDomain).  "A plugin has no seam to retry a failed request" was
+   * therefore too strong: a plugin cannot INTERCEPT the model's own retry, but it
+   * CAN re-drive execution via `session.synthetic({sessionID, text, resume:true})`,
+   * and the retry governor's ③ re-drive does exactly that.
    */
 }
 
@@ -233,6 +241,20 @@ export interface V2SessionDomain {
    * it, so there is no admission rule to state here.
    */
   readonly compact?: (input: { sessionID: string; id?: string; delivery?: string }) => Promise<unknown>
+  /**
+   * Measured 2026-10-21 on host 2.1.2 (zero-token sandbox probe): the plugin ctx session
+   * domain really exposes list/create/get/remove/switchAgent/switchModel/prompt/generate/
+   * command/compact/synthetic/interrupt/update/move/wait/context — all functions.
+   * `synthetic({})` fails with `Missing key at ["sessionID"]` and a bogus id with
+   * `Session.NotFoundError`, so the seam dispatches to the session store.  The host's own
+   * API text: "Durably admit synthetic session input and schedule execution unless resume
+   * is false" — the retry layer's ③ re-drive uses exactly this.  `prompt` exists too and
+   * the retry layer deliberately does NOT use it: synthetic input is the designed
+   * non-user channel; a plugin writing a user-role message would impersonate the user.
+   */
+  readonly synthetic?: (input: { sessionID: string; text: string; description?: string; metadata?: Record<string, unknown>; delivery?: string; resume?: boolean }) => Promise<unknown>
+  readonly prompt?: (input: Record<string, unknown>) => Promise<unknown>
+  readonly wait?: (input: { sessionID: string }) => Promise<unknown>
   readonly [key: string]: unknown
 }
 
