@@ -609,3 +609,46 @@ no-op because it is "only a default". The host assembled a request that worked; 
 it a request some providers refuse. A plugin that improves determinism on one model can
 therefore remove compatibility on another, and the compatibility cost is invisible in our own
 logs — it shows up as somebody else's API error. `[R]`
+
+### 2026-10-21 — host 2.1.x: where its release notes actually live, and the #57260 contract renames that bind our seams `[D][L]`
+
+**Where to look.** The desktop shipped 2.1.2 (`opencode-cli.version` = `2.1.2`; boot log
+`msg="cli starting" version=2.1.2 channel=latest`). `api.github.com/repos/sst/opencode/releases/latest`
+answers **v1.19.3** — the 2.x desktop line is not published as a GitHub release of that repo,
+so `/releases/latest` (which also skips prereleases) is the wrong source and a search there
+finds nothing. The authoritative notes are `https://opencode.ai/changelog`. `[D]`
+
+**v2.1.0 is a BREAKING contract release (#57260)** — "intentional changes to public SDK, HTTP
+message/event, and plugin contracts". The renames that touch our readers: tool parts lose
+separate `providerState`/`providerResultState` — call and result data share `tool.native`
+(success/failure events shallow-merge native into the call's native, result wins on duplicate
+keys); `SessionCompactionResult.providerState` → `native`; compaction `recent` →
+`metadata.keepID` reference; event names `session.tool.called` / `session.tool.success` /
+`session.tool.failed` / `session.step.ended` / `session.step.failed` /
+`session.compaction.started|ended`; `Credential.Key.configuration` removed (writes use
+`metadata`). Our seams named in the risk list: `v2-offload.ts` (native-result shape measured as
+`{content, metadata, output}` on 2.0.16), `v2-subagent.ts` (`result.metadata.sessionID` off the
+ack), `v2-prune.ts` (parts-by-shape), `v2-events.ts` (whitelisted event NAMES — a renamed event
+arrives as unrecognised and is counted, never forwarded on a guess), `v2-session.ts`
+(compaction hook `output.context`). The design law caps the blast radius: an unrecognized shape
+is left alone and COUNTED (`unknownParts`, `unmatched`, `scope_unknown`), so the expected failure
+mode on a drifted field is silent degradation visible in `tm_stats`, not corruption.
+Post-install checks owed on 2.1.2: the `v2-boot` row, a native `shell`/`read` result actually
+offloading (`native:shell offloaded:true`), a background child settling via injection, and the
+`v2-surface` counters' `unmatched`/`unknownParts` deltas. `[D]`
+
+**v2.1.2 (#57146, #57589) adds `retryAfterMs` to structured session errors** and fixes retry
+timing being dropped from quota/rate-limit/provider-internal errors. Our retry governor
+(`v2-retry.ts`) parses `Retry-After` out of the error TEXT only — the structured field is a
+follow-up read point (the 1.7.8 ladder is fixed 5s/10s/20s per the user's ask regardless, so
+this is an enrichment, not a break). Also relevant: #54276 fixed Code Mode async jobs
+interleaving (our `execute` programs), and #57416 keeps locations loaded while long tools run
+(the new HTTP ladder's worst case is ~115 s single-URL, ~165 s across redirect hops).
+v2.1.0's `experimental.todo` (a TUI `todowrite`) is config-gated and off by default —
+`tm_ledger` remains our lead's ledger. `[D]`
+
+**Live evidence, same day `[L]`:** this session ran on 2.1.2 with the installed 1.7.7 plugin —
+three forced-background `subagent` dispatches each settled and their full bodies were collected
+(the completion envelope injection path works on 2.1.2), and the boot probe against the real
+config shows `loading plugin … @te-river/opencode-team-mode@latest` from the host cache with the
+`[team-mode] v2 人格已启动` note and no load failure.

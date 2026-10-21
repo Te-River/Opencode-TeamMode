@@ -732,10 +732,10 @@ for overrides, extra agents and disabling roles.
 | `splitAdvice` | `on`/`off` | `on` | Inject a split suggestion when a dispatch brief carries too many acceptance criteria. `off` stops the hint (the prompt discipline stays). |
 | `splitBriefTokens` | number | `4000` | The brief token threshold that triggers it. **Clamped to ≥200.** |
 | `splitMaxCriteria` | number | `3` | More acceptance criteria than this is a signal to split. |
-| `retry` | `on`/`off` | `on` | Retry governor: classify a quota / rate / transient / unknown error **by name and text only**, compute jittered backoff, and inject ONE directive naming the exact seconds to wait. After `retryBreakAfter` consecutive errors a cooldown denies new `subagent` dispatches. Honest boundary: there is no seam to intercept the model's own retry — it identifies, states the wait, and refuses new work; it does not wait for the model. |
-| `retryBaseMs` | number | `5000` | First backoff; doubles per consecutive error. |
+| `retry` | `on`/`off` | `on` | Retry governance on BOTH request-failure surfaces: (1) the provider-error governor — classify a quota / rate / transient / unknown error **by name and text only**, compute the fixed 5s/10s/20s ladder, and inject ONE directive naming the exact seconds to wait; after `retryBreakAfter` consecutive errors a cooldown denies new `subagent` dispatches; (2) the HTTP layer — a failed request inside `tm_webfetch` / every `tm_search` engine leg (network throw, per-request timeout, HTTP 429 or 5xx) is retried up to 3 times on the SAME ladder, and the reply labels it (`第N次重试后成功` / `重试3次…仍失败`). A policy refusal (off-allowlist, red line, env-file URL, 403/418, other 4xx) is never re-asked. Honest boundary: there is no seam to intercept the model's own retry — it identifies, states the wait, and refuses new work; it does not wait for the model. |
+| `retryBaseMs` | number | `5000` | First rung of the ladder: retries #1/#2/#3 wait 5s / 10s / 20s (doubling), on both surfaces. |
 | `retryMaxMs` | number | `60000` | Ceiling for that backoff. |
-| `retryJitter` | number | `0.3` | ± fraction applied to the wait, so parallel sessions do not re-fire together. |
+| `retryJitter` | number | `0` | ± fraction applied to the wait. Default `0` = NO jitter, so the 5s/10s/20s ladder is exact; set a fraction (≤0.95) if parallel sessions should not re-fire in lockstep. |
 | `retryBreakAfter` | number | `5` | Consecutive errors before the breaker trips. |
 | `retryCooldownMs` | number | `60000` | How long new sub-agent dispatches are refused once it has. |
 

@@ -3441,7 +3441,7 @@ console.log("   OK (tool-call read by shape; a media part is known-but-textless;
 // 30. 错峰重试 — recognise a provider throttle, inject an EXACT wait, cool down (#49 feature 3)
 console.log("30. 错峰重试 — recognise a provider throttle, inject an exact wait, cool down (#49 feature 3)")
 {
-  const { classifyProviderError, backoffMs, createRetryGovernor, resolveRetryConfig, applyV2RetryGovernor, RETRY_MARKER } =
+  const { classifyProviderError, backoffMs, createRetryGovernor, resolveRetryConfig, applyV2RetryGovernor, RETRY_MARKER, RETRY_DEFAULTS } =
     await import("./dist/host/v2-retry.js")
   const { createTeamScope } = await import("./dist/host/v2-scope.js")
 
@@ -3491,6 +3491,21 @@ console.log("30. 错峰重试 — recognise a provider throttle, inject an exact
   assert.equal(rc({ retryJitter: 5 }).jitter, 0.95, "an out-of-range jitter is clamped to the ceiling")
   assert.equal(rc({ retry: "off" }).enabled, false, "only an explicit off disables")
   assert.equal(rc({}).enabled, true, "default is on")
+  // (f2) THE SHIPPED LADDER.  The default carries NO jitter, so consecutive
+  // errors #1/#2/#3 inject exactly 5s / 10s / 20s — the ask is a fixed ladder,
+  // and a jittered one is a different promise wearing these words.
+  assert.equal(RETRY_DEFAULTS.jitter, 0, "the default jitter is 0 — the ladder is fixed, not random")
+  assert.equal(RETRY_DEFAULTS.baseMs, 5000, "…and the first wait is 5s")
+  assert.equal(rc({}).jitter, 0, "the registry default reaches the resolved config as 0")
+  {
+    const defaults = resolveRetryConfig(resolveConfig({}))
+    const ladderGov = createRetryGovernor({ ...defaults, random: () => 0.37 })
+    const waits = ["HTTP 429 Too Many Requests", "HTTP 429 Too Many Requests", "Allocated quota exceeded"].map((t) => ladderGov.observe(t).delayMs)
+    assert.deepEqual(waits, [5000, 10000, 20000], `three consecutive errors wait exactly 5s/10s/20s — got: ${waits}`)
+    assert.equal(backoffMs(3, defaults.baseMs, defaults.maxMs, defaults.jitter, () => 0.9), 40000, "error #4 keeps doubling (40s)")
+    assert.equal(backoffMs(4, defaults.baseMs, defaults.maxMs, defaults.jitter, () => 0.1), 60000, "error #5 rests on the 60s cap")
+    assert.equal(defaults.breakAfter, 5, "the breaker threshold is unchanged by the ladder")
+  }
 
   // (g) the hooks, on the fake host
   const ws30 = workspace("retry")
@@ -3564,7 +3579,7 @@ console.log("30. 错峰重试 — recognise a provider throttle, inject an exact
 
   for (const r of layer.registrations) await r.dispose()
 }
-console.log("   OK (explicit signatures only; base→×2→cap with jitter in [1-j,1+j]; the Nth error trips the breaker; the next request carries the EXACT seconds once; cooldown denies only a Team dispatch and names retry: \"off\"; foreign/other actions untouched; a throw is swallowed and counted)")
+console.log("   OK (explicit signatures only; the DEFAULT is the fixed 5s/10s/20s ladder with jitter 0, doubling to the 60s cap after that, and a configured jitter still stays in [1-j,1+j]; the Nth error trips the breaker; the next request carries the EXACT seconds once; cooldown denies only a Team dispatch and names retry: \"off\"; foreign/other actions untouched; a throw is swallowed and counted)")
 
 console.log("31. 拆分任务 — a big brief arms ONE advice line for the lead's next request (#49 feature 4)")
 {

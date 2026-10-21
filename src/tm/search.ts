@@ -32,6 +32,8 @@
 
 import {
   fetchWebText,
+  httpRetryFromConfig,
+  httpRetryNote,
   extractSearchHits,
   renderSearchHits,
   searchDateLine,
@@ -716,6 +718,9 @@ export function buildTmSearchTool(deps: {
    *  previous query (or a page the lead just fetched) costs one fetch, not
    *  two.  Keyed by URL, so the sharing is exact. */
   cache?: WebCache
+  /** Injectable sleep for the HTTP retry ladder (a test pins the waits without
+   *  living them).  Omitted = real setTimeout, same as buildTmWebfetchTool. */
+  sleep?: (ms: number) => Promise<void>
 }): {
   description: string
   args: Record<string, unknown>
@@ -767,7 +772,7 @@ export function buildTmSearchTool(deps: {
           const stepId = pipelines.nextStepId()
           pipelines.store.appendTrajectory({ tool, step_id: stepId, event: "call", engine: AUTO_ENGINE_KEY, routes })
           const settled = await Promise.all(
-            routes.map(async (key): Promise<FusionGroup & { note?: string }> => {
+            routes.map(async (key): Promise<FusionGroup & { note?: string; fetched?: boolean }> => {
               const engine = SEARCH_ENGINES[key]
               const stalledLeg = dupe.stalled(key)
               if (stalledLeg.blocked) {
@@ -784,8 +789,38 @@ export function buildTmSearchTool(deps: {
                 return { engine: key, hits: [], note: `${key} 主机不在白名单，已跳过` }
               }
               try {
-                const res = await fetchWebText(target, allowlist, { fetchImpl: deps.fetchImpl, cache: deps.cache })
-                return { engine: key, hits: bodyToHits(engine, res.text, maxHits) }
+                const res = await fetchWebText(target, allowlist, {
+                  fetchImpl: deps.fetchImpl,
+                  cache: deps.cache,
+                  sleep: deps.sleep,
+                  // Same fixed ladder as tm_webfetch (5s/10s/20s) — a leg that
+                  // times out or gets a 5xx asks again before the other engines
+                  // are blamed for it.
+                  retry: httpRetryFromConfig(cfg),
+                  onRetry: (row) =>
+                    pipelines.store.appendTrajectory({
+                      tool,
+                      step_id: stepId,
+                      event: "http_retry",
+                      engine: key,
+                      attempt: row.attempt,
+                      delay_ms: row.delayMs,
+                      reason: row.reason,
+                    }),
+                })
+                // Review finding #1: a leg that walked the ladder and THEN
+                // succeeded is not the same fact as an instant hit — the label
+                // rides the reply through the notes channel (so it shows in the
+                // fused header AND in the "no extractable results" line), not
+                // only in the trajectory.  fetched=true keeps the "not one leg
+                // left the process" diagnostic honest for a slow zero-hit leg.
+                const legNote = httpRetryNote(res.retries ?? [])
+                return {
+                  engine: key,
+                  hits: bodyToHits(engine, res.text, maxHits),
+                  fetched: true,
+                  ...(legNote ? { note: `${key} ${legNote}` } : {}),
+                }
               } catch (err) {
                 const e = err as { name?: string; message?: unknown }
                 return { engine: key, hits: [], note: `${key} 失败（${shorten(e?.message ?? e, 80)}）` }
@@ -799,7 +834,10 @@ export function buildTmSearchTool(deps: {
             // sentence collapsed them: a live v2 session spent its round retrying
             // four engines that had each been dropped by our own gate before any
             // request left the process.
-            const attempted = settled.filter((g) => !g.note).length
+            // A slow-but-successful leg now carries a note; without `fetched`
+            // it would drop out of this count and the "全部在发出请求前就被本站
+            // 门禁剔除" claim could fire while a leg HAD been requested.
+            const attempted = settled.filter((g) => g.fetched || !g.note).length
             if (attempted === 0) {
               return toToolResult(
                 tmError(
@@ -916,6 +954,20 @@ export function buildTmSearchTool(deps: {
           ask: ask ?? undefined,
           skipAskHosts: approvedHosts,
           cache: deps.cache,
+          sleep: deps.sleep,
+          // The same fixed ladder the page GET uses; the SO-quota→bing swap
+          // downstream still fires — it simply sees the leg AFTER its ladder.
+          retry: httpRetryFromConfig(cfg),
+          onRetry: (row) =>
+            pipelines.store.appendTrajectory({
+              tool,
+              step_id: stepId,
+              event: "http_retry",
+              engine: engine.name,
+              attempt: row.attempt,
+              delay_ms: row.delayMs,
+              reason: row.reason,
+            }),
         })
         let rendered: string | null = null
         /** the html engines hand their hit list to the collapse guard */
@@ -944,6 +996,12 @@ export function buildTmSearchTool(deps: {
             ),
           )
         }
+        // Review finding #1: same duty as the page GET and the auto route —
+        // a leg that waited the ladder before answering labels itself in the
+        // reply (第N次重试后成功), not only in the trajectory.  Appended AFTER
+        // the empty-render check so a retried-but-empty engine still gets the
+        // honest "没有返回可提取的结果" error, not a note-dressed non-empty.
+        rendered = `${rendered}${httpRetryNote(res.retries ?? [])}`
         const verdict = dupe.observe(engine.name, query, guardHits, queryTerms(query))
         if (verdict.note) {
           pipelines.store.appendTrajectory({
@@ -962,9 +1020,10 @@ export function buildTmSearchTool(deps: {
           }),
         )
       } catch (err) {
-        const e = err as { name?: string; message?: unknown }
+        const e = err as { name?: string; message?: unknown; retryNote?: string }
         if (e?.name === "AbortError") {
-          return toToolResult(tmError(tool, "execute", "搜索超时（20s）——换更具体的搜索词或换引擎"))
+          const exhausted = typeof e.retryNote === "string" ? e.retryNote : ""
+          return toToolResult(tmError(tool, "execute", "搜索超时（每次请求 20s）——换更具体的搜索词或换引擎" + exhausted))
         }
         return toToolResult(tmError(tool, "execute", String(e?.message ?? err ?? "tm_search 失败")))
       }

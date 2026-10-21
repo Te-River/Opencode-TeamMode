@@ -2919,6 +2919,9 @@ try {
           pipelines: { store: { appendTrajectory: () => {} }, nextStepId: () => "sE14", govern: (_s, _t, c) => c },
           cfg: { ...tm.resolveConfig({}), webfetchAllowedDomains: domains ?? ["cn.bing.com"] },
           fetchImpl: impl,
+          // The 429/503 legs below now walk the 5s/10s/20s ladder; sleeping for
+          // real here would cost the suite 70 s of nothing.
+          sleep: async () => {},
         })
       const o2 = (r) => String(r?.output ?? "")
 
@@ -3137,6 +3140,244 @@ try {
       await rt2.dispose()
       await rt3.dispose()
       console.log("18. runtime auto-create: OK (created with every key, idempotent, never overwrites)")
+    }
+
+    // ---------- 19. the HTTP retry ladder: fixed 5s/10s/20s, and only for a FAILED REQUEST ----------
+    {
+      const wf = await import("./dist/tm/webfetch.js")
+      const cm = await import("./dist/tm/cache.js")
+      const res = (status, headers = {}, body = "") => ({
+        status,
+        headers: { get: (n) => headers[String(n).toLowerCase()] ?? null },
+        text: async () => body,
+      })
+      const o19 = (r) => String(r?.output ?? "")
+      const ctx19 = { directory: process.cwd() }
+      let rows = []
+      let slept = []
+      let calls = 0
+      const reset19 = () => {
+        rows = []
+        slept = []
+        calls = 0
+      }
+      const mk = (impl, extra = {}) =>
+        wf.buildTmWebfetchTool({
+          pipelines: {
+            store: { appendTrajectory: (row) => rows.push(row) },
+            nextStepId: () => "sE19",
+            govern: (_s, _t, c) => c,
+          },
+          cfg: { ...tm.resolveConfig({}), webfetchAllowedDomains: ["cn.bing.com", "learn.microsoft.com"], ...extra.cfg },
+          fetchImpl: async (u, init) => {
+            calls++
+            return impl(u, init)
+          },
+          // The ladder is real seconds; a suite that waited on them would cost
+          // 35 s per retried leg for no added evidence.
+          sleep: async (ms) => {
+            slept.push(ms)
+          },
+          cache: extra.cache,
+        })
+
+      // (a) a 500 that clears on the next ask: ONE 5s wait, and the reply says so
+      reset19()
+      const a1 = o19(
+        await mk(async () => (calls === 1 ? res(500, {}, "") : res(200, { "content-type": "text/plain" }, "page content"))).execute(
+          { url: "https://cn.bing.com/flaky" },
+          ctx19,
+        ),
+      )
+      assert.equal(calls, 2, "a 500 is asked again — one failure is not treated as the answer")
+      assert.deepEqual(slept, [5000], "retry #1 waits EXACTLY 5s (the fixed ladder, no jitter)")
+      assert.ok(a1.includes("page content"), "the body arrives")
+      assert.ok(
+        a1.includes("第1次重试后成功") && a1.includes("已等待5s"),
+        `the reply labels the retry it actually took — got: ${a1.slice(0, 200)}`,
+      )
+      assert.ok(
+        rows.some((r) => r.event === "http_retry" && r.attempt === 1 && r.delay_ms === 5000),
+        `one http_retry trajectory row per retry — got: ${JSON.stringify(rows)}`,
+      )
+
+      // (b) a 503 that never clears: exactly 3 retries (4 requests), 5/10/20, honest failure
+      reset19()
+      const b1 = o19(await mk(async () => res(503, { "retry-after": "5" }, "")).execute({ url: "https://cn.bing.com/dead" }, ctx19))
+      assert.equal(calls, 4, "3 retries = 4 requests, and the ladder STOPS there")
+      assert.deepEqual(slept, [5000, 10000, 20000], "the ladder is 5s / 10s / 20s for retries #1/#2/#3")
+      assert.ok(/重试3次/.test(b1) && /仍失败/.test(b1), `the failure states the ladder it used up — got: ${b1.slice(0, 240)}`)
+      assert.ok(b1.includes("503") && b1.includes("Retry-After"), "…and still carries the status and the hint it was given")
+      // finding #4: the advice cannot say 别对同一 URL 原地重试 while the same
+      // reply says this tool just retried 3 times — past a walked ladder the
+      // sentence acknowledges it; the Retry-After number stays visible either way.
+      assert.ok(/重试过 3 次/.test(b1) && !/别对同一 URL 原地重试/.test(b1), `the Retry-After line acknowledges the ladder it walked — got: ${b1.slice(0, 300)}`)
+      assert.match(wf.retryAfterNote("30"), /别对同一 URL 原地重试/, "with no ladder walked (retry: off) the original换来源 advice stands, verbatim")
+      assert.match(wf.retryAfterNote("30", 2), /重试过 2 次/, "…and the taken-count rides the alternate sentence")
+
+      // (c) a refusal is a VERDICT, never a transient failure
+      reset19()
+      const c1 = o19(
+        await mk((u) => (u.includes("learn.microsoft.com") ? res(302, { location: "https://m.example.net/p" }, "") : res(200, { "content-type": "text/plain" }, "x"))).execute(
+          { url: "https://learn.microsoft.com/shortcut" },
+          ctx19,
+        ),
+      )
+      assert.equal(calls, 1, "a hop our own gate refused is never re-asked")
+      assert.deepEqual(slept, [], "…and no ladder time is spent on a verdict")
+      assert.ok(/跳转链/.test(c1), "the mid-chain refusal still names both hops")
+      reset19()
+      o19(await mk(async () => res(200, { "content-type": "text/plain" }, "should never be fetched")).execute({ url: "https://not-allowlisted.example/z" }, ctx19))
+      assert.equal(calls, 0, "an off-allowlist URL is refused before a request leaves the process")
+      assert.deepEqual(slept, [], "…and nothing is retried that was never allowed")
+
+      // (d) 403 keeps its browser directive and its single request
+      reset19()
+      const d1 = o19(await mk(async () => res(403, {}, "")).execute({ url: "https://cn.bing.com/blocked" }, ctx19))
+      assert.equal(calls, 1, "a 403 gets no second try — re-asking a fingerprint gate earns the same 403")
+      assert.deepEqual(slept, [], "…and slept nothing")
+      assert.ok(/browser_navigate/.test(d1), "the browser directive line is intact (a retry note must not eat it)")
+
+      // (e) a cache hit short-circuits BEFORE the network, so it cannot retry
+      reset19()
+      const cache = cm.createWebCache({ dir: mktmp("retry-cache"), ttlSec: 300 })
+      const eFirst = o19(await mk(async () => res(200, { "content-type": "text/plain" }, "cached body"), { cache }).execute({ url: "https://cn.bing.com/cached" }, ctx19))
+      assert.ok(eFirst.includes("cached body"), "the first fetch serves the page")
+      assert.deepEqual(slept, [], "a clean first fetch sleeps nothing")
+      const eCalls = calls
+      const eSlept = slept.length
+      reset19()
+      calls = eCalls
+      const eSecond = o19(await mk(async () => res(200, { "content-type": "text/plain" }, "never from network"), { cache }).execute({ url: "https://cn.bing.com/cached" }, ctx19))
+      assert.equal(calls, eCalls, "the cache hit touches no network at all")
+      assert.equal(slept.length, eSlept, "…and therefore retries nothing")
+      assert.ok(eSecond.includes("缓存命中"), "…and says where the body came from")
+      assert.ok(!/重试/.test(eSecond), "…and claims no retry it did not do")
+
+      // (f) retry: "off" means ONE request at the HTTP layer too
+      reset19()
+      const f1 = o19(await mk(async () => res(500, {}, ""), { cfg: tm.resolveConfig({ retry: "off" }) }).execute({ url: "https://cn.bing.com/off" }, ctx19))
+      assert.equal(calls, 1, 'retry: "off" = no ladder, not a shorter ladder')
+      assert.deepEqual(slept, [], "…and nothing was slept")
+      assert.ok(!/重试/.test(f1), "…and the reply claims no retries it did not perform")
+      assert.ok(f1.includes("500"), "the status itself still arrives")
+      assert.equal(wf.httpRetryFromConfig({ retry: "off" }).enabled, false, "the config half of the switch")
+      assert.equal(wf.httpRetryFromConfig({}).enabled, true, "default on")
+      assert.equal(wf.httpRetryFromConfig({}).baseMs, 5000, "base read from the registry")
+
+      // (g) the pure ladder, pinned without a fetch
+      assert.deepEqual([1, 2, 3].map((a) => wf.httpRetryDelayMs(a, 5000)), [5000, 10000, 20000], "5s/10s/20s for retries 1/2/3")
+      assert.equal(wf.httpRetryDelayMs(4, 5000), 0, "retry #4 has no wait — the ladder is three, not forever")
+      assert.equal(wf.httpRetryDelayMs(0, 5000), 0, "attempt 0 is not a retry")
+      assert.deepEqual([1, 2, 3].map((a) => wf.httpRetryDelayMs(a)), [5000, 10000, 20000], "no base argument = the registry default")
+      assert.equal(wf.HTTP_RETRY_MAX, 3, "max 3 retries")
+      // finding #3: the rungs clamp to the maxMs ceiling (registry retryMaxMs) —
+      // with retryBaseMs > 15000 the un-clamped rung 3 (base×4) outran the cap
+      // the docs promise for BOTH retry surfaces.
+      assert.deepEqual(
+        [1, 2, 3].map((a) => wf.httpRetryDelayMs(a, 10000, 15000)),
+        [10000, 15000, 15000],
+        "rung waits clamp to maxMs — base 10s under a 15s cap yields 10s/15s/15s",
+      )
+
+      // (h) a network throw is a failed request (retryable); a timeout keeps its name
+      reset19()
+      const h1 = o19(
+        await mk(() => {
+          if (calls === 1) throw new TypeError("socket hang up")
+          return res(200, { "content-type": "text/plain" }, "recovered")
+        }).execute({ url: "https://cn.bing.com/throw" }, ctx19),
+      )
+      assert.deepEqual(slept, [5000], "a bare network throw IS retryable — it carries no verdict")
+      assert.ok(h1.includes("recovered") && h1.includes("第1次重试后成功"), "…and the recovery is labelled")
+      assert.ok(rows.some((r) => r.event === "http_retry" && /TypeError/.test(String(r.reason))), `the row names the reason — got: ${JSON.stringify(rows)}`)
+
+      reset19()
+      const h2 = o19(
+        await mk(() => {
+          const e = new Error("This operation was aborted")
+          e.name = "AbortError"
+          throw e
+        }).execute({ url: "https://cn.bing.com/slow" }, ctx19),
+      )
+      assert.deepEqual(slept, [5000, 10000, 20000], "a per-attempt timeout walks the whole ladder")
+      assert.equal(calls, 4, "…four attempts of 20s each is the documented worst case")
+      assert.ok(/抓取超时/.test(h2) && /重试3次/.test(h2), `the timeout reply keeps BOTH facts — got: ${h2.slice(0, 200)}`)
+
+      // (i) a malformed Location header is a VERDICT on this response, not a
+      // failed request (finding #2): it used to look transient, burn the whole
+      // 35s ladder, and come back labeled 「重试3次 · 5s/10s/20s · 仍失败」.
+      reset19()
+      const i1 = o19(await mk(async () => res(302, { location: "http://" }, "")).execute({ url: "https://cn.bing.com/badloc" }, ctx19))
+      assert.equal(calls, 1, "a broken Location is never re-asked — the same response carries the same broken header")
+      assert.deepEqual(slept, [], "…and no ladder time is spent on it")
+      assert.ok(/Location 无法解析/.test(i1), `the reply names the parse failure — got: ${i1.slice(0, 200)}`)
+      assert.ok(!/重试/.test(i1), "…and it is not dressed as a transient failure")
+
+      // (j) an oversized maxRetries behaves as the documented three (finding #5):
+      // resolveHttpRetry clamps to HTTP_RETRY_MAX, and the note renderers filter
+      // zero-delay entries so no 「1s」 wait is ever claimed that did not happen.
+      reset19()
+      const jErr = await wf
+        .fetchWebText(new URL("https://cn.bing.com/overshoot"), ["cn.bing.com"], {
+          fetchImpl: async () => {
+            calls++
+            return res(500, {}, "")
+          },
+          sleep: async (ms) => {
+            slept.push(ms)
+          },
+          retry: { maxRetries: 9 },
+        })
+        .then(() => null, (e) => e)
+      assert.equal(calls, 4, "maxRetries 9 is clamped to 3 — 1 request + 3 retries, then the stop")
+      assert.deepEqual(slept, [5000, 10000, 20000], "…and only the three real rungs were slept")
+      assert.equal(jErr?.retryNote, "（重试3次 · 5s/10s/20s · 仍失败）", "…and the note is exactly the three-rung ladder, no fabricated 1s entries")
+      assert.equal(wf.resolveHttpRetry({ maxRetries: 9 }).maxRetries, 3, "the clamp itself, pure")
+      assert.equal(wf.httpRetryFailNote([5000, 0, 0]), "（重试1次 · 5s · 仍失败）", "zero-delay entries are filtered before rendering")
+      assert.equal(wf.httpRetryNote([0]), "", "a list of nothing-but-zeros claims no wait at all")
+
+      // (k) tm_search labels the ladder on BOTH render routes (finding #1): a
+      // leg that waited 35s for its hit list must not read as an instant answer —
+      // the same claim law the page GET already honors in its three render paths.
+      const srch = await import("./dist/tm/search.js")
+      const HN_OK = JSON.stringify({
+        hits: [{ title: "Retry ladder story", url: "https://hn.example.com/1", points: 7, num_comments: 3, objectID: "1", created_at: "2026-10-21T00:00:00Z" }],
+        nbHits: 1,
+      })
+      let sCalls = 0
+      let sSlept = []
+      const mkSearch = () =>
+        srch.buildTmSearchTool({
+          pipelines: {
+            store: { appendTrajectory: () => {} },
+            nextStepId: () => "sE19k",
+            govern: (_s, _t, c) => c,
+          },
+          cfg: { ...tm.resolveConfig({}), webfetchAllowedDomains: ["hn.algolia.com"] },
+          fetchImpl: async () => {
+            sCalls++
+            return sCalls === 1 ? res(500, {}, "") : res(200, { "content-type": "application/json" }, HN_OK)
+          },
+          // The legs' ladder is real seconds too — injected so the pin costs no wall time.
+          sleep: async (ms) => {
+            sSlept.push(ms)
+          },
+        })
+      const k1 = o19(await mkSearch().execute({ query: "retry ladder test", engine: "hn" }, ctx19))
+      assert.equal(sCalls, 2, "explicit route: the hn leg asks again after the 500")
+      assert.deepEqual(sSlept, [5000], "…on the ladder, not immediately")
+      assert.ok(k1.includes("第1次重试后成功") && k1.includes("Retry ladder story"), `explicit route labels the waited leg — got: ${k1.slice(0, 220)}`)
+      sCalls = 0
+      sSlept = []
+      // the other auto legs sit outside this custom-narrow allowlist → skipped,
+      // so the hn leg is the only one requested (and the only one that retries)
+      const k2 = o19(await mkSearch().execute({ query: "retry ladder test again" }, ctx19))
+      assert.equal(sCalls, 2, "auto route: only the allowlisted hn leg reaches the network")
+      assert.ok(k2.includes("第1次重试后成功"), `auto route carries the leg's retry label through the notes channel — got: ${k2.slice(0, 300)}`)
+      assert.ok(k2.includes("Retry ladder story"), "…and still returns the fused hits")
+
+      console.log("19. HTTP retry ladder: OK (500→200 waits [5000] and says 第1次重试后成功; a persistent 503 walks 5s/10s/20s in 4 requests and admits 仍失败; an allowlist/mid-chain refusal and a 403 are never re-asked; a cache hit never reaches the ladder; retry:\"off\" = one request; httpRetryDelayMs pinned incl. the maxMs clamp; a network throw and a per-attempt timeout retry with their reason in the trajectory; a malformed Location is a fatal verdict walked by ZERO retries; maxRetries 9 behaves as 3 with no fabricated 「1s」; tm_search labels the ladder on BOTH render routes)")
     }
 
 } finally {

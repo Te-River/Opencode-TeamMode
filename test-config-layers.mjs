@@ -465,15 +465,19 @@ const eq = (a, b, msg) => assert.strictEqual(a, b, msg)
 
 // ---------------------------------------------------------------------------
 // 17. INTEGER HEURISTIC — a fractional default keeps its fraction; an integer
-//     default truncates the value (registry contract, config.ts:226).
+//     default truncates the value, UNLESS the knob's whole range is below one
+//     unit (registry contract: `coerceValue` in src/tm/config.ts).
 // ---------------------------------------------------------------------------
 {
   const spec = (k) => CONFIG_KEYS.find((s) => s.key === k)
   eq(coerceValue(spec("searchRelevanceFloor"), 0.5), 0.5, "searchRelevanceFloor keeps a fraction")
   eq(coerceValue(spec("retryJitter"), 0.42), 0.42, "retryJitter keeps a fraction")
+  eq(spec("retryJitter").default, 0, "its default is 0 = the fixed 5s/10s/20s ladder")
+  eq(coerceValue(spec("retryJitter"), 5), 0.95, "…and an integer default does NOT make a sub-unit knob an integer one (0.42 must not truncate to 0)")
+  eq(spec("retryBaseMs").default, 5000, "retryBaseMs default 5000 = the first rung of the ladder")
   eq(coerceValue(spec("previewMaxTokens"), 80.9), 80, "an integer-default key truncates 80.9 -> 80")
   eq(coerceValue(spec("offloadThreshold"), 2000.9), 2000, "an integer-default key truncates 2000.9 -> 2000")
-  console.log("17. integer heuristic: OK (fractions kept, integer keys truncated)")
+  console.log("17. integer heuristic: OK (fractions kept, sub-unit knobs never truncate, integer keys truncated)")
 }
 
 // ---------------------------------------------------------------------------

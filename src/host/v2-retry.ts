@@ -10,7 +10,8 @@
  *   1. RECOGNISE a provider throttle from the event feed (`session.error`), by
  *      matching explicit signatures only �?never by guessing.  A text that does
  *      not carry a known signature classifies as `unknown` and changes nothing.
- *   2. COMPUTE an exact wait (backoff × jitter, capped) and inject it into the
+ *   2. COMPUTE an exact wait (the fixed 5s/10s/20s ladder for retries #1/#2/#3, doubling
+ *      to the cap after that; jitter applies only when retryJitter > 0) and inject it into the
  *      NEXT request's system prompt as an actionable sentence ("�?N 秒再�?),
  *      not a vague "try later".  The directive is consumed once, so a host that
  *      replays the hook in-process cannot duplicate it.
@@ -83,11 +84,18 @@ export interface RetryConfig {
   cooldownMs: number
 }
 
+/**
+ * The default ladder is FIXED and deterministic: consecutive errors #1/#2/#3
+ * wait exactly 5s / 10s / 20s (base 5000 doubling, jitter 0).  Jitter stays a
+ * knob — a user who would rather parallel sessions not re-fire in lockstep can
+ * set `retryJitter` back to a fraction — but the shipped default promises the
+ * 5/10/20 ladder, and a promise with jitter in it is not that promise.
+ */
 export const RETRY_DEFAULTS: RetryConfig = {
   enabled: true,
   baseMs: 5000,
   maxMs: 60000,
-  jitter: 0.3,
+  jitter: 0,
   breakAfter: 5,
   cooldownMs: 60000,
 }

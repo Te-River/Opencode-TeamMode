@@ -222,7 +222,13 @@ export function coerceValue(spec: ConfigKeySpec, raw: unknown): unknown {
       if (typeof raw === "string" && raw.trim() === "") return spec.default
       const n = typeof raw === "number" ? raw : Number(String(raw).trim())
       if (!Number.isFinite(n)) return spec.default
-      let v = Number.isInteger(spec.default) ? Math.trunc(n) : n
+      // Integer knobs truncate; a knob whose ENTIRE range sits below one unit
+      // must not — truncating 0.42 to 0 would silently throw the user's value
+      // away.  This used to be decided by the default's shape alone, which broke
+      // the day `retryJitter`'s default became 0 (a fixed 5s/10s/20s ladder):
+      // an integer default no longer proves the knob is not a fraction.
+      const subUnit = spec.max !== undefined && spec.max < 1
+      let v = Number.isInteger(spec.default) && !subUnit ? Math.trunc(n) : n
       if (spec.min !== undefined) v = Math.max(spec.min, v)
       if (spec.max !== undefined) v = Math.min(spec.max, v)
       return v

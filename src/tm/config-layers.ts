@@ -131,8 +131,11 @@ export const DEFAULT_WEBFETCH_DOMAINS: readonly string[] = [
  *
  * `default` is the ONLY default source; `resolveConfig` (src/tm/config.ts)
  * fills it and clamps `number` values to `min`/`max`.  A `number` whose
- * default is an integer is truncated to an integer; a fractional default
- * (searchRelevanceFloor, retryJitter) keeps its fraction.
+ * default is an integer is truncated to an integer — UNLESS its `max` is below
+ * 1, because truncating a sub-unit knob (retryJitter) would always discard the
+ * value.  (`searchRelevanceFloor` is a fraction too, but its max is 1, not below
+ * it — it survives truncation via its non-integer default, not via this
+ * exemption.)
  */
 export const CONFIG_KEYS: readonly ConfigKeySpec[] = [
   // ---- offload / preview / store ----
@@ -186,10 +189,10 @@ export const CONFIG_KEYS: readonly ConfigKeySpec[] = [
   { key: "prune", type: "string", default: "on", enum: ["on", "off"], doc: "上下文裁剪（已结算消息替换为指针）；off = 关闭。" },
   { key: "pruneAtPercent", type: "number", default: 70, min: 40, max: 90, doc: "上下文裁剪启动的窗口占比（%）。" },
   { key: "pruneKeepTailPercent", type: "number", default: 40, min: 0, max: 90, doc: "裁剪时尾部逐字保留的窗口占比（%）。" },
-  { key: "retry", type: "string", default: "on", enum: ["on", "off"], doc: "错峰重试（识别限流 + 注入等待 + 冷却）；off = 关闭。" },
-  { key: "retryBaseMs", type: "number", default: 5000, min: 1, max: 3_600_000, doc: "重试退避基数（毫秒）。" },
-  { key: "retryMaxMs", type: "number", default: 60_000, min: 1, max: 3_600_000, doc: "重试退避上限（毫秒）。" },
-  { key: "retryJitter", type: "number", default: 0.3, min: 0, max: 0.95, doc: "重试退避抖动比例。" },
+  { key: "retry", type: "string", default: "on", enum: ["on", "off"], doc: "错峰重试：识别限流 + 注入等待 + 冷却，并管住 tm_webfetch/tm_search 的 HTTP 重试；固定阶梯 5s/10s/20s（第1/2/3次重试），off = 两处都关闭。" },
+  { key: "retryBaseMs", type: "number", default: 5000, min: 1, max: 3_600_000, doc: "重试退避基数（毫秒）——第1次重试等它，第2次×2，第3次×4（默认即 5s/10s/20s 固定阶梯）。" },
+  { key: "retryMaxMs", type: "number", default: 60_000, min: 1, max: 3_600_000, doc: "重试退避上限（毫秒）——第4次起翻倍到这里封顶。" },
+  { key: "retryJitter", type: "number", default: 0, min: 0, max: 0.95, doc: "重试退避抖动比例（默认 0 = 不抖动，保证第1/2/3次重试精确 5s/10s/20s；设成正数才在 ±比例内随机错峰）。" },
   { key: "retryBreakAfter", type: "number", default: 5, min: 1, max: 1000, doc: "连续多少次错误后触发断路器。" },
   { key: "retryCooldownMs", type: "number", default: 60_000, min: 0, max: 3_600_000, doc: "断路器冷却时长（毫秒）。" },
   { key: "splitAdvice", type: "string", default: "on", enum: ["on", "off"], doc: "派发 brief 过大时注入拆分建议；off = 关闭。" },

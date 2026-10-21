@@ -19,14 +19,19 @@
  *     allowlist (an allowlisted shortener cannot bounce off-site);
  *   - a URL naming an env file (isEnvFilePath) is refused — the R6 red
  *     line applies to remote spellings too;
- *   - response body capped at 2 MB, whole fetch under a hard 20 s timeout,
- *     HTML stripped to text before governance.
+ *   - response body capped at 2 MB, each request under a hard 20 s timeout,
+ *     HTML stripped to text before governance;
+ *   - a FAILED REQUEST (network throw, per-attempt timeout, HTTP 429/5xx) is
+ *     retried on the fixed 5s/10s/20s ladder (max 3 retries, same config the
+ *     provider-error governor reads) and the reply says when it was used —
+ *     a policy refusal (allowlist, red line, env-file, 403/418, other 4xx) is
+ *     never re-asked, because asking again earns the same verdict.
  */
 
 import { isEnvFilePath } from "../envprotect.js"
 import { askFnOf, askGrantNote, askRefusalNote, askUserForTarget, askUserForTargetDetailed, type TmAskFn } from "./perm-ask.js"
 import type { ToolResult } from "../types.js"
-import { shorten, DEFAULT_WEBFETCH_DOMAINS, type TmConfig } from "./config.js"
+import { shorten, resolveConfig, DEFAULT_WEBFETCH_DOMAINS, type TmConfig } from "./config.js"
 
 /** T4 (tm_search quality upgrade): the two new no-key engine hosts.
  *  DEFAULT_WEBFETCH_DOMAINS itself lives in config.ts (owned by the P0
@@ -515,6 +520,10 @@ export interface WebFetchResult {
   /** Set when the body came from the URL cache instead of the network — the
    *  reply says so, because a re-served page is not a freshly-verified one. */
   cachedAt?: number
+  /** The HTTP retries actually taken before this body arrived (absent = the
+   *  first request answered).  Rides up to the reply so 第N次重试后成功 is a
+   *  measurement of what happened, not a restatement of the config. */
+  retries?: number[]
 }
 
 export type FetchImpl = (input: string, init?: Record<string, unknown>) => Promise<{
@@ -559,22 +568,176 @@ async function readBodyCapped(res: {
 /** A 429/503 that says WHEN, not just NO.  Only the delta-seconds spelling
  *  becomes a sentence: an HTTP-date would be laundered into a countdown the
  *  agent has no way to honor (there is no sleep in this toolset), and a wrong
- *  number is worse than no number. */
-export function retryAfterNote(raw: unknown): string {
+ *  number is worse than no number.
+ *  `retriesTaken` keeps the advice consistent with what this tool just DID:
+ *  telling the agent "别对同一 URL 原地重试" while the reply carries our own
+ *  「重试3次」 is one sentence contradicting the other (review finding #4).
+ *  Either way the Retry-After number stays visible. */
+export function retryAfterNote(raw: unknown, retriesTaken = 0): string {
   const v = String(raw ?? "").trim()
   if (!/^\d{1,6}$/.test(v)) return ""
   const s = Number(v)
   if (!s) return ""
+  if (retriesTaken > 0) {
+    return (
+      ` · Retry-After: ${s} 秒——服务端建议等 ${s} 秒；本工具已按 5s/10s/20s 重试过 ${retriesTaken} 次仍被限流，` +
+      `别再原地重问，换别的来源（tm_search 其它引擎 / 直接源站）。`
+    )
+  }
   return (
     ` · Retry-After: ${s} 秒——这是"待会儿再来"，不是"这页没了"。` +
     `本轮先换别的来源（tm_search 其它引擎 / 直接源站），别对同一 URL 原地重试。`
   )
 }
 
+// ---------- HTTP-layer retry ladder (the fixed 5s / 10s / 20s) ----------
+
+/** Retries per request: attempt #1 waits 5s, #2 waits 10s, #3 waits 20s, then
+ *  the failure is reported.  Same ladder the provider-error governor promises,
+ *  derived from the SAME config (`retryBaseMs` doubling, no jitter), so the two
+ *  failure surfaces cannot drift into two different meanings of "retry". */
+export const HTTP_RETRY_MAX = 3
+
+/** A transient HTTP failure worth asking again: 429 (rate limited) and any 5xx.
+ *  Everything else in the 4xx band is a VERDICT about this request — a retry
+ *  would earn the same bytes, and 403/418 carry their own browser directive. */
+export function isRetryableHttpStatus(status: number): boolean {
+  return status === 429 || (status >= 500 && status <= 599)
+}
+
+/** Pure so a test can pin the ladder without sleeping: retry `attempt` (1-based)
+ *  waits `baseMs × 2^(attempt-1)` clamped to `maxMs`; attempt 0 or anything past
+ *  `HTTP_RETRY_MAX` waits nothing (0 = no further retry).  The clamp is what
+ *  makes the docs' promise true (review finding #3): with `retryBaseMs > 15000`
+ *  the un-clamped third rung (base×4) exceeded `retryMaxMs`, while the `retry`
+ *  key says BOTH surfaces share one capped ladder.  Defaults read from the
+ *  registry, so the shipped path stays exactly 5s/10s/20s (all under 60s). */
+export function httpRetryDelayMs(attempt: number, baseMs?: number, maxMs?: number): number {
+  const a = Number.isFinite(attempt) ? Math.floor(attempt) : 0
+  if (a < 1 || a > HTTP_RETRY_MAX) return 0
+  const base = Number.isFinite(baseMs) && (baseMs as number) > 0 ? (baseMs as number) : resolveConfig().retryBaseMs
+  const max = Number.isFinite(maxMs) && (maxMs as number) > 0 ? (maxMs as number) : resolveConfig().retryMaxMs
+  return Math.min(Math.round(base * Math.pow(2, a - 1)), max)
+}
+
+export interface HttpRetryPolicy {
+  enabled: boolean
+  baseMs: number
+  maxRetries: number
+  /** One rung's ceiling — the registry's `retryMaxMs`, threaded so the ladder
+   *  and the governor cannot drift into two meanings of "capped". */
+  maxMs: number
+}
+
+/** The registry is the one source of truth: `retry: "off"` disables the HTTP
+ *  retries as well as the governor's directive, and `retryBaseMs` sets the
+ *  first wait.  Callers holding a resolved `TmConfig` pass it in; a caller with
+ *  none (the search engine legs' inner helper, a PTC bridge) gets the defaults. */
+export function httpRetryFromConfig(cfg: Partial<Pick<TmConfig, "retry" | "retryBaseMs">> = {}): HttpRetryPolicy {
+  const base = resolveConfig()
+  return {
+    enabled: (cfg.retry ?? base.retry) !== "off",
+    baseMs: Number.isFinite(cfg.retryBaseMs) && (cfg.retryBaseMs as number) > 0 ? (cfg.retryBaseMs as number) : base.retryBaseMs,
+    maxRetries: HTTP_RETRY_MAX,
+    maxMs: base.retryMaxMs,
+  }
+}
+
+/** The same policy from an explicit per-call partial (what `fetchWebText`'s
+ *  `retry` option carries): every field falls back to the registry, never to a
+ *  guessed number, so a caller that passes `{}` retries exactly like the tool.
+ *  `maxRetries` is CLAMPED to HTTP_RETRY_MAX (review finding #5): the ladder has
+ *  three rungs, and `httpRetryDelayMs` answers 0 past them — an accepted 9 would
+ *  take six zero-delay "retries" the note renderers used to print as 「1s」, a
+ *  wait that never happened. */
+export function resolveHttpRetry(policy: Partial<HttpRetryPolicy> = {}): HttpRetryPolicy {
+  const base = resolveConfig()
+  return {
+    enabled: policy.enabled ?? base.retry !== "off",
+    baseMs: Number.isFinite(policy.baseMs) && (policy.baseMs as number) > 0 ? (policy.baseMs as number) : base.retryBaseMs,
+    maxRetries:
+      Number.isFinite(policy.maxRetries) && (policy.maxRetries as number) >= 0
+        ? Math.min(Math.floor(policy.maxRetries as number), HTTP_RETRY_MAX)
+        : HTTP_RETRY_MAX,
+    maxMs: Number.isFinite(policy.maxMs) && (policy.maxMs as number) > 0 ? (policy.maxMs as number) : base.retryMaxMs,
+  }
+}
+
+/** Honest labelling (design goal #6): a page that arrived on the third try is
+ *  not the same fact as a page that arrived on the first, and a failure after
+ *  three tries says how long the caller waited for nothing.  Zero-delay entries
+ *  are filtered before rendering (review finding #5): a 0 is "the ladder was
+ *  already walked", and `Math.max(1, round(0/1000))` would print it as a 「1s」
+ *  wait that never happened.  With the maxRetries clamp these cannot reach the
+ *  list any more — this is the belt under the braces. */
+export function httpRetryNote(delaysMs: readonly number[]): string {
+  const ds = delaysMs.filter((d) => Number.isFinite(d) && d > 0)
+  if (!ds.length) return ""
+  const waited = ds.map((d) => `${Math.max(1, Math.round(d / 1000))}s`).join("+")
+  return `（第${ds.length}次重试后成功 · 已等待${waited}）`
+}
+
+/** The failure counterpart — how many times, at what waits, still no answer.
+ *  Zero-delay entries filtered for the same reason as above. */
+export function httpRetryFailNote(delaysMs: readonly number[]): string {
+  const ds = delaysMs.filter((d) => Number.isFinite(d) && d > 0)
+  if (!ds.length) return ""
+  const ladder = ds.map((d) => `${Math.max(1, Math.round(d / 1000))}s`).join("/")
+  return `（重试${ds.length}次 · ${ladder} · 仍失败）`
+}
+
+/** A POLICY verdict, not a failed request: allowlist/dialog refusal, 403/418,
+ *  a non-429 4xx, a redirect without a usable Location.  Never retried. */
+function fatalFetchError(message: string): Error {
+  const e = new Error(message) as Error & { retryable?: boolean }
+  e.retryable = false
+  return e
+}
+
+/** A status the caller may ask again about (429 / 5xx). */
+function transientFetchError(message: string): Error {
+  const e = new Error(message) as Error & { retryable?: boolean }
+  e.retryable = true
+  return e
+}
+
+const isFatalFetchError = (err: unknown): boolean =>
+  (err as { retryable?: boolean } | null)?.retryable === false
+
+/** `AbortError` is a timeout, anything else that reached the catch without a
+ *  fatal tag is a network failure — the two shapes a retry can actually fix. */
+function retryReason(err: unknown): string {
+  const e = err as { name?: string; message?: unknown } | null
+  if (e?.name === "AbortError") return "timeout"
+  return String(e?.name ?? e?.message ?? "error").slice(0, 40) || "network error"
+}
+
+/** Stamp the exhausted-ladder fact onto the error the caller will read, without
+ *  replacing it (an `AbortError` that lost its name would print as unknown). */
+function tagHttpRetryExhausted(err: unknown, delaysMs: readonly number[]): void {
+  const e = err as { message?: string; retryNote?: string } | null
+  if (!e) return
+  const note = httpRetryFailNote(delaysMs)
+  if (!note) return
+  e.retryNote = note
+  e.message = `${String(e.message ?? "")}\n${note}`
+}
+
 /**
  * Fetch a URL with hard timeout, byte cap, and MANUAL redirects — every
  * hop is re-checked against the allowlist before it is requested.
- * `fetchImpl` is injectable for tests (default: globalThis.fetch).
+ * `fetchImpl` is injectable for tests (default: globalThis.fetch), as is
+ * `sleep` (default: setTimeout) so the ladder can be pinned without waiting
+ * on it.
+ *
+ * HTTP retries: a failed request (network throw, per-attempt timeout, 429,
+ * 5xx) is retried up to `HTTP_RETRY_MAX` times with the fixed 5s/10s/20s
+ * ladder.  The timeout stays PER ATTEMPT, so the worst case for one URL is
+ * 4 × 20s of fetching plus 35s of waiting ≈ 115s — accepted deliberately:
+ * a transient failure that clears in 20s should not cost the caller a new
+ * round, and the reply says out loud when the ladder was used up.
+ * A policy refusal is never retried, and a retry re-requests THIS hop only —
+ * it never re-follows a redirect chain and never re-asks a dialog.
  */
 export async function fetchWebText(
   url: URL,
@@ -608,6 +771,15 @@ export async function fetchWebText(
      *  content-type — which is also why the reply says so when a body arrived
      *  as Markdown.  A re-negotiation is a `fresh: true` away. */
     accept?: string
+    /** HTTP retry policy (see `httpRetryFromConfig`).  Omitted = the registry
+     *  defaults, so tm_webfetch, every tm_search engine leg and the PTC bridge
+     *  all retry the same way without repeating the knobs at each call site. */
+    retry?: Partial<HttpRetryPolicy>
+    /** Injectable sleep so a test can pin the 5s/10s/20s ladder instantly. */
+    sleep?: (ms: number) => Promise<void>
+    /** Audit sink: one row per retry ACTUALLY taken (the caller writes it to the
+     *  trajectory — fetchWebText owns no pipeline instance of its own). */
+    onRetry?: (row: { attempt: number; delayMs: number; reason: string }) => void
   } = {},
 ): Promise<WebFetchResult> {
   const doFetch = opts.fetchImpl ?? (globalThis as { fetch?: FetchImpl }).fetch
@@ -617,6 +789,22 @@ export async function fetchWebText(
   const timeoutMs = opts.timeoutMs ?? WEBFETCH_TIMEOUT_MS
   const maxBytes = opts.maxBytes ?? WEBFETCH_MAX_BYTES
   const accept = (opts.accept && opts.accept.trim()) || WEBFETCH_ACCEPT
+  const retry = resolveHttpRetry(opts.retry ?? {})
+  const sleep = opts.sleep ?? ((ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms)))
+  // Retries actually taken in THIS call, in the order they were slept.  Both
+  // labels (success and exhausted) are rendered from this list, so the reply
+  // can only ever claim waiting for time this function actually spent.
+  const delays: number[] = []
+  const takeRetry = async (attempt: number, reason: string): Promise<void> => {
+    const delayMs = httpRetryDelayMs(attempt + 1, retry.baseMs, retry.maxMs)
+    delays.push(delayMs)
+    try {
+      opts.onRetry?.({ attempt: attempt + 1, delayMs, reason })
+    } catch {
+      /* the trajectory line is an extra, never a reason to fail the fetch */
+    }
+    await sleep(delayMs)
+  }
   let current = url
   const approvedHosts = opts.skipAskHosts ?? new Set<string>()
   // Every hop, in order.  Without this an allowlisted shortener that bounces
@@ -629,7 +817,7 @@ export async function fetchWebText(
     const seq = hopHosts.filter((h, i) => i === 0 || h !== hopHosts[i - 1])
     return seq.length > 1 ? ` · 跳转链: ${seq.join(" → ")}（停在第 ${hopHosts.length} 跳）` : ""
   }
-  for (let hop = 0; hop <= WEBFETCH_MAX_REDIRECTS; hop++) {
+  hopLoop: for (let hop = 0; hop <= WEBFETCH_MAX_REDIRECTS; hop++) {
     hopHosts.push(current.hostname)
     // every hop re-checked — an allowlisted shortener cannot bounce off-site
     const verdict = checkWebUrl(current.toString(), allowlist)
@@ -657,54 +845,93 @@ export async function fetchWebText(
       const hit = opts.cache.get(current.toString())
       if (hit) return { text: hit.body, contentType: hit.contentType, finalUrl: current.toString(), cachedAt: hit.at }
     }
-    const ctrl = new AbortController()
-    const timer = setTimeout(() => ctrl.abort(), timeoutMs)
-    try {
-      const res = (await doFetch(current.toString(), {
-        redirect: "manual",
-        signal: ctrl.signal,
-        headers: {
-          "user-agent": WEBFETCH_UA,
-          accept,
-          "accept-language": WEBFETCH_ACCEPT_LANGUAGE,
-        },
-      })) as Awaited<ReturnType<FetchImpl>>
-      if (REDIRECT_STATUSES.has(res.status)) {
-        const loc = res.headers.get("location")
-        if (!loc) throw new Error(`重定向 ${res.status} 缺少 Location 头${trail()}`)
-        current = new URL(loc, current)
-        continue
+    // One attempt = ONE request for THIS hop.  A retry re-requests this same
+    // URL — it never re-follows the chain, never re-asks a dialog, and never
+    // reaches a hop whose allowlist / red-line verdict already refused (those
+    // throw above this loop, outside the retry's reach).
+    for (let attempt = 0; ; attempt++) {
+      const ctrl = new AbortController()
+      const timer = setTimeout(() => ctrl.abort(), timeoutMs)
+      try {
+        const res = (await doFetch(current.toString(), {
+          redirect: "manual",
+          signal: ctrl.signal,
+          headers: {
+            "user-agent": WEBFETCH_UA,
+            accept,
+            "accept-language": WEBFETCH_ACCEPT_LANGUAGE,
+          },
+        })) as Awaited<ReturnType<FetchImpl>>
+        if (REDIRECT_STATUSES.has(res.status)) {
+          const loc = res.headers.get("location")
+          if (!loc) throw fatalFetchError(`重定向 ${res.status} 缺少 Location 头${trail()}`)
+          // A malformed Location is a VERDICT about this response, not a failed
+          // request — asking again earns the same broken header.  Without the
+          // fatal tag (review finding #2) a TypeError from the URL parse looked
+          // transient and burned the whole 35 s ladder on it.
+          try {
+            current = new URL(loc, current)
+          } catch {
+            throw fatalFetchError(`重定向 ${res.status} 的 Location 无法解析${trail()}`)
+          }
+          continue hopLoop
+        }
+        // A 429/5xx with ladder left is a retry, not a result — the reporting
+        // code below only ever sees a response the caller has to be told about.
+        if (isRetryableHttpStatus(res.status) && retry.enabled && attempt < retry.maxRetries) {
+          await takeRetry(attempt, `HTTP ${res.status}`)
+          continue
+        }
+        if (res.status === 403 || res.status === 418) {
+          // Already sent real-Chrome UA + Accept headers and still rejected:
+          // the gate is JS-challenge / TLS-fingerprint based — only a real
+          // browser passes.  DIRECTIVE to the agent: use the host's native browser.
+          const u = current.toString()
+          const known = u.includes("baike.baidu.com")
+            ? "（baike.baidu.com 是 JS 渲染 SPA）"
+            : u.includes("zhihu.com")
+              ? "（知乎对 fetch 一律 403）"
+              : ""
+          throw fatalFetchError(
+            `HTTP ${res.status}${known}——伪装浏览器请求头后仍被拒，该站需要真实浏览器会话。` +
+              `下一步：用宿主原生浏览器打开此 URL（browser_navigate → browser_snapshot）` +
+              `（${shorten(u, 120)}）；或换 tm_search 引擎 / 找直接源站。${trail()}`,
+          )
+        }
+        if (res.status < 200 || res.status >= 300) {
+          // 429/5xx exhausted their ladder → still a transient, and the note
+          // says so.  Any other 4xx is a verdict on THIS request: no retry.
+          throw (isRetryableHttpStatus(res.status) ? transientFetchError : fatalFetchError)(
+            `HTTP ${res.status}（最终 URL: ${shorten(current.toString(), 120)}）${retryAfterNote(res.headers.get("retry-after"), delays.length)}${trail()}`,
+          )
+        }
+        const contentType = (res.headers.get("content-type") ?? "text/plain").toLowerCase()
+        const raw = await readBodyCapped(res, maxBytes)
+        // Store the RAW body (pre-extraction) under the SAME static-allowlist
+        // condition; a 2xx-only rule keeps an error page from outliving itself
+        // as "the content of that URL".
+        if (staticAllow && opts.cache?.enabled()) opts.cache.put(current.toString(), { status: res.status, contentType, body: raw })
+        return {
+          text: raw,
+          contentType,
+          finalUrl: current.toString(),
+          ...(delays.length ? { retries: [...delays] } : {}),
+        }
+      } catch (err) {
+        // Only a FAILED REQUEST retries here.  An error carrying a policy
+        // verdict is tagged fatal (allowlist refusal, 403/418, a non-429 4xx,
+        // a redirect without a usable Location) and leaves immediately; a bare
+        // throw from fetch/body-read is a network error or a timeout abort,
+        // which is exactly what asking again can fix.
+        if (retry.enabled && attempt < retry.maxRetries && !isFatalFetchError(err)) {
+          await takeRetry(attempt, retryReason(err))
+          continue
+        }
+        tagHttpRetryExhausted(err, delays)
+        throw err
+      } finally {
+        clearTimeout(timer)
       }
-      if (res.status === 403 || res.status === 418) {
-        // Already sent real-Chrome UA + Accept headers and still rejected:
-        // the gate is JS-challenge / TLS-fingerprint based — only a real
-        // browser passes.  DIRECTIVE to the agent: use the host's native browser.
-        const u = current.toString()
-        const known = u.includes("baike.baidu.com")
-          ? "（baike.baidu.com 是 JS 渲染 SPA）"
-          : u.includes("zhihu.com")
-            ? "（知乎对 fetch 一律 403）"
-            : ""
-        throw new Error(
-          `HTTP ${res.status}${known}——伪装浏览器请求头后仍被拒，该站需要真实浏览器会话。` +
-            `下一步：用宿主原生浏览器打开此 URL（browser_navigate → browser_snapshot）` +
-            `（${shorten(u, 120)}）；或换 tm_search 引擎 / 找直接源站。${trail()}`,
-        )
-      }
-      if (res.status < 200 || res.status >= 300) {
-        throw new Error(
-          `HTTP ${res.status}（最终 URL: ${shorten(current.toString(), 120)}）${retryAfterNote(res.headers.get("retry-after"))}${trail()}`,
-        )
-      }
-      const contentType = (res.headers.get("content-type") ?? "text/plain").toLowerCase()
-      const raw = await readBodyCapped(res, maxBytes)
-      // Store the RAW body (pre-extraction) under the SAME static-allowlist
-      // condition; a 2xx-only rule keeps an error page from outliving itself
-      // as "the content of that URL".
-      if (staticAllow && opts.cache?.enabled()) opts.cache.put(current.toString(), { status: res.status, contentType, body: raw })
-      return { text: raw, contentType, finalUrl: current.toString() }
-    } finally {
-      clearTimeout(timer)
     }
   }
   throw new Error(`重定向超过 ${WEBFETCH_MAX_REDIRECTS} 跳，放弃抓取`)
@@ -727,7 +954,9 @@ const WEBFETCH_DESCRIPTION = `Fetch a web page through the governed pipeline (do
 - Seeded hosts (CN-reachable, no API keys): moegirl.org.cn (parent — all subdomains: mobile. term https://mobile.moegirl.org.cn/TERM, mzh. main site) · search.bilibili.com · cn.bing.com (search: https://cn.bing.com/search?q=QUERY; &ensearch=1 for international results) · baidu.com (parent: www. search /s?wd=QUERY, baike. encyclopedia entries) · www.sogou.com (https://www.sogou.com/web?query=QUERY) · www.so.com (https://www.so.com/s?q=QUERY) · registry.npmjs.org (package JSON: https://registry.npmjs.org/<pkg>/latest, search: https://registry.npmjs.org/-/v1/search?text=QUERY) · api.github.com (repo search: https://api.github.com/search/repositories?q=QUERY) · api.stackexchange.com (question search: https://api.stackexchange.com/2.3/search/advanced?order=desc&sort=relevance&q=QUERY&site=stackoverflow&pagesize=10) · hn.algolia.com (HN story search: https://hn.algolia.com/api/v1/search?query=QUERY&tags=story) · raw.githubusercontent.com + gist.githubusercontent.com + github.com (docs/code/issues) · ghproxy.net (mainland mirror for github raw).  URL-encode the query (CJK terms too).  Search-engine result pages are auto-extracted to a title+URL hit list.  Expand colloquial/abbreviated terms to canonical forms and fetch BOTH spellings.
 - Governance: only http(s), hosts must be allowlisted (extend via webfetchAllowedDomains, "*" opens all), redirects re-checked per hop (a refusal names the whole hop chain), HTML stripped to text — some documentation hosts (learn.microsoft.com measured 5.3x smaller) are fetched as Markdown when they honour accept: text/markdown, and the reply says so; output above offloadThreshold tokens is offloaded to a handle — page with tm_fetch (try mode:"structure" first).
 - Governance: out-of-allowlist hosts route through the OFFICIAL confirmation dialog (approve to proceed once; the 1-min unanswered auto-reject applies); env-file URLs and non-http(s) schemes are hard-rejected with no dialog.
-- Freshness: a repeated URL is served from a local TTL cache (webCacheTtlSec, default 300 s) and the reply SAYS 缓存命中 with its age.  Need the page as it is NOW?  Pass { fresh: true } to bypass the cache and hit the network.`
+- Freshness: a repeated URL is served from a local TTL cache (webCacheTtlSec, default 300 s) and the reply SAYS 缓存命中 with its age.  Need the page as it is NOW?  Pass { fresh: true } to bypass the cache and hit the network.
+- Transient failures: a network throw, a per-request 20 s timeout, an HTTP 429 or 5xx is retried up to 3 times on the fixed 5s/10s/20s ladder and the reply labels it (第N次重试后成功 / 重试3次…仍失败).  A refusal (off-allowlist, red line, env-file URL, 403/418, other 4xx) is NOT retried — it is a verdict, so change source instead of re-asking.  Set retry: "off" to disable both.
+`
 
 /** Build the tm_webfetch ToolDefinition over the SHARED main pipelines
  *  instance (same step counter as tm_read/tm_grep/tm_bash — refs stay
@@ -740,6 +969,9 @@ export function buildTmWebfetchTool(deps: {
   /** Shared URL cache (tm/index.ts owns the one instance so tm_search and
    *  tm_webfetch cannot drift into two stores of the same page). */
   cache?: WebCache
+  /** Injectable sleep for the HTTP retry ladder (tests pin 5s/10s/20s without
+   *  waiting on it).  Omitted = real setTimeout. */
+  sleep?: (ms: number) => Promise<void>
 }): {
   description: string
   args: Record<string, unknown>
@@ -801,7 +1033,24 @@ export function buildTmWebfetchTool(deps: {
           // learn.microsoft.com, no-op elsewhere); the engine legs never come
           // through here, so their calibrated browser-shaped header stands.
           accept: WEBFETCH_ACCEPT_MD,
+          // The fixed HTTP ladder (5s/10s/20s) with the registry's own knobs, and
+          // one trajectory row per retry actually taken — so "重试3次" in the
+          // reply is falsifiable in steps.jsonl, not just asserted.
+          retry: httpRetryFromConfig(cfg),
+          sleep: deps.sleep,
+          onRetry: (row) =>
+            pipelines.store.appendTrajectory({
+              tool,
+              step_id: stepId,
+              event: "http_retry",
+              attempt: row.attempt,
+              delay_ms: row.delayMs,
+              reason: row.reason,
+            }),
         })
+        // A page that arrived on the second or third try is not the same fact as
+        // one that arrived on the first — the wait is stated, not hidden.
+        const retryNote = httpRetryNote(res.retries ?? [])
         // A re-served page is stated as such — an agent that believes a cache
         // hit is a fresh observation propagates a stale fact into the plan.
         let cacheNote = ""
@@ -819,7 +1068,7 @@ export function buildTmWebfetchTool(deps: {
           if (hits.length > 0) {
             const sp = (verdict.ok ? verdict.url : new URL(requested)).searchParams
             const query = sp.get("q") ?? sp.get("wd") ?? sp.get("query") ?? sp.get("keyword") ?? ""
-            const listing = renderSearchHits(query || res.finalUrl, "webfetch", hits) + cacheNote + grantNote
+            const listing = renderSearchHits(query || res.finalUrl, "webfetch", hits) + retryNote + cacheNote + grantNote
             return toToolResult(
               pipelines.govern(stepId, tool, listing, {
                 contentType: detectContentType(listing),
@@ -837,12 +1086,15 @@ export function buildTmWebfetchTool(deps: {
           : ""
         if (!text.trim()) {
           // anti-bot / JS-rendered pages (baidu is the usual offender) return
-          // an empty shell — tell the agent instead of storing nothing
+          // an empty shell — tell the agent instead of storing nothing.  When
+          // the shell only arrived after walking the ladder, that wait is part
+          // of the fact too (review finding #6) — an empty page that cost 35 s
+          // is not the same experience as one that answered instantly.
           return toToolResult(
             tmError(
               tool,
               "execute",
-              "页面内容为空——该站点可能是反爬或 JS 渲染页（baidu 常见）。换 tm_search 的其他引擎（bing/stackoverflow/hn）、用宿主原生浏览器打开，或直接访问数据源 URL（如 registry.npmjs.org/<pkg>/latest）。",
+              "页面内容为空——该站点可能是反爬或 JS 渲染页（baidu 常见）。换 tm_search 的其他引擎（bing/stackoverflow/hn）、用宿主原生浏览器打开，或直接访问数据源 URL（如 registry.npmjs.org/<pkg>/latest）。" + retryNote,
             ),
           )
         }
@@ -870,7 +1122,7 @@ export function buildTmWebfetchTool(deps: {
             ].join("\n")
             const projected = proj.values.length ? `${head}\n${proj.values.join("\n")}` : head
             return toToolResult(
-              pipelines.govern(stepId, tool, projected, {
+              pipelines.govern(stepId, tool, `${projected}${retryNote}`, {
                 contentType: "text",
                 clue: `url=${shorten(res.finalUrl, 120)} fields=${shorten(fields, 60)}`,
               }),
@@ -878,15 +1130,18 @@ export function buildTmWebfetchTool(deps: {
           }
         }
         return toToolResult(
-          pipelines.govern(stepId, tool, text + cacheNote + mdNote + grantNote, {
+          pipelines.govern(stepId, tool, text + retryNote + cacheNote + mdNote + grantNote, {
             contentType,
             clue: `url=${shorten(res.finalUrl, 120)}`,
           }),
         )
       } catch (err) {
-        const e = err as { name?: string; message?: unknown }
+        const e = err as { name?: string; message?: unknown; retryNote?: string }
         if (e?.name === "AbortError") {
-          return toToolResult(tmError(tool, "execute", "抓取超时（20s）——换更具体的搜索词或稍后重试"))
+          // A timeout that used up the ladder says so — the per-attempt 20s is
+          // not the whole story of how long this call took.
+          const exhausted = typeof e?.retryNote === "string" ? e.retryNote : ""
+          return toToolResult(tmError(tool, "execute", "抓取超时（每次请求 20s）——换更具体的搜索词或稍后重试" + exhausted))
         }
         return toToolResult(tmError(tool, "execute", String(e?.message ?? err ?? "webfetch 失败")))
       }
