@@ -4535,7 +4535,7 @@ console.log("35. 无损修剪 — 修剪前先离载，stub 带完整 tm_fetch �
   assert.equal(resolveConfig({ pruneOffload: "maybe" }).pruneOffload, "on", "无效值回落默认（不是静默关掉）")
   const offloadSpec = CONFIG_KEYS.find((k) => k.key === "pruneOffload")
   assert.ok(offloadSpec && offloadSpec.type === "string" && offloadSpec.default === "on" && offloadSpec.enum.includes("off"), "pruneOffload 是 on/off 字符串键")
-  assert.equal(CONFIG_KEYS.length, 62, "注册表 62 条（61 + pruneOffload）")
+  assert.equal(CONFIG_KEYS.length, 63, "注册表 63 条（61 + pruneOffload + pruneProtectPatterns）")
 
   const CAT = [{ id: "glm", providerID: "lxns", modelID: "glm", limit: { context: 1000, output: 100 } }]
   const mat = (text, role = "assistant") => ({ role, model: { providerID: "lxns", id: "glm" }, parts: [{ type: "text", text }] })
@@ -4786,6 +4786,330 @@ console.log("35. 无损修剪 — 修剪前先离载，stub 带完整 tm_fetch �
   assert.equal(shutdownA.prune_offload_failed, 0, "…没有失败")
 }
 console.log("   OK (无句柄的正文先离载再修剪：stub 带 ref/token/expire_at 且载荷逐字节可取回；已含句柄/子代理/骨架/尾部一条都不误伤；失败退回 echo 桩并记一行；pruneOffload:off 逐字节回到改动前)")
+
+console.log("36. 窗口占用条目 — 独立 system 条目：最近 5% 分桶、同档逐字节不变、变档原地替换、不可得即摘除")
+{
+  const { STATE_CARD_MARKER, WINDOW_MARKER, windowBucket, renderWindowEntry } = await import("./dist/host/v2-state.js")
+  const { createUsagePercent } = await import("./dist/host/v2-usage.js")
+
+  // ---- pure: the bucket and the entry shape ----
+  assert.equal(windowBucket(42), 40, "42% → 40%（最近 5% 的整数倍）")
+  assert.equal(windowBucket(46), 45, "46% → 45%")
+  assert.equal(windowBucket(47.5), 50, "47.5% → 50%")
+  assert.equal(windowBucket(Number.NaN), 0, "非数字不会变成 NaN%")
+  const entry = renderWindowEntry(40, "lxns/glm")
+  assert.equal(entry, `${WINDOW_MARKER}\nhash:${entry.split("\n")[1].slice(5)}\n窗口：40% · 模型 lxns/glm`, "条目 = marker + hash 行 + 一行占用")
+  assert.match(entry, /^\[Team 窗口占用\]\nhash:[0-9a-f]{16}\n窗口：40% · 模型 lxns\/glm$/, "条目形状固定")
+
+  const CATbig = [{ id: "glm", providerID: "lxns", modelID: "glm", limit: { context: 100000, output: 1000 } }]
+
+  // ---- pure: the reader never guesses a denominator ----
+  const noCat = makeFakeCtx({ directory: workspace("state-window-nocat"), agents: [], models: [] })
+  const zeroReader = createUsagePercent(noCat.ctx)
+  assert.equal(await zeroReader("s", [{ usage: { input: 1000 } }]), null, "没有目录 = 没有分母 → null，不是 0%")
+  assert.equal(await zeroReader("s", []), null, "没有用量 → null")
+
+  const root = mktmp("state-window")
+  writeCfg({ trajectoryDir: path.join(root, "tj"), blackboardDir: path.join(root, "board") })
+  const f = makeFakeCtx({ directory: workspace("state-window"), agents: sixAgents, models: CATbig })
+  const boot = await withCapturedConsole(() => plugin.setup(f.ctx))
+  const SID = "ses_window"
+  const reader = createUsagePercent(f.ctx)
+  const reading = await reader(SID, [{ role: "assistant", model: { providerID: "lxns", id: "glm" }, usage: { input: 42000 } }])
+  assert.equal(reading.used, 42000, "用量来自消息自带的 usage")
+  assert.equal(reading.limit, 100000, "分母来自 catalog 的 limit.context")
+  assert.equal(reading.percent, 42, "42% = 42000 / 100000")
+
+  const isWindow = (p) => String(p?.text ?? "").startsWith(WINDOW_MARKER)
+  const isCard = (p) => String(p?.text ?? "").startsWith(STATE_CARD_MARKER)
+  const turn = (used) => ({
+    role: "assistant",
+    model: { providerID: "lxns", id: "glm" },
+    ...(used === null ? {} : { usage: { input: used } }),
+    parts: [{ type: "text", text: "一句不用剪的正文" }],
+  })
+  const fire = async (messages) => {
+    const req = { agent: "team", sessionID: SID, system: [], messages, options: {}, tools: {} }
+    await f.hook("session.context").fire(req)
+    return req
+  }
+
+  // ① 42000 tokens of a 100000 window → exactly ONE window entry at the 40% bucket.
+  const r1 = await fire([turn(42000)])
+  const w1 = r1.system.filter(isWindow)
+  assert.equal(w1.length, 1, "恰好一条窗口占用条目")
+  assert.equal(r1.system.filter(isCard).length, 0, "账本为空 ⇒ 状态卡照旧不注入（两条条目互不牵连）")
+  assert.ok(w1[0].text.includes("40%"), `42000/100000 = 42% → 40% 桶：${w1[0].text}`)
+  assert.ok(w1[0].text.includes("lxns/glm"), "条目里带着模型 id")
+  const snapshot = JSON.stringify(r1.system)
+
+  // ② same bucket + same model → byte-exact, on a replay AND on a fresh request.
+  await f.hook("session.context").fire(r1)
+  assert.equal(JSON.stringify(r1.system), snapshot, "同一档位再组装：一个字节都没写")
+  const r2 = await fire([turn(42000)])
+  assert.equal(JSON.stringify(r2.system), snapshot, "新组装的请求也是同一串字节")
+
+  // ③ 46000 → 45% bucket: the SAME slot is replaced, the array does not grow.
+  const idx = r1.system.findIndex(isWindow)
+  const before = r1.system.length
+  await f.hook("session.context").fire({ agent: "team", sessionID: SID, system: r1.system, messages: [turn(46000)], options: {}, tools: {} })
+  assert.equal(r1.system.length, before, "原地替换：数组长度不变")
+  assert.equal(r1.system.findIndex(isWindow), idx, "替换的是同一个位置上的那一条")
+  assert.equal(r1.system.filter(isWindow).length, 1, "marker 条目仍是 1 条")
+  assert.ok(r1.system[idx].text.includes("45%"), `46000/100000 = 46% → 45% 桶：${r1.system[idx].text}`)
+
+  // ④ usage gone → the entry is REMOVED (never left claiming a stale window).
+  const r3 = { agent: "team", sessionID: SID, system: r1.system.slice(), messages: [turn(null)], options: {}, tools: {} }
+  await f.hook("session.context").fire(r3)
+  assert.equal(r3.system.filter(isWindow).length, 0, "读不到用量 → 条目被摘掉")
+  // …and with nothing to remove, the outcome is its OWN counter, not a silent pass.
+  const r4 = { agent: "team", sessionID: SID, system: r3.system.slice(), messages: [turn(null)], options: {}, tools: {} }
+  await f.hook("session.context").fire(r4)
+  assert.equal(r4.system.filter(isWindow).length, 0, "本来就没有条目时也不注入")
+
+  // ⑤ no catalog = no denominator → the entry never appears at all.
+  const rootNoCat = mktmp("state-window-nocat2")
+  writeCfg({ trajectoryDir: path.join(rootNoCat, "tj"), blackboardDir: path.join(rootNoCat, "board") })
+  const fnc = makeFakeCtx({ directory: workspace("state-window-nocat2"), agents: sixAgents, models: [] })
+  const bootNoCat = await withCapturedConsole(() => plugin.setup(fnc.ctx))
+  const rnc = { agent: "team", sessionID: SID, system: [], messages: [turn(42000)], options: {}, tools: {} }
+  await fnc.hook("session.context").fire(rnc)
+  assert.equal(rnc.system.filter(isWindow).length, 0, "模型表里没有这个模型 → 整条不显示（绝不猜窗口）")
+  await bootNoCat.value()
+
+  await boot.value()
+  const rows = fs
+    .readdirSync(path.join(root, "tj", "runs"))
+    .flatMap((run) =>
+      fs
+        .readFileSync(path.join(root, "tj", "runs", run, "steps.jsonl"), "utf8")
+        .split(/\r?\n/)
+        .filter(Boolean)
+        .map((l) => {
+          try {
+            return JSON.parse(l)
+          } catch {
+            return null
+          }
+        })
+        .filter(Boolean),
+    )
+  const shutdown = rows.find((r) => r.step_id === "v2-shutdown")
+  assert.ok(shutdown, "shutdown 行照旧写出")
+  assert.ok(shutdown.state_window_injected >= 2, "注入/替换都计入 state_window_injected")
+  assert.ok(shutdown.state_window_unchanged >= 1, "同档位不计为写（state_window_unchanged）")
+  assert.ok(shutdown.state_window_cleared >= 1, "摘除计入 state_window_cleared")
+  assert.ok(shutdown.state_window_absent >= 1, "本来就没有这条条目也计数（state_window_absent）")
+
+  const v2srcWin = fs.readFileSync(path.join(path.dirname(fileURLToPath(import.meta.url)), "src", "host", "v2.ts"), "utf8")
+  for (const field of ["state_window_injected", "state_window_unchanged", "state_window_cleared", "state_window_absent"]) {
+    assert.equal(
+      (v2srcWin.match(new RegExp(`${field}: stateCard\\.report\\.window`, "g")) ?? []).length,
+      2,
+      `${field} 在 surface 与 shutdown 两行都带（两处口径必须一致）`,
+    )
+  }
+}
+console.log("   OK (窗口占用是独立条目：42%→40%/46%→45% 分桶，同档逐字节不变、变档原地替换、不可得即摘除；没有目录就是 null，不是 0%)")
+
+console.log("37. 修剪地址保留 — 无句柄的桩追加一行 `地址：`（去重、≤3、文档顺序）；没有地址时逐字节不变")
+{
+  const { extractAddresses, PRUNE_ADDRESS_MAX, PRUNE_ADDRESS_PREFIX, renderPruneStub, applyV2ContextPrune } = await import("./dist/host/v2-prune.js")
+  const { estimateTokens } = await import("./dist/tm/config.js")
+
+  // ---- pure: extraction ----
+  const boardPath = "C:\\ws\\board\\20261022-101010\\prune\\01-team-report.md"
+  const fileLine = "src/host/v2-prune.ts:120"
+  const url = "https://example.com/a.md"
+  const trio = `报告落盘 ${boardPath}\n改动见 ${fileLine}\n来源 ${url}`
+  assert.deepEqual(extractAddresses(trio), [boardPath, fileLine, url], "三类地址都在、按文档顺序、去重")
+
+  const duplicated = ["/a/one.md", "/a/one.md", "/b/two.json", "/c/three.ts", "/d/four.log"].join(" ")
+  const picked = extractAddresses(duplicated)
+  assert.equal(picked.length, PRUNE_ADDRESS_MAX, `最多 ${PRUNE_ADDRESS_MAX} 条`)
+  assert.deepEqual(picked, ["/a/one.md", "/b/two.json", "/c/three.ts"], "去重后按出现顺序截断（第四个地址让位）")
+  assert.equal(new Set(picked).size, picked.length, "没有重复地址")
+
+  assert.deepEqual(extractAddresses("expire_at:9 and STATUS:12 and C:"), [], "`word:9` 不是 file:line（地址需要路径分隔符）")
+  assert.deepEqual(extractAddresses("一句没有任何地址的回显"), [], "没有地址就是空数组")
+  assert.deepEqual(extractAddresses(""), [], "空正文 = 空数组")
+  // A URL's own path must not spend a second slot as a "path" address.
+  assert.deepEqual(extractAddresses(url), [url], "URL 只算一条（它的 path 不会被重复计入）")
+  // `<board-root>/…md` — the placeholder shape the board note publishes.
+  assert.deepEqual(extractAddresses("<board-root>/sess/task/01-team-x.md"), ["<board-root>/sess/task/01-team-x.md"], "尖括号占位路径也算地址")
+
+  // ---- performance contract: the scan is SINGLE-PASS / linear (regression pin) ----
+  // The previous implementation ran three global regexes over the whole body and
+  // rebuilt the string per URL hit — 200 000 characters of one word took minutes
+  // (measured: the suite went 48 s → 545 s).  These three cases are the shapes that
+  // hurt it, and 100 ms is loose enough for a slow CI box and tight enough to fail
+  // the quadratic version immediately.
+  const timed = (fn) => {
+    const t0 = Date.now()
+    const out = fn()
+    return { ms: Date.now() - t0, out }
+  }
+  const longRun = timed(() => extractAddresses("a".repeat(200000)))
+  assert.deepEqual(longRun.out, [], "20 万字符的长词串里没有地址（语义不变）")
+  assert.ok(longRun.ms < 100, `单 token 200000 字符 < 100ms（实测 ${longRun.ms}ms）`)
+  const wordRun = timed(() => extractAddresses("word-".repeat(20000)))
+  assert.deepEqual(wordRun.out, [], "10 万字符的 `word-` 重复串里没有地址（语义不变）")
+  assert.ok(wordRun.ms < 100, `单 token 100000 字符 < 100ms（实测 ${wordRun.ms}ms）`)
+  const manyUrls = Array.from({ length: 1000 }, (_, i) => `https://example.com/run/${i}/${"x".repeat(160)}/a.md`).join(" ")
+  const bulk = timed(() => extractAddresses(manyUrls))
+  assert.equal(bulk.out.length, PRUNE_ADDRESS_MAX, `1000 个 URL 也只留 ${PRUNE_ADDRESS_MAX} 条（语义不变）`)
+  assert.ok(bulk.ms < 100, `1000 个 URL（约 ${Math.round(manyUrls.length / 1024)}KB）< 100ms（实测 ${bulk.ms}ms）`)
+
+  // ---- pure: the stub line ----
+  const tokens = estimateTokens(trio)
+  const withAddr = renderPruneStub({ kind: "echo", originalTokens: tokens, addresses: extractAddresses(trio) })
+  const addrLine = withAddr.split("\n").at(-1)
+  assert.ok(addrLine.startsWith(PRUNE_ADDRESS_PREFIX), `地址行是最后一行：${addrLine}`)
+  assert.equal(addrLine, `${PRUNE_ADDRESS_PREFIX}${boardPath} · ${fileLine} · ${url}`, "三者在同一行、以 · 分隔")
+  const plainBody = "旧回显：" + "y".repeat(2000)
+  assert.equal(
+    renderPruneStub({ kind: "echo", originalTokens: estimateTokens(plainBody), addresses: extractAddresses(plainBody) }),
+    renderPruneStub({ kind: "echo", originalTokens: estimateTokens(plainBody) }),
+    "一条地址都抽不到 → 与不带地址参数逐字节一致",
+  )
+
+  // ---- end to end: a pruned message keeps its addresses ----
+  const CAT = [{ id: "glm", providerID: "lxns", modelID: "glm", limit: { context: 1000, output: 100 } }]
+  const scopeStub = { decide: (e) => (e && e.agent === "team" ? "ours" : "foreign"), count: (v) => v, learn: () => {} }
+  const mat = (text, role = "assistant") => ({ role, model: { providerID: "lxns", id: "glm" }, parts: [{ type: "text", text }] })
+  const addrBody = trio + "\n" + "y".repeat(6000)
+  const f = makeFakeCtx({ directory: workspace("prune-addr"), agents: [], models: CAT })
+  const layer = await applyV2ContextPrune(f.ctx, {
+    config: { enabled: true, atPercent: 70, keepTailPercent: 0, protectPatterns: [] },
+    scope: scopeStub,
+  })
+  const messages = [mat(addrBody), mat("tail", "user")]
+  await f.hook("session.context").fire({ agent: "team", sessionID: "ses_addr", system: [], messages, tools: {} })
+  const stub = messages[0].parts[0].text
+  assert.equal(layer.report.prunedMessages, 1, "带地址的那条被剪了（否则这条断言测不到东西）")
+  assert.ok(stub.includes(`\n${PRUNE_ADDRESS_PREFIX}${boardPath} · ${fileLine} · ${url}`), `桩保留了三条地址：${stub}`)
+  assert.ok(!stub.includes("y".repeat(40)), "桩里没有正文片段（只留地址本身）")
+  // The offload stub carries the same line — it is the one a reader might not
+  // want to page through, so the addresses are what they act on.
+  const f2 = makeFakeCtx({ directory: workspace("prune-addr-offload"), agents: [], models: CAT })
+  const layer2 = await applyV2ContextPrune(f2.ctx, {
+    config: { enabled: true, atPercent: 70, keepTailPercent: 0, protectPatterns: [] },
+    scope: scopeStub,
+    offload: async () => ({ ref: "tm://runs/r-ad/steps/s0001/result", accessToken: "tok-ad", expireAt: Date.now() + 60_000 }),
+  })
+  const messages2 = [mat(addrBody), mat("tail", "user")]
+  await f2.hook("session.context").fire({ agent: "team", sessionID: "ses_addr2", system: [], messages: messages2, tools: {} })
+  const offStub = messages2[0].parts[0].text
+  assert.equal(layer2.report.offloaded, 1, "这一轮走了离载桩")
+  assert.ok(offStub.includes("本条消息已卸载"), "离载桩照旧说明它离载了")
+  assert.ok(offStub.includes(`${PRUNE_ADDRESS_PREFIX}${boardPath}`), `离载桩也带地址行：${offStub.slice(-160)}`)
+}
+console.log("   OK (看板路径 + file:line + URL 三类地址：去重、文档顺序、≤3 条，桩里只留地址本身；抽不到就与改动前逐字节一致；离载桩同样保留)")
+
+console.log("38. 修剪保护正则 pruneProtectPatterns — 命中即不剪；无效正则被忽略；空串与改动前逐字节一致")
+{
+  const { parseProtectPatterns, resolvePruneConfig, prunePlan, applyV2ContextPrune } = await import("./dist/host/v2-prune.js")
+  const { resolveConfig, estimateTokens } = await import("./dist/tm/config.js")
+  const { CONFIG_KEYS } = await import("./dist/tm/config-layers.js")
+  const pc = (values) => resolvePruneConfig(resolveConfig(values))
+
+  // ---- the key, and the registry it lives in ----
+  const spec = CONFIG_KEYS.find((k) => k.key === "pruneProtectPatterns")
+  assert.ok(spec, "pruneProtectPatterns 在注册表里")
+  assert.equal(spec.type, "string", "type = string")
+  assert.equal(spec.default, "", "默认空串（=关闭）")
+  assert.match(String(spec.doc), /无效正则被忽略/, "doc 说明无效正则被忽略")
+  assert.equal(CONFIG_KEYS.length, 63, "注册表 63 条（62 + pruneProtectPatterns）")
+  assert.deepEqual(pc({}).protectPatterns, [], "空串 = 关闭（空数组）")
+  assert.equal(pc({ pruneProtectPatterns: "SECRET-FILE|^EVIDENCE BLOCK" }).protectPatterns.length, 1, "逗号分隔 = 一条正则（交替式）")
+  assert.equal(pc({ pruneProtectPatterns: "a, b" }).protectPatterns.length, 2, "逗号分隔 + trim = 两条")
+  assert.deepEqual(pc({ pruneProtectPatterns: "[" }).protectPatterns, [], "无效正则被忽略（不抛）")
+  assert.equal(pc({ pruneProtectPatterns: "ok,[,fine" }).protectPatterns.length, 2, "一条坏的连累不到邻居")
+  assert.deepEqual(parseProtectPatterns(undefined), [], "缺省 = 空数组")
+
+  // ---- empty = byte-identical behaviour ----
+  const mat = (text, role = "assistant") => ({ role, model: { providerID: "lxns", id: "glm" }, parts: [{ type: "text", text }] })
+  const big = "x".repeat(6000)
+  const seq = () => [mat(big), mat(big), mat("tail", "user")]
+  assert.deepEqual(
+    prunePlan(seq(), { budgetTokens: 10, keepTailTokens: 0, protectPatterns: [] }),
+    prunePlan(seq(), { budgetTokens: 10, keepTailTokens: 0 }),
+    "空模式 = 与不传该选项逐字节相同（选点、桩、节省量全部一致）",
+  )
+
+  // ---- hit ⇒ never pruned, and counted ----
+  const scopeStub = { decide: (e) => (e && e.agent === "team" ? "ours" : "foreign"), count: (v) => v, learn: () => {} }
+  const CAT = [{ id: "glm", providerID: "lxns", modelID: "glm", limit: { context: 1000, output: 100 } }]
+  const fire = async (models, sessionID, messages) => {
+    const f = makeFakeCtx({ directory: workspace(`prune-protect-${sessionID}`), agents: [], models: CAT })
+    const layer = await applyV2ContextPrune(f.ctx, { config: models, scope: scopeStub })
+    await f.hook("session.context").fire({ agent: "team", sessionID, system: [], messages, tools: {} })
+    return layer.report
+  }
+  const patterns = resolvePruneConfig(resolveConfig({ pruneProtectPatterns: "SECRET-FILE|^EVIDENCE BLOCK" })).protectPatterns
+  const secret = mat("SECRET-FILE 内容 " + big)
+  const evidence = mat("EVIDENCE BLOCK 结论 " + big)
+  const ordinary = mat("旧命令回显：" + big)
+  const messages = [secret, evidence, ordinary, mat("tail", "user")]
+  const report = await fire({ enabled: true, atPercent: 70, keepTailPercent: 0, protectPatterns: patterns }, "ses_protect", messages)
+  assert.equal(report.prunedMessages, 1, "只有那条普通消息被剪")
+  assert.equal(report.protectMatched, 2, "两条命中保护正则的消息被保护（并被计数）")
+  assert.equal(report.skippedProtected, 0, "保护正则的命中不混进 skippedProtected（两种保护各记各的）")
+  assert.equal(report.protectPatterns, 1, "报告带着编译成功的条数（`SECRET-FILE|^EVIDENCE BLOCK` 是一条交替式正则）")
+  assert.ok(secret.parts[0].text.startsWith("SECRET-FILE"), "命中 SECRET-FILE 的消息逐字节不变")
+  assert.ok(evidence.parts[0].text.startsWith("EVIDENCE BLOCK"), "命中 ^EVIDENCE BLOCK 的消息逐字节不变")
+  assert.ok(ordinary.parts[0].text.includes("已裁剪"), "普通消息照旧被剪")
+
+  // ---- an invalid pattern = ignored, behaviour == empty ----
+  const invalid = mat("旧命令回显：" + big)
+  const reportInvalid = await fire({ enabled: true, atPercent: 70, keepTailPercent: 0, protectPatterns: parseProtectPatterns("[") }, "ses_protect_invalid", [invalid, mat("tail", "user")])
+  assert.equal(reportInvalid.protectPatterns, 0, "无效正则没有被编译进列表")
+  assert.equal(reportInvalid.protectMatched, 0, "也就没有命中")
+  assert.equal(reportInvalid.prunedMessages, 1, "行为与空串一致（照旧剪）")
+
+  // ---- the key reaches the layer through the real personality ----
+  const root = mktmp("prune-protect-wired")
+  writeCfg({
+    trajectoryDir: path.join(root, "tj"),
+    blackboardDir: path.join(root, "board"),
+    pruneKeepTailPercent: 0,
+    pruneProtectPatterns: "SECRET-FILE",
+  })
+  const fw = makeFakeCtx({ directory: workspace("prune-protect-wired"), agents: sixAgents, models: CAT })
+  const boot = await withCapturedConsole(() => plugin.setup(fw.ctx))
+  const kept = mat("SECRET-FILE " + big)
+  const other = mat("旧命令回显：" + big)
+  const wired = [kept, other, mat("tail", "user")]
+  await fw.hook("session.context").fire({ agent: "team", sessionID: "ses_protect_wired", system: [], messages: wired, tools: {} })
+  assert.ok(kept.parts[0].text.startsWith("SECRET-FILE"), "配置里的正则真的接到了修剪层（命中消息不被剪）")
+  assert.ok(other.parts[0].text.includes("已裁剪"), "普通消息照旧剪")
+  await boot.value()
+  const rows = fs
+    .readdirSync(path.join(root, "tj", "runs"))
+    .flatMap((run) =>
+      fs
+        .readFileSync(path.join(root, "tj", "runs", run, "steps.jsonl"), "utf8")
+        .split(/\r?\n/)
+        .filter(Boolean)
+        .map((l) => {
+          try {
+            return JSON.parse(l)
+          } catch {
+            return null
+          }
+        })
+        .filter(Boolean),
+    )
+  const shutdown = rows.find((r) => r.step_id === "v2-shutdown")
+  assert.equal(shutdown.prune_protect_patterns, 1, "shutdown 行：编译成功 1 条")
+  assert.ok(shutdown.prune_protect_matched >= 1, "shutdown 行：命中计数有出口")
+  const v2srcP = fs.readFileSync(path.join(path.dirname(fileURLToPath(import.meta.url)), "src", "host", "v2.ts"), "utf8")
+  for (const field of ["prune_protect_patterns", "prune_protect_matched"]) {
+    assert.equal((v2srcP.match(new RegExp(`${field}: prune\\.report\\.protect`, "g")) ?? []).length, 2, `${field} 在 surface 与 shutdown 两行都带`)
+  }
+}
+console.log("   OK (命中保护正则的消息永不剪且单独计数；无效正则被忽略不抛；空串与改动前逐字节一致；键经真实人格接到修剪层)")
+
 
 // B5: the group count is DERIVED from the numbered group headers this file
 // actually printed, never hand-written — the last hand-written number was

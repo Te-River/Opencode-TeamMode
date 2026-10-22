@@ -1070,6 +1070,9 @@ export const v2Personality: V2Plugin = {
       prune_offloaded: prune.report.offloaded,
       prune_reused: prune.report.reused,
       prune_offload_failed: prune.report.offloadFailed,
+      // 保护模式的编译条数与命中条数：空串时两者恒为 0，行为与改动前逐字节一致。
+      prune_protect_patterns: prune.report.protectPatterns,
+      prune_protect_matched: prune.report.protectMatched,
       // 任务状态卡 — one entry per lead request, and every outcome is its own
       // number: injected / replaced / unchanged / empty / skipped never collapse
       // into one silent count.
@@ -1082,6 +1085,11 @@ export const v2Personality: V2Plugin = {
       state_card_agent_skipped: stateCard.report.agentSkipped,
       state_card_foreign_skipped: stateCard.report.foreignSkipped,
       state_card_threw: stateCard.report.threw,
+      // 窗口占用是独立条目：注入 / 未变 / 已摘除 / 本来就没有，四个数字互不吞并。
+      state_window_injected: stateCard.report.windowInjected,
+      state_window_unchanged: stateCard.report.windowUnchanged,
+      state_window_cleared: stateCard.report.windowCleared,
+      state_window_absent: stateCard.report.windowAbsent,
       // #49 feature 3: 错峰重试 — recognition counts, breaker trips, cooldown
       // denials and the last computed wait, so "we backed off" is a number.
       retry_enabled: retry.report.enabled,
@@ -1288,6 +1296,9 @@ export const v2Personality: V2Plugin = {
           prune_offloaded: prune.report.offloaded,
           prune_reused: prune.report.reused,
           prune_offload_failed: prune.report.offloadFailed,
+          // 保护模式：与 surface 行同一口径（两处必须一致）。
+          prune_protect_patterns: prune.report.protectPatterns,
+          prune_protect_matched: prune.report.protectMatched,
           state_card_injected: stateCard.report.injected,
           state_card_replaced: stateCard.report.replaced,
           state_card_unchanged: stateCard.report.unchanged,
@@ -1300,6 +1311,11 @@ export const v2Personality: V2Plugin = {
           state_card_agent_skipped: stateCard.report.agentSkipped,
           state_card_foreign_skipped: stateCard.report.foreignSkipped,
           state_card_threw: stateCard.report.threw,
+          // 窗口占用条目：四个结果各占一个字段。
+          state_window_injected: stateCard.report.windowInjected,
+          state_window_unchanged: stateCard.report.windowUnchanged,
+          state_window_cleared: stateCard.report.windowCleared,
+          state_window_absent: stateCard.report.windowAbsent,
           // #49 feature 3: 错峰重试 — the same counter set as the surface row.
           retry_enabled: retry.report.enabled,
           retry_quota_seen: retry.report.quotaSeen,

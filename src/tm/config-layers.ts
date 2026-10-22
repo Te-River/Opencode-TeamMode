@@ -190,6 +190,7 @@ export const CONFIG_KEYS: readonly ConfigKeySpec[] = [
   { key: "pruneAtPercent", type: "number", default: 70, min: 40, max: 90, doc: "上下文裁剪启动的窗口占比（%）。" },
   { key: "pruneKeepTailPercent", type: "number", default: 40, min: 0, max: 90, doc: "裁剪时尾部逐字保留的窗口占比（%）。" },
   { key: "pruneOffload", type: "string", default: "on", enum: ["on", "off"], doc: "修剪前先把消息体离载到 run store 并在 stub 留 tm_fetch 句柄（原文可取回）；off = 今日行为（纯注记，原文不保留）。" },
+  { key: "pruneProtectPatterns", type: "string", default: "", doc: "修剪保护正则（逗号分隔，命中任一的消息永不修剪）；无效正则被忽略，空串=关闭。" },
   { key: "retry", type: "string", default: "on", enum: ["on", "off"], doc: "错峰重试：识别限流 + 注入等待 + 冷却，并管住 tm_webfetch/tm_search 的 HTTP 重试；固定阶梯 5s/10s/20s（第1/2/3次重试），off = 两处都关闭。" },
   { key: "retryBaseMs", type: "number", default: 5000, min: 1, max: 3_600_000, doc: "重试退避基数（毫秒）——第1次重试等它，第2次×2，第3次×4（默认即 5s/10s/20s 固定阶梯）。" },
   { key: "retryMaxMs", type: "number", default: 60_000, min: 1, max: 3_600_000, doc: "重试退避上限（毫秒）——第4次起翻倍到这里封顶。" },

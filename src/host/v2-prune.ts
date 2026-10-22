@@ -25,7 +25,15 @@
  *    of its own is offloaded to the run store BEFORE its body is replaced, so
  *    the stub carries a full `tm_fetch` handle (`pruneOffload`, default on).  A
  *    failed offload falls back to today's echo note, one message at a time —
- *    losing a body is data loss, losing an offload is a counter.
+ *    losing a body is data loss, losing an offload is a counter.  A stub with no
+ *    handle to offer still carries the ADDRESSES the body named (board paths,
+ *    `file:line`, URLs; at most three, deduplicated, in document order), because a
+ *    pointer the reader can act on is the whole point of keeping one — and that
+ *    scan is SINGLE-PASS and linear in the body length, not three global regexes
+ *    over the whole text (which went quadratic on a long word run).
+ *  - **A user pattern outranks the budget** (`pruneProtectPatterns`): a message
+ *    whose text matches any compiled entry is never pruned, and the matches are
+ *    counted (`protectMatched`) instead of silently changing the saving figure.
  *  - **The threshold is derived, never hard-coded.**  `TM_PRUNE_AT_PERCENT`
  *    (default 70) of `limit.context`, the same denominator the desktop's own
  *    usage meter reads.  No `limit.context` → no prune, counted `no_limit`.
@@ -58,13 +66,44 @@ export interface PruneConfig {
   atPercent: number
   /** Percent of `limit.context` kept verbatim at the tail (clamped 0–90). */
   keepTailPercent: number
+  /**
+   * User-supplied protection regexes (`pruneProtectPatterns`, comma separated).
+   * A message whose text matches ANY of them is never pruned.  Empty = off, and
+   * that is the byte-identical path: the list is consulted only when non-empty.
+   */
+  protectPatterns: RegExp[]
+}
+
+/**
+ * Compile the comma-separated pattern list.  One invalid pattern loses only
+ * itself (a typo must not disable the ones next to it, and must never throw into
+ * the request path); an empty / absent value compiles to `[]` = off.
+ */
+export function parseProtectPatterns(raw: unknown): RegExp[] {
+  if (typeof raw !== "string" || !raw.trim()) return []
+  const out: RegExp[] = []
+  for (const part of raw.split(",")) {
+    const src = part.trim()
+    if (!src) continue
+    try {
+      out.push(new RegExp(src))
+    } catch {
+      /* an invalid regex is ignored, never fatal */
+    }
+  }
+  return out
 }
 
 const isOff = (v: string | undefined): boolean =>
   typeof v === "string" && ["off", "false", "0", "no"].includes(v.trim().toLowerCase())
 
 export function resolvePruneConfig(
-  config: { prune: string; pruneAtPercent: number; pruneKeepTailPercent: number } = resolveConfig(),
+  config: {
+    prune: string
+    pruneAtPercent: number
+    pruneKeepTailPercent: number
+    pruneProtectPatterns?: string
+  } = resolveConfig(),
 ): PruneConfig {
   return {
     enabled: config.prune !== "off",
@@ -73,6 +112,7 @@ export function resolvePruneConfig(
     // prune is looking at the clamp, not at a broken layer.
     atPercent: config.pruneAtPercent,
     keepTailPercent: config.pruneKeepTailPercent,
+    protectPatterns: parseProtectPatterns(config.pruneProtectPatterns),
   }
 }
 
@@ -268,15 +308,151 @@ export interface PruneHandle {
   reused?: boolean
 }
 
+/** 地址行最多留几条——再多就不是「地址」，而是正文摘抄。 */
+export const PRUNE_ADDRESS_MAX = 3
+/** 地址行的前缀；整行只在真的抽到地址时出现。 */
+export const PRUNE_ADDRESS_PREFIX = "地址："
+/**
+ * 单个 token 的字符上限。  超过它的不是地址，是正文——这条上限也是性能闸门：
+ * 长词串整段跳过，永远不会进到正则里。
+ */
+export const PRUNE_ADDRESS_TOKEN_MAX = 2048
+
+/**
+ * Token separators.  `<` / `>` are deliberately NOT separators: the board note
+ * publishes `<board-root>/…md`, and splitting on the angle brackets would strip
+ * the placeholder off the address it belongs to.
+ */
+const ADDRESS_SEPARATORS = new Set([" ", "\t", "\n", "\r", "\f", "\v", '"', "'", "|", "`", ";", ",", "(", ")"])
+
+/** A cheap anchored pre-filter: only these suffixes can be a path address. */
+const PATH_EXT_RE = /\.(?:md|json|jsonl|txt|log|ts|tsx|js|py|yml|yaml)$/
+/** `file:line` / `file:line:col`, ANCHORED inside one token (no per-start retry). */
+const FILE_LINE_TOKEN_RE = /^(?:[A-Za-z]:)?[\w./\\-]+:\d+(?::\d+)?$/
+/**
+ * A path-shaped token with a KNOWN extension: `C:\…\01-team-report.md`,
+ * `/x/y/z.json`, `<board-root>/…md`, `src/host/v2-prune.ts`.  The leading run is
+ * optional (drive letter, an angle-bracket placeholder, a relative first
+ * segment); every further segment must start with a separator, which is what
+ * keeps a bare `v2-prune.ts` from being called an address.  BOTH ENDS ANCHORED:
+ * the engine never re-tries every start position, which is the whole point of
+ * the token pass.
+ */
+const PATH_TOKEN_RE =
+  /^(?:[A-Za-z]:|<[^>\s]+>|[^\s"'<>|`;,():\/\\]+)?(?:[\/\\][^\s"'<>|`;,():\/\\]+)+\.(?:md|json|jsonl|txt|log|ts|tsx|js|py|yml|yaml)$/
+
+/** Strip the `<`/`>` a prose writer may have wrapped an address in. */
+const trimAngles = (s: string): string => s.replace(/^</, "").replace(/>+$/, "")
+
+/**
+ * The first `http(s)://` inside a token, or -1.  `indexOf` is linear, and it is
+ * how an address glued to Chinese text (`看https://…`) is still recovered —
+ * without a cross-text regex that would try every start position.
+ */
+function urlAt(token: string): number {
+  const a = token.indexOf("http://")
+  const b = token.indexOf("https://")
+  if (a < 0) return b
+  if (b < 0) return a
+  return Math.min(a, b)
+}
+
+/** Retry a token from its first path separator: `见：/a/one.md` → `/a/one.md`. */
+function tailFromSeparator(token: string): string | null {
+  const a = token.indexOf("/")
+  const b = token.indexOf("\\")
+  const cut = a < 0 ? b : b < 0 ? a : Math.min(a, b)
+  return cut > 0 ? token.slice(cut) : null
+}
+
+/**
+ * The addresses a pruned body carried, in DOCUMENT ORDER, deduplicated, at most
+ * `PRUNE_ADDRESS_MAX`.  Pure, and it only ever yields the address itself — never a
+ * fragment of the body around it, because the stub is a pointer, not a summary.
+ *
+ * LINEAR BY CONSTRUCTION (this is a performance contract, not a style note): the
+ * text is walked ONCE, token by token, and every pattern is anchored to a single
+ * token.  The previous version ran three GLOBAL regexes over the whole body and
+ * blanked each URL match by rebuilding the string — quadratic on a long word run
+ * (`"a".repeat(200000)` was hundreds of seconds) and O(k·n) with many URLs.  A
+ * token longer than `PRUNE_ADDRESS_TOKEN_MAX` is skipped without touching a regex.
+ *
+ * A longer address that CONTAINS a shorter one wins: `…/v2-prune.ts:120` is the
+ * pointer a reader can use, while `…/v2-prune.ts` would send them hunting for the
+ * line the message was about.
+ */
+export function extractAddresses(text: string): string[] {
+  if (!text) return []
+  const found: Array<{ at: number; address: string }> = []
+  const n = text.length
+  let i = 0
+  while (i < n) {
+    while (i < n && ADDRESS_SEPARATORS.has(text[i])) i++
+    if (i >= n) break
+    const start = i
+    while (i < n && !ADDRESS_SEPARATORS.has(text[i])) i++
+    const token = text.slice(start, i)
+    if (token.length > PRUNE_ADDRESS_TOKEN_MAX) continue
+
+    // URL first: its own path must never be counted as a second address.
+    const scheme = urlAt(token)
+    if (scheme >= 0) {
+      const address = trimAngles(token.slice(scheme))
+      if (address.length > 8) found.push({ at: start + scheme, address })
+      continue
+    }
+
+    // `file:line` — a prefix with no separator is a word (`expire_at:9`), not a path.
+    if (token.includes(":") && /\d$/.test(token)) {
+      const direct = FILE_LINE_TOKEN_RE.test(token) ? token : null
+      const candidate = direct ?? tailFromSeparator(token)
+      if (candidate && FILE_LINE_TOKEN_RE.test(candidate)) {
+        const cut = candidate.lastIndexOf(":")
+        if (/[\/\\]/.test(candidate.slice(0, cut))) {
+          found.push({ at: start, address: candidate })
+          continue
+        }
+      }
+    }
+
+    if (PATH_EXT_RE.test(token)) {
+      const direct = PATH_TOKEN_RE.test(token) ? token : null
+      const tail = direct ? null : tailFromSeparator(token)
+      const candidate = direct ?? (tail && PATH_EXT_RE.test(tail) && PATH_TOKEN_RE.test(tail) ? tail : null)
+      if (candidate) found.push({ at: start, address: candidate })
+    }
+  }
+  // Tokens are already in document order; the sort stays because an embedded URL
+  // reports an offset inside its token, and "document order" is what the reader
+  // expects either way.
+  found.sort((a, b) => a.at - b.at)
+  const out: string[] = []
+  for (const { address } of found) {
+    if (out.some((kept) => kept.includes(address))) continue
+    if (found.some((o) => o.address !== address && o.address.includes(address))) continue
+    out.push(address)
+    if (out.length >= PRUNE_ADDRESS_MAX) break
+  }
+  return out
+}
+
 export interface PruneStubInput {
   kind: "handle" | "child" | "echo" | "offload"
   originalTokens: number
   handle?: PruneHandle
   childId?: string
   childState?: string
+  /** Addresses found in the body — rendered as one `地址：` line, or omitted whole. */
+  addresses?: string[]
 }
 
 const withCommas = (n: number): string => String(n).replace(/\B(?=(\d{3})+(?!\d))/g, ",")
+
+/** One trailing line carrying the recoverable addresses; "" when none were found. */
+function addressLine(addresses: string[] | undefined): string {
+  if (!addresses || !addresses.length) return ""
+  return `\n${PRUNE_ADDRESS_PREFIX}${addresses.join(" · ")}`
+}
 
 /**
  * The replacement text.  It must be self-explanatory: a reader has to know what
@@ -295,9 +471,11 @@ export function renderPruneStub(entry: PruneStubInput): string {
     // Deliberately different wording from the tool-result stub above: this body
     // had NO handle until the prune created one, so "re-run the command" would
     // be wrong advice — the bytes are in the store, not behind a command.
-    return `${head} 本条消息已卸载：tm_fetch { ref:"${entry.handle.ref}", access_token:"${entry.handle.accessToken}", expire_at:${entry.handle.expireAt} }。原文可回取（TTL 由 blackboardTtlDays 决定），不要重跑。`
+    return `${head} 本条消息已卸载：tm_fetch { ref:"${entry.handle.ref}", access_token:"${entry.handle.accessToken}", expire_at:${entry.handle.expireAt} }。原文可回取（TTL 由 blackboardTtlDays 决定），不要重跑。${addressLine(entry.addresses)}`
   }
-  return `${head} 已结算的工具输出/命令回显，正文已裁剪；如需重看请重跑原命令，或从轨迹（tm_stats { recent: N }）取回。`
+  // The echo stub is the one that keeps NO copy of the body, so the addresses it
+  // reports are the only thing the next round can still act on.
+  return `${head} 已结算的工具输出/命令回显，正文已裁剪；如需重看请重跑原命令，或从轨迹（tm_stats { recent: N }）取回。${addressLine(entry.addresses)}`
 }
 
 function extractHandle(text: string): PruneHandle | null {
@@ -318,7 +496,9 @@ function buildStub(text: string, tokens: number): { kind: PruneStubInput["kind"]
   if (handle) return { kind: "handle", stub: renderPruneStub({ kind: "handle", originalTokens: tokens, handle }) }
   const child = extractChild(text)
   if (child) return { kind: "child", stub: renderPruneStub({ kind: "child", originalTokens: tokens, childId: child.id, childState: child.state }) }
-  return { kind: "echo", stub: renderPruneStub({ kind: "echo", originalTokens: tokens }) }
+  // Only the branches that carry no recoverable pointer get the address line: a
+  // handle already says where the bytes are, and a child id where the report is.
+  return { kind: "echo", stub: renderPruneStub({ kind: "echo", originalTokens: tokens, addresses: extractAddresses(text) }) }
 }
 
 // ---------- the plan ----------
@@ -333,6 +513,8 @@ export interface PrunePlanEntry {
 export interface PrunePlan {
   prune: PrunePlanEntry[]
   protectedCount: number
+  /** Messages a user-supplied `pruneProtectPatterns` entry kept (a subset of the kept ones). */
+  protectMatched: number
   keptCount: number
   savedTokens: number
 }
@@ -342,6 +524,8 @@ export interface PrunePlanOptions {
   budgetTokens?: number
   /** Newest messages whose cumulative tokens fit here are kept verbatim. */
   keepTailTokens?: number
+  /** User patterns: any hit keeps that message, whatever the budget says. */
+  protectPatterns?: RegExp[]
 }
 
 /**
@@ -349,10 +533,11 @@ export interface PrunePlanOptions {
  * budget.  Pure: it reads the messages and returns a plan; nothing is mutated.
  */
 export function prunePlan(messages: unknown, opts: PrunePlanOptions = {}): PrunePlan {
-  const plan: PrunePlan = { prune: [], protectedCount: 0, keptCount: 0, savedTokens: 0 }
+  const plan: PrunePlan = { prune: [], protectedCount: 0, protectMatched: 0, keptCount: 0, savedTokens: 0 }
   if (!Array.isArray(messages) || messages.length === 0) return plan
   const keepTailTokens = Math.max(0, opts.keepTailTokens ?? 0)
   const budgetTokens = opts.budgetTokens ?? Number.POSITIVE_INFINITY
+  const protectPatterns = opts.protectPatterns ?? []
 
   // The tail boundary: walk from the newest message until the cumulative token
   // count would exceed the tail budget.  The newest message is ALWAYS protected.
@@ -370,6 +555,13 @@ export function prunePlan(messages: unknown, opts: PrunePlanOptions = {}): Prune
   let saved = 0
   for (let i = 0; i < tailStart; i++) {
     const msg = messages[i]
+    if (protectPatterns.length) {
+      const body = messageText(msg)
+      if (body && protectPatterns.some((re) => re.test(body))) {
+        plan.protectMatched++
+        continue
+      }
+    }
     if (isProtectedMessage(msg)) {
       plan.protectedCount++
       continue
@@ -441,7 +633,14 @@ async function offloadPlannedBodies(
       }
       if (handle && !failure) {
         entry.kind = "offload"
-        entry.stub = renderPruneStub({ kind: "offload", originalTokens: entry.originalTokens, handle })
+        entry.stub = renderPruneStub({
+          kind: "offload",
+          originalTokens: entry.originalTokens,
+          handle,
+          // The offload stub points at bytes a reader may not want to page
+          // through; the addresses are what they can act on in one round.
+          addresses: extractAddresses(text),
+        })
         // A dedupe hit means these bytes are ALREADY in the store — counting it as
         // a fresh offload would report a saving that was not made, and would make
         // the card's "上轮修剪" line grow on a replayed request.
@@ -484,6 +683,10 @@ export interface PruneReport {
   orphans: number
   /** Parts whose `type` we did not recognise — a renamed shape shows up here. */
   unknownParts: number
+  /** Compiled `pruneProtectPatterns` entries (a value that failed to parse is not counted here). */
+  protectPatterns: number
+  /** Messages a protect pattern kept out of the plan this process. */
+  protectMatched: number
   lastPercent: number
   lastUsed: number
   lastLimit: number
@@ -574,6 +777,9 @@ function defaultModelLimitOf(ctx: V2Context): (sessionID: string, messages: unkn
 
 export async function applyV2ContextPrune(ctx: V2Context, input: PruneInput = {}): Promise<PruneLayer> {
   const config = input.config ?? resolvePruneConfig()
+  // A hand-built config (a test, an embedder) may predate the pattern list; `[]` is
+  // the "off" path, so tolerating it changes no behaviour and throws nothing.
+  const protectPatterns = config.protectPatterns ?? []
   const report: PruneReport = {
     enabled: config.enabled,
     atPercent: config.atPercent,
@@ -593,6 +799,8 @@ export async function applyV2ContextPrune(ctx: V2Context, input: PruneInput = {}
     overBudget: 0,
     orphans: 0,
     unknownParts: 0,
+    protectPatterns: protectPatterns.length,
+    protectMatched: 0,
     lastPercent: 0,
     lastUsed: 0,
     lastLimit: 0,
@@ -646,7 +854,7 @@ export async function applyV2ContextPrune(ctx: V2Context, input: PruneInput = {}
         }
         const budgetTokens = Math.floor((limit * config.atPercent) / 100)
         const keepTailTokens = Math.floor((limit * config.keepTailPercent) / 100)
-        const plan = prunePlan(messages, { budgetTokens, keepTailTokens })
+        const plan = prunePlan(messages, { budgetTokens, keepTailTokens, protectPatterns })
         const freshBefore = report.offloaded
         await offloadPlannedBodies(messages, plan, input.offload, (row) => emit("prune_offload_failed", row), report, sessionID)
         try {
@@ -659,6 +867,7 @@ export async function applyV2ContextPrune(ctx: V2Context, input: PruneInput = {}
           report.prunedMessages += plan.prune.length
           report.prunedTokens += plan.savedTokens
           report.skippedProtected += plan.protectedCount
+          report.protectMatched += plan.protectMatched
           emit("prune", {
             sessionID,
             percent: pct,
@@ -667,6 +876,8 @@ export async function applyV2ContextPrune(ctx: V2Context, input: PruneInput = {}
             pruned: plan.prune.length,
             saved: plan.savedTokens,
             protected: plan.protectedCount,
+            protect_matched: plan.protectMatched,
+            protect_patterns: protectPatterns.length,
             unknown: report.unknownParts,
             over_budget: overBudget,
             reused: report.reused,

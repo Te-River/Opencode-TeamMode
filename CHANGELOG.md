@@ -9,6 +9,20 @@ registry saw 1.5.0 as the install-script fix release).
 
 ### Added
 
+- **窗口占用条目（独立 system 条目，随状态卡层一起注册）。** lead 的请求上多一条
+  `[Team 窗口占用]`：`窗口：<bucket>% · 模型 <providerID>/<id>`，百分比取**最近 5% 的整数倍**
+  （42% → 40%），分母来自 `ctx.model.list()` 的 `limit.context`、用量来自消息自带的 usage——
+  两者任一读不到就整条不显示（已存在则摘掉），绝不渲染一个编造的 0%。它是**独立条目**：
+  状态卡的渲染与 hash 门控一个字节都没改。计数：`windowInjected` / `windowUnchanged` /
+  `windowCleared` / `windowAbsent`，两行观测带 `state_window_*` 四个字段。
+- **修剪桩保留证据地址（B）。** 无句柄、无子代理 id 的桩（echo 与离载桩）会从正文里抽地址
+  追加一行 `地址：<a> · <b> · <c>`：看板/文件路径（扩展名限 md|json|jsonl|txt|log|ts|tsx|js|py|yml|yaml）、
+  `file:line`、URL；按文档顺序去重、最多 3 条，且只留地址本身（不回写正文片段）。一条都抽不到
+  时该行不出现，桩与改动前逐字节一致。
+- **修剪保护正则 (`pruneProtectPatterns`, 默认 `""` = 关闭)。** 逗号分隔的正则列表，命中任一条
+  的消息永不修剪；无效正则被忽略（不连累邻居、不抛错）。报告带 `protectPatterns`（编译成功条数）
+  与 `protectMatched`（本轮因此被保护的消息数），两行观测带 `prune_protect_patterns` /
+  `prune_protect_matched`；空串时行为与改动前逐字节一致。配置注册表 62 → 63 条。
 - **Lossless context pruning (`pruneOffload`, default `on`).** A message selected
   for pruning no longer loses its body: the text is offloaded through the shared
   pipeline (`alwaysOffload`, so the threshold cannot talk it out of it) and the

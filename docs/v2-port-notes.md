@@ -672,9 +672,13 @@ anomalyco/opencode#57719; our docs/installers now tell users to restart the app 
 restart really swaps the process (pid 18980 → 17860, same URL), and the sandbox `start` failing
 with "port 45278 already in use" proves the managed service IS the desktop's embedded server.
 It is now the documented activation path in `docs/installation-v2.md` and the installers;
-the desktop's own reconnect after a restart was not exercised live (that would interrupt the
-running session — the command's job is a real stop→start, so treat the open session as
-reconnecting, not surviving).
+**Measured 2026-10-22 `[L]`: the open session SURVIVES a restart.** Two
+`opencode service restart` runs during a live 2.1.2 session: the conversation history came
+back intact, the desktop reconnected to the new server, and the session continued — only the
+IN-FLIGHT tool call was aborted (`Tool execution interrupted`) and had to be re-issued. The
+user separately reported (2026-10-22) that OpenCode now recovers sessions after a restart,
+which matches this measurement. So restart is the safe mid-session activation path: budget for
+one lost tool call, not for a lost conversation.
 
 ### 2026-10-21 — the plugin ctx's session METHODS surface is richer than we declared: `synthetic` is callable, and it is the retry seam `[L][B]`
 

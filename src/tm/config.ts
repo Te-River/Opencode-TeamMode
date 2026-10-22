@@ -142,6 +142,8 @@ export interface TmConfig {
   pruneKeepTailPercent: number
   /** 修剪前先离载（stub 带 tm_fetch 句柄）；off = 纯注记、原文不保留。 */
   pruneOffload: "on" | "off"
+  /** 修剪保护正则（逗号分隔，命中任一的消息永不修剪）；空串 = 关闭。 */
+  pruneProtectPatterns: string
   /** Retry governor (recognise throttle + inject wait + cooldown). */
   retry: "on" | "off"
   retryBaseMs: number

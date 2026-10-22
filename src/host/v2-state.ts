@@ -27,6 +27,12 @@
  *  - **Empty state is not a card.**  No open/doing/blocked ledger item and no
  *    running child = the entry is omitted entirely, because an empty box costs
  *    tokens and says nothing.
+ *  - **The window reading is its OWN entry** (`[Team 窗口占用]`), not a card line:
+ *    `窗口：<bucket>% · 模型 <id>` with the percent rounded to the NEAREST 5%
+ *    multiple (42% → 40%), so a percent that jitters by a point or two does not
+ *    rewrite the request.  The card's render and its byte gate never reference
+ *    it; an unreadable window (no usage, no catalog entry, a throwing read)
+ *    removes the entry rather than rendering a fabricated 0%.
  *  - **A failed read says so, once per session.**  A storage read that throws
  *    injects nothing and writes one `state_skipped` trajectory row; a repeated
  *    failure for the same session does not become a line per request.
@@ -42,11 +48,16 @@
 import { estimateTokens, shorten } from "../tm/config.js"
 import type { Ledger, LedgerItem } from "../tm/ledger.js"
 import { normalizeAgentName } from "../identity.js"
+import { createUsagePercent, type UsagePercentReader, type UsagePercentReading } from "./v2-usage.js"
 import type { TeamScope } from "./v2-scope.js"
 import type { V2Context, V2Registration, V2SessionContext } from "./v2-types.js"
 
 /** 卡片标记：`event.system` 里以它开头的条目就是状态卡（唯一一条）。 */
 export const STATE_CARD_MARKER = "[Team 状态卡]"
+/** 窗口占用条目的标记——它是**独立条目**，不参与状态卡的渲染与 hash 门控。 */
+export const WINDOW_MARKER = "[Team 窗口占用]"
+/** 窗口占用的分桶步长：最近 5% 的整数倍（42% → 40%）。 */
+export const WINDOW_BUCKET_STEP = 5
 /** 卡片 token 上限。  超过就按「最旧账本项」开始裁剪。 */
 export const STATE_CARD_MAX_TOKENS = 300
 /** 每条账本项渲染的字符上限。 */
@@ -83,6 +94,11 @@ export interface StateCardInput {
   children: () => StateCardChild[]
   /** 累计离载条数（读 prune 报告的 `offloaded`）。  只取差量，所以「上轮」是可信的。 */
   pruneCount?: () => number
+  /**
+   * 窗口占用的读取器；缺省时由 `createUsagePercent(ctx)` 从 `ctx.model.list()` +
+   * 消息自带的 usage 读。注入点只为单测准备，生产路径没有第二个分母来源。
+   */
+  usageOf?: UsagePercentReader
   onEvent?: (row: Record<string, unknown>) => void
 }
 
@@ -106,6 +122,17 @@ export interface StateCardReport {
   foreignSkipped: number
   /** hook 内部抛错（永不外溢，只计数）。 */
   threw: number
+  /**
+   * 窗口占用条目（独立于状态卡）：
+   *  - `windowInjected`：本轮请求里出现了这条条目（新推入**或**原地替换同一槽位）；
+   *  - `windowUnchanged`：分桶与模型都没变，一个字节都没写；
+   *  - `windowCleared`：读不到窗口/用量，已存在的那条被摘掉；
+   *  - `windowAbsent`：读不到，而且本来就没有这条条目。
+   */
+  windowInjected: number
+  windowUnchanged: number
+  windowCleared: number
+  windowAbsent: number
   lastWhy: string
 }
 
@@ -132,6 +159,24 @@ export function stateCardHash(body: string): string {
   const a = fnv32(body, 0x811c9dc5)
   const b = fnv32(body, 0x9e3779b9)
   return a.toString(16).padStart(8, "0") + b.toString(16).padStart(8, "0")
+}
+
+/**
+ * 窗口占用的分桶：最近 5% 的整数倍。  分桶是为了让「同一个档位」在两次请求之间
+ * 逐字节相等——百分比每次都可能抖一两位，而「窗口还剩多少」这个判断不需要那么细。
+ */
+export function windowBucket(percent: number): number {
+  const p = Number.isFinite(percent) ? Math.max(0, percent) : 0
+  return Math.round(p / WINDOW_BUCKET_STEP) * WINDOW_BUCKET_STEP
+}
+
+/**
+ * 窗口占用条目。  它是**独立**的一条 system 条目（自己的 marker、自己的 hash），
+ * 状态卡的渲染与字节门控完全不引用它——两件事各自可靠。
+ */
+export function renderWindowEntry(bucket: number, model: string): string {
+  const body = `窗口：${bucket}% · 模型 ${model}`
+  return `${WINDOW_MARKER}\nhash:${stateCardHash(body)}\n${body}`
 }
 
 interface LedgerCounts {
@@ -270,6 +315,13 @@ function isMarkerEntry(part: unknown): boolean {
   return CARD_HEAD_RE.test(cardTextOf(part))
 }
 
+/** 窗口条目的认领规则与状态卡同构：marker + 16 位 hex，缺一不可。 */
+const WINDOW_HEAD_RE = /^\[Team 窗口占用\]\nhash:[0-9a-f]{16}/
+
+function isWindowEntry(part: unknown): boolean {
+  return WINDOW_HEAD_RE.test(cardTextOf(part))
+}
+
 /**
  * 注册到 `session.hook("context")` 的状态卡层。  依赖全部注入，所以测试可以
  * 用一个内存账本驱动它，而生产路径用的是 `tm_ledger` 的那个 store 实例。
@@ -286,6 +338,10 @@ export async function applyV2StateCard(ctx: V2Context, input: StateCardInput): P
     agentSkipped: 0,
     foreignSkipped: 0,
     threw: 0,
+    windowInjected: 0,
+    windowUnchanged: 0,
+    windowCleared: 0,
+    windowAbsent: 0,
     lastWhy: "",
   }
   const registrations: V2Registration[] = []
@@ -294,6 +350,8 @@ export async function applyV2StateCard(ctx: V2Context, input: StateCardInput): P
   // existed, and "did not register" is the only way to be sure of that.
   if (!report.enabled) return { registrations, report }
   if (!session || typeof session.hook !== "function") return { registrations, report }
+
+  const usageOf: UsagePercentReader = input.usageOf ?? createUsagePercent(ctx)
 
   const emit = (row: Record<string, unknown>): void => {
     try {
@@ -323,6 +381,42 @@ export async function applyV2StateCard(ctx: V2Context, input: StateCardInput): P
         }
         if (!Array.isArray(event?.system)) return
         const sessionID = String((event as { sessionID?: unknown }).sessionID ?? "")
+        // ---- 窗口占用：独立条目，状态卡的渲染与 hash 门控一个字节都不碰 ----
+        // 读不到窗口/用量 = 「不可得」，不是 0%：整条不显示，已存在的那条摘掉。
+        // 读取抛错与「读不到」同处理——两种情况我们都没拿到数字，区分只对日志有用，
+        // 而这里连日志都不该成为请求失败的理由。
+        let windowReading: UsagePercentReading | null = null
+        try {
+          windowReading = await usageOf(sessionID, (event as { messages?: unknown }).messages)
+        } catch {
+          windowReading = null
+        }
+        {
+          const at = event.system.findIndex(isWindowEntry)
+          if (!windowReading) {
+            if (at >= 0) {
+              event.system.splice(at, 1)
+              report.windowCleared++
+            } else {
+              report.windowAbsent++
+            }
+          } else {
+            const entry = renderWindowEntry(
+              windowBucket(windowReading.percent),
+              `${windowReading.model.providerID}/${windowReading.model.id}`,
+            )
+            if (at < 0) {
+              event.system.push({ type: "text", text: entry })
+              report.windowInjected++
+            } else if (cardTextOf(event.system[at]) === entry) {
+              // 分桶与模型都没变 ⇒ 一个字节都没写（和卡片同一条纪律）。
+              report.windowUnchanged++
+            } else {
+              ;(event.system[at] as { text: string }).text = entry
+              report.windowInjected++
+            }
+          }
+        }
         let ledger: Ledger | null = null
         try {
           ledger = await input.loadLedger(sessionID)

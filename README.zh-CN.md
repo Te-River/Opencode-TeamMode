@@ -648,6 +648,7 @@ Team Lead 自己从不删黑板，你可以随时审计任何一次运行。
 | `pruneAtPercent` | number | `70` | 请求达到模型窗口的这份占比时开始裁剪，由 `limit.context` 推导——绝不是写死的 token 数。**夹在 40–90。** |
 | `pruneKeepTailPercent` | number | `40` | 尾部逐字保留的窗口占比；最新一条消息永远保留。 |
 | `pruneOffload` | `on`/`off` | `on` | 修剪**前**先把消息体离载到 run store，stub 里带完整的 `tm_fetch { ref, access_token, expire_at }` 句柄——否则「裁剪」就是永久删正文。同一段正文若已被上一次请求存过，直接复用那个句柄（一份载荷，不是一请求一份）；离载失败退回纯注记并计数（`prune_offload_failed` 轨迹行），绝不外抛。`off` = 今日行为：只留指针，原文不保留。 |
+| `pruneProtectPatterns` | 正则列表（逗号分隔） | `""` | 修剪保护正则：命中任一条的消息**永不修剪**，命中条数计入 `prune_protect_matched`。无效正则被忽略（不连累邻居、不抛错）；空串 = 关闭，与不带此键的行为逐字节一致。正则本身若含逗号无法表达——解析就是按 `,` 切分。 |
 | `stateCard` | `on`/`off` | `on` | 任务状态卡——lead 的请求上带**一条 ≤300 token** 的 system 条目：账本计数 + 未收口项（最旧先裁）、**本会话**运行中的子代理（空 sessionID 时整行省略）、缩短过的看板根、上轮离载条数。内容逐字节不变时一个字节都不写（比较用整串，`hash:` 行只是可见标记）。`off` = 该层不注册。 |
 | `splitAdvice` | `on`/`off` | `on` | 派工简报的验收标准过多时注入拆分建议。`off` 停掉这条提示（提示词纪律仍在）。 |
 | `splitBriefTokens` | number | `4000` | 触发拆分建议的简报 token 阈值。**夹在 ≥200。** |
