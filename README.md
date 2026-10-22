@@ -14,6 +14,22 @@
 
 ---
 
+## 📑 Contents
+
+- [Why TeamMode](#-why-teammode)
+- [The team](#-the-team)
+- [Install](#-install)
+- [Usage](#-usage)
+- [JIT context and retry](#-jit-context-and-retry)
+- [Governed tools & security](#-governed-tools--security)
+- [Configuration](#️-configuration)
+- [How the team works](#-how-the-team-works)
+- [Customization](#-customization)
+- [Troubleshooting](#-troubleshooting)
+- [Uninstall](#️-uninstall)
+
+---
+
 ## TL;DR — skip the docs
 
 > **The lazy path:** paste this to any coding agent and let it do the work:
@@ -30,7 +46,7 @@
 > **The one command to remember afterwards:** `/team-run <task>` — the Team Lead
 > plans it, shows you the plan, waits for your approval, then runs the whole team.
 
-Everything else below is detail. When you're ready for it, here's the map:
+Everything else below is detail. When you're ready for it, the short version:
 
 **[Why](#-why-teammode) · [The team](#-the-team) · [Install](#-install) · [Usage](#-usage) · [Tools & security](#-governed-tools--security) · [Configuration](#️-configuration) · [How it works](#-how-the-team-works) · [Troubleshooting](#-troubleshooting) · [Uninstall](#-uninstall)**
 
@@ -147,7 +163,7 @@ OpenCode installs the plugin on next startup.
 
 ### ⚠️ Read this once, save yourself an hour later
 
-- **Restart to activate.** After touching the OpenCode config, fully quit and restart OpenCode (Desktop: quit from tray, not just the window).
+- **Restart to activate.** After touching the OpenCode config, restart OpenCode — `opencode service restart` is the official command, and on Desktop quitting from the tray (not just closing the window) also works. A restart is safe mid-session: the conversation survives, and only an in-flight tool call is aborted and has to be re-issued.
 - **Plugin updates: re-run the installer.** It is idempotent — a re-run re-patches the config (no-op when present), purges the stale plugin cache, and re-resolves any npm-installed copy. This exists because OpenCode caches plugins by spec string and does NOT re-resolve `@latest` when a new version publishes (upstream limitation). Manual recipe, if you prefer:
 
   | OS | Purge command — recursive, covers BOTH cache layouts |
@@ -265,6 +281,20 @@ team   Done. rateLimit.ts (new) · app.ts (+3) · 14 tests green
 You typed the task and four words. The plan was a routing-table lookup,
 execution waited for your approval, and every handoff between agents traveled
 as a structured skeleton — nothing landed in your repo, nothing was guessed.
+
+---
+
+## 🧠 JIT context and retry
+
+*New in this release:* layered request-side context keeps a long session inside the window without deleting evidence, plus a retry ladder that says what it cannot do.
+
+- **State card (lead only).** ≤300 tokens of ledger doing/blocked/todo items, running sub-agents and the board root, injected once per request. Hash-gated: an unchanged state re-emits the same bytes, so the prefix stays cacheable (`stateCard: "off"` removes the layer).
+- **Lossless pruning.** Past 70% of the window (`pruneAtPercent`) a settled body becomes a one-line pointer — but only after it was offloaded and deduplicated against the run store, so the stub carries a real `tm_fetch` handle (`pruneOffload`). Reply skeleton, GOAL/ACCEPTANCE, provenance, system messages and the board note are never cut; `pruneProtectPatterns` lets your regexes outrank the budget.
+- **Window entry.** A separate `[Team 窗口占用]` line reports `<bucket>% · model <id>`, bucketed to the nearest 5% so one bucket stays byte-identical. An unreadable window means the line is absent — never "0%".
+- **Dynamic tail.** State card, window entry, retry directive and split advice merge into ONE message at the request's end, so `system` stops changing and prefix caching survives; `dynamicTail: "off"` restores the previous system injection.
+- **Cache metering.** Each request that reports usage writes one `v2-cache` row (read / write / input / rate); `tm_stats` renders the **缓存命中** section with its denominator. No row means usage was never read — not a 0% hit.
+- **Retry.** A throttle is classified by name and text, then answered by a per-request ladder — 5s / 10s / 20s / 40s / 60s, five rungs, never shared across requests; the host's own countdown wins when it has one. A sub-agent that spends its budget hands the work back; the main agent stops, reports and offers options. A hard quota is the billing family only and names no wait. When nothing continues by itself, one `session.synthetic` re-drive is admitted per rung.
+- **A user stop is a scope change.** Land in-flight work first, skip verification, then hand over in four sections: 已落盘 / 未开始 / 验证 / 提交与发布.
 
 ---
 
@@ -605,7 +635,7 @@ the auto-create state.
 
 When the global file is **absent**, the plugin creates it at boot — atomically,
 idempotently, and **never overwriting an existing file**. What it writes is an
-**inert** template: all **58** registry keys, each as a *comment* under a
+**inert** template: all **64** registry keys, each as a *comment* under a
 one-line description, so the file parses to `{}` and sets nothing until you
 uncomment what you want.
 
@@ -614,7 +644,7 @@ uncomment what you want.
 {
   // "offloadThreshold": 2000,            // 卸载阈值（估算 token；等于阈值也卸载）。
   // "envProtect": "strict",              // R6 环境防护模式（strict/standard/off）。（红线：仅全局）
-  // …共 58 个键，每个都带一行说明
+  // …共 64 个键，每个都带一行说明
 }
 ```
 
@@ -676,7 +706,10 @@ Your own agents named `team` / `architect` / … always take precedence; the
 plugin never clobbers user definitions. See [Customization](#-customization)
 for overrides, extra agents and disabling roles.
 
-### Key reference (all 58)
+### Key reference (all 64)
+
+<details>
+<summary>All 64 keys — click to expand</summary>
 
 **Offload, previews and the store**
 
@@ -772,6 +805,8 @@ for overrides, extra agents and disabling roles.
 | `compactionContext` | `on` | v1-only |
 | `shellEnv` | `""` | v1-only |
 | `ptcWebBridge` | `on` | v1-only |
+
+</details>
 
 > **Compaction timing belongs to the host, not to this plugin.** An earlier
 > release triggered its own summarization at 75% of the window; that was removed
@@ -955,39 +990,9 @@ No DLLs were harmed. Nothing was written to your working tree.
 
 ## 🏛️ Architecture (for the curious)
 
-```
-opencode-team-mode/
-├── src/
-│   ├── index.ts          ← Plugin entry ({id, setup} — v2 only)
-│   ├── agents.ts         ← Agent structure (modes, colors, temperatures, whitelist matrix)
-│   ├── prompts/          ← Agent prompts (lead / specialists / shared) — pinned by tests
-│   ├── commands.ts       ← Slash command definitions
-│   ├── blackboard.ts     ← Shared blackboard + TTL sweeper
-│   ├── envprotect.ts     ← R6 facade (patterns / classifiers / gate predicates / hook)
-│   ├── identity.ts       ← Agent-name identity (case-insensitive lead match)
-│   ├── tm/               ← Governed tools: pipelines / store / preview / guard / refs /
-│   │                        config-layers (the 58-key registry) / config-files (the two
-│   │                        layers) / config-template (the inert auto-created file) /
-│   │                        webfetch / search / memory / board / ledger / dispatch
-│   ├── host/             ← v2 personality (setup / guard / offload / session / events / …)
-│   └── types.ts          ← Loader-contract types
-├── docs/installation.md  ← Historical 1.18.x guide (no longer supported)
-├── docs/installation-v2.md ← The 2.x install guide (roles arrive as generated config files)
-├── scripts/              ← One-line installers (bash / PowerShell)
-├── pt07/                 ← PT-07 baseline suite (seeded A/B token measurement)
-└── README.*.md           ← You are here (twice)
-```
+The package exports `{id, setup}` and nothing else. The loader calls `setup(ctx)` once: it registers the `tm_*` tools, resolves the two config layers, arms the R6 / address guard on `permission.evaluate`, attaches JIT governance on `tool.execute.after`, and publishes the blackboard note — and user-defined agents with the same name always win. One rule keeps the config layer honest: **`CONFIG_KEYS` is the registry and the single source of truth**, so a key absent from it is reported as unknown and never applied, and the red-line set is derived from that registry rather than hand-listed.
 
-The loader calls `setup(ctx)` once: it registers the `tm_*` tools, resolves the
-two config layers, installs the R6/address guard on `permission.evaluate`, attaches
-the JIT offload on `tool.execute.after`, and publishes the blackboard note. User-defined
-agents with the same name always win — the plugin never clobbers.
-
-The one rule that makes the config layer trustworthy: **`CONFIG_KEYS` is the
-registry and the single source of truth.** A key absent from it is reported as
-unknown and never applied; the red-line set is derived from that registry rather
-than hand-listed; and the auto-created global file is rendered *from* the
-registry, so it cannot drift from what the code actually reads.
+The module map, the per-layer seams and every measured host fact are in [AGENTS.md](./AGENTS.md); the dated evidence behind each v2 claim is in [docs/v2-port-notes.md](./docs/v2-port-notes.md). `pt07/` holds the PT-07 baseline suite (seeded A/B token measurement); `scripts/` the one-line installers.
 
 ---
 
