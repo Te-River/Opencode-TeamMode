@@ -4230,8 +4230,8 @@ console.log("34. 任务状态卡 — 请求侧 JIT 状态注入：一条 ≤300 
       )
 
   const tj1 = mktmp("state-card")
-  // `dynamicTail: "off"` 是本组的对照：本组钉的是 **system** 注入那一条路径的
-  // 逐字节行为，尾层（默认 on）会把卡片搬到请求末尾，见组 39。
+  // `dynamicTail: "off"` 是本组的对照（也是注册表默认）：本组钉的是 **system** 注入那一条
+  // 路径的逐字节行为，尾层（`dynamicTail: "on"` 才启用）会把卡片搬到请求末尾，见组 39。
   writeCfg({ trajectoryDir: tj1, dynamicTail: "off" })
   const w = makeFakeCtx({ directory: workspace("state-card"), agents: sixAgents })
   const boot = await withCapturedConsole(() => plugin.setup(w.ctx))
@@ -5252,12 +5252,14 @@ console.log("39. 易变上下文尾部注入 dynamicTail — system 逐字节稳
   const spec = CONFIG_KEYS.find((k) => k.key === "dynamicTail")
   assert.ok(spec, "dynamicTail 在注册表里")
   assert.equal(spec.type, "string", "type = string")
-  assert.equal(spec.default, "on", "默认 on")
+  assert.equal(spec.default, "off", "默认 off（宿主 2.1.x 会把追加消息当作真实用户消息持久化并回放，实测 2026-10-22）")
   assert.deepEqual(spec.enum, ["on", "off"], "enum = on / off")
   assert.match(String(spec.doc), /前缀缓存/, "doc 说明它保的是前缀缓存")
+  assert.match(String(spec.doc), /持久化并回放/, "doc 写明默认关闭的实测原因")
 
   const tjOn = mktmp("dynamic-tail")
-  writeCfg({ trajectoryDir: tjOn })
+  // 默认已是 off：本组测的是尾部注入这条路径，必须显式开启。
+  writeCfg({ trajectoryDir: tjOn, dynamicTail: "on" })
   const h = makeFakeCtx({ directory: workspace("dynamic-tail"), agents: sixAgents })
   const boot = await withCapturedConsole(() => plugin.setup(h.ctx))
   const SID = "ses_tail_lead"

@@ -17,6 +17,10 @@
  *  - 宿主会跨请求复用 `event.messages`，所以追加前先剥掉以 `[Team 动态上下文]`
  *    开头的旧尾部——否则每轮多一条，最后挤掉真正的工作。
  *
+ * **默认 off（2026-10-22 实测）。** 宿主 2.1.x 会把这条例 `role:"user"` 消息持久化进
+ * 会话历史，并在下一次请求里把它当作「最后一条用户消息」回放（`synthetic:true` 也拦不住），
+ * 所以本层默认不注册；功能保留，只在确认宿主提供非唤醒通道后手动 `dynamicTail: "on"`。
+ *
  * `dynamicTail: "off"` 时本层根本不注册，四个生产者各自走原来的 `event.system`
  * 路径，逐字节与改动前一致（这是回滚路径，也是套件里钉住的对照）。
  */
@@ -126,7 +130,7 @@ export function renderDynamicTail(sections: Map<DynamicSection, string>): string
 const isOff = (value: unknown): boolean =>
   typeof value === "string" && /^(off|0|false|no)$/i.test(value.trim())
 
-/** `dynamicTail: "off"`（以及旧的假值拼写）关闭；其余一律是默认的尾部注入。 */
+/** `dynamicTail: "off"`（以及旧的假值拼写）关闭；注册表默认 off，只有显式 on 才走尾部注入。 */
 export function resolveDynamicTailConfig(
   config: { dynamicTail?: string } = resolveConfig(),
 ): { enabled: boolean } {

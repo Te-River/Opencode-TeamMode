@@ -7,6 +7,13 @@ registry saw 1.5.0 as the install-script fix release).
 
 ## [Unreleased]
 
+### Fixed
+
+- **动态尾层默认关闭（`dynamicTail` 默认 `off`）。** 宿主 2.1.x 会把追加的 `role:"user"`
+  消息持久化进会话历史，并作为「最后一条用户消息」回放（实测 2026-10-22，`synthetic:true`
+  也拦不住），因此该层默认不注册；功能保留（`dynamicTail: "on"` 手动开启，`off` 与改动前
+  逐字节一致），`test-v2-adapter` 组 39 钉住注册表默认值。
+
 ## [1.8.3] - 2026-10-22
 
 ### Added
