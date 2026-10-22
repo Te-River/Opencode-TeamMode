@@ -7,6 +7,8 @@ registry saw 1.5.0 as the install-script fix release).
 
 ## [Unreleased]
 
+## [1.8.3] - 2026-10-22
+
 ### Added
 
 - **缓存命中率（P2，纯增量）。** `UsagePercentReading` 多带 `cache: { read, write, input, present }`
