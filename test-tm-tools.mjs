@@ -2602,6 +2602,94 @@ try {
         }
       }
 
+      // ── the body a PRESUMED settle reads may be a FRAGMENT ────────────────────
+      // Live cost, from another project: the parent went idle, a still-running host child was
+      // presumed settled, tm_join returned the text that child had written BEFORE its last
+      // tool call (no `time.completed`), and the lead read it as the delivery — "修复没落地"
+      // — then re-dispatched work that had already landed. The join must now separate "this
+      // body is a finished turn" from "this is what happened to be written".
+      {
+        const rowsOf = (rt) =>
+          fs.readFileSync(rt.store.trajectoryFile(), "utf8").split(/\r?\n/).filter(Boolean).map((l) => JSON.parse(l))
+        const bodyRow = (rt, sid) => rowsOf(rt).filter((e) => e.event === "child_body" && e.child === sid).pop()
+
+        // ① parent-idle presumption + a last assistant message with NO time.completed
+        {
+          const { rt } = await seeded("disp-body-half", {
+            replies: { ses_body_half: "改到一半：src/a.ts 已改，测试还没跑" },
+            completedFor: [], // the message the host hands us carries no completion time
+            statusMap: {},
+          })
+          assert.equal(
+            rt.registerHostChild({ sessionID: "ses_body_half", parentSessionID: "ses_lead", agent: "implementer", label: "修 A" }),
+            true,
+            "the host child is registered the way v2-subagent does it",
+          )
+          rt.observeDispatchEvent({ type: "session.idle", properties: { sessionID: "ses_lead" } })
+          assert.equal(
+            rt.hostChildren().find((c) => c.sessionID === "ses_body_half")?.settleSource,
+            "parent-idle",
+            "the settle source is the PRESUMPTION, recorded in the code token the reply renders in words",
+          )
+          const joined = await rt.tools.tm_join.execute({}, LEAD)
+          assert.ok(
+            joined.output.includes(dmod.INCOMPLETE_PRESUMED_BODY_WARNING),
+            "a presumed settle with an unterminated body warns: " + joined.output.replace(/\n/g, " | ").slice(0, 320),
+          )
+          assert.ok(joined.output.includes("正文：半截（推定）"), "and the status table calls the body half (a presumption)")
+          assert.ok(
+            joined.output.includes("推定已结算") && joined.output.includes("宿主未给该子会话 idle 事件"),
+            "the source line keeps 推定 in it and names the missing idle event",
+          )
+          assert.ok(!joined.output.includes("正文：完整"), "a fragment is never reported as complete")
+          assert.ok(joined.output.includes("改到一半"), "the fragment is still SHOWN — withholding it would hide the only evidence the lead has")
+          assert.equal(bodyRow(rt, "ses_body_half")?.complete, false, "the child_body row records the completeness it MEASURED")
+          await rt.dispose()
+        }
+
+        // ② same shape, but the host DID record time.completed → no warning, 正文：完整
+        {
+          const { rt } = await seeded("disp-body-done", {
+            replies: { ses_body_done: "STATUS: done\nEVIDENCE: npm test 8/8" },
+            completedFor: ["ses_body_done"],
+            completedAt: 9000,
+            statusMap: {},
+          })
+          rt.registerHostChild({ sessionID: "ses_body_done", parentSessionID: "ses_lead", agent: "implementer", label: "修 B" })
+          rt.observeDispatchEvent({ type: "session.idle", properties: { sessionID: "ses_lead" } })
+          const joined = await rt.tools.tm_join.execute({}, LEAD)
+          assert.ok(!joined.output.includes("半截话"), "a body the host marked complete gets NO fragment warning")
+          assert.ok(joined.output.includes("正文：完整"), "and the table says complete")
+          assert.equal(bodyRow(rt, "ses_body_done")?.complete, true, "the row records complete:true")
+          await rt.dispose()
+        }
+
+        // ③ event / injection settle → no presumption sentence and no fragment warning (this
+        //    seam carries no completion time either, which is exactly the false alarm to avoid)
+        {
+          const { rt } = await seeded("disp-body-event", {
+            replies: { ses_body_ev: "STATUS: done", ses_body_inj: "STATUS: done" },
+            completedFor: [],
+            statusMap: {},
+          })
+          rt.registerHostChild({ sessionID: "ses_body_ev", parentSessionID: "ses_lead", agent: "reviewer", label: "审 C" })
+          rt.observeDispatchEvent({ type: "session.idle", properties: { sessionID: "ses_body_ev" } })
+          rt.registerHostChild({ sessionID: "ses_body_inj", parentSessionID: "ses_lead", agent: "tester", label: "测 D" })
+          assert.equal(rt.settleHostChild("ses_body_inj", "completed"), true, "the host's own completion envelope settles the second child")
+          const joined = await rt.tools.tm_join.execute({}, LEAD)
+          assert.ok(
+            !joined.output.includes("半截话"),
+            "an event/injection-settled body raises no fragment warning: " + joined.output.replace(/\n/g, " | ").slice(0, 320),
+          )
+          assert.ok(!joined.output.includes("推定已结算"), "…and neither row claims a presumption")
+          assert.ok(
+            joined.output.includes("正文：未带完成时间"),
+            "the status states the measurement (no completion time) rather than pretending 完整 or 半截",
+          )
+          await rt.dispose()
+        }
+      }
+
       // the goal tripwire, read off the host's own todo list
       assert.deepEqual(
         dmod.openHostTodos([
@@ -2687,7 +2775,7 @@ try {
       assert.equal(dmod.parseDispatchTitle("Explore the repo (@tester subagent)", ["tester"]), null, "a host task child's title never parses — that is what the marker is for")
       assert.equal(dmod.parseDispatchTitle("随便一个会话", ["tester"]), null, "an ordinary session is not ours")
     }
-    console.log("10. tm_dispatch removed (not registered, lead denied) + tm_join as the collect side: adoption of leftovers (both title shapes) with a host task child never claimed on speculation, named-id claims verified against host parentage, status/event settle, cancel, offloaded fat replies, the wait budget and its chained-wait cut, the goal tripwire with the todowrite escape, and the pure helpers")
+    console.log("10. tm_dispatch removed (not registered, lead denied) + tm_join as the collect side: adoption of leftovers (both title shapes) with a host task child never claimed on speculation, named-id claims verified against host parentage, status/event settle, cancel, offloaded fat replies, the wait budget and its chained-wait cut, the presumed-settle body-completeness warning (complete / half / missing), the goal tripwire with the todowrite escape, and the pure helpers")
   }
 
   // ---------- 11. bash timeout clamp — RETIRED with the v1 personality ----------

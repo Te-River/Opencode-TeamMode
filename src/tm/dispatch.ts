@@ -84,6 +84,14 @@ export interface ChildRecord {
    *  运行中 forever would be the same overstated claim in the opposite direction.  A
    *  presumption is printed as one. */
   settleSource?: "event" | "parent-idle" | "injection"
+  /** Whether the body tm_join actually READ was a finished turn: true only when the last
+   *  assistant message carried `time.completed`.  Absent/false is NOT "the child failed" —
+   *  it is the measurement that lets a presumed settle avoid presenting the text written
+   *  before the child's last tool call as a delivery (a live lead read one such fragment as
+   *  "修复没落地" and re-dispatched work that had already landed).  Refreshed on every read. */
+  bodyComplete?: boolean
+  /** The host's own completion moment for that body, when it recorded one. */
+  bodyCompletedAt?: number
   /** #33: the verdict of a stop attempt on THIS row, in the tool's own words. Printed by
    *  `renderChildLine` so a lead skimming the table cannot read five different outcomes as
    *  one "已取消". Absent = no stop was attempted on this child. */
@@ -370,6 +378,17 @@ export function describeHostError(err: unknown, max = 220): string {
   return shorten(flat || "session.error", max)
 }
 
+/**
+ * The line a PRESUMED settle must print when the body it collected carries no
+ * `time.completed`.  Both halves of that condition matter: the settle was an inference
+ * (the parent went idle, no event named this child) AND the text has no completion marker,
+ * so it may be what the child had written before its last tool call.  A live lead read
+ * exactly that fragment as the delivery, concluded "修复没落地", and re-dispatched work
+ * that had already landed — the fix is to say it, not to withhold the text.
+ */
+export const INCOMPLETE_PRESUMED_BODY_WARNING =
+  "⚠ 推定结算且正文未带完成时间：这可能是最后一次工具调用前的半截话，不要据此判定交付；稍后再次 tm_join 可复核（或让子代理续跑）。"
+
 /** One child's status line — the lead reads these, so keep them terse. */
 export function renderChildLine(c: ChildRecord, elapsedMs: number): string {
   const secs = Math.round(elapsedMs / 1000)
@@ -380,7 +399,7 @@ export function renderChildLine(c: ChildRecord, elapsedMs: number): string {
   const stop = c.state === "idle" && c.cancelNote ? ` ·${c.cancelNote}` : ""
   return `${c.sessionID} · ${c.agent} · "${c.label}" · ${tag}${stop}${c.adopted ? " ·（本进程重启后由宿主会话树接管）" : ""}${
     c.via === "host-injection" && c.settleSource === "parent-idle"
-      ? " ·（宿主子代理：随父会话空闲推定已结算，宿主没给过这个子会话的 idle 事件）"
+      ? " ·（宿主子代理：随父会话空闲推定已结算；宿主未给该子会话 idle 事件）"
       : c.via === "host-injection"
         ? " ·（宿主 subagent 派发）"
         : ""
@@ -791,15 +810,29 @@ export function buildDispatchTools(deps: DispatchDeps): {
   function fetchReply(
     sid: string,
     directory: string | undefined,
-  ): Promise<{ text: string; completedAt?: number; error?: string; via?: string; shape?: string; items?: number; pickedType?: string }> {
+  ): Promise<{
+    text: string
+    completedAt?: number
+    error?: string
+    via?: string
+    shape?: string
+    items?: number
+    pickedType?: string
+    /** true only when the message carrying the text also carried `time.completed` — the
+     *  difference between a finished turn and text written before the last tool call. */
+    bodyComplete: boolean
+    bodyCompletedAt?: number
+  }> {
     return (async () => {
       if (typeof api?.messages !== "function") {
-        return { text: "", error: "这个宿主客户端没有给出读取子会话正文的缝（v2 上它是 ctx.session.context 的兼容层）" }
+        return { text: "", error: "这个宿主客户端没有给出读取子会话正文的缝（v2 上它是 ctx.session.context 的兼容层）", bodyComplete: false }
       }
       try {
         const raw = await api.messages({ path: { id: sid }, ...(directory ? { query: { directory } } : {}) })
         const un = unwrapClientResult(raw)
-        const got = un.ok ? lastAssistantMessage(un.data) : { text: "", error: un.message }
+        const got: { text: string; completedAt?: number; error?: string } = un.ok
+          ? lastAssistantMessage(un.data)
+          : { text: "", error: un.message }
         // The seam that ANSWERED, named by the seam itself. On v1 that is the host's
         // `session.messages`; on v2 the same call is served by `ctx.session.context`, and
         // printing "session.messages" there would credit an endpoint this host does not
@@ -810,11 +843,17 @@ export function buildDispatchTools(deps: DispatchDeps): {
         // and the last item carried no text part" is a different fact from "no seam".
         const reported = (raw as { shape?: unknown } | null)?.shape
         const shape = typeof reported === "string" && reported ? reported : undefined
+        // `bodyComplete` is derived from the SAME parse that produced the text, so a caller
+        // can never read a body and a completeness verdict from two different messages.
+        const completeness = {
+          bodyComplete: typeof got.completedAt === "number",
+          ...(typeof got.completedAt === "number" ? { bodyCompletedAt: got.completedAt } : {}),
+        }
         return got.text
-          ? { ...got, via, ...(shape ? { shape } : {}) }
-          : { text: "", error: got.error, via, ...(shape ? { shape } : {}) }
+          ? { ...got, via, ...(shape ? { shape } : {}), ...completeness }
+          : { text: "", error: got.error, via, ...(shape ? { shape } : {}), ...completeness }
       } catch (err) {
-        return { text: "", error: describeHostError((err as { message?: unknown })?.message ?? err, 140) }
+        return { text: "", error: describeHostError((err as { message?: unknown })?.message ?? err, 140), bodyComplete: false }
       }
     })()
   }
@@ -1318,6 +1357,10 @@ export function buildDispatchTools(deps: DispatchDeps): {
           `派发汇总：${sums.idle} 完成 / ${sums.running} 运行中 / ${sums.error} 失败${settled ? "（全部已结算）" : `（未等到全部结算 · 本次已等 ${Math.round((now() - waitStart) / 1000)}s）`}`,
           ...mine.map((r) => renderChildLine(r, (r.finishedAt ?? now()) - r.startedAt)),
         ]
+        // The `正文：` line belongs directly under the child rows it describes, but the
+        // body's completeness is only knowable once the bodies have been read — remember
+        // where the rows end and splice it back in there.
+        const childRowsEnd = header.length
         if (cancelTally) {
           const parts = cancelOutcomeParts(cancelTally)
           header.push(
@@ -1420,10 +1463,25 @@ export function buildDispatchTools(deps: DispatchDeps): {
         const wantText = !(args.includeText === false || args.includeText === "false")
         const collectible = mine.filter((r) => r.state !== "running")
         const blocks: string[] = []
+        /** One token per collected child for the `正文：` line — each token is a MEASUREMENT
+         *  (`time.completed` was on the message, or it was not), never a guess. */
+        const bodyStatus: string[] = []
         if (wantText) {
           for (const r of collectible) {
             const reply = await fetchReply(r.sessionID, directory)
             const text = reply.text
+            r.bodyComplete = reply.bodyComplete === true
+            r.bodyCompletedAt = reply.bodyCompletedAt
+            const hasBody = Boolean(text.trim())
+            // The combination that produced a wrong verdict live: a PRESUMED settle (no
+            // event ever named this child) plus a body with no completion marker.  Only
+            // then is "半截" a fair reading — an event/injection-settled child on a seam
+            // that simply does not carry `time` (2.0.20's ctx) must not be labelled a
+            // fragment, which would be the same overstatement facing the other way.
+            const half = hasBody && r.bodyComplete === false && r.settleSource === "parent-idle"
+            bodyStatus.push(
+              `正文：${!hasBody ? "缺失" : r.bodyComplete ? "完整" : half ? "半截（推定）" : "未带完成时间"} · ${r.agent} "${r.label}"`,
+            )
             const src = text && reply.via ? ` ·正文来源=${reply.via}` : ""
             // Which seam answered, per child — an id, a seam name and the SHAPE it saw, never
             // a body (R6 binds a diagnostic too). This is the line that makes "正文来源=…"
@@ -1435,13 +1493,20 @@ export function buildDispatchTools(deps: DispatchDeps): {
               event: text ? "child_body" : "child_body_missing",
               child: r.sessionID,
               via: reply.via ?? "none",
+              // Completeness rides only the row that claims a BODY was read; a missing body
+              // has no completion to report (`child_body_missing` stays byte-exact).
+              ...(text ? { complete: r.bodyComplete === true } : {}),
               // Only when the SEAM reported one: v1's SDK client gives no shape, and the v1
               // personality is frozen — its rows stay byte-exact rather than gaining a field
               // nobody asked for. The v2 bridge reports a shape on every path.
               ...(text || !reply.shape ? {} : { shape: reply.shape }),
             })
+            // Said BEFORE the body and INSIDE this child's own block: the body is what
+            // gets misread as a delivery, and a warning floating between two blocks would
+            // not name the child it is about.
+            const warn = half ? `${INCOMPLETE_PRESUMED_BODY_WARNING}\n` : ""
             blocks.push(
-              `--- ${r.agent} "${r.label}" (${r.sessionID})${src} ---\n${
+              `--- ${r.agent} "${r.label}" (${r.sessionID})${src} ---\n${warn}${
                 text.trim() ||
                 (r.via === "host-injection"
                   ? `（这个子会话由宿主的 subagent 工具派发，而这一次我没有读到它的正文${
@@ -1454,6 +1519,9 @@ export function buildDispatchTools(deps: DispatchDeps): {
             )
           }
         }
+        // One `正文：` line per child, directly under the child rows it describes, and only
+        // when bodies were actually read (`includeText:false` has no body to judge).
+        if (bodyStatus.length) header.splice(childRowsEnd, 0, ...bodyStatus)
         const body = [...header, ...(blocks.length ? ["", blocks.join("\n")] : [])].join("\n")
         const stepId = deps.pipelines.nextStepId()
         return toToolResult(
