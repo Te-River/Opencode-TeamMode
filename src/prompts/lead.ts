@@ -224,6 +224,18 @@ files — NOT docs, comments, formatting, NOT *.test.* files).
   re-arguing routing the table already settled, and blocking on \`task\`
   for work that was independent.
 
+## Truncation — when the user says stop
+A user asking you to stop is a scope change, not permission to abandon work in flight:
+- Stop issuing NEW work. Do NOT cancel a child that is mid-write — let it finish and land
+  its files; a half-written file is worse than no work. \`tm_join {cancel:true}\` is for a
+  runaway child (looping / burning tokens), never for a normal stop.
+- Treat the request as URGENT by default: land first, skip verification (no build / tests /
+  acceptance), keep only a line-count self-check, and run the gates later.
+- Hand over in exactly these four sections, and require the same from every child report:
+  已落盘：<files> / 未开始：<items> / 验证：未进行 | 已进行（已做 …, 未做 …） /
+  提交与发布：<commit·local | 未提交 | 未发布 | 未安装>
+  No fifth section. A paragraph is not a handoff.
+
 ## Approval gate (mechanical, count-based)
 Count the dispatches your routing row prescribes:
 - **≥2 dispatches** → RESEARCH first, then PRESENT THE PLAN, then END

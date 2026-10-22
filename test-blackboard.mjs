@@ -316,6 +316,41 @@ assert.ok(
 )
 assert.ok(leadPrompt.includes("Parallel-safe"), "lead: what may run at once stays enumerated")
 assert.ok(leadPrompt.includes("Must serialize"), "lead: what must not stays enumerated")
+/* The truncation rule (user decision 2026-10-22): a stop is a SCOPE CHANGE, and the
+   handoff is a FIXED four-section shape.  Pinned because "land first, verify later"
+   is exactly the instruction a model softens back into "stop and summarise", and
+   because the four section names are the only Chinese a specialist prompt carries —
+   a fifth section name would therefore be a real defect, not a style choice. */
+assert.ok(leadPrompt.includes("## Truncation"), "lead: the truncation section is there")
+assert.ok(
+  // whitespace-tolerant: the section is hard-wrapped, so "land its files" may sit
+  // across a line break — the RULE is what must be present, not the wrap.
+  leadPrompt.includes("cancel:true") &&
+    leadPrompt.includes("runaway") &&
+    /land\s+its\s+files/.test(leadPrompt),
+  "lead: a user stop never cancels a child mid-write — cancel is for a runaway child only",
+)
+assert.ok(leadPrompt.includes("No fifth section"), "lead: the four sections are a closed set")
+{
+  const leadLabels = ["已落盘：", "未开始：", "验证：", "提交与发布："]
+  for (const label of leadLabels) assert.ok(leadPrompt.includes(label), `lead: the handoff carries the fixed section ${label}`)
+  assert.ok(!leadPrompt.includes("下一步："), "lead: no fifth section name leaked into the handoff")
+  assert.ok(
+    leadPrompt.indexOf("## Delegation") < leadPrompt.indexOf("## Truncation") &&
+      leadPrompt.indexOf("## Truncation") < leadPrompt.indexOf("## Approval gate"),
+    "lead: the truncation rule sits between Delegation and the approval gate",
+  )
+  // The specialists get the same discipline through REPLY_CONTRACT; their labels are
+  // the bare section names (the shared sentence lists them with slashes, not colons).
+  const specialistLabels = ["已落盘", "未开始", "验证", "提交与发布"]
+  const specialists = Object.entries(cfg2.agent).filter(([n]) => n.toLowerCase() !== "team")
+  assert.equal(specialists.length, 5, "five specialist prompts were scanned (a vacuous loop is not a pass)")
+  for (const [name, a] of specialists) {
+    const p = String(a.prompt ?? "")
+    assert.ok(p.includes("## Truncation handoff"), `${name}: the stop handoff section is appended`)
+    for (const label of specialistLabels) assert.ok(p.includes(label), `${name}: the stop handoff carries ${label}`)
+  }
+}
 // async dispatch makes multi-in_progress normal, and order is negotiable
 assert.ok(leadPrompt.includes("SEVERAL items"), "lead: parallel dispatch explicitly licenses several in_progress items")
 assert.ok(leadPrompt.includes("ORDER IS A DEFAULT, NOT A LAW"), "lead: todo-list order yields to parallelism")
@@ -472,6 +507,13 @@ assert.ok(leadPrompt.includes("<session-key>"), "lead: session layer in board pa
       "个可寻址节点", "域名不在白名单", "需批准", "在白名单内", "静态白名单",
       "你刚批准的窗", "宿主按已记住的", "始终允许", "秒回", "该",
       "个子资源请求被拦截",
+      /* The truncation-handoff labels (user decision 2026-10-22).  These are the
+         SECTION NAMES of a scripted four-part handoff the user mandated, not a
+         licence for the agent to write Chinese prose of its own — the set stays
+         CLOSED, which is why each label is listed as a literal run and nothing
+         else was added.  A new Chinese token still fails this scan by name. */
+      "已落盘", "未开始", "验证", "提交与发布", "未进行", "已进行", "已做", "未做",
+      "未提交", "未发布", "未安装",
     ]
     const strayByRole = []
     for (const [name, a] of Object.entries(cfg2.agent)) {

@@ -16,6 +16,11 @@ HANDOFF: <the minimum structured context the next agent needs>
 Keep the whole reply ≤50 lines. Deliverables at that size travel inline —
 no files involved.
 
+## Truncation handoff (when the lead says stop)
+If the lead tells you to stop: finish landing the files you have already opened, start
+nothing new, skip verification unless the lead asks for it, and report in exactly four
+sections — 已落盘 / 未开始 / 验证（未进行 | 已进行：已做 …, 未做 …）/ 提交与发布.
+
 ## Multi-part briefs (the ledger habit)
 If the brief asks for several things, treat it as a checklist: work the parts
 in order, and give each part its own line in FINDINGS/EVIDENCE.

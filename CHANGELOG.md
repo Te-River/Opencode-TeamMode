@@ -9,6 +9,14 @@ registry saw 1.5.0 as the install-script fix release).
 
 ### Added
 
+- **截断交接（Truncation，用户 2026-10-22 决定）。** lead 提示词新增 `## Truncation` 节
+  （位于 `## Delegation` 与 `## Approval gate` 之间）：用户喊停是范围变更，不是放弃在途工作的
+  许可——不再派新活、**不取消正在写文件的子代理**（`tm_join {cancel:true}` 只留给跑飞的孩子）、
+  默认按急停处理（先落盘、跳过验证、只留行数自检）、按固定四段交接
+  `已落盘 / 未开始 / 验证 / 提交与发布`，且不得有第五段。5 个 specialist 经 `REPLY_CONTRACT`
+  追加 `## Truncation handoff`（同一套格式）。`test-blackboard` 钉住节标题、专属修饰词、
+  四段标签、五角色覆盖与「无第五段」反向断言，并把 11 个标签汉字加入唯一白名单
+  `VERBATIM_TOOL_STRINGS`（白名单仍是**封闭集**，不是给 agent 自撰中文的授权）。
 - **窗口占用条目（独立 system 条目，随状态卡层一起注册）。** lead 的请求上多一条
   `[Team 窗口占用]`：`窗口：<bucket>% · 模型 <providerID>/<id>`，百分比取**最近 5% 的整数倍**
   （42% → 40%），分母来自 `ctx.model.list()` 的 `limit.context`、用量来自消息自带的 usage——
