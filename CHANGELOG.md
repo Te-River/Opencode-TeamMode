@@ -7,6 +7,8 @@ registry saw 1.5.0 as the install-script fix release).
 
 ## [Unreleased]
 
+## [1.8.4] - 2026-10-22
+
 ### Fixed
 
 - **动态尾层默认关闭（`dynamicTail` 默认 `off`）。** 宿主 2.1.x 会把追加的 `role:"user"`
