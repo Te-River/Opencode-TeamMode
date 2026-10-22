@@ -7,6 +7,34 @@ registry saw 1.5.0 as the install-script fix release).
 
 ## [Unreleased]
 
+### Added
+
+- **Lossless context pruning (`pruneOffload`, default `on`).** A message selected
+  for pruning no longer loses its body: the text is offloaded through the shared
+  pipeline (`alwaysOffload`, so the threshold cannot talk it out of it) and the
+  stub carries a full `tm_fetch { ref, access_token, expire_at }`. Retrieval is
+  verified end to end in `test-v2-adapter` (payload file byte-identical to the
+  original, then fetched back through the registered `tm_fetch`). Re-pruning the
+  same body on a later request reuses the handle (content-level dedupe,
+  sha256 → handle, 500-entry FIFO) instead of writing a second payload. A failed
+  offload degrades to the old echo stub with one `prune_offload_failed` row;
+  bodies stored for a plan that never landed are counted as `orphans`; a
+  post-prune size over budget is counted as `overBudget` rather than silently
+  re-pruned. `prune_offload_failed` and the offload counts ride both observation
+  rows (`prune_offloaded` / `prune_reused` / `prune_offload_failed`); a cached
+  handle whose `expire_at` has passed is discarded and the body is written again
+  rather than reusing a pointer into a swept payload.
+- **任务状态卡 (`stateCard`, default `on`).** The lead's assembled request
+  carries ONE ≤300-token system entry: ledger counts plus open items, the running
+  children that belong to THIS session (an empty session id renders no children
+  row at all), a shortened board root, and last round's offloaded-message count
+  (`prune.report.offloaded`, so a round that offloaded nothing never claims
+  otherwise). The gate compares the card byte-for-byte (the `hash:` line stays as
+  a visible marker), `pruneSeen` advances only after a card actually lands, and a
+  state that becomes empty REMOVES the previously injected card instead of leaving
+  it on the request (`state_card_cleared`, so an over-stated "still running" card
+  cannot outlive the work). `off` does not register the layer at all.
+
 ## [1.8.2] - 2026-10-21
 
 ### Fixed

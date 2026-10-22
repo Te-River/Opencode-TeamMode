@@ -140,6 +140,8 @@ export interface TmConfig {
   pruneAtPercent: number
   /** Percent of the window kept verbatim at the tail. */
   pruneKeepTailPercent: number
+  /** 修剪前先离载（stub 带 tm_fetch 句柄）；off = 纯注记、原文不保留。 */
+  pruneOffload: "on" | "off"
   /** Retry governor (recognise throttle + inject wait + cooldown). */
   retry: "on" | "off"
   retryBaseMs: number
@@ -164,6 +166,8 @@ export interface TmConfig {
   v2BrowserGate: "on" | "off"
   /** tm_ledger per-session item cap. */
   ledgerMaxItems: number
+  /** 任务状态卡：请求侧 JIT 状态注入（`on` / `off`）。 */
+  stateCard: "on" | "off"
 }
 
 /** The registry's defaults, keyed by canonical key.  Derived from

@@ -79,6 +79,15 @@ export interface TmDeps {
 interface GovernOptions {
   contentType: ReturnType<typeof detectContentType>
   clue?: string
+  /**
+   * Skip ONLY the threshold test and offload regardless of size.  The preview /
+   * handle / store path is reused verbatim, so this is not a second offload
+   * implementation — it is the same one with the "is it big enough?" question
+   * answered by the caller (context pruning: a body that is about to be REPLACED
+   * must be recoverable whatever its size, since after the prune its threshold
+   * will never be re-evaluated).
+   */
+  alwaysOffload?: boolean
 }
 
 /**
@@ -203,7 +212,7 @@ export function buildPipelines(deps: TmDeps) {
   function govern(stepId: string, tool: string, content: string, opts: GovernOptions): unknown {
     const tokens = estimateTokens(content)
     const threshold = offloadThresholdFor(cfg, opts.contentType)
-    if (!shouldOffload(tokens, threshold)) {
+    if (!opts.alwaysOffload && !shouldOffload(tokens, threshold)) {
       store.appendTrajectory({ tool, step_id: stepId, event: "result", offloaded: false, tokens })
       return content
     }

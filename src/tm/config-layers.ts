@@ -189,6 +189,7 @@ export const CONFIG_KEYS: readonly ConfigKeySpec[] = [
   { key: "prune", type: "string", default: "on", enum: ["on", "off"], doc: "上下文裁剪（已结算消息替换为指针）；off = 关闭。" },
   { key: "pruneAtPercent", type: "number", default: 70, min: 40, max: 90, doc: "上下文裁剪启动的窗口占比（%）。" },
   { key: "pruneKeepTailPercent", type: "number", default: 40, min: 0, max: 90, doc: "裁剪时尾部逐字保留的窗口占比（%）。" },
+  { key: "pruneOffload", type: "string", default: "on", enum: ["on", "off"], doc: "修剪前先把消息体离载到 run store 并在 stub 留 tm_fetch 句柄（原文可取回）；off = 今日行为（纯注记，原文不保留）。" },
   { key: "retry", type: "string", default: "on", enum: ["on", "off"], doc: "错峰重试：识别限流 + 注入等待 + 冷却，并管住 tm_webfetch/tm_search 的 HTTP 重试；固定阶梯 5s/10s/20s（第1/2/3次重试），off = 两处都关闭。" },
   { key: "retryBaseMs", type: "number", default: 5000, min: 1, max: 3_600_000, doc: "重试退避基数（毫秒）——第1次重试等它，第2次×2，第3次×4（默认即 5s/10s/20s 固定阶梯）。" },
   { key: "retryMaxMs", type: "number", default: 60_000, min: 1, max: 3_600_000, doc: "重试退避上限（毫秒）——第4次起翻倍到这里封顶。" },
@@ -202,6 +203,7 @@ export const CONFIG_KEYS: readonly ConfigKeySpec[] = [
   { key: "splitMaxCriteria", type: "number", default: 3, min: 1, max: 50, doc: "拆分建议里每条交付的验收标准上限。" },
   { key: "v2BrowserGate", type: "string", default: "on", enum: ["on", "off"], doc: "原生 browser_* 目录的域名/地址/R6 门禁；off = 关闭。" },
   { key: "ledgerMaxItems", type: "number", default: 200, min: 10, max: 100_000, doc: "tm_ledger 每个会话的最大条目数。" },
+  { key: "stateCard", type: "string", default: "on", enum: ["on", "off"], doc: "任务状态卡：给 lead 组装请求时注入一条 ≤300 token 的当前状态（账本进行/阻塞/待办、运行中子代理、看板根）；状态未变化时一个字节都不动，off = 不注册该层。" },
   { key: "subagentConcurrency", type: "number", default: 8, min: -1, max: 100, doc: "子代理并发上限（running + 在飞派发）；0 = 不限；负值无效，回落默认 8（不夹到 0——0 是“不限”，一个笔误不该把上限关掉）。" },
   // ---- RED-LINE knobs: honored ONLY in the global file (D1) ----
   {

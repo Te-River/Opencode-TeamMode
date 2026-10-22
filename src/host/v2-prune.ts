@@ -21,6 +21,11 @@
  *    protected STRING: the message may be pruned, but the stub must carry the
  *    handle verbatim, which is exactly the "keep the pointer, drop the body"
  *    contract.
+ *  - **Nothing leaves that cannot be recovered.**  A message carrying no handle
+ *    of its own is offloaded to the run store BEFORE its body is replaced, so
+ *    the stub carries a full `tm_fetch` handle (`pruneOffload`, default on).  A
+ *    failed offload falls back to today's echo note, one message at a time —
+ *    losing a body is data loss, losing an offload is a counter.
  *  - **The threshold is derived, never hard-coded.**  `TM_PRUNE_AT_PERCENT`
  *    (default 70) of `limit.context`, the same denominator the desktop's own
  *    usage meter reads.  No `limit.context` → no prune, counted `no_limit`.
@@ -259,10 +264,12 @@ export interface PruneHandle {
   ref: string
   accessToken: string
   expireAt: number
+  /** Set when the wiring recognised this body and handed back an EXISTING handle. */
+  reused?: boolean
 }
 
 export interface PruneStubInput {
-  kind: "handle" | "child" | "echo"
+  kind: "handle" | "child" | "echo" | "offload"
   originalTokens: number
   handle?: PruneHandle
   childId?: string
@@ -283,6 +290,12 @@ export function renderPruneStub(entry: PruneStubInput): string {
   }
   if (entry.kind === "child" && entry.childId) {
     return `${head} 子代理 ${entry.childId} 的报告已结算（state=${entry.childState ?? "completed"}）；需要原文用 tm_join { ids:["${entry.childId}"] } 取回。`
+  }
+  if (entry.kind === "offload" && entry.handle) {
+    // Deliberately different wording from the tool-result stub above: this body
+    // had NO handle until the prune created one, so "re-run the command" would
+    // be wrong advice — the bytes are in the store, not behind a command.
+    return `${head} 本条消息已卸载：tm_fetch { ref:"${entry.handle.ref}", access_token:"${entry.handle.accessToken}", expire_at:${entry.handle.expireAt} }。原文可回取（TTL 由 blackboardTtlDays 决定），不要重跑。`
   }
   return `${head} 已结算的工具输出/命令回显，正文已裁剪；如需重看请重跑原命令，或从轨迹（tm_stats { recent: N }）取回。`
 }
@@ -391,6 +404,59 @@ export function applyPrunePlan(messages: unknown, plan: PrunePlan): void {
   }
 }
 
+/**
+ * Offload a planned body BEFORE its message is rewritten, so the stub can carry
+ * a real `tm_fetch` handle.  Only `echo` entries are offloaded: a `handle` entry
+ * already points at a payload (offloading it again would duplicate the bytes) and
+ * a `child` entry points at a session (its body lives in the child, not here).
+ *
+ * Failure is BOUNDED and per message: one throw degrades that one stub to today's
+ * echo note and increments a counter — the remaining plan still runs, and the
+ * caller's hook never sees an exception.  `savedTokens` is recomputed afterwards
+ * because a handle stub is longer than an echo note, and a reported saving that
+ * did not happen is exactly the kind of claim this product refuses.
+ */
+async function offloadPlannedBodies(
+  messages: unknown[],
+  plan: PrunePlan,
+  offload: ((text: string) => Promise<PruneHandle | null>) | undefined,
+  onFailure: (row: Record<string, unknown>) => void,
+  report: PruneReport,
+  sessionID: string,
+): Promise<void> {
+  if (!offload || plan.prune.length === 0) return
+  let saved = 0
+  for (const entry of plan.prune) {
+    const text = entry.kind === "echo" ? messageText(messages[entry.index]) : ""
+    if (entry.kind === "echo" && text) {
+      let handle: PruneHandle | null = null
+      let failure: Record<string, unknown> | null = null
+      try {
+        handle = await offload(text)
+        if (!handle || !handle.ref || !handle.accessToken || !Number.isFinite(handle.expireAt)) {
+          failure = { reason: handle ? "invalid" : "empty" }
+        }
+      } catch (err) {
+        failure = { reason: "threw", error: String((err as Error)?.message ?? err).slice(0, 120) }
+      }
+      if (handle && !failure) {
+        entry.kind = "offload"
+        entry.stub = renderPruneStub({ kind: "offload", originalTokens: entry.originalTokens, handle })
+        // A dedupe hit means these bytes are ALREADY in the store — counting it as
+        // a fresh offload would report a saving that was not made, and would make
+        // the card's "上轮修剪" line grow on a replayed request.
+        if (handle.reused) report.reused++
+        else report.offloaded++
+      } else {
+        report.offloadFailed++
+        onFailure({ sessionID, index: entry.index, ...(failure ?? {}) })
+      }
+    }
+    saved += Math.max(0, entry.originalTokens - estimateTokens(entry.stub))
+  }
+  plan.savedTokens = saved
+}
+
 // ---------- the layer ----------
 
 export interface PruneReport {
@@ -406,6 +472,16 @@ export interface PruneReport {
   noMessages: number
   foreignSkipped: number
   threw: number
+  /** Bodies stored in the run store before their message was replaced. */
+  offloaded: number
+  /** Handle reused for a body an earlier request already stored (no second write). */
+  reused: number
+  /** Messages whose offload failed (or returned no handle) → echo stub. */
+  offloadFailed: number
+  /** Requests whose post-prune size still exceeds the budget (counted, never re-pruned). */
+  overBudget: number
+  /** Bodies stored for a request whose plan never landed — payloads with no pointer. */
+  orphans: number
   /** Parts whose `type` we did not recognise — a renamed shape shows up here. */
   unknownParts: number
   lastPercent: number
@@ -420,6 +496,12 @@ export interface PruneInput {
   modelLimitOf?: (sessionID: string, messages: unknown[]) => Promise<number | null> | number | null
   /** Per-decision trajectory line (counters alone are invisible in a CLI run). */
   onEvent?: (row: Record<string, unknown>) => void
+  /**
+   * Store one message body and hand back its handle.  Absent = today's
+   * behaviour (echo stub, body not kept) — the wiring passes it only while
+   * `pruneOffload` is on.
+   */
+  offload?: (text: string) => Promise<PruneHandle | null>
 }
 
 export interface PruneLayer {
@@ -505,6 +587,11 @@ export async function applyV2ContextPrune(ctx: V2Context, input: PruneInput = {}
     noMessages: 0,
     foreignSkipped: 0,
     threw: 0,
+    offloaded: 0,
+    reused: 0,
+    offloadFailed: 0,
+    overBudget: 0,
+    orphans: 0,
     unknownParts: 0,
     lastPercent: 0,
     lastUsed: 0,
@@ -560,20 +647,44 @@ export async function applyV2ContextPrune(ctx: V2Context, input: PruneInput = {}
         const budgetTokens = Math.floor((limit * config.atPercent) / 100)
         const keepTailTokens = Math.floor((limit * config.keepTailPercent) / 100)
         const plan = prunePlan(messages, { budgetTokens, keepTailTokens })
-        applyPrunePlan(messages, plan)
-        report.prunedMessages += plan.prune.length
-        report.prunedTokens += plan.savedTokens
-        report.skippedProtected += plan.protectedCount
-        emit("prune", {
-          sessionID,
-          percent: pct,
-          used,
-          limit,
-          pruned: plan.prune.length,
-          saved: plan.savedTokens,
-          protected: plan.protectedCount,
-          unknown: report.unknownParts,
-        })
+        const freshBefore = report.offloaded
+        await offloadPlannedBodies(messages, plan, input.offload, (row) => emit("prune_offload_failed", row), report, sessionID)
+        try {
+          applyPrunePlan(messages, plan)
+          // A handle stub is longer than the echo note it replaced, so the plan's
+          // own arithmetic can land ABOVE the budget.  Counted, never silently
+          // re-pruned: a second pass would have to offload again to be lossless.
+          const overBudget = messagesTokens(messages) > budgetTokens
+          if (overBudget) report.overBudget++
+          report.prunedMessages += plan.prune.length
+          report.prunedTokens += plan.savedTokens
+          report.skippedProtected += plan.protectedCount
+          emit("prune", {
+            sessionID,
+            percent: pct,
+            used,
+            limit,
+            pruned: plan.prune.length,
+            saved: plan.savedTokens,
+            protected: plan.protectedCount,
+            unknown: report.unknownParts,
+            over_budget: overBudget,
+            reused: report.reused,
+          })
+        } catch (err) {
+          // Bodies stored for THIS request but never pointed at by a message are
+          // orphans: counted, and named on their own trajectory row — a payload
+          // nobody can reach is otherwise invisible until the TTL sweep.
+          // R4: only the FRESH writes of this request count.  A reused handle points
+          // at a payload an earlier request already stored, so calling it an orphan
+          // would invent garbage — and deleting nothing would be the fix anyway.
+          const freshThisRequest = Math.max(0, report.offloaded - freshBefore)
+          if (freshThisRequest > 0) {
+            report.orphans += freshThisRequest
+            emit("prune_offload_failed", { sessionID, reason: "orphaned", orphan: freshThisRequest })
+          }
+          throw err
+        }
       } catch (err) {
         report.threw++
         emit("threw", { error: String((err as Error)?.message ?? err).slice(0, 120) })

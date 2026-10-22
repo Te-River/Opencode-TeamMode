@@ -28,6 +28,9 @@
  * the v2-worded refusal set below.
  */
 
+import { createHash } from "node:crypto"
+
+import { isExpired } from "../tm/refs.js"
 import { agents } from "../agents.js"
 import { normalizeAgentName } from "../identity.js"
 import { DEFAULT_TTL_DAYS, resolveTtlMs, startBlackboardMaintenance } from "../blackboard.js"
@@ -52,6 +55,7 @@ import { applyV2SessionLayer, removalPlan, resolveSplitConfig } from "./v2-sessi
 import { applyV2RetryGovernor, createRetryGovernor, resolveRetryConfig, roleOfSession, sessionIDOf } from "./v2-retry.js"
 import type { RedriveRequest } from "./v2-retry.js"
 import { applyV2ContextPrune, resolvePruneConfig } from "./v2-prune.js"
+import { applyV2StateCard } from "./v2-state.js"
 import { checkDefaultAgentRole, globalConfigDir, type DefaultAgentCheck } from "./v2-default-agent.js"
 import { createStorageLedgerStore } from "../tm/ledger.js"
 import { createTeamScope } from "./v2-scope.js"
@@ -194,6 +198,10 @@ export const v2Personality: V2Plugin = {
     // code reads. `session.children` has no counterpart, so adoption from the host's
     // tree keeps reporting `no_seam` rather than implying we looked.
     const sessionReader = createV2SessionReader(ctx)
+    // ONE store instance for the whole personality: `tm_ledger` writes through
+    // it and the request-side state card reads through the SAME object, so the
+    // card can never report a list the tool would not.
+    const ledgerStore = createStorageLedgerStore((ctx as { storage?: unknown }).storage)
     const tmRuntime = await createTmTools(
       { directory, project: "", client: sessionReader.client, $: undefined } as unknown as PluginInput,
       {
@@ -215,7 +223,7 @@ export const v2Personality: V2Plugin = {
         // `tm_join`'s goal tripwire checks THAT — see src/tm/ledger.ts.  When the
         // domain is missing the tool refuses with the reason rather than keeping
         // the list in process memory and calling it recorded.
-        ledgerStore: createStorageLedgerStore((ctx as { storage?: unknown }).storage),
+        ledgerStore,
         sessionReaderReport: () => sessionReader.report,
       },
     )
@@ -735,7 +743,10 @@ export const v2Personality: V2Plugin = {
     // product is built to refuse.
     const ttlMs = resolveTtlMs(options as never)
     const ttlDays = Math.round(ttlMs / (24 * 60 * 60 * 1000)) || DEFAULT_TTL_DAYS
-    const note = blackboardNote(startBlackboardMaintenance(directory, ttlMs), ttlDays)
+    // The board root is resolved ONCE here: the note advertises it to the lead and
+    // the state card repeats it, so a second `teamRootFor` call could only drift.
+    const boardRoot = startBlackboardMaintenance(directory, ttlMs)
+    const note = blackboardNote(boardRoot, ttlDays)
     const plan = removalPlan(agents as unknown as Record<string, { permission?: Record<string, unknown> }>)
     // ---------- does ctx.storage actually round-trip? ----------
     // The LEDGER needs somewhere to live and `ctx.storage` is the candidate; the
@@ -825,12 +836,73 @@ export const v2Personality: V2Plugin = {
     // its window.  Registered AFTER the session layer so its `context` hook runs
     // on the same assembled request, and it never touches a message outside its
     // plan (the newest message and every hard-protected one stay byte-exact).
+    // 内容级去重 (M2)：宿主每次请求都从历史重建消息数组，消息内的 sentinel 只
+    // 挡得住同一份数组被重放，挡不住「同一段正文再离载一次」——实测两次请求 =
+    // 两份载荷、两个 stepId。这里按 sha256(正文) 记住首次签发的句柄：命中直接
+    // 复用（不取新步号、不重复落盘），500 条 FIFO 淘汰，进程级（载荷在磁盘上，
+    // 这里记住的只是一个地址）。
+    const pruneHandles = new Map<string, { ref: string; accessToken: string; expireAt: number }>()
+    const PRUNE_HANDLE_CACHE_MAX = 500
+    const offloadPrunedBody = async (text: string) => {
+      const key = createHash("sha256").update(text, "utf8").digest("hex")
+      const hit = pruneHandles.get(key)
+      // R1: 命中也得确认句柄还活着。载荷被 TTL 清扫后复用，桩就指向一份不存在的
+      // 原文——那是过度声明，比多落一次盘糟得多。过期即丢弃、重新离载。
+      if (hit && !isExpired(hit.expireAt)) return { ...hit, reused: true }
+      if (hit) pruneHandles.delete(key)
+      // 此处不得引入 await：get→set 必须在同一微任务内完成，否则并发请求会各写一份。
+      const stepId = tmRuntime.pipelines.nextStepId()
+      // 共享管线 + alwaysOffload：预览/句柄/落盘路径原样复用，只跳过阈值判定。
+      const g = tmRuntime.pipelines.govern(stepId, "prune:message", text, {
+        contentType: "text",
+        alwaysOffload: true,
+      }) as any
+      if (!g || !g.offloaded) return null
+      const handle = { ref: g.ref, accessToken: g.access_token, expireAt: g.expire_at }
+      pruneHandles.set(key, handle)
+      if (pruneHandles.size > PRUNE_HANDLE_CACHE_MAX) {
+        const oldest = pruneHandles.keys().next().value
+        if (oldest !== undefined) pruneHandles.delete(oldest)
+      }
+      return handle
+    }
     const prune = await applyV2ContextPrune(ctx, {
       config: resolvePruneConfig(cfg),
       scope,
+      // 修剪前先离载：被剪的消息体先落 run store，stub 里带完整 tm_fetch 句柄，
+      // 否则「裁剪」就是永久删正文。pruneOffload:"off" 时整段不挂载，行为与
+      // 改动前逐字节一致。
+      offload: cfg.pruneOffload !== "off" ? offloadPrunedBody : undefined,
       onEvent: (row) => {
         try {
           tmRuntime.pipelines.store.appendTrajectory({ tool: "host", step_id: "v2-prune", event: "prune", api: 2, ...row })
+        } catch {
+          /* a diagnostic that cannot be written never breaks the request it describes */
+        }
+      },
+    })
+    // 任务状态卡: the LEAD's request carries its own state — ledger totals,
+    // running children and the board root — as ONE ≤300-token system entry that a
+    // hash gate leaves byte-exact while nothing changes, and replaces in place
+    // when something does.  It reads the SAME `LedgerStore` instance `tm_ledger`
+    // writes through, and it registers after the session layer so the board note
+    // is already on the request.
+    const stateCard = await applyV2StateCard(ctx, {
+      enabled: cfg.stateCard !== "off",
+      boardRoot,
+      scope,
+      loadLedger: (sid) => ledgerStore.load(sid),
+      children: () => tmRuntime.hostChildren(),
+      // The prune layer keeps a CUMULATIVE count; the card renders the delta since
+      // its own previous card, because "上轮" is the only span that means anything.
+      // M1: only bodies that really WENT to the store are "已卸载（tm_fetch 可取回）"
+      // — a pruned message with an echo stub (offload off / failed) and a child
+      // report (recovered via tm_join) are different things, so counting
+      // prunedMessages here overstated what the card promised.
+      pruneCount: () => prune.report.offloaded,
+      onEvent: (row) => {
+        try {
+          tmRuntime.pipelines.store.appendTrajectory({ tool: "host", step_id: "v2-state", api: 2, ...row })
         } catch {
           /* a diagnostic that cannot be written never breaks the request it describes */
         }
@@ -886,6 +958,7 @@ export const v2Personality: V2Plugin = {
       })
     registrations.push(...session.registrations)
     registrations.push(...prune.registrations)
+    registrations.push(...stateCard.registrations)
     if (!session.registrations.length) {
       notes.push("ctx.session.hook 不存在：工具面裁剪、温度、黑板根目录三项请求层治理都没装上")
     }
@@ -993,6 +1066,22 @@ export const v2Personality: V2Plugin = {
       prune_foreign_skipped: prune.report.foreignSkipped,
       prune_threw: prune.report.threw,
       prune_last_percent: prune.report.lastPercent,
+      // #49 无损修剪：修剪前离载成功 / 复用已有句柄 / 失败（退回纯注记）的条数。
+      prune_offloaded: prune.report.offloaded,
+      prune_reused: prune.report.reused,
+      prune_offload_failed: prune.report.offloadFailed,
+      // 任务状态卡 — one entry per lead request, and every outcome is its own
+      // number: injected / replaced / unchanged / empty / skipped never collapse
+      // into one silent count.
+      state_card_injected: stateCard.report.injected,
+      state_card_replaced: stateCard.report.replaced,
+      state_card_unchanged: stateCard.report.unchanged,
+      state_card_empty: stateCard.report.empty,
+      state_card_skipped: stateCard.report.skipped,
+      state_card_cleared: stateCard.report.cleared,
+      state_card_agent_skipped: stateCard.report.agentSkipped,
+      state_card_foreign_skipped: stateCard.report.foreignSkipped,
+      state_card_threw: stateCard.report.threw,
       // #49 feature 3: 错峰重试 — recognition counts, breaker trips, cooldown
       // denials and the last computed wait, so "we backed off" is a number.
       retry_enabled: retry.report.enabled,
@@ -1194,6 +1283,23 @@ export const v2Personality: V2Plugin = {
           prune_foreign_skipped: prune.report.foreignSkipped,
           prune_threw: prune.report.threw,
           prune_last_percent: prune.report.lastPercent,
+          // #49 无损修剪：与 surface 行同一口径（两处必须一致）——
+          // 修剪前离载成功 / 复用已有句柄 / 失败（退回纯注记）的条数。
+          prune_offloaded: prune.report.offloaded,
+          prune_reused: prune.report.reused,
+          prune_offload_failed: prune.report.offloadFailed,
+          state_card_injected: stateCard.report.injected,
+          state_card_replaced: stateCard.report.replaced,
+          state_card_unchanged: stateCard.report.unchanged,
+          state_card_empty: stateCard.report.empty,
+          state_card_skipped: stateCard.report.skipped,
+          state_card_cleared: stateCard.report.cleared,
+          // 计数口径以 `observationCounters` 为准：下面那一行是 boot 专属的，
+          // 而这里漏过一个字段时，展开会把它补上、值看起来仍然对——两处必然
+          // 漂移，所以本块只保留 boot 记录需要的字段并显式补齐同名字段。
+          state_card_agent_skipped: stateCard.report.agentSkipped,
+          state_card_foreign_skipped: stateCard.report.foreignSkipped,
+          state_card_threw: stateCard.report.threw,
           // #49 feature 3: 错峰重试 — the same counter set as the surface row.
           retry_enabled: retry.report.enabled,
           retry_quota_seen: retry.report.quotaSeen,

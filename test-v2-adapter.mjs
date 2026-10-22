@@ -4205,6 +4205,588 @@ console.log("33. the v2 personality's configDefaults sit BELOW the file layers (
 }
 console.log("   OK (the wildcard default is wired; the merge order keeps a user-edited file in charge)")
 
+console.log("34. 任务状态卡 — 请求侧 JIT 状态注入：一条 ≤300 token 的 system 条目，hash 门控原地替换")
+{
+  const { STATE_CARD_MARKER, STATE_CARD_MAX_TOKENS, STATE_CARD_BOARD_CHARS, renderStateCard, applyV2StateCard } = await import("./dist/host/v2-state.js")
+  const { estimateTokens } = await import("./dist/tm/config.js")
+  const { createTeamScope } = await import("./dist/host/v2-scope.js")
+
+  const rowsOf = (root) =>
+    fs
+      .readdirSync(path.join(root, "runs"))
+      .flatMap((run) =>
+        fs
+          .readFileSync(path.join(root, "runs", run, "steps.jsonl"), "utf8")
+          .split(/\r?\n/)
+          .filter(Boolean)
+          .map((l) => {
+            try {
+              return JSON.parse(l)
+            } catch {
+              return null
+            }
+          })
+          .filter(Boolean),
+      )
+
+  const tj1 = mktmp("state-card")
+  writeCfg({ trajectoryDir: tj1 })
+  const w = makeFakeCtx({ directory: workspace("state-card"), agents: sixAgents })
+  const boot = await withCapturedConsole(() => plugin.setup(w.ctx))
+  const SID = "ses_state_lead"
+  const KEY = `team-mode/ledger/${SID}`
+  // The ledger lives in the fake `ctx.storage` — the SAME domain tm_ledger writes
+  // through, so this drives the real reader (`createStorageLedgerStore.load`).
+  const seedLedger = (items) =>
+    w.ctx.storage._map.set(KEY, { sessionID: SID, items, updated: Date.now() })
+  const isCard = (p) => String(p?.text ?? "").startsWith(STATE_CARD_MARKER)
+  const req = () => ({ agent: "team", sessionID: SID, system: [], messages: [], options: {}, tools: {} })
+  const fire = (e) => w.hook("session.context").fire(e)
+
+  seedLedger([
+    { id: 31, text: "把 v2 状态卡接到请求层，并让 v2-adapter 套件把三条验收钉死", status: "doing", at: 1 },
+    { id: 29, text: "等用户批准 stateCard 配置键", status: "blocked", at: 2 },
+  ])
+  // A running child, registered the way the host reports one: an ack carrying
+  // `metadata.sessionID` — so `tmRuntime.hostChildren()` (the card's real source)
+  // has something to report.
+  const childCall = { tool: "subagent", sessionID: SID, agent: "team", id: "call_1", input: { agent: "implementer", description: "实现状态卡", background: true } }
+  await w.hook("tool.execute.before").fire(childCall)
+  await w.hook("tool.execute.after").fire({
+    tool: "subagent",
+    sessionID: SID,
+    agent: "team",
+    id: "call_1",
+    result: { metadata: { sessionID: "ses_ab12cd", status: "running" }, content: [{ type: "text", text: "The subagent is working in the background (sessionID: ses_ab12cd)." }] },
+  })
+
+  // ① exactly ONE card, carrying the list, the child and the board — ≤300 tokens.
+  const r1 = req()
+  await fire(r1)
+  const cards = r1.system.filter(isCard)
+  assert.equal(cards.length, 1, "lead 的请求恰好携带 1 条状态卡")
+  const card = cards[0].text
+  assert.match(card, /^\[Team 状态卡\]\nhash:[0-9a-f]{16}\n/, "卡片 = marker + 16 位 hex + 正文")
+  assert.ok(card.includes("账本（进行 1 / 阻塞 1 / 待办 0）："), `计数来自完整账本：${card}`)
+  assert.ok(card.includes("#31 [doing] 把 v2 状态卡接到请求层"), "进行中的项在卡上")
+  assert.ok(card.includes("#29 [blocked]") && card.includes("（等批准）"), "阻塞项带着「等批准」的提示")
+  assert.match(card, /运行子代理（1）：ses_ab12cd implementer/, "运行中的子代理（id + 角色）在卡上")
+  assert.ok(card.includes("看板："), "看板根在卡上")
+  assert.ok(!card.includes("上轮修剪"), "没有修剪数据时整行省略")
+  assert.ok(estimateTokens(card) <= STATE_CARD_MAX_TOKENS, `卡片 ${estimateTokens(card)} token ≤ ${STATE_CARD_MAX_TOKENS}`)
+  const snapshot = JSON.stringify(r1.system)
+
+  // ② same state → byte-exact, on a replayed hook AND on a freshly assembled request.
+  await fire(r1)
+  assert.equal(JSON.stringify(r1.system), snapshot, "同一状态再组装：system 逐字节不变（hash 门控，一个字节都没写）")
+  const r2 = req()
+  await fire(r2)
+  assert.equal(JSON.stringify(r2.system), snapshot, "新组装的请求也是同一串字节")
+
+  // ③ a changed state replaces the SAME slot — the array does not grow.
+  const idx = r1.system.findIndex(isCard)
+  seedLedger([
+    { id: 31, text: "把 v2 状态卡接到请求层，并让 v2-adapter 套件把三条验收钉死", status: "doing", at: 1 },
+    { id: 29, text: "等用户批准 stateCard 配置键", status: "blocked", at: 2 },
+    { id: 33, text: "新增一条：补边界测试", status: "open", at: 3 },
+  ])
+  await fire(r1)
+  assert.equal(r1.system.length, JSON.parse(snapshot).length, "数组长度不变")
+  assert.equal(r1.system.filter(isCard).length, 1, "marker 条目仍是 1 条")
+  assert.equal(r1.system.findIndex(isCard), idx, "替换的是同一个位置上的那一条")
+  assert.ok(r1.system[idx].text.includes("#33 [open] 新增一条"), "新账本项出现在同一条卡片里")
+  assert.notEqual(r1.system[idx].text, card, "而且真的换了内容")
+  const afterReplace = JSON.stringify(r1.system)
+  await fire(r1)
+  assert.equal(JSON.stringify(r1.system), afterReplace, "替换之后再同状态组装又是逐字节不变")
+
+  // ④ an empty state is NOT a card (and it does not suppress the board note).
+  const tj2 = mktmp("state-card-empty")
+  writeCfg({ trajectoryDir: tj2 })
+  const e2 = makeFakeCtx({ directory: workspace("state-card-empty"), agents: sixAgents })
+  const boot2 = await withCapturedConsole(() => plugin.setup(e2.ctx))
+  e2.ctx.storage._map.set("team-mode/ledger/ses_empty", { sessionID: "ses_empty", items: [{ id: 1, text: "已经收口的一项", status: "done", at: 1 }], updated: 1 })
+  const emptyReq = { agent: "team", sessionID: "ses_empty", system: [], messages: [], options: {}, tools: {} }
+  await e2.hook("session.context").fire(emptyReq)
+  assert.equal(emptyReq.system.filter(isCard).length, 0, "账本 0 项且 0 个运行子代理 → 整卡省略")
+  assert.ok(emptyReq.system.some((p) => String(p?.text ?? "").includes("## Team Blackboard")), "…但黑板注记照旧（这一层没有碰别人的注入）")
+  await boot2.value()
+
+  // ⑤ a non-Team agent gets nothing.
+  const archReq = { agent: "architect", sessionID: SID, system: [], messages: [], options: {}, tools: {} }
+  await fire(archReq)
+  assert.equal(archReq.system.filter(isCard).length, 0, "非 Team agent 不注入")
+
+  // ⑥ a storage read that THROWS: nothing injected, ONE `state_skipped` row per session.
+  const storage = w.ctx.storage
+  const realGet = storage.get
+  storage.get = async () => {
+    throw new Error("boom")
+  }
+  const bad1 = req()
+  await fire(bad1)
+  const bad2 = req()
+  await fire(bad2)
+  storage.get = realGet
+  assert.equal(bad1.system.filter(isCard).length, 0, "读账本抛错 → 不注入")
+  assert.equal(bad2.system.filter(isCard).length, 0, "再抛一次也不注入")
+  await boot.value()
+  const rows1 = rowsOf(tj1)
+  const skippedRows = rows1.filter((r) => r.step_id === "v2-state" && r.event === "state_skipped")
+  assert.equal(skippedRows.length, 1, "每会话只记一条 state_skipped（两次失败不刷屏）")
+  assert.match(String(skippedRows[0].why), /boom/, "轨迹行带着失败原因")
+  const shutdown = rows1.find((r) => r.step_id === "v2-shutdown")
+  assert.ok(shutdown, "shutdown 行照旧写出")
+  assert.ok(shutdown.state_card_injected >= 1, "surface/shutdown 行带 state_card_injected 计数")
+  assert.ok(shutdown.state_card_replaced >= 1, "原地替换也计数")
+  assert.ok(shutdown.state_card_unchanged >= 1, "hash 命中（什么都没写）也计数")
+  assert.ok(shutdown.state_card_agent_skipped >= 1, "非 Team 的跳过是数字，不是沉默")
+  assert.ok(shutdown.state_card_skipped >= 1, "读取失败也计数")
+  assert.equal(shutdown.state_card_threw, 0, "hook 内部没有抛错（抛错永不外溢）")
+
+  // ⑦ `stateCard: "off"`: byte-identical to the build before this layer — it does not register.
+  const tj4 = mktmp("state-card-off")
+  writeCfg({ trajectoryDir: tj4, stateCard: "off" })
+  const o = makeFakeCtx({ directory: workspace("state-card-off"), agents: sixAgents })
+  const bootOff = await withCapturedConsole(() => plugin.setup(o.ctx))
+  o.ctx.storage._map.set(KEY, { sessionID: SID, items: [{ id: 31, text: "有进行项也不该出现", status: "doing", at: 1 }], updated: 1 })
+  const offReq = { agent: "team", sessionID: SID, system: [], messages: [], options: {}, tools: {} }
+  await o.hook("session.context").fire(offReq)
+  assert.equal(offReq.system.filter(isCard).length, 0, "off = 不注入")
+  assert.equal(
+    o.hook("session.context").handlers.length + 1,
+    w.hook("session.context").handlers.length,
+    "off 比 on 恰好少一个 session.context handler —— 层根本没注册",
+  )
+  await bootOff.value()
+  const rows4 = rowsOf(tj4)
+  assert.equal(rows4.filter((r) => r.step_id === "v2-state").length, 0, "off 时不写 v2-state 轨迹行")
+
+  // The off/on handler difference, stated as its own assertion rather than assumed.
+  writeCfg({ trajectoryDir: mktmp("state-card-on-again") })
+  const onAgain = makeFakeCtx({ directory: workspace("state-card-on-again"), agents: sixAgents })
+  const bootOn = await withCapturedConsole(() => plugin.setup(onAgain.ctx))
+  assert.equal(
+    onAgain.hook("session.context").handlers.length,
+    o.hook("session.context").handlers.length + 1,
+    "on 比 off 恰好多一个 session.context handler —— 这就是「层不注册」的可测形式",
+  )
+  await bootOn.value()
+  clearCfg()
+
+  // ⑧ the layer's two gates that the wired personality cannot reach are pinned
+  //    DIRECTLY (same precedent as tm_ledger's runtime onlyAgent gate): a scope
+  //    that does not own `team` must leave the request byte-exact…
+  const fu = makeFakeCtx({ directory: workspace("state-card-scope"), agents: sixAgents })
+  const layer = await applyV2StateCard(fu.ctx, {
+    boardRoot: "/board",
+    scope: createTeamScope(["researcher"]),
+    loadLedger: async () => ({ sessionID: "s", items: [{ id: 1, text: "x", status: "doing", at: 1 }], updated: 1 }),
+    children: () => [],
+  })
+  const foreignReq = { agent: "team", sessionID: "s", system: [] }
+  await fu.hook("session.context").fire(foreignReq)
+  assert.equal(foreignReq.system.length, 0, "scope 判定非 ours 的会话不注入、一个字节都不动")
+  assert.equal(layer.report.foreignSkipped, 1, "而且跳过被计数（不是静默）")
+  // …and `stateCard: "off"` through the layer API registers nothing at all.
+  const layerOff = await applyV2StateCard(fu.ctx, {
+    enabled: false,
+    boardRoot: "/board",
+    loadLedger: async () => null,
+    children: () => [],
+  })
+  assert.equal(layerOff.registrations.length, 0, "enabled:false 时层不注册")
+  assert.equal(layerOff.report.enabled, false, "report 也如实说它没开")
+  for (const r of layer.registrations) await r.dispose()
+
+  // ⑨ the render cap trims from the OLDEST item, and an empty state is null.
+  const many = Array.from({ length: 40 }, (_, i) => ({ id: i + 1, text: "很长的一项".repeat(30), status: "open", at: i }))
+  const big = renderStateCard({ ledger: { sessionID: "s", items: many, updated: 1 }, children: [], boardRoot: "/board" })
+  assert.ok(estimateTokens(big) <= STATE_CARD_MAX_TOKENS, `40 条长项也压到 ${estimateTokens(big)} token ≤ ${STATE_CARD_MAX_TOKENS}`)
+  assert.ok(big.includes("#40 [open]"), "最新的一项活下来")
+  assert.ok(!big.includes("#1 [open]"), "裁剪从最旧的一项开始")
+  assert.equal(renderStateCard({ ledger: null, children: [], boardRoot: "/board" }), null, "空状态 = null（不注入）")
+
+  // ⑩ m5：没有 sessionID 时绝不列「运行中子代理」——那是别人的会话。
+  const runningKid = { sessionID: "ses_other_kid", parentSessionID: "ses_other_parent", agent: "implementer", state: "running" }
+  const noSidCard = renderStateCard({
+    ledger: { sessionID: "s", items: [{ id: 1, text: "只有账本项", status: "doing", at: 1 }], updated: 1 },
+    children: [runningKid],
+    boardRoot: "/board",
+  })
+  assert.ok(noSidCard && noSidCard.includes("#1 [doing]"), "没有 sessionID 的账本项照样出卡")
+  assert.ok(!noSidCard.includes("运行子代理"), "…但 children 行整行省略（m5：不猜归属）")
+  const ownedCard = renderStateCard({
+    ledger: { sessionID: "s", items: [{ id: 1, text: "只有账本项", status: "doing", at: 1 }], updated: 1 },
+    children: [runningKid],
+    boardRoot: "/board",
+    sessionID: "ses_other_parent",
+  })
+  assert.ok(ownedCard.includes("ses_other"), "有 sessionID 且 parent 匹配时照样列出来")
+  const fe = makeFakeCtx({ directory: workspace("state-card-nosid"), agents: sixAgents })
+  const layerE = await applyV2StateCard(fe.ctx, {
+    boardRoot: "/board",
+    loadLedger: async () => ({ sessionID: "", items: [{ id: 1, text: "只有账本项", status: "doing", at: 1 }], updated: 1 }),
+    children: () => [runningKid],
+  })
+  const emptySidReq = { agent: "team", sessionID: "", system: [] }
+  await fe.hook("session.context").fire(emptySidReq)
+  const emptySidCards = emptySidReq.system.filter(isCard)
+  assert.equal(emptySidCards.length, 1, "空 sessionID 也注入了账本卡")
+  assert.ok(!emptySidCards[0].text.includes("运行子代理"), "…而卡里没有别人的子代理（m5 的人格级回归）")
+  for (const r of layerE.registrations) await r.dispose()
+
+  // ⑪ m6：超长 boardRoot + 多个子代理仍 ≤300 token，看板行被 shorten、计数仍是真值。
+  const longBoard = "/" + "very-long-workspace-name-with-lots-of-segments/".repeat(12)
+  assert.ok(longBoard.length > 300, `构造的看板根确实超长（${longBoard.length} 字符）`)
+  const boardCard = renderStateCard({
+    ledger: { sessionID: "s", items: [{ id: 1, text: "一项", status: "doing", at: 1 }], updated: 1 },
+    children: Array.from({ length: 8 }, (_, i) => ({ sessionID: `ses_kid${i}00`, parentSessionID: "s", agent: "implementer", state: "running" })),
+    boardRoot: longBoard,
+    sessionID: "s",
+  })
+  assert.ok(estimateTokens(boardCard) <= STATE_CARD_MAX_TOKENS, `超长看板根 + 8 个子代理仍压到 ${estimateTokens(boardCard)} token ≤ ${STATE_CARD_MAX_TOKENS}`)
+  const boardLine = boardCard.split("\n").find((l) => l.startsWith("看板："))
+  assert.ok(boardLine.length <= "看板：".length + STATE_CARD_BOARD_CHARS + 1, "看板根被 shorten 到字符上限（m6）")
+  assert.ok(boardCard.includes("运行子代理（8"), "children 行的计数保留真实总数（m6）")
+
+  // ⑫ M1：`pruneOffload:"off"` 时卡上不许出现「已卸载」——那时正文并没有离载。
+  const tjOff = mktmp("state-card-prune-off")
+  writeCfg({
+    trajectoryDir: path.join(tjOff, "tj"),
+    blackboardDir: path.join(tjOff, "board"),
+    pruneKeepTailPercent: 0,
+    pruneOffload: "off",
+  })
+  const CATsmall = [{ id: "glm", providerID: "lxns", modelID: "glm", limit: { context: 1000, output: 100 } }]
+  const pOff = makeFakeCtx({ directory: workspace("state-card-prune-off"), agents: sixAgents, models: CATsmall })
+  const bootPOff = await withCapturedConsole(() => plugin.setup(pOff.ctx))
+  pOff.ctx.storage._map.set("team-mode/ledger/ses_card_off", {
+    sessionID: "ses_card_off",
+    items: [{ id: 7, text: "一个进行项", status: "doing", at: 1 }],
+    updated: 1,
+  })
+  const bigMsg = { role: "assistant", model: { providerID: "lxns", id: "glm" }, parts: [{ type: "text", text: "旧回显：" + "y".repeat(6000) }] }
+  const offReq2 = {
+    agent: "team",
+    sessionID: "ses_card_off",
+    system: [],
+    messages: [bigMsg, { role: "user", parts: [{ type: "text", text: "tail" }] }],
+    options: {},
+    tools: {},
+  }
+  await pOff.hook("session.context").fire(offReq2)
+  assert.ok(bigMsg.parts[0].text.includes("已裁剪"), "这一轮确实剪了消息（否则这条断言测不到东西）")
+  assert.ok(!bigMsg.parts[0].text.includes("本条消息已卸载"), "…而且走的是 echo 桩（没有离载）")
+  const offCards = offReq2.system.filter(isCard)
+  assert.equal(offCards.length, 1, "卡照旧注入")
+  assert.ok(!offCards[0].text.includes("已卸载"), "M1：没有任何离载的轮次，卡上不许说「已卸载」")
+  await bootPOff.value()
+
+  // ⑬ n8：shutdown 的内联字面量显式带 state_card_agent_skipped（漏了会被
+  //    observationCounters 展开悄悄补上，两处必然漂移）。
+  const v2srcState = fs.readFileSync(path.join(path.dirname(fileURLToPath(import.meta.url)), "src", "host", "v2.ts"), "utf8")
+  const shStart = v2srcState.indexOf('step_id: "v2-shutdown"')
+  const shEnd = v2srcState.indexOf('...observationCounters("shutdown")', shStart)
+  const shutdownBlock = v2srcState.slice(shStart, shEnd)
+  assert.ok(
+    /state_card_agent_skipped: stateCard\.report\.agentSkipped/.test(shutdownBlock),
+    "v2-shutdown 的内联字面量显式带 state_card_agent_skipped（n8）",
+  )
+  assert.ok(
+    /state_card_cleared: stateCard\.report\.cleared/.test(shutdownBlock),
+    "v2-shutdown 的内联字面量显式带 state_card_cleared（R2）",
+  )
+
+  // ⑭ R2：状态清空后旧卡必须被摘掉（宿主会跨请求保留 event.system）。
+  let ledgerNow = { sessionID: "ses_clear", items: [{ id: 1, text: "先有一项", status: "doing", at: 1 }], updated: 1 }
+  const fc = makeFakeCtx({ directory: workspace("state-card-clear"), agents: sixAgents })
+  const layerC = await applyV2StateCard(fc.ctx, {
+    boardRoot: "/board",
+    loadLedger: async () => ledgerNow,
+    children: () => [],
+  })
+  const sysC = []
+  const clearReq = { agent: "team", sessionID: "ses_clear", system: sysC }
+  await fc.hook("session.context").fire(clearReq)
+  assert.equal(sysC.filter(isCard).length, 1, "先注入一张卡")
+  ledgerNow = { sessionID: "ses_clear", items: [{ id: 1, text: "已经收口", status: "done", at: 1 }], updated: 2 }
+  await fc.hook("session.context").fire(clearReq)
+  assert.equal(sysC.filter(isCard).length, 0, "账本清空后旧卡被摘掉（R2：不留高估形态）")
+  assert.equal(layerC.report.cleared, 1, "…并计入 cleared")
+  assert.equal(layerC.report.empty, 0, "empty 只计「本来就没有卡」")
+  await fc.hook("session.context").fire(clearReq)
+  assert.equal(layerC.report.empty, 1, "没有卡可摘时才计 empty")
+  assert.equal(layerC.report.cleared, 1, "cleared 不再增长")
+  for (const r of layerC.registrations) await r.dispose()
+}
+console.log("   OK (one ≤300-token card with a 16-hex hash gate: same state byte-exact, a change replaces the same slot, empty state omitted, a failed read counted once, off = not registered)")
+
+
+console.log("35. 无损修剪 — 修剪前先离载，stub 带完整 tm_fetch 句柄（#49）")
+{
+  const { renderPruneStub, applyV2ContextPrune } = await import("./dist/host/v2-prune.js")
+  const { resolveConfig, estimateTokens } = await import("./dist/tm/config.js")
+  const { CONFIG_KEYS } = await import("./dist/tm/config-layers.js")
+
+  // ---- the key, and the registry it lives in ----
+  assert.equal(resolveConfig({}).pruneOffload, "on", "默认 on：无损修剪是默认行为")
+  assert.equal(resolveConfig({ pruneOffload: "off" }).pruneOffload, "off", "显式 off 生效")
+  assert.equal(resolveConfig({ pruneOffload: "maybe" }).pruneOffload, "on", "无效值回落默认（不是静默关掉）")
+  const offloadSpec = CONFIG_KEYS.find((k) => k.key === "pruneOffload")
+  assert.ok(offloadSpec && offloadSpec.type === "string" && offloadSpec.default === "on" && offloadSpec.enum.includes("off"), "pruneOffload 是 on/off 字符串键")
+  assert.equal(CONFIG_KEYS.length, 62, "注册表 62 条（61 + pruneOffload）")
+
+  const CAT = [{ id: "glm", providerID: "lxns", modelID: "glm", limit: { context: 1000, output: 100 } }]
+  const mat = (text, role = "assistant") => ({ role, model: { providerID: "lxns", id: "glm" }, parts: [{ type: "text", text }] })
+  const BODY = "旧命令回显：" + "y".repeat(2000) + "NEEDLE-END-PRUNE" + "y".repeat(2000)
+  const scopeStub = { decide: (e) => (e && e.agent === "team" ? "ours" : "foreign"), count: (v) => v, learn: () => {} }
+
+  const tjRows = (root) => {
+    const runs = path.join(root, "runs")
+    if (!fs.existsSync(runs)) return []
+    return fs
+      .readdirSync(runs)
+      .flatMap((run) => {
+        const file = path.join(runs, run, "steps.jsonl")
+        if (!fs.existsSync(file)) return []
+        return fs
+          .readFileSync(file, "utf8")
+          .split(/\r?\n/)
+          .filter(Boolean)
+          .map((l) => {
+            try {
+              return JSON.parse(l)
+            } catch {
+              return null
+            }
+          })
+          .filter(Boolean)
+      })
+  }
+
+  // ---- (a) 端到端：真实人格 + 真实 run store；载荷逐字节可取回 ----
+  const rootA = mktmp("prune-offload")
+  const boardA = path.join(rootA, "board")
+  writeCfg({ blackboardDir: boardA, trajectoryDir: path.join(rootA, "tj"), pruneKeepTailPercent: 0 })
+  const fA = makeFakeCtx({ directory: workspace("prune-offload-ws"), agents: sixAgents, models: CAT })
+  const bootA = await withCapturedConsole(() => plugin.setup(fA.ctx))
+  const byA = Object.fromEntries(fA.tools.list().map((t) => [t.id ?? t.name, t]))
+  const msgA = [mat(BODY), mat("tail", "user")]
+  await fA.hook("session.context").fire({ agent: "team", sessionID: "ses_prune_off", system: [], messages: msgA, tools: {} })
+  const stubA = msgA[0].parts[0].text
+  assert.ok(stubA.includes("本条消息已卸载"), `被剪的消息体先离载，stub 说明这一点：${stubA}`)
+  const hm = /ref\s*:\s*"([^"]+)"[\s\S]*?access_token\s*:\s*"([^"]+)"[\s\S]*?expire_at\s*:\s*(\d+)/.exec(stubA)
+  assert.ok(hm, "stub 带完整 handle（ref + access_token + expire_at）")
+  const refA = hm[1]
+  assert.match(refA, /^tm:\/\/runs\/[^/]+\/steps\/[^/]+\/result$/, "ref 是合法 tm_fetch 句柄")
+  assert.ok(Number(hm[3]) > Date.now(), "expire_at 在未来")
+  const [, runIdA, stepIdA] = /^tm:\/\/runs\/([^/]+)\/steps\/([^/]+)\/result$/.exec(refA)
+  const idxA = fs
+    .readFileSync(path.join(boardA, "runs", runIdA, "index.jsonl"), "utf8")
+    .split(/\r?\n/)
+    .filter(Boolean)
+    .map((l) => JSON.parse(l))
+    .filter((e) => e.ref === refA)
+  assert.equal(idxA.length, 1, "run store 的索引里这个句柄只有一条")
+  assert.equal(idxA[0].step_id, stepIdA, "索引的 step_id 与 ref 一致")
+  // index `file` is `<stepId>/<name>` relative to the run's `steps/` root.
+  const payloadA = fs.readFileSync(path.join(boardA, "runs", runIdA, "steps", idxA[0].file), "utf8")
+  assert.equal(payloadA, BODY, "载荷文件与原文逐字节相同")
+  // retrieval through the REAL registered tm_fetch: it re-derives the token
+  // against the run store's persisted HMAC key, so a passing fetch IS the
+  // ref+token verification (the alternative `verifyToken` probe would need the
+  // handle-key path this test has no reason to know).
+  const fetched = textOf(await byA.tm_fetch.execute({ ref: refA, access_token: hm[2] }, CTX))
+  assert.ok(fetched.includes("NEEDLE-END-PRUNE"), `已注册的 tm_fetch 用同一句柄取回原文：${fetched.slice(0, 120)}`)
+  assert.ok(!/校验失败|找不到载荷/.test(fetched), "取回过程没有校验失败")
+  assert.equal(msgA[1].parts[0].text, "tail", "尾部消息逐字节不变")
+
+  // ---- (a2) 同一段正文的第二份请求（宿主每次从历史重建消息数组）——M2 去重 ----
+  const indexRows = () =>
+    fs
+      .readFileSync(path.join(boardA, "runs", runIdA, "index.jsonl"), "utf8")
+      .split(/\r?\n/)
+      .filter(Boolean)
+      .map((l) => JSON.parse(l))
+  const pruneRows = () => indexRows().filter((e) => e.tool === "prune:message")
+  assert.equal(pruneRows().length, 1, "第一次请求只写了一份载荷")
+  const msgA2 = [mat(BODY), mat("tail", "user")]
+  await fA.hook("session.context").fire({ agent: "team", sessionID: "ses_prune_off", system: [], messages: msgA2, tools: {} })
+  assert.ok(msgA2[0].parts[0].text.includes("本条消息已卸载"), "第二次请求同样给出离载桩")
+  assert.equal(pruneRows().length, 1, "M2：同一正文不再落第二份载荷（内容级去重）")
+  assert.equal(msgA2[0].parts[0].text, stubA, "两次 stub 逐字节相同（复用的是同一个句柄）")
+
+  // ---- (a3) R1：句柄过期后不得复用（时钟前推 8 天 > 默认 TTL 7 天）----
+  {
+    const rootC = mktmp("prune-offload-expired")
+    const boardC = path.join(rootC, "board")
+    const tjC = path.join(rootC, "tj")
+    writeCfg({ blackboardDir: boardC, trajectoryDir: tjC, pruneKeepTailPercent: 0 })
+    const fC = makeFakeCtx({ directory: workspace("prune-offload-expired-ws"), agents: sixAgents, models: CAT })
+    const bootC = await withCapturedConsole(() => plugin.setup(fC.ctx))
+    const fireC = async (messages) =>
+      fC.hook("session.context").fire({ agent: "team", sessionID: "ses_prune_exp", system: [], messages, tools: {} })
+    const m1 = [mat(BODY), mat("tail", "user")]
+    await fireC(m1)
+    const ref1 = /ref\s*:\s*"([^"]+)"/.exec(m1[0].parts[0].text)[1]
+    const realNow = Date.now
+    const m2 = [mat(BODY), mat("tail", "user")]
+    Date.now = () => realNow() + 8 * 24 * 60 * 60 * 1000
+    try {
+      await fireC(m2)
+    } finally {
+      Date.now = realNow
+    }
+    const ref2 = /ref\s*:\s*"([^"]+)"/.exec(m2[0].parts[0].text)[1]
+    assert.notEqual(ref2, ref1, "句柄过期 → 重新离载并签发新 ref（R1：不复用指向已清扫载荷的桩）")
+    const runIdC = ref2.split("/")[3]
+    const rowsC = tjRows(tjC)
+    const pruneC = rowsC.filter((r) => r.step_id === "v2-prune" && r.event === "prune")
+    assert.equal(pruneC.length, 2, "两次请求各一条 prune 行")
+    assert.equal(pruneC[1].reused, 0, "过期的第二次是一次真正的新离载（复用得 0，R1）")
+    const idxC = fs
+      .readFileSync(path.join(boardC, "runs", runIdC, "index.jsonl"), "utf8")
+      .split(/\r?\n/)
+      .filter(Boolean)
+      .map((l) => JSON.parse(l))
+      .filter((e) => e.tool === "prune:message")
+    assert.equal(idxC.length, 2, "过期后确实落了两份载荷（不是复用一份）")
+    await bootC.value()
+    const shutdownC = tjRows(tjC).find((r) => r.step_id === "v2-shutdown")
+    assert.equal(shutdownC.prune_offloaded, 2, "shutdown 行：两次真正离载")
+    assert.equal(shutdownC.prune_reused, 0, "shutdown 行：一次复用都没有（R1 走的是重离载分支）")
+  }
+
+  // ---- (b) 不重复离载、不误伤 ----
+  const drive = async (opts = {}) => {
+    const f = makeFakeCtx({ directory: workspace("prune-offload-unit"), agents: [], models: CAT })
+    const events = []
+    const calls = []
+    const offload =
+      opts.offload === null
+        ? undefined
+        : opts.offload === undefined
+          ? async (text) => {
+              calls.push(text)
+              return { ref: "tm://runs/r-unit/steps/s0001/result", accessToken: "tok-unit", expireAt: Date.now() + 60_000 }
+            }
+          : opts.offload
+    const layer = await applyV2ContextPrune(f.ctx, {
+      config: { enabled: true, atPercent: 70, keepTailPercent: 0 },
+      scope: scopeStub,
+      ...(offload ? { offload } : {}),
+      onEvent: (row) => events.push(row),
+    })
+    const fire = async (messages) => {
+      await f.hook("session.context").fire({ agent: "team", sessionID: "ses_pu", system: [], messages, tools: {} })
+    }
+    return { f, report: layer.report, calls, events, fire }
+  }
+
+  const handleBody = 'tm_fetch { ref:"tm://runs/r-9/steps/s9/result", access_token:"tok9", expire_at:9 } ' + "z".repeat(300_000)
+  const childBody = '<subagent sessionID="ses_doneA" state="completed">' + "q".repeat(20_000) + "</subagent>"
+  {
+    const { report, calls, fire } = await drive()
+    const messages = [mat(handleBody), mat(childBody, "user"), mat(BODY), mat("STATUS: keep me"), mat("tail", "user")]
+    await fire(messages)
+    const [h, c, p, sk, tl] = messages.map((m) => m.parts[0].text)
+    assert.ok(h.includes("工具结果已卸载") && h.includes("tm://runs/r-9/steps/s9/result"), "已含句柄的消息保持今日行为，且不二次离载")
+    assert.ok(c.includes('tm_join { ids:["ses_doneA"] }'), "子代理报告仍是 tm_join 指针")
+    assert.ok(p.includes("本条消息已卸载") && p.includes("tm://runs/r-unit/steps/s0001/result"), "无句柄的消息走离载桩")
+    assert.equal(sk, "STATUS: keep me", "骨架消息逐字节不变")
+    assert.equal(tl, "tail", "尾部消息逐字节不变")
+    assert.equal(calls.length, 1, "只离载了那一条需要离载的消息")
+    assert.equal(calls[0], BODY, "离载送入的是原文，不是桩")
+    assert.equal(report.offloaded, 1, "报告如实记下 1 条离载")
+    assert.equal(report.offloadFailed, 0, "没有失败")
+  }
+
+  // ---- (c) 失败有界：echo 桩 + 一条轨迹行，hook 永不 throw ----
+  {
+    const { report, events, fire } = await drive({ offload: async () => { throw new Error("disk full") } })
+    const messages = [mat(BODY), mat("tail", "user")]
+    await fire(messages)
+    assert.equal(report.offloaded, 0, "失败不计入成功")
+    assert.equal(report.offloadFailed, 1, "失败有独立计数")
+    assert.equal(messages[0].parts[0].text, renderPruneStub({ kind: "echo", originalTokens: estimateTokens(BODY) }), "离载抛错 → 逐字节回到今日的 echo 桩")
+    const failed = events.filter((e) => e.kind === "prune_offload_failed")
+    assert.equal(failed.length, 1, "一条 prune_offload_failed 轨迹行")
+    assert.equal(failed[0].reason, "threw", "轨迹行说明是抛错")
+    assert.ok(!JSON.stringify(failed[0]).includes("旧命令回显"), "轨迹行不带消息正文（R6 口径）")
+  }
+  {
+    const { report, fire } = await drive({ offload: async () => null })
+    const messages = [mat(BODY), mat("tail", "user")]
+    await fire(messages)
+    assert.equal(report.offloadFailed, 1, "返回空句柄同样记为失败")
+    assert.equal(messages[0].parts[0].text, renderPruneStub({ kind: "echo", originalTokens: estimateTokens(BODY) }), "…并退回 echo 桩")
+  }
+  {
+    // ---- (c2) n10：离载成功但计划没能落地 → 载荷成孤儿，计数并留痕 ----
+    const { report, events, fire } = await drive()
+    const frozen = { role: "assistant", model: { providerID: "lxns", id: "glm" }, parts: [Object.freeze({ type: "text", text: BODY })] }
+    await fire([frozen, mat("tail", "user")])
+    assert.equal(report.offloaded, 1, "离载已经发生（载荷在盘上）")
+    assert.equal(report.prunedMessages, 0, "…但消息没有被替换")
+    assert.equal(report.orphans, 1, "…所以它被计为孤儿（n10）")
+    const orphanRow = events.find((e) => e.kind === "prune_offload_failed" && e.reason === "orphaned")
+    assert.ok(orphanRow && orphanRow.orphan === 1, "失败行带着孤儿条数")
+    assert.equal(report.threw, 1, "hook 如实计一次抛错，且没有外溢")
+  }
+
+  // ---- (d) pruneOffload:"off" 与改动前逐字节一致 ----
+  {
+    const { report, calls, fire } = await drive({ offload: null })
+    const messages = [mat(BODY), mat("tail", "user")]
+    await fire(messages)
+    assert.equal(messages[0].parts[0].text, renderPruneStub({ kind: "echo", originalTokens: estimateTokens(BODY) }), "不挂 offload → 逐字节回到改动前的 echo 桩")
+    assert.equal(report.offloaded, 0, "…且没有离载计数")
+    assert.equal(report.offloadFailed, 0, "…也没有失败计数")
+    assert.equal(calls.length, 0, "…且一次离载都没调用")
+  }
+  {
+    // 键真的接在接线处：同一个请求，boot 之后 run store 里一条载荷都不该出现
+    const rootB = mktmp("prune-offload-off")
+    const boardB = path.join(rootB, "board")
+    writeCfg({ blackboardDir: boardB, trajectoryDir: path.join(rootB, "tj"), pruneKeepTailPercent: 0, pruneOffload: "off" })
+    const fB = makeFakeCtx({ directory: workspace("prune-offload-off-ws"), agents: sixAgents, models: CAT })
+    const bootB = await withCapturedConsole(() => plugin.setup(fB.ctx))
+    const msgB = [mat(BODY), mat("tail", "user")]
+    await fB.hook("session.context").fire({ agent: "team", sessionID: "ses_prune_off2", system: [], messages: msgB, tools: {} })
+    assert.equal(msgB[0].parts[0].text, renderPruneStub({ kind: "echo", originalTokens: estimateTokens(BODY) }), 'pruneOffload:"off" → 与改动前逐字节一致')
+    assert.ok(!fs.existsSync(path.join(boardB, "runs")), "…run store 里一条载荷都没写")
+    await bootB.value()
+  }
+
+  // ---- (f) m3：离载桩比 echo 桩长，落点可能超预算 —— 只如实计数，不二次修剪 ----
+  {
+    const { report, events, fire } = await drive()
+    const messages = [mat(BODY), mat(BODY + "-tail")]
+    await fire(messages)
+    assert.equal(report.prunedMessages, 1, "只剪了最旧的那一条（最新一条永远保留）")
+    assert.equal(report.overBudget, 1, "修剪后仍超预算 → 如实计数（m3）")
+    const pruneRow = events.find((e) => e.kind === "prune")
+    assert.equal(pruneRow.over_budget, true, "轨迹行的 over_budget 与报告同口径")
+    assert.ok(messages[1].parts[0].text.length > 0, "…且没有为了凑预算再剪一刀")
+  }
+
+  // ---- (e) 两行观测计数同口径 ----
+  const v2src = fs.readFileSync(path.join(path.dirname(fileURLToPath(import.meta.url)), "src", "host", "v2.ts"), "utf8")
+  assert.equal((v2src.match(/prune_offloaded: prune\.report\.offloaded/g) ?? []).length, 2, "surface 与 shutdown 两行都带 prune_offloaded")
+  assert.equal((v2src.match(/prune_offload_failed: prune\.report\.offloadFailed/g) ?? []).length, 2, "…也都带 prune_offload_failed（两处口径必须一致）")
+  assert.ok(/pruneOffload !== "off"/.test(v2src), "键真的接在接线处")
+  assert.ok(/alwaysOffload: true/.test(v2src), "离载走共享管线的 alwaysOffload 旁路")
+
+  await bootA.value()
+  // R3：复用计数有出口——shutdown 行给出真实数字（1 次新离载 + 1 次复用）。
+  const shutdownA = tjRows(path.join(rootA, "tj")).find((r) => r.step_id === "v2-shutdown")
+  assert.equal(shutdownA.prune_offloaded, 1, "shutdown 行：只真正离载了一次")
+  assert.equal(shutdownA.prune_reused, 1, "shutdown 行：复用计数有出口（R3）")
+  assert.equal(shutdownA.prune_offload_failed, 0, "…没有失败")
+}
+console.log("   OK (无句柄的正文先离载再修剪：stub 带 ref/token/expire_at 且载荷逐字节可取回；已含句柄/子代理/骨架/尾部一条都不误伤；失败退回 echo 桩并记一行；pruneOffload:off 逐字节回到改动前)")
+
 // B5: the group count is DERIVED from the numbered group headers this file
 // actually printed, never hand-written — the last hand-written number was
 // already stale while the file had more.  The self-scan reads THIS file by its

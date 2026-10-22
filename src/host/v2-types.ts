@@ -190,6 +190,8 @@ export interface V2PermissionDomain {
 
 export interface V2SessionContext {
   readonly agent?: string
+  /** The session this request belongs to; absent on the compaction variant only. */
+  readonly sessionID?: string
   readonly system: unknown[]
   readonly messages: unknown[]
   readonly tools: Record<string, { description: string; input: unknown }>
