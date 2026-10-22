@@ -4912,6 +4912,119 @@ console.log("36. 窗口占用条目 — 独立 system 条目：最近 5% 分桶�
 }
 console.log("   OK (窗口占用是独立条目：42%→40%/46%→45% 分桶，同档逐字节不变、变档原地替换、不可得即摘除；没有目录就是 null，不是 0%)")
 
+console.log("36b. 缓存命中 — cacheStatsOf 的分母口径（没报 cache → null，不是 0%）、每请求一行 v2-cache、tm_stats 的命中率小节")
+{
+  const { cacheStatsOf, createUsagePercent } = await import("./dist/host/v2-usage.js")
+  const { summarizeEvents, renderStats } = await import("./dist/tm/stats.js")
+
+  // ---- pure: the four cases a hit rate has to keep apart ----
+  const model = { providerID: "lxns", id: "glm" }
+  const withCache = { used: 12000, limit: 100000, percent: 12, model, cache: { read: 9000, write: 2000, input: 1000, present: true } }
+  assert.equal(cacheStatsOf(withCache).hitRate, 0.75, "9000 / (9000+2000+1000) = 0.75")
+  assert.deepEqual(
+    [cacheStatsOf(withCache).read, cacheStatsOf(withCache).write, cacheStatsOf(withCache).input],
+    [9000, 2000, 1000],
+    "原始三值原样给出",
+  )
+  const noCacheReport = { ...withCache, cache: { read: 0, write: 0, input: 1000, present: false } }
+  assert.equal(cacheStatsOf(noCacheReport).hitRate, null, "provider 没报 cache ⇒ null，不是 0（缺字段不等于 0 命中）")
+  assert.equal(cacheStatsOf({ ...withCache, cache: { read: 0, write: 0, input: 0, present: true } }).hitRate, null, "三值全 0 ⇒ 分母 0 ⇒ null，绝不除零")
+  assert.equal(cacheStatsOf({ ...withCache, cache: { read: 0, write: 0, input: 500, present: true } }).hitRate, 0, "报了 cache 且 read=0、有 input ⇒ 真的是 0%")
+  assert.equal(cacheStatsOf(null).hitRate, null, "没有读数 ⇒ null")
+
+  // ---- the reader carries the SAME block's cache counters (or none at all) ----
+  const CAT = [{ id: "glm", providerID: "lxns", modelID: "glm", limit: { context: 100000 } }]
+  const nocat = makeFakeCtx({ directory: workspace("cache-nocat"), agents: [], models: [] })
+  assert.equal(
+    await createUsagePercent(nocat.ctx)("s", [{ usage: { input: 1000, cache: { read: 9000, write: 2000 } } }]),
+    null,
+    "没有目录 = 没有读数 —— 缓存行也不会凭空出现",
+  )
+  const cat = makeFakeCtx({ directory: workspace("cache-cat"), agents: [], models: CAT })
+  const readCat = createUsagePercent(cat.ctx)
+  const cached = await readCat("s", [{ model, usage: { input: 1000, cache: { read: 9000, write: 2000 } } }])
+  assert.equal(cached.cache.read, 9000, "读数里带着 cache.read")
+  assert.equal(cached.cache.present, true, "…并标明这个 provider 报了 cache")
+  const plain = await readCat("s", [{ model, usage: { input: 1000 } }])
+  assert.equal(plain.cache.present, false, "没有 cache 字段 ⇒ present=false")
+  assert.equal(cacheStatsOf(plain).hitRate, null, "…因此命中率是 null，不是 0")
+
+  // ---- end to end: one row per request that HAD a reading ----
+  const root = mktmp("cache-stats")
+  writeCfg({ trajectoryDir: path.join(root, "tj"), blackboardDir: path.join(root, "board") })
+  const f = makeFakeCtx({ directory: workspace("cache-stats"), agents: sixAgents, models: CAT })
+  const boot = await withCapturedConsole(() => plugin.setup(f.ctx))
+  const SID = "ses_cache"
+  const fire = async (messages) => {
+    const req = { agent: "team", sessionID: SID, system: [], messages, options: {}, tools: {} }
+    await f.hook("session.context").fire(req)
+    return req
+  }
+  await fire([{ role: "assistant", model: { providerID: "lxns", id: "glm" }, usage: { input: 1000, cache: { read: 9000, write: 2000 } } }])
+  await fire([{ role: "assistant", model: { providerID: "lxns", id: "glm" }, usage: { input: 42000 } }])
+  await fire([{ role: "assistant", model: { providerID: "lxns", id: "glm" }, parts: [{ type: "text", text: "没有 usage 的一轮" }] }])
+  await boot.value()
+  const rows = fs
+    .readdirSync(path.join(root, "tj", "runs"))
+    .flatMap((run) =>
+      fs
+        .readFileSync(path.join(root, "tj", "runs", run, "steps.jsonl"), "utf8")
+        .split(/\r?\n/)
+        .filter(Boolean)
+        .map((l) => {
+          try {
+            return JSON.parse(l)
+          } catch {
+            return null
+          }
+        })
+        .filter(Boolean),
+    )
+  const cacheRows = rows.filter((r) => r.tool === "host" && r.step_id === "v2-cache" && r.event === "cache")
+  assert.equal(cacheRows.length, 2, "有读数的两轮各一行；没有 usage 的那轮一行都没有")
+  const [rowA, rowB] = cacheRows
+  assert.equal(rowA.hit, 9000, "轨迹行带 cache.read")
+  assert.equal(rowA.read, 9000, "…同一数值的可读别名也在")
+  assert.equal(rowA.write, 2000, "轨迹行带 cache.write")
+  assert.equal(rowA.input, 1000, "轨迹行带 input")
+  assert.equal(rowA.rate, 0.75, "rate = 0.75（两位小数以内）")
+  assert.equal(rowB.rate, null, "provider 没报 cache 的那轮：rate 是 null，不是 0")
+  assert.equal(rowB.hit, 0, "…read 记 0（缺失记 0），但 rate 不因此变成 0")
+  // The row is numbers only — it may never carry prose or a path.
+  for (const r of cacheRows) {
+    assert.deepEqual(
+      Object.keys(r).filter((k) => !["ts", "run_id", "tool", "step_id", "event", "api", "hit", "read", "write", "input", "rate"].includes(k)),
+      [],
+      "轨迹行只有数值字段，没有任何正文/路径",
+    )
+  }
+
+  // ---- the tm_stats section ----
+  const ts = new Date(1_700_000_000_000).toISOString()
+  const md = renderStats(
+    summarizeEvents([
+      { ts, tool: "tm_read", step_id: "s1", event: "call" },
+      { ts, tool: "host", step_id: "v2-cache", event: "cache", hit: 9000, read: 9000, write: 2000, input: 1000, rate: 0.75 },
+      { ts, tool: "host", step_id: "v2-cache", event: "cache", hit: 0, read: 0, write: 0, input: 1000, rate: null },
+    ]),
+    { runDirs: 1, roots: [] },
+  )
+  assert.ok(md.includes("### 缓存命中"), "有「缓存命中」小节")
+  assert.ok(md.includes("各 provider 对 cache.read / cache.write 的定义不同"), "口径 caveat 在（跨 provider 不可直接比较）")
+  assert.ok(md.includes("**75.0%**"), "命中率保留 1 位小数")
+  assert.ok(md.includes("cache.read 9,000") && md.includes("cache.write 2,000") && md.includes("input 1,000"), "原始三值都在")
+  assert.ok(md.includes("1 行 `v2-cache`"), "样本行数只数与命中率可算的行")
+  assert.ok(md.includes("另有 1 行 provider 未报 cache"), "算不出来的行数可见，不是悄悄丢掉")
+  assert.ok(!md.includes("- `v2-cache` · "), "v2-cache 不进「启动与人格」小节（每请求一行会把那里刷满）")
+
+  const emptyMd = renderStats(
+    summarizeEvents([{ ts, tool: "tm_read", step_id: "s1", event: "call" }]),
+    { runDirs: 1, roots: [] },
+  )
+  assert.ok(emptyMd.includes("没有 v2-cache 行（不是 0% 命中）"), "一个样本都没有 ⇒ 明说没有行，不是 0% 命中")
+}
+console.log("   OK (9000/12000 = 0.75；缺 cache 与三值全 0 都是 null 而不是 0%；有读数才写一行 v2-cache，没 usage 零行；tm_stats 有样本给三值+1 位小数，无样本说「不是 0%」)")
+
 console.log("37. 修剪地址保留 — 无句柄的桩追加一行 `地址：`（去重、≤3、文档顺序）；没有地址时逐字节不变")
 {
   const { extractAddresses, PRUNE_ADDRESS_MAX, PRUNE_ADDRESS_PREFIX, renderPruneStub, applyV2ContextPrune } = await import("./dist/host/v2-prune.js")

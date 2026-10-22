@@ -126,6 +126,17 @@ export interface TmStats {
     /** URL-cache hits — every one is a fetch this round did NOT pay for. */
     webCacheHits: number
   }
+  /** `v2-cache` rows: the prompt-cache reading of the newest usage in that request.
+   *  `samples` counts only rows whose rate was computable — a row carrying `input`
+   *  but no `cache` object says nothing about caching and must not dilute the ratio
+   *  (it lands in `unavailable` instead, so the omission is visible). */
+  cache: {
+    samples: number
+    unavailable: number
+    read: number
+    write: number
+    input: number
+  }
   /** `tool:"host"` lines — which personality booted, what it could not do.
    *  Without this the v2 boot record is written and never read back, so "the
    *  plugin loaded" stays a claim the user cannot check from a session. */
@@ -151,6 +162,7 @@ export function summarizeEvents(events: readonly TrajEvent[]): TmStats {
     tools: [],
     dispatch: { starts: 0, settled: 0, failed: 0, adopted: 0, claims: 0, cancelled: 0, sumMs: 0, maxMs: 0, overlapSavedMs: 0, waitMs: 0, waits: 0, repeatWaits: 0 },
     governance: { clampedTimeouts: 0, clampSavedMs: 0, offloadDegraded: 0, webCacheHits: 0 },
+    cache: { samples: 0, unavailable: 0, read: 0, write: 0, input: 0 },
     boot: [],
   }
   const byTool = new Map<string, ToolStat>()
@@ -182,7 +194,23 @@ export function summarizeEvents(events: readonly TrajEvent[]): TmStats {
       if (!first || at < first) first = at
       if (at > last) last = at
     }
-    if (tool === "host" && e.step_id) stats.boot.push({ ...e })
+    // A `v2-cache` row is a per-request measurement, not a boot/surface snapshot:
+    // letting it into `boot` would add a junk line to 启动与人格 for every request.
+    if (tool === "host" && e.step_id && e.step_id !== "v2-cache") stats.boot.push({ ...e })
+    if (tool === "host" && e.step_id === "v2-cache") {
+      // Only a computable rate is summed. A row with `rate: null` carries `input`
+      // without a `cache` object — a provider that does not report caching — and
+      // folding that into the denominator would print "low hit rate" for a missing
+      // field. `unavailable` keeps the omission countable instead of silent.
+      if (typeof e.rate === "number" && Number.isFinite(e.rate)) {
+        stats.cache.samples++
+        stats.cache.read += num(e.read ?? e.hit)
+        stats.cache.write += num(e.write)
+        stats.cache.input += num(e.input)
+      } else {
+        stats.cache.unavailable++
+      }
+    }
     if (ev === "call") row(tool).calls++
     if (ev === "result") {
       const r = row(tool)
@@ -441,6 +469,36 @@ export function renderStats(
     )
   }
   out.push(`| **合计** |  |  |  |  | **${savedTotal.toLocaleString("en-US")}** |`)
+
+  // 缓存命中。 口径先写：各 provider 对 cache.read / cache.write 的定义不同
+  // （自动前缀缓存 vs 显式断点），跨 provider 平均出来的百分比没有意义，而这正是
+  // 这一行最容易被误读的地方。 没有样本时说的是「没有行」，不是「0%」。
+  const c = stats.cache
+  out.push(
+    "",
+    "### 缓存命中（cache.read / (read + write + input)）",
+    "",
+    "口径：各 provider 对 cache.read / cache.write 的定义不同（自动前缀缓存 vs 显式断点），跨 provider 不可直接比较——这个数字只用于同一会话 / 同一 provider 的前后对比。",
+  )
+  if (c.samples) {
+    const denom = c.read + c.write + c.input
+    const rate = denom > 0 ? `${((c.read / denom) * 100).toFixed(1)}%` : "—（三值全 0）"
+    out.push(
+      "",
+      "| 指标 | 值 |",
+      "|---|---|",
+      `| 命中率 | **${rate}** |`,
+      `| 原始值 | cache.read ${c.read.toLocaleString("en-US")} · cache.write ${c.write.toLocaleString("en-US")} · input ${c.input.toLocaleString("en-US")} |`,
+      `| 样本 | ${c.samples} 行 \`v2-cache\`${c.unavailable ? ` · 另有 ${c.unavailable} 行 provider 未报 cache（算不出来，未计入）` : ""} |`,
+    )
+  } else {
+    out.push(
+      "",
+      c.unavailable
+        ? `没有 v2-cache 行（不是 0% 命中）—— 本窗口 ${c.unavailable} 行读数里 provider 都没报 cache，命中率算不出来。`
+        : "没有 v2-cache 行（不是 0% 命中）—— 本窗口里没有一次请求读到 usage。",
+    )
+  }
 
   const d = stats.dispatch
   out.push(

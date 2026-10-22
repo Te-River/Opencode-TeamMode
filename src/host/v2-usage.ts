@@ -7,7 +7,8 @@
  * `readModelKey` pulls the providerID+modelID that produced it, `lastUsageOf` walks a
  * transcript for the newest reading, and `percentOf` turns a numerator plus the
  * catalog's `limit.context` into the percent every threshold in this package compares
- * against.
+ * against. `cacheStatsOf` turns that same block's cache counters into a hit rate — and
+ * answers NULL, never 0%, when the provider reported no cache at all.
  *
  * Until 1.7.0 these lived in `v2-compaction.ts`, whose layer submitted
  * `ctx.session.compact({sessionID})` on its own once a session crossed 75% of the
@@ -34,10 +35,11 @@ import type { V2Context } from "./v2-types.js"
 const num = (v: unknown): number => (typeof v === "number" && Number.isFinite(v) ? v : 0)
 
 /**
- * The host's usage block, summed the way the host sums it. Returns null when the object
- * carries no numbers at all — "we did not find them" is not "usage is zero".
+ * The usage block itself — the same candidate list, in the same order, that
+ * `readUsedTokens` sums. One walker, so a token reading and a cache reading can
+ * never be taken from two different blocks of the same message.
  */
-export function readUsedTokens(message: unknown): number | null {
+function usageBlockOf(message: unknown): Record<string, any> | null {
   const m = message as Record<string, any> | null | undefined
   if (!m || typeof m !== "object") return null
   const candidates = [m.tokens, m.metadata?.tokens, m.info?.tokens, m.usage?.tokens, m.usage]
@@ -45,9 +47,45 @@ export function readUsedTokens(message: unknown): number | null {
     if (!t || typeof t !== "object") continue
     const cache = t.cache && typeof t.cache === "object" ? t.cache : {}
     const sum = num(t.input) + num(t.output) + num(t.reasoning) + num(cache.read) + num(cache.write)
-    if (sum > 0) return sum
+    if (sum > 0) return t as Record<string, any>
   }
   return null
+}
+
+function usedOf(t: Record<string, any>): number {
+  const cache = t.cache && typeof t.cache === "object" ? t.cache : {}
+  return num(t.input) + num(t.output) + num(t.reasoning) + num(cache.read) + num(cache.write)
+}
+
+/**
+ * The host's usage block, summed the way the host sums it. Returns null when the object
+ * carries no numbers at all — "we did not find them" is not "usage is zero".
+ */
+export function readUsedTokens(message: unknown): number | null {
+  const t = usageBlockOf(message)
+  return t ? usedOf(t) : null
+}
+
+/**
+ * Cache accounting carried by ONE usage block. `present` records whether the block
+ * had a `cache` object at all: providers that report no caching and providers that
+ * report a 0-hit cache are different facts, and only the second one is a rate.
+ */
+export interface UsageCacheCounts {
+  read: number
+  write: number
+  input: number
+  present: boolean
+}
+
+function cacheCountsOf(t: Record<string, any>): UsageCacheCounts {
+  const cache = t.cache && typeof t.cache === "object" ? (t.cache as Record<string, any>) : null
+  return {
+    read: cache ? num(cache.read) : 0,
+    write: cache ? num(cache.write) : 0,
+    input: num(t.input),
+    present: cache !== null,
+  }
 }
 
 /** The model that produced that usage — the key we need to find its context limit. */
@@ -63,12 +101,21 @@ export function readModelKey(message: unknown): { providerID: string; id: string
   return null
 }
 
-/** Newest message that carries usage wins — that is what the host's meter calls `usage.last`. */
-export function lastUsageOf(messages: unknown): { used: number; model: { providerID: string; id: string } | null } | null {
+/**
+ * Newest message that carries usage wins — that is what the host's meter calls
+ * `usage.last`. `cache` rides along from the SAME block as `used`, so the hit rate
+ * can never be computed against a different request than the token total.
+ */
+export function lastUsageOf(messages: unknown): {
+  used: number
+  model: { providerID: string; id: string } | null
+  cache: UsageCacheCounts
+} | null {
   if (!Array.isArray(messages)) return null
   for (let i = messages.length - 1; i >= 0; i--) {
-    const used = readUsedTokens(messages[i])
-    if (used !== null) return { used, model: readModelKey(messages[i]) }
+    const t = usageBlockOf(messages[i])
+    if (!t) continue
+    return { used: usedOf(t), model: readModelKey(messages[i]), cache: cacheCountsOf(t) }
   }
   return null
 }
@@ -82,16 +129,50 @@ export function percentOf(used: number, limit: number): number {
  * One window reading: the newest usage, the catalog window that produced it, and
  * the percent between them.  `model` is NON-null by construction — a reading
  * without a model has no denominator, and that case returns null instead of a
- * guessed 0%.
+ * guessed 0%.  `cache` is the cache accounting of the SAME usage block; its
+ * `present` flag is what `cacheStatsOf` refuses to turn into a 0% hit rate.
  */
 export interface UsagePercentReading {
   used: number
   limit: number
   percent: number
   model: { providerID: string; id: string }
+  cache: UsageCacheCounts
 }
 
 export type UsagePercentReader = (sessionID: string, messages: unknown) => Promise<UsagePercentReading | null>
+
+/** The cache numbers, plus the one ratio they support. */
+export interface CacheStats {
+  read: number
+  write: number
+  input: number
+  /** `read / (read + write + input)`, 0..1 — null when it cannot be computed. */
+  hitRate: number | null
+}
+
+/**
+ * Cache hit rate from one usage reading.
+ *
+ * NULL, never 0, in two cases — and the distinction is the whole point:
+ *  - the block carried no `cache` object: that provider does not report caching,
+ *    so "0% hit" would be a number we invented from a missing field;
+ *  - all three values are 0: the denominator is 0, and dividing is guessing.
+ * A provider that really reported `cache: { read: 0, write: 0 }` with a non-zero
+ * input IS a 0% rate and comes back as `0`.
+ *
+ * `read / (read + write + input)`: the denominator counts every input token once,
+ * because a cache read and a cache write are both a way an input token was billed.
+ */
+export function cacheStatsOf(reading: UsagePercentReading | null | undefined): CacheStats {
+  const cache = reading?.cache
+  if (!cache) return { read: 0, write: 0, input: 0, hitRate: null }
+  const denominator = cache.read + cache.write + cache.input
+  if (!cache.present || denominator <= 0) {
+    return { read: cache.read, write: cache.write, input: cache.input, hitRate: null }
+  }
+  return { read: cache.read, write: cache.write, input: cache.input, hitRate: cache.read / denominator }
+}
 
 /**
  * Resolve "how full is this window" from the request plus the catalog — the same
@@ -166,6 +247,6 @@ export function createUsagePercent(ctx: V2Context): UsagePercentReader {
       limit = (await loadLimits(true)).get(key)
     }
     if (!limit || !Number.isFinite(limit) || limit <= 0) return null
-    return { used: usage.used, limit, percent: percentOf(usage.used, limit), model }
+    return { used: usage.used, limit, percent: percentOf(usage.used, limit), model, cache: usage.cache }
   }
 }

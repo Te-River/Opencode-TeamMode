@@ -48,7 +48,7 @@
 import { estimateTokens, shorten } from "../tm/config.js"
 import type { Ledger, LedgerItem } from "../tm/ledger.js"
 import { normalizeAgentName } from "../identity.js"
-import { createUsagePercent, type UsagePercentReader, type UsagePercentReading } from "./v2-usage.js"
+import { cacheStatsOf, createUsagePercent, type UsagePercentReader, type UsagePercentReading } from "./v2-usage.js"
 import type { TeamScope } from "./v2-scope.js"
 import type { V2Context, V2Registration, V2SessionContext } from "./v2-types.js"
 
@@ -390,6 +390,23 @@ export async function applyV2StateCard(ctx: V2Context, input: StateCardInput): P
           windowReading = await usageOf(sessionID, (event as { messages?: unknown }).messages)
         } catch {
           windowReading = null
+        }
+        // ---- 缓存命中：每请求一行轨迹，就发在这一次读数上（不新增第二次 usage 读取）----
+        // 读不到 usage 就一行都不写：「没读到」落盘后会被当成「0 命中」，那正是这行要防的。
+        // `step_id` 覆盖 v2.ts 包装里的默认值（它在 `...row` 之前），这一行因此按自己的
+        // 口径被 tm_stats 汇总，而不是混进 v2-state 的观测行。
+        if (windowReading) {
+          const cache = cacheStatsOf(windowReading)
+          emit({
+            step_id: "v2-cache",
+            event: "cache",
+            // `hit` 是本行的规范字段名，`read` 是同一数值的可读别名（汇总两种拼写都认）。
+            hit: cache.read,
+            read: cache.read,
+            write: cache.write,
+            input: cache.input,
+            rate: cache.hitRate === null ? null : Number(cache.hitRate.toFixed(2)),
+          })
         }
         {
           const at = event.system.findIndex(isWindowEntry)
