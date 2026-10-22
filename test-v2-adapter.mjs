@@ -5281,6 +5281,7 @@ console.log("39. 易变上下文尾部注入 dynamicTail — system 逐字节稳
   assert.ok(text1.startsWith(DYNAMIC_TAIL_MARKER), "首行是 [Team 动态上下文]")
   assert.equal(t1[0].id, DYNAMIC_TAIL_MESSAGE_ID, "消息 id 是我们铸造的那个")
   assert.equal(t1[0].role, "user", "形状 = role:user + content[type:text]")
+  assert.equal(t1[0].content?.[0]?.synthetic, true, "part 带 synthetic:true（宿主用它区分注入上下文与用户输入）")
   assert.ok(text1.includes(STATE_CARD_MARKER) && text1.includes("#31 [doing]"), `状态卡内容在尾部消息里：${text1.slice(0, 120)}`)
   assert.equal(r1.messages[r1.messages.length - 1], t1[0], "它是消息数组的最后一条")
   const system1 = JSON.stringify(r1.system)

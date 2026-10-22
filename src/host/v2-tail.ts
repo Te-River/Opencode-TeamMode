@@ -217,7 +217,10 @@ export async function applyV2DynamicTail(ctx: V2Context, input: DynamicTailInput
         }
         const text = renderDynamicTail(sections)
         // 形状来自宿主实测：`{id, role, content:[{type:"text",text}]}`。
-        event.messages.push({ id: DYNAMIC_TAIL_MESSAGE_ID, role: "user", content: [{ type: "text", text }] })
+        // 形状来自宿主自己的注入（实测）：`{id, role:"user", content:[{type:"text",text,synthetic:true}]}`。
+        // `synthetic:true` 是关键——宿主用它标记"注入的上下文"而非用户输入（其子代理回复注入同形），
+        // 这也是本层不会把尾部消息当成新一次用户发言的前提（CLI 探针已验证该 part 仍送达模型）。
+        event.messages.push({ id: DYNAMIC_TAIL_MESSAGE_ID, role: "user", content: [{ type: "text", text, synthetic: true }] })
         report.messages++
         const bytes = Buffer.byteLength(text, "utf8")
         report.bytes += bytes
