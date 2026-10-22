@@ -20,6 +20,7 @@
 import { V2_LADDER_ACTIONS } from "./v2-permissions.js"
 import { normalizeAgentName } from "../identity.js"
 import { estimateTokens, resolveConfig } from "../tm/config.js"
+import type { DynamicSink } from "./v2-tail.js"
 import type { V2Registration, V2SessionContext, V2Context } from "./v2-types.js"
 
 /**
@@ -197,6 +198,13 @@ export interface SessionLayerInput {
   scope?: import("./v2-scope.js").TeamScope
   /** #49 feature 4: the split-advice knobs.  Absent = the defaults (on). */
   split?: SplitConfig
+  /**
+   * 易变注入的尾部通道 (`dynamicTail: "on"`).  When handed in, the split advice
+   * goes to the request TAIL instead of `event.system` — the board note and the
+   * compaction survival list stay in `system`, because those are STABLE content
+   * (they are the prefix we are trying to keep cacheable).
+   */
+  sink?: DynamicSink
   /** Fired for each observable split outcome so the personality can write the
    *  `step_id:"v2-split"` trajectory line — the layer owns no store. */
   onSplit?: (row: Record<string, unknown>) => void
@@ -306,20 +314,35 @@ export async function applyV2SessionLayer(
       // request only.  A child session's agent is also one of ours, so gating on
       // scope alone would hand the advice to a specialist; the lead is the only
       // role that dispatches, so it is the only role the advice is for.
-      if (pendingAdvice && agentKey === "team" && Array.isArray(event.system)) {
-        const already = event.system.some(
-          (p) => typeof (p as { text?: unknown })?.text === "string" && (p as { text: string }).text.includes(SPLIT_MARKER),
-        )
-        if (!already) {
-          event.system.push({ type: "text", text: pendingAdvice })
+      if (pendingAdvice && agentKey === "team") {
+        if (input.sink) {
+          input.sink.set(
+            String((event as { sessionID?: unknown }).sessionID ?? ""),
+            "advice",
+            pendingAdvice,
+          )
           report.splitAdvised++
           try {
             input.onSplit?.({ event: "injected" })
           } catch {
             /* the trajectory line is an extra */
           }
+          pendingAdvice = null
+        } else if (Array.isArray(event.system)) {
+          const already = event.system.some(
+            (p) => typeof (p as { text?: unknown })?.text === "string" && (p as { text: string }).text.includes(SPLIT_MARKER),
+          )
+          if (!already) {
+            event.system.push({ type: "text", text: pendingAdvice })
+            report.splitAdvised++
+            try {
+              input.onSplit?.({ event: "injected" })
+            } catch {
+              /* the trajectory line is an extra */
+            }
+          }
+          pendingAdvice = null
         }
-        pendingAdvice = null
       }
     }),
   )

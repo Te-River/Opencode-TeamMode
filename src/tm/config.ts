@@ -170,6 +170,8 @@ export interface TmConfig {
   ledgerMaxItems: number
   /** 任务状态卡：请求侧 JIT 状态注入（`on` / `off`）。 */
   stateCard: "on" | "off"
+  /** 易变上下文（状态卡/窗口/重试/拆分建议）作为请求末尾的一条消息；`off` = 旧的 system 注入。 */
+  dynamicTail: "on" | "off"
 }
 
 /** The registry's defaults, keyed by canonical key.  Derived from

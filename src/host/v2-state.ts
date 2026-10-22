@@ -50,6 +50,7 @@ import type { Ledger, LedgerItem } from "../tm/ledger.js"
 import { normalizeAgentName } from "../identity.js"
 import { cacheStatsOf, createUsagePercent, type UsagePercentReader, type UsagePercentReading } from "./v2-usage.js"
 import type { TeamScope } from "./v2-scope.js"
+import type { DynamicSink } from "./v2-tail.js"
 import type { V2Context, V2Registration, V2SessionContext } from "./v2-types.js"
 
 /** 卡片标记：`event.system` 里以它开头的条目就是状态卡（唯一一条）。 */
@@ -99,6 +100,14 @@ export interface StateCardInput {
    * 消息自带的 usage 读。注入点只为单测准备，生产路径没有第二个分母来源。
    */
   usageOf?: UsagePercentReader
+  /**
+   * 易变注入的尾部通道 (`dynamicTail: "on"`).  When handed in, the card and the
+   * window entry go to the request's TAIL instead of `event.system`, and the
+   * hash/bucket gate becomes a same-request idempotency check (`peek`) rather
+   * than a cross-request byte gate — the sink is drained every request, so
+   * there is nothing from the previous turn to compare against.
+   */
+  sink?: DynamicSink
   onEvent?: (row: Record<string, unknown>) => void
 }
 
@@ -379,7 +388,10 @@ export async function applyV2StateCard(ctx: V2Context, input: StateCardInput): P
           report.foreignSkipped++
           return
         }
-        if (!Array.isArray(event?.system)) return
+        // 尾层模式（`dynamicTail: "on"`）：状态卡与窗口条目写进请求末尾的
+        // 滞留区，system 一个字节都不碰——前缀缓存靠的就是它稳定。
+        const onTail = input.sink !== undefined
+        if (!onTail && !Array.isArray(event?.system)) return
         const sessionID = String((event as { sessionID?: unknown }).sessionID ?? "")
         // ---- 窗口占用：独立条目，状态卡的渲染与 hash 门控一个字节都不碰 ----
         // 读不到窗口/用量 = 「不可得」，不是 0%：整条不显示，已存在的那条摘掉。
@@ -409,28 +421,47 @@ export async function applyV2StateCard(ctx: V2Context, input: StateCardInput): P
           })
         }
         {
-          const at = event.system.findIndex(isWindowEntry)
-          if (!windowReading) {
-            if (at >= 0) {
-              event.system.splice(at, 1)
-              report.windowCleared++
-            } else {
+          if (onTail) {
+            if (!windowReading) {
+              // 读不到 = 没有这一节；上一条尾巴已经由尾层剥离，这里无需再摘。
               report.windowAbsent++
+            } else {
+              const entry = renderWindowEntry(
+                windowBucket(windowReading.percent),
+                `${windowReading.model.providerID}/${windowReading.model.id}`,
+              )
+              // 同一请求内重放（宿主会重放 hook）：同串就不再写，计 unchanged。
+              if (input.sink?.peek(sessionID, "window") === entry) {
+                report.windowUnchanged++
+              } else {
+                input.sink?.set(sessionID, "window", entry)
+                report.windowInjected++
+              }
             }
           } else {
-            const entry = renderWindowEntry(
-              windowBucket(windowReading.percent),
-              `${windowReading.model.providerID}/${windowReading.model.id}`,
-            )
-            if (at < 0) {
-              event.system.push({ type: "text", text: entry })
-              report.windowInjected++
-            } else if (cardTextOf(event.system[at]) === entry) {
-              // 分桶与模型都没变 ⇒ 一个字节都没写（和卡片同一条纪律）。
-              report.windowUnchanged++
+            const at = event.system.findIndex(isWindowEntry)
+            if (!windowReading) {
+              if (at >= 0) {
+                event.system.splice(at, 1)
+                report.windowCleared++
+              } else {
+                report.windowAbsent++
+              }
             } else {
-              ;(event.system[at] as { text: string }).text = entry
-              report.windowInjected++
+              const entry = renderWindowEntry(
+                windowBucket(windowReading.percent),
+                `${windowReading.model.providerID}/${windowReading.model.id}`,
+              )
+              if (at < 0) {
+                event.system.push({ type: "text", text: entry })
+                report.windowInjected++
+              } else if (cardTextOf(event.system[at]) === entry) {
+                // 分桶与模型都没变 ⇒ 一个字节都没写（和卡片同一条纪律）。
+                report.windowUnchanged++
+              } else {
+                ;(event.system[at] as { text: string }).text = entry
+                report.windowInjected++
+              }
             }
           }
         }
@@ -464,6 +495,22 @@ export async function applyV2StateCard(ctx: V2Context, input: StateCardInput): P
           pruneDelta,
           sessionID,
         })
+        if (onTail) {
+          if (!card) {
+            // 没有卡片 = 这一节不出现；上一条尾巴由尾层剥离，旧卡不会留在请求里。
+            report.empty++
+            return
+          }
+          if (input.sink?.peek(sessionID, "state") === card) {
+            // 同一请求内重放：一个字节都不再写。
+            report.unchanged++
+            return
+          }
+          input.sink?.set(sessionID, "state", card)
+          report.injected++
+          if (pruneNow !== undefined) pruneSeen.set(sessionID, pruneNow)
+          return
+        }
         if (!card) {
           // R2：宿主会跨请求保留 `event.system`，账本清空后旧卡仍挂着就是高估形态
           // （卡上还写着「进行 1 / 运行子代理 1」）。状态为空 = 把我们的条目摘掉；

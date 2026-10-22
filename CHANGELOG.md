@@ -9,6 +9,43 @@ registry saw 1.5.0 as the install-script fix release).
 
 ### Added
 
+- **缓存命中率（P2，纯增量）。** `UsagePercentReading` 多带 `cache: { read, write, input, present }`
+  （取自与 `used` **同一个** 最新 usage 块，缺失记 0，无 usage 时整个读数仍是 null），
+  并新增纯函数 `cacheStatsOf(reading) → { read, write, input, hitRate }`：
+  `hitRate = read / (read + write + input)`，`0..1`。**provider 没报 `cache` 字段、或三值全 0，
+  一律 null，不是 0%**（缺字段不是 0 命中），真报了 `read: 0` 且有 input 才是 0。
+  窗口条目的那一次读数处顺带写一行轨迹 `v2-cache`
+  （`{tool:"host", step_id:"v2-cache", event:"cache", hit, read, write, input, rate}`，
+  只有数值，无正文/路径）；读不到 usage → 一行都不写。`tm_stats` 新增「### 缓存命中」小节：
+  首行是口径 caveat（各 provider 对 cache.read/write 的定义不同——自动前缀缓存 vs 显式断点，
+  跨 provider 不可比，只用于同一会话/同一 provider 的前后对比），随后是命中率（1 位小数）、
+  原始三值与样本行数；`rate` 为 null 的行只计入「另有 N 行 provider 未报 cache」，不进分母；
+  一个样本都没有时明说「没有 v2-cache 行（不是 0% 命中）」。`v2-cache` 行不进「启动与人格」小节。
+  `test-v2-adapter` 组 36b 钉住四种分母口径、每请求一行的数量（无 usage = 零行）与小节渲染。
+
+- **易变上下文搬到请求尾部（P2，`dynamicTail`，默认 `on`）。** 状态卡 / 窗口占用 / 重试指令 /
+  拆分建议这四个**每轮都可能变**的注入不再写 `event.system`，而是进进程内 sink
+  （`createDynamicSink` 的 `set / peek / take`），由**最后一个** `session.hook("context")`
+  渲染成请求末尾的**一条**消息（`{id:"team-dynamic", role:"user", content:[{type:"text"}]}`，
+  首行 `[Team 动态上下文]`，各段前一行 `### <段名>`，顺序固定 state → window → retry → advice）。
+  system 因此只携带稳定内容（角色提示、工具面、黑板注记、压缩清单），provider 的**前缀缓存**
+  才可能命中——一份 ≤300 token 的卡片曾让几万 token 的前缀每轮作废。宿主跨请求复用消息数组时，
+  追加前先剥掉旧尾部（只认我们的 marker/id，别的消息逐字节不动），因此不会一轮一条地累积；
+  **sink 为空时一个字节都不动**（这也是重放安全：宿主在进程内重放 hook，第二次 sink 已空，
+  此时再剥就会删掉刚追加的那条）。注册顺序 session → state → retry → prune → tail（最后）：
+  尾层晚于 prune（它追加的消息不会在同一请求里被当作可修剪候选），也晚于所有生产者（四个段都已就位）。
+  两行观测带 `dynamic_tail` / `dynamic_tail_msgs` / `dynamic_tail_bytes`（另有 stripped / empty /
+  foreign_skipped / no_messages / threw 五个分项），每次真实注入写一行 `v2-tail` 轨迹
+  （`{event:"tail", bytes, sections}`，无正文）。配置注册表 63 → 64 条。
+  `test-v2-adapter` 组 39 钉住 system 逐字节稳定、尾部恰一条、旧尾部剥离重建、off 对照，
+  以及重试指令的 on（尾部）/ off（system）两条路径。
+
+- **system 前缀稳定性是 P0，不是优化。** `dynamicTail: "off"` 必须与改动前**逐字节一致**：
+  四个生产者（`v2-session.ts` 的拆分建议、`v2-state.ts` 的状态卡与窗口条目、`v2-retry.ts` 的
+  重试指令）都保留原来的 `event.system` 分支，只有拿到 sink 时才走尾部；尾层在 `off` 时
+  **根本不注册**（套件按 `session.context` handler 数量差 1 钉住）。反向验证各做过一次并还原：
+  去掉剥离逻辑 ⇒「把含尾部消息的 messages 再喂一次」变红；把 `off` 分支改走 sink ⇒ off 对照变红。
+
 - **截断交接（Truncation，用户 2026-10-22 决定）。** lead 提示词新增 `## Truncation` 节
   （位于 `## Delegation` 与 `## Approval gate` 之间）：用户喊停是范围变更，不是放弃在途工作的
   许可——不再派新活、**不取消正在写文件的子代理**（`tm_join {cancel:true}` 只留给跑飞的孩子）、

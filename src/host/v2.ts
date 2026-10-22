@@ -56,6 +56,7 @@ import { applyV2RetryGovernor, createRetryGovernor, resolveRetryConfig, roleOfSe
 import type { RedriveRequest } from "./v2-retry.js"
 import { applyV2ContextPrune, resolvePruneConfig } from "./v2-prune.js"
 import { applyV2StateCard } from "./v2-state.js"
+import { applyV2DynamicTail, createDynamicSink, resolveDynamicTailConfig } from "./v2-tail.js"
 import { checkDefaultAgentRole, globalConfigDir, type DefaultAgentCheck } from "./v2-default-agent.js"
 import { createStorageLedgerStore } from "../tm/ledger.js"
 import { createTeamScope } from "./v2-scope.js"
@@ -772,11 +773,23 @@ export const v2Personality: V2Plugin = {
       }
     }
 
+    // 易变上下文搬到请求末尾 (P0).  `dynamicTail: "on"` (default) means the four
+    // volatile producers (state card, window entry, retry directive, split advice)
+    // write into ONE process-wide sink and the LAST `session.hook("context")`
+    // renders it as a single message appended to `event.messages`.  The prefix —
+    // role prompt, tool surface, board note — therefore stops changing turn to
+    // turn, which is what the provider's prefix cache keys on.
+    const dynamicTailConfig = resolveDynamicTailConfig(cfg)
+    const dynamicTailEnabled = dynamicTailConfig.enabled
+    const dynamicSink = createDynamicSink()
     const session = await applyV2SessionLayer(ctx, {
       note,
       noteAgents: ["Team"],
       plan,
       scope,
+      // `dynamicTail: "off"` hands `undefined` instead — the pre-1.9 system path,
+      // byte for byte.
+      sink: dynamicTailEnabled ? dynamicSink : undefined,
       // #49 feature 4: 拆分任务.  The layer owns no store, so the trajectory sink
       // is wired here — same shape as the retry governor's `onEvent`.
       split: resolveSplitConfig(cfg),
@@ -791,6 +804,35 @@ export const v2Personality: V2Plugin = {
     // #58: point the late-bound reader at the real observation now that the
     // request layer exists, so `v2-surface` carries `tools_in_request` too.
     tmInRequestSurface = () => (session.report.tmInRequestSurface ? "tm-in-request" : "catalog-only")
+    // 任务状态卡: the LEAD's request carries its own state — ledger totals,
+    // running children and the board root — as ONE ≤300-token entry whose sections
+    // the tail layer renders into the request's LAST message.  It reads the SAME
+    // `LedgerStore` instance `tm_ledger` writes through, and it registers after the
+    // session layer (board note already on the request) and BEFORE the retry/prune
+    // layers, so the tail layer — registered last — sees every producer's section.
+    const stateCard = await applyV2StateCard(ctx, {
+      enabled: cfg.stateCard !== "off",
+      boardRoot,
+      scope,
+      // 状态卡与窗口条目进尾部滞留区（而不是 system）——同一实例，尾层最后统一落一条消息。
+      sink: dynamicTailEnabled ? dynamicSink : undefined,
+      loadLedger: (sid) => ledgerStore.load(sid),
+      children: () => tmRuntime.hostChildren(),
+      // The prune layer keeps a CUMULATIVE count; the card renders the delta since
+      // its own previous card, because "上轮" is the only span that means anything.
+      // M1: only bodies that really WENT to the store are "已卸载（tm_fetch 可取回）"
+      // — a pruned message with an echo stub (offload off / failed) and a child
+      // report (recovered via tm_join) are different things, so counting
+      // prunedMessages here overstated what the card promised.
+      pruneCount: () => prune.report.offloaded,
+      onEvent: (row) => {
+        try {
+          tmRuntime.pipelines.store.appendTrajectory({ tool: "host", step_id: "v2-state", api: 2, ...row })
+        } catch {
+          /* a diagnostic that cannot be written never breaks the request it describes */
+        }
+      },
+    })
     // #49 feature 3: 错峰重试.  We have no seam that intercepts the model's own
     // retry, so this layer only (1) recognises a provider throttle from the event
     // feed, (2) injects an exact wait into the next request, and (3) denies new
@@ -825,7 +867,15 @@ export const v2Personality: V2Plugin = {
     })
     let redriveBound: ((req: RedriveRequest) => void) | null = null
     const retry = retryConfig.enabled
-      ? await applyV2RetryGovernor(ctx, { scope, governor: retryGovernor, onEvent: retrySink, bindRedrive: (fn) => { redriveBound = fn } })
+      ? await applyV2RetryGovernor(ctx, {
+          scope,
+          governor: retryGovernor,
+          onEvent: retrySink,
+          bindRedrive: (fn) => {
+            redriveBound = fn
+          },
+          sink: dynamicTailEnabled ? dynamicSink : undefined,
+        })
       : { registrations: [], report: retryGovernor.report, cancelRedrive: () => {} }
     registrations.push(...retry.registrations)
     // Context Pruning (plan 功能 1, #49): the request layer trims the tool
@@ -881,28 +931,16 @@ export const v2Personality: V2Plugin = {
         }
       },
     })
-    // 任务状态卡: the LEAD's request carries its own state — ledger totals,
-    // running children and the board root — as ONE ≤300-token system entry that a
-    // hash gate leaves byte-exact while nothing changes, and replaces in place
-    // when something does.  It reads the SAME `LedgerStore` instance `tm_ledger`
-    // writes through, and it registers after the session layer so the board note
-    // is already on the request.
-    const stateCard = await applyV2StateCard(ctx, {
-      enabled: cfg.stateCard !== "off",
-      boardRoot,
+    // 易变注入的尾巴 — registered LAST, after the prune layer, so the message it
+    // appends is not a pruning candidate in the same request and every producer
+    // has already written its section.  `dynamicTail: "off"` registers nothing.
+    const dynamicTail = await applyV2DynamicTail(ctx, {
       scope,
-      loadLedger: (sid) => ledgerStore.load(sid),
-      children: () => tmRuntime.hostChildren(),
-      // The prune layer keeps a CUMULATIVE count; the card renders the delta since
-      // its own previous card, because "上轮" is the only span that means anything.
-      // M1: only bodies that really WENT to the store are "已卸载（tm_fetch 可取回）"
-      // — a pruned message with an echo stub (offload off / failed) and a child
-      // report (recovered via tm_join) are different things, so counting
-      // prunedMessages here overstated what the card promised.
-      pruneCount: () => prune.report.offloaded,
+      enabled: dynamicTailEnabled,
+      sink: dynamicSink,
       onEvent: (row) => {
         try {
-          tmRuntime.pipelines.store.appendTrajectory({ tool: "host", step_id: "v2-state", api: 2, ...row })
+          tmRuntime.pipelines.store.appendTrajectory({ tool: "host", step_id: "v2-tail", api: 2, ...row })
         } catch {
           /* a diagnostic that cannot be written never breaks the request it describes */
         }
@@ -959,6 +997,7 @@ export const v2Personality: V2Plugin = {
     registrations.push(...session.registrations)
     registrations.push(...prune.registrations)
     registrations.push(...stateCard.registrations)
+    registrations.push(...dynamicTail.registrations)
     if (!session.registrations.length) {
       notes.push("ctx.session.hook 不存在：工具面裁剪、温度、黑板根目录三项请求层治理都没装上")
     }
@@ -1052,6 +1091,15 @@ export const v2Personality: V2Plugin = {
       // #49 feature 4: 拆分任务 — briefs measured and advice injected.
       split_seen: session.report.splitSeen,
       split_advised: session.report.splitAdvised,
+      // 易变注入尾部 (P0): 开关状态 + 本进程追加次数与累计字符数。
+      dynamic_tail: dynamicTail.report.enabled ? "on" : "off",
+      dynamic_tail_msgs: dynamicTail.report.messages,
+      dynamic_tail_bytes: dynamicTail.report.bytes,
+      dynamic_tail_stripped: dynamicTail.report.stripped,
+      dynamic_tail_empty: dynamicTail.report.empty,
+      dynamic_tail_foreign_skipped: dynamicTail.report.foreignSkipped,
+      dynamic_tail_no_messages: dynamicTail.report.noMessages,
+      dynamic_tail_threw: dynamicTail.report.threw,
       // #49 Context Pruning — the history-shrinking half of the budget work.
       prune_enabled: prune.report.enabled,
       prune_at_percent: prune.report.atPercent,
@@ -1316,6 +1364,15 @@ export const v2Personality: V2Plugin = {
           state_window_unchanged: stateCard.report.windowUnchanged,
           state_window_cleared: stateCard.report.windowCleared,
           state_window_absent: stateCard.report.windowAbsent,
+          // 易变注入尾部：与 surface 行同一口径（两处必须一致）。
+          dynamic_tail: dynamicTail.report.enabled ? "on" : "off",
+          dynamic_tail_msgs: dynamicTail.report.messages,
+          dynamic_tail_bytes: dynamicTail.report.bytes,
+          dynamic_tail_stripped: dynamicTail.report.stripped,
+          dynamic_tail_empty: dynamicTail.report.empty,
+          dynamic_tail_foreign_skipped: dynamicTail.report.foreignSkipped,
+          dynamic_tail_no_messages: dynamicTail.report.noMessages,
+          dynamic_tail_threw: dynamicTail.report.threw,
           // #49 feature 3: 错峰重试 — the same counter set as the surface row.
           retry_enabled: retry.report.enabled,
           retry_quota_seen: retry.report.quotaSeen,

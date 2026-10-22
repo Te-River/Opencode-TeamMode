@@ -45,6 +45,7 @@
 
 import { resolveConfig } from "../tm/config.js"
 import type { TeamScope } from "./v2-scope.js"
+import type { DynamicSink } from "./v2-tail.js"
 import type { V2Context, V2PermissionEvaluation, V2Registration, V2SessionContext } from "./v2-types.js"
 
 /** The stable prefix a human (and a test) can recognise the injected line by. */
@@ -710,6 +711,13 @@ const rank = { allow: 0, ask: 1, deny: 2 } as const
 export interface RetryLayerInput {
   scope?: TeamScope
   governor: RetryGovernor
+  /**
+   * 易变注入的尾部通道 (`dynamicTail: "on"`).  When handed in, the pending
+   * directive goes to the request's TAIL (one message at the very end) instead
+   * of `event.system`, so the prefix stays cacheable; absent = the old system
+   * push, byte-exact.
+   */
+  sink?: DynamicSink
   /** Fired for each observable outcome so the personality can write the
    *  `step_id:"v2-retry"` trajectory line — the layer owns no store. */
   onEvent?: (row: Record<string, unknown>) => void
@@ -820,12 +828,17 @@ export async function applyV2RetryGovernor(ctx: V2Context, input: RetryLayerInpu
           // The session is assembling a request on its own (host retry, or the model
           // re-issued): stand the scheduled re-drive down — the revival happened.
           cancelRedrive(sid)
-          if (!Array.isArray(event?.system)) return
+          // 尾层模式不读 system：指令进滞留区，由最后一个 context hook 拼成末尾消息。
+          if (!input.sink && !Array.isArray(event?.system)) return
           // Per-session delivery: a child's wait directive must never ride the
           // lead's request (and vice versa) — the two chains are independent.
           const d = governor.takeDirective(sid)
           if (!d) return
-          event.system.push({ type: "text", text: d.text })
+          if (input.sink) {
+            input.sink.set(sid, "retry", d.text)
+          } else {
+            event.system.push({ type: "text", text: d.text })
+          }
           report.directivesInjected++
           try {
             input.onEvent?.({ event: "injected", delay_ms: d.delayMs, session: sid })

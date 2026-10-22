@@ -4230,7 +4230,9 @@ console.log("34. 任务状态卡 — 请求侧 JIT 状态注入：一条 ≤300 
       )
 
   const tj1 = mktmp("state-card")
-  writeCfg({ trajectoryDir: tj1 })
+  // `dynamicTail: "off"` 是本组的对照：本组钉的是 **system** 注入那一条路径的
+  // 逐字节行为，尾层（默认 on）会把卡片搬到请求末尾，见组 39。
+  writeCfg({ trajectoryDir: tj1, dynamicTail: "off" })
   const w = makeFakeCtx({ directory: workspace("state-card"), agents: sixAgents })
   const boot = await withCapturedConsole(() => plugin.setup(w.ctx))
   const SID = "ses_state_lead"
@@ -4302,7 +4304,7 @@ console.log("34. 任务状态卡 — 请求侧 JIT 状态注入：一条 ≤300 
 
   // ④ an empty state is NOT a card (and it does not suppress the board note).
   const tj2 = mktmp("state-card-empty")
-  writeCfg({ trajectoryDir: tj2 })
+  writeCfg({ trajectoryDir: tj2, dynamicTail: "off" })
   const e2 = makeFakeCtx({ directory: workspace("state-card-empty"), agents: sixAgents })
   const boot2 = await withCapturedConsole(() => plugin.setup(e2.ctx))
   e2.ctx.storage._map.set("team-mode/ledger/ses_empty", { sessionID: "ses_empty", items: [{ id: 1, text: "已经收口的一项", status: "done", at: 1 }], updated: 1 })
@@ -4346,7 +4348,7 @@ console.log("34. 任务状态卡 — 请求侧 JIT 状态注入：一条 ≤300 
 
   // ⑦ `stateCard: "off"`: byte-identical to the build before this layer — it does not register.
   const tj4 = mktmp("state-card-off")
-  writeCfg({ trajectoryDir: tj4, stateCard: "off" })
+  writeCfg({ trajectoryDir: tj4, stateCard: "off", dynamicTail: "off" })
   const o = makeFakeCtx({ directory: workspace("state-card-off"), agents: sixAgents })
   const bootOff = await withCapturedConsole(() => plugin.setup(o.ctx))
   o.ctx.storage._map.set(KEY, { sessionID: SID, items: [{ id: 31, text: "有进行项也不该出现", status: "doing", at: 1 }], updated: 1 })
@@ -4363,7 +4365,7 @@ console.log("34. 任务状态卡 — 请求侧 JIT 状态注入：一条 ≤300 
   assert.equal(rows4.filter((r) => r.step_id === "v2-state").length, 0, "off 时不写 v2-state 轨迹行")
 
   // The off/on handler difference, stated as its own assertion rather than assumed.
-  writeCfg({ trajectoryDir: mktmp("state-card-on-again") })
+  writeCfg({ trajectoryDir: mktmp("state-card-on-again"), dynamicTail: "off" })
   const onAgain = makeFakeCtx({ directory: workspace("state-card-on-again"), agents: sixAgents })
   const bootOn = await withCapturedConsole(() => plugin.setup(onAgain.ctx))
   assert.equal(
@@ -4457,6 +4459,7 @@ console.log("34. 任务状态卡 — 请求侧 JIT 状态注入：一条 ≤300 
     blackboardDir: path.join(tjOff, "board"),
     pruneKeepTailPercent: 0,
     pruneOffload: "off",
+    dynamicTail: "off",
   })
   const CATsmall = [{ id: "glm", providerID: "lxns", modelID: "glm", limit: { context: 1000, output: 100 } }]
   const pOff = makeFakeCtx({ directory: workspace("state-card-prune-off"), agents: sixAgents, models: CATsmall })
@@ -4535,7 +4538,7 @@ console.log("35. 无损修剪 — 修剪前先离载，stub 带完整 tm_fetch �
   assert.equal(resolveConfig({ pruneOffload: "maybe" }).pruneOffload, "on", "无效值回落默认（不是静默关掉）")
   const offloadSpec = CONFIG_KEYS.find((k) => k.key === "pruneOffload")
   assert.ok(offloadSpec && offloadSpec.type === "string" && offloadSpec.default === "on" && offloadSpec.enum.includes("off"), "pruneOffload 是 on/off 字符串键")
-  assert.equal(CONFIG_KEYS.length, 63, "注册表 63 条（61 + pruneOffload + pruneProtectPatterns）")
+  assert.equal(CONFIG_KEYS.length, 64, "注册表 64 条（61 + pruneOffload + pruneProtectPatterns + dynamicTail）")
 
   const CAT = [{ id: "glm", providerID: "lxns", modelID: "glm", limit: { context: 1000, output: 100 } }]
   const mat = (text, role = "assistant") => ({ role, model: { providerID: "lxns", id: "glm" }, parts: [{ type: "text", text }] })
@@ -4810,7 +4813,7 @@ console.log("36. 窗口占用条目 — 独立 system 条目：最近 5% 分桶�
   assert.equal(await zeroReader("s", []), null, "没有用量 → null")
 
   const root = mktmp("state-window")
-  writeCfg({ trajectoryDir: path.join(root, "tj"), blackboardDir: path.join(root, "board") })
+  writeCfg({ trajectoryDir: path.join(root, "tj"), blackboardDir: path.join(root, "board"), dynamicTail: "off" })
   const f = makeFakeCtx({ directory: workspace("state-window"), agents: sixAgents, models: CATbig })
   const boot = await withCapturedConsole(() => plugin.setup(f.ctx))
   const SID = "ses_window"
@@ -4869,7 +4872,7 @@ console.log("36. 窗口占用条目 — 独立 system 条目：最近 5% 分桶�
 
   // ⑤ no catalog = no denominator → the entry never appears at all.
   const rootNoCat = mktmp("state-window-nocat2")
-  writeCfg({ trajectoryDir: path.join(rootNoCat, "tj"), blackboardDir: path.join(rootNoCat, "board") })
+  writeCfg({ trajectoryDir: path.join(rootNoCat, "tj"), blackboardDir: path.join(rootNoCat, "board"), dynamicTail: "off" })
   const fnc = makeFakeCtx({ directory: workspace("state-window-nocat2"), agents: sixAgents, models: [] })
   const bootNoCat = await withCapturedConsole(() => plugin.setup(fnc.ctx))
   const rnc = { agent: "team", sessionID: SID, system: [], messages: [turn(42000)], options: {}, tools: {} }
@@ -4951,7 +4954,7 @@ console.log("36b. 缓存命中 — cacheStatsOf 的分母口径（没报 cache �
 
   // ---- end to end: one row per request that HAD a reading ----
   const root = mktmp("cache-stats")
-  writeCfg({ trajectoryDir: path.join(root, "tj"), blackboardDir: path.join(root, "board") })
+  writeCfg({ trajectoryDir: path.join(root, "tj"), blackboardDir: path.join(root, "board"), dynamicTail: "off" })
   const f = makeFakeCtx({ directory: workspace("cache-stats"), agents: sixAgents, models: CAT })
   const boot = await withCapturedConsole(() => plugin.setup(f.ctx))
   const SID = "ses_cache"
@@ -5132,7 +5135,7 @@ console.log("38. 修剪保护正则 pruneProtectPatterns — 命中即不剪；�
   assert.equal(spec.type, "string", "type = string")
   assert.equal(spec.default, "", "默认空串（=关闭）")
   assert.match(String(spec.doc), /无效正则被忽略/, "doc 说明无效正则被忽略")
-  assert.equal(CONFIG_KEYS.length, 63, "注册表 63 条（62 + pruneProtectPatterns）")
+  assert.equal(CONFIG_KEYS.length, 64, "注册表 64 条（62 + pruneProtectPatterns + dynamicTail）")
   assert.deepEqual(pc({}).protectPatterns, [], "空串 = 关闭（空数组）")
   assert.equal(pc({ pruneProtectPatterns: "SECRET-FILE|^EVIDENCE BLOCK" }).protectPatterns.length, 1, "逗号分隔 = 一条正则（交替式）")
   assert.equal(pc({ pruneProtectPatterns: "a, b" }).protectPatterns.length, 2, "逗号分隔 + trim = 两条")
@@ -5222,6 +5225,166 @@ console.log("38. 修剪保护正则 pruneProtectPatterns — 命中即不剪；�
   }
 }
 console.log("   OK (命中保护正则的消息永不剪且单独计数；无效正则被忽略不抛；空串与改动前逐字节一致；键经真实人格接到修剪层)")
+
+console.log("39. 易变上下文尾部注入 dynamicTail — system 逐字节稳定；状态卡/窗口/重试/拆分建议合并为请求末尾一条消息")
+{
+  const { DYNAMIC_TAIL_MARKER, DYNAMIC_TAIL_MESSAGE_ID, createDynamicSink, renderDynamicTail, firstTextOf, isDynamicTailMessage, applyV2DynamicTail } =
+    await import("./dist/host/v2-tail.js")
+  const { STATE_CARD_MARKER } = await import("./dist/host/v2-state.js")
+  const { createTeamScope } = await import("./dist/host/v2-scope.js")
+  const { createRetryGovernor, applyV2RetryGovernor, RETRY_MARKER } = await import("./dist/host/v2-retry.js")
+  const { CONFIG_KEYS } = await import("./dist/tm/config-layers.js")
+
+  // ---- pure: 声明的渲染顺序 + 空 sink 的判据 ----
+  const s0 = createDynamicSink()
+  assert.equal(s0.take("nobody").size, 0, "没有内容 → 空 Map（不是 undefined）")
+  s0.set("s1", "advice", "advice 正文")
+  s0.set("s1", "state", "state 正文")
+  s0.set("s1", "window", "window 正文")
+  assert.equal(
+    renderDynamicTail(s0.take("s1")),
+    `${DYNAMIC_TAIL_MARKER}\n### 状态卡\nstate 正文\n### 窗口占用\nwindow 正文\n### 拆分建议\nadvice 正文`,
+    "渲染顺序是声明固定的 state → window → retry → advice（不靠 Map 插入顺序）",
+  )
+  assert.ok(!isDynamicTailMessage({ role: "user", content: [{ type: "text", text: "普通消息" }] }), "普通消息不会被认成尾部")
+
+  // ---- the key ----
+  const spec = CONFIG_KEYS.find((k) => k.key === "dynamicTail")
+  assert.ok(spec, "dynamicTail 在注册表里")
+  assert.equal(spec.type, "string", "type = string")
+  assert.equal(spec.default, "on", "默认 on")
+  assert.deepEqual(spec.enum, ["on", "off"], "enum = on / off")
+  assert.match(String(spec.doc), /前缀缓存/, "doc 说明它保的是前缀缓存")
+
+  const tjOn = mktmp("dynamic-tail")
+  writeCfg({ trajectoryDir: tjOn })
+  const h = makeFakeCtx({ directory: workspace("dynamic-tail"), agents: sixAgents })
+  const boot = await withCapturedConsole(() => plugin.setup(h.ctx))
+  const SID = "ses_tail_lead"
+  const KEY = `team-mode/ledger/${SID}`
+  const seed = (items) => h.ctx.storage._map.set(KEY, { sessionID: SID, items, updated: Date.now() })
+  const req = (messages = []) => ({ agent: "team", sessionID: SID, system: [], messages, options: {}, tools: {} })
+  const fire = async (r) => {
+    await h.hook("session.context").fire(r)
+    return r
+  }
+  const tailsOf = (r) => r.messages.filter((m) => isDynamicTailMessage(m))
+  const isCard = (p) => String(p?.text ?? "").startsWith(STATE_CARD_MARKER)
+
+  // ① system 稳定：账本变化前后各组装一次，system 逐字节相同；尾部恰好一条
+  seed([{ id: 31, text: "把易变注入搬到请求末尾", status: "doing", at: 1 }])
+  const r1 = await fire(req())
+  assert.equal(r1.system.filter(isCard).length, 0, "状态卡不在 system 里（那是前缀缓存最值钱的部分）")
+  const t1 = tailsOf(r1)
+  assert.equal(t1.length, 1, "请求末尾恰好一条动态上下文消息")
+  const text1 = firstTextOf(t1[0])
+  assert.ok(text1.startsWith(DYNAMIC_TAIL_MARKER), "首行是 [Team 动态上下文]")
+  assert.equal(t1[0].id, DYNAMIC_TAIL_MESSAGE_ID, "消息 id 是我们铸造的那个")
+  assert.equal(t1[0].role, "user", "形状 = role:user + content[type:text]")
+  assert.ok(text1.includes(STATE_CARD_MARKER) && text1.includes("#31 [doing]"), `状态卡内容在尾部消息里：${text1.slice(0, 120)}`)
+  assert.equal(r1.messages[r1.messages.length - 1], t1[0], "它是消息数组的最后一条")
+  const system1 = JSON.stringify(r1.system)
+
+  seed([
+    { id: 31, text: "把易变注入搬到请求末尾", status: "doing", at: 1 },
+    { id: 33, text: "新增一条：补边界测试", status: "open", at: 2 },
+  ])
+  const r2 = await fire(req())
+  assert.equal(JSON.stringify(r2.system), system1, "账本变化后 system 逐字节相同（前缀缓存因此可以命中）")
+  assert.ok(firstTextOf(tailsOf(r2)[0]).includes("#33 [open]"), "变化只出现在尾部")
+
+  // ② 不累积：把上一轮的 messages（含尾部消息）再喂回去 → 仍然只有一条
+  const r3 = await fire(req(r2.messages))
+  assert.equal(tailsOf(r3).length, 1, "旧的尾部被剥离后重建：仍然只有 1 条")
+  assert.equal(r3.messages.length, r2.messages.length, "消息数组长度不增长")
+  assert.ok(firstTextOf(tailsOf(r3)[0]).includes("#33 [open]"), "重建的那条带着当前账本")
+
+  // ③ 重放安全 + 空 sink 一个字节都不动（这正是 off 对照所依赖的）
+  const replayBefore = JSON.stringify(r3.messages)
+  await h.hook("session.context").fire(r3)
+  assert.equal(JSON.stringify(r3.messages), replayBefore, "同一份请求重放：sink 已空 ⇒ 消息数组逐字节不变（不会删掉刚追加的那条）")
+  seed([])
+  const r4 = await fire(req(r3.messages))
+  assert.equal(JSON.stringify(r4.messages), replayBefore, "空 sink ⇒ 消息数组一字不动（含旧的尾部）")
+
+  // ④ off：状态卡回到 system，且没有尾部消息；handler 恰好少一个（层没注册）
+  const tjOff = mktmp("dynamic-tail-off")
+  writeCfg({ trajectoryDir: tjOff, dynamicTail: "off" })
+  const o = makeFakeCtx({ directory: workspace("dynamic-tail-off"), agents: sixAgents })
+  const bootOff = await withCapturedConsole(() => plugin.setup(o.ctx))
+  o.ctx.storage._map.set(KEY, { sessionID: SID, items: [{ id: 31, text: "off 下回到 system", status: "doing", at: 1 }], updated: 1 })
+  const rOff = { agent: "team", sessionID: SID, system: [], messages: [], options: {}, tools: {} }
+  await o.hook("session.context").fire(rOff)
+  assert.equal(rOff.messages.length, 0, "off：没有任何尾部消息")
+  assert.equal(rOff.system.filter(isCard).length, 1, "off：状态卡回到 system（1.9.x 前的行为）")
+  assert.ok(String(rOff.system.find(isCard).text).startsWith(`${STATE_CARD_MARKER}\nhash:`), "off：卡片形状与改动前一致（marker + hash 行）")
+  assert.equal(
+    o.hook("session.context").handlers.length + 1,
+    h.hook("session.context").handlers.length,
+    "off 比 on 恰好少一个 session.context handler —— 尾层根本没注册",
+  )
+  await bootOff.value()
+
+  // ⑤ 重试指令：on 进尾部、system 无它；off 回到 system
+  const rf = makeFakeCtx({ directory: workspace("dynamic-tail-retry"), agents: [] })
+  const scope5 = createTeamScope(["team", "architect", "implementer", "reviewer", "tester", "researcher"])
+  const sink5 = createDynamicSink()
+  const gov5 = createRetryGovernor({ baseMs: 5000, maxMs: 60000, jitter: 0, breakAfter: 5, cooldownMs: 60000, random: () => 0.5 })
+  const retryOn = await applyV2RetryGovernor(rf.ctx, { scope: scope5, governor: gov5, sink: sink5 })
+  const tail5 = await applyV2DynamicTail(rf.ctx, { scope: scope5, sink: sink5 })
+  gov5.observe("quota exceeded", { sessionID: "ses_tail_retry" })
+  const rr = { agent: "team", sessionID: "ses_tail_retry", system: [], messages: [], tools: {} }
+  await rf.hook("session.context").fire(rr)
+  assert.equal(rr.system.length, 0, "on：system 里没有重试指令")
+  assert.equal(rr.messages.length, 1, "on：指令落在末尾那条消息里")
+  const retryText = firstTextOf(rr.messages[0])
+  assert.ok(retryText.startsWith(DYNAMIC_TAIL_MARKER) && retryText.includes(RETRY_MARKER), "on：尾部消息带着重试指令")
+  assert.ok(retryText.includes("5 秒"), `on：指令里的确切秒数没丢：${retryText}`)
+  assert.equal(retryOn.report.directivesInjected, 1, "on：注入照旧计数")
+  assert.ok(tail5.report.messages >= 1, "on：尾层记下追加次数")
+
+  const of = makeFakeCtx({ directory: workspace("dynamic-tail-retry-off"), agents: [] })
+  const gov6 = createRetryGovernor({ baseMs: 5000, maxMs: 60000, jitter: 0, breakAfter: 5, cooldownMs: 60000, random: () => 0.5 })
+  const retryOff = await applyV2RetryGovernor(of.ctx, { scope: scope5, governor: gov6 })
+  gov6.observe("quota exceeded", { sessionID: "ses_tail_retry" })
+  const ro = { agent: "team", sessionID: "ses_tail_retry", system: [], messages: [], tools: {} }
+  await of.hook("session.context").fire(ro)
+  assert.equal(ro.messages.length, 0, "off：没有尾部消息")
+  assert.equal(ro.system.length, 1, "off：指令回到 system")
+  assert.ok(String(ro.system[0].text).includes(RETRY_MARKER), "off：system 里就是那条指令")
+  assert.equal(retryOff.report.directivesInjected, 1, "off：注入同样计数")
+
+  // ⑥ 观测两行都带 dynamic_tail*
+  await boot.value()
+  const tjRows = fs
+    .readdirSync(path.join(tjOn, "runs"))
+    .flatMap((run) =>
+      fs
+        .readFileSync(path.join(tjOn, "runs", run, "steps.jsonl"), "utf8")
+        .split(/\r?\n/)
+        .filter(Boolean)
+        .map((l) => {
+          try {
+            return JSON.parse(l)
+          } catch {
+            return null
+          }
+        })
+        .filter(Boolean),
+    )
+  const shutdown = tjRows.find((r) => r.step_id === "v2-shutdown")
+  assert.ok(shutdown, "shutdown 行照旧写出")
+  assert.equal(shutdown.dynamic_tail, "on", "shutdown：dynamic_tail = on")
+  assert.ok(shutdown.dynamic_tail_msgs >= 2, "shutdown：追加次数是数字")
+  assert.ok(shutdown.dynamic_tail_bytes > 0, "shutdown：累计字符数是数字")
+  assert.equal(shutdown.dynamic_tail_threw, 0, "shutdown：hook 内部没有抛错")
+  const sameCount = (field) => (String(fs.readFileSync(path.join(path.dirname(fileURLToPath(import.meta.url)), "src", "host", "v2.ts"), "utf8")).match(new RegExp(`${field}: dynamicTail\\.report`, "g")) ?? []).length
+  for (const field of ["dynamic_tail", "dynamic_tail_msgs", "dynamic_tail_bytes"]) {
+    assert.equal(sameCount(field), 2, `${field} 在 surface 与 shutdown 两行都带（口径一致）`)
+  }
+}
+console.log("   OK (system 逐字节稳定且改变只出现在尾部；旧尾部被剥离不累积；重放/空 sink 一字不动；off 回到 system 且少一层；重试指令 on 进尾部 off 进 system)")
+
 
 
 // B5: the group count is DERIVED from the numbered group headers this file
