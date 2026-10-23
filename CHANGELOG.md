@@ -7,6 +7,12 @@ registry saw 1.5.0 as the install-script fix release).
 
 ## [Unreleased]
 
+## [1.8.5] - 2026-10-23
+
+### Fixed
+
+- **`tm_join` 的三个语义坑（用户另一个项目实测 2026-10-23）。** ① `steer` 投递给已结算的子代理会**唤醒**它（宿主原句 "Steering wakes session execution"），lead 用它发「停止」反而与新派发并发——现在非 running 的目标默认拒绝，出口是 `cancel:true` 或显式 `wake:true`。② `cancel:true` 曾只信登记状态，登记为 idle 就答「没有运行中的子代理可停」而**不调宿主**——现在显式点名的 id 一律先问宿主中断缝，按 stopped/idle/unknown/no-seam/threw 五态如实回答。③ 子会话 context 读不到正文（`child_body_missing`）时，改读**父会话**历史里的 `<subagent sessionID="…">正文</subagent>` 信封兜底，标注 `正文来源=宿主注入信封`，id 不匹配仍按缺失处理。
+
 ## [1.8.4] - 2026-10-22
 
 ### Fixed
