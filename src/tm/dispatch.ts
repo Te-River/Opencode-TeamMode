@@ -40,6 +40,22 @@
  * already calls.  What the host does NOT give is tool-level cancellation — the
  * only thing stoppable is the whole active execution (`interrupt`) — so nothing
  * here pretends that granularity exists.
+ *
+ * Waking (2026-10-23, measured in another project): steering a session that has
+ * already settled is not an interjection, it is a RESURRECTION — the host's own
+ * sentence is "Steering wakes session execution", so the line starts a second run
+ * that overlaps whatever the lead dispatched meanwhile (two processes on one
+ * device, in the incident that produced this).  A steer therefore refuses unless
+ * the registry says `running`, and the explicit `wake:true` opt-in is the only way
+ * to deliver into a settled/unknown child.  The same incident showed the mirror
+ * bug on the stop path: a settled row made `cancel:true` answer "没有运行中的
+ * 子代理可停" WITHOUT asking the host, while the woken child was in fact running.
+ * An explicitly named id is always asked of the host now.
+ *
+ * The body fallback has one more source: a settled host sub-agent's report also
+ * lives in the PARENT transcript as `<subagent sessionID="…">…</subagent>`; when
+ * the child session's context yields no assistant text, that envelope is read
+ * (exact id match, last one wins) instead of reporting `child_body_missing`.
  */
 
 import type { HostEvent, ToolDefinition, ToolResult } from "../types.js"
@@ -337,6 +353,74 @@ export function lastAssistantMessage(messages: unknown): { text: string; complet
 /** Back-compat seam: the reply text alone. */
 export function lastAssistantText(messages: unknown): string {
   return lastAssistantMessage(messages).text
+}
+
+/** Every non-empty text body a transcript carries, in message order.
+ *  Deliberately NOT filtered by role: the host's completion envelope arrives as an
+ *  ordinary (user-role) message, and dropping it here would make the fallback below
+ *  structurally dead. */
+function transcriptTexts(messages: unknown): string[] {
+  const list = Array.isArray(messages) ? messages : []
+  const out: string[] = []
+  for (const entry of list) {
+    const e = entry as { parts?: unknown; text?: unknown; type?: unknown } | null | undefined
+    if (Array.isArray(e?.parts)) {
+      const t = e.parts
+        .filter((p) => {
+          const pp = p as { type?: unknown; text?: unknown } | null | undefined
+          return pp && pp.type === "text" && typeof pp.text === "string"
+        })
+        .map((p) => String((p as { text: unknown }).text))
+        .join("\n")
+      if (t.trim()) out.push(t)
+      continue
+    }
+    if (e?.type === "text" && typeof e.text === "string" && e.text.trim()) out.push(e.text)
+  }
+  return out
+}
+
+/** The body of the LAST `<subagent sessionID="<sid>" …>…</subagent>` envelope in one
+ *  text, or null.  The id must match EXACTLY — an envelope naming another child is
+ *  never adopted, because the lead naming a session must not receive someone else's
+ *  report (the same rule `parentageOf` applies to steering). */
+function lastEnvelopeFor(text: string, sessionID: string): string | null {
+  let from = 0
+  let found: string | null = null
+  for (;;) {
+    const open = text.indexOf("<subagent", from)
+    if (open < 0) break
+    const gt = text.indexOf(">", open)
+    if (gt < 0) break
+    const tag = text.slice(open, gt + 1)
+    const close = text.indexOf("</subagent>", gt + 1)
+    if (close < 0) break
+    const id = /\bsessionID\s*=\s*(?:"([^"]*)"|'([^']*)')/.exec(tag)
+    if (id && (id[1] ?? id[2] ?? "").trim() === sessionID) {
+      const body = text.slice(gt + 1, close).trim()
+      if (body) found = body
+    }
+    from = close + "</subagent>".length
+  }
+  return found
+}
+
+/** The body the host injected into the PARENT transcript for this child, if any.
+ *  The v2 plugin can read a child's own context, but a host sub-agent's report also
+ *  arrives in the parent as a completion envelope — and on a host whose child context
+ *  answers with no assistant text (the measured `child_body_missing`), that envelope
+ *  is the only readable copy.  Null when nothing matches, so the caller keeps its
+ *  exact `child_body_missing` wording rather than inventing a third outcome. */
+export function hostEnvelopeBody(messages: unknown, sessionID: string): string | null {
+  const sid = String(sessionID ?? "").trim()
+  if (!sid) return null
+  const texts = transcriptTexts(messages)
+  // newest-first: a child re-run after a wake may have been injected more than once
+  for (let i = texts.length - 1; i >= 0; i--) {
+    const hit = lastEnvelopeFor(texts[i], sid)
+    if (hit) return hit
+  }
+  return null
 }
 
 /**
@@ -807,9 +891,30 @@ export function buildDispatchTools(deps: DispatchDeps): {
     }
   }
 
+  /** Read the completion envelope the host injected into the PARENT transcript for
+   *  this child.  Absent seam / failed call / no matching envelope all return null —
+   *  the fallback may not turn "I could not look" into a body. */
+  async function envelopeFromParent(
+    parent: string,
+    sid: string,
+    directory: string | undefined,
+  ): Promise<string | null> {
+    if (!parent || !sid || parent === sid) return null
+    if (typeof api?.messages !== "function") return null
+    try {
+      const raw = await api.messages({ path: { id: parent }, ...(directory ? { query: { directory } } : {}) })
+      const un = unwrapClientResult(raw)
+      if (!un.ok) return null
+      return hostEnvelopeBody(un.data, sid)
+    } catch {
+      return null
+    }
+  }
+
   function fetchReply(
     sid: string,
     directory: string | undefined,
+    parentSessionID?: string,
   ): Promise<{
     text: string
     completedAt?: number
@@ -849,9 +954,19 @@ export function buildDispatchTools(deps: DispatchDeps): {
           bodyComplete: typeof got.completedAt === "number",
           ...(typeof got.completedAt === "number" ? { bodyCompletedAt: got.completedAt } : {}),
         }
-        return got.text
+        return got.text.trim()
           ? { ...got, via, ...(shape ? { shape } : {}), ...completeness }
-          : { text: "", error: got.error, via, ...(shape ? { shape } : {}), ...completeness }
+          : await (async () => {
+              // C: the child's own context answered with no assistant text.  Before
+              // reporting `child_body_missing`, look for the host's completion envelope
+              // in the parent — for a host sub-agent that IS the delivered report, and a
+              // lead that cannot read it has to re-dispatch work that already landed.
+              const envelope = await envelopeFromParent(parentSessionID ?? "", sid, directory)
+              if (envelope) {
+                return { text: envelope, via: "host-envelope", shape: "parent-envelope", bodyComplete: true }
+              }
+              return { text: "", error: got.error, via, ...(shape ? { shape } : {}), ...completeness }
+            })()
       } catch (err) {
         return { text: "", error: describeHostError((err as { message?: unknown })?.message ?? err, 140), bodyComplete: false }
       }
@@ -1013,10 +1128,10 @@ export function buildDispatchTools(deps: DispatchDeps): {
     description: `Collect the sub-agent work attached to THIS session — the read-back side of delegation. You reach for it in two situations: the host's background \`task\` finished and TeamMode replaced its injected reply with a preview (pull the whole thing back with \`{ ids: ["<child session>"] }\`), or a dispatched child from before this build is still open and needs collecting or cancelling.
 - No args: status snapshot of every open child of THIS session — running / idle(done) / error, with elapsed seconds.  Cheap and non-blocking: use it to decide whether to keep working or start merging.
 - { waitMs: 30000 }: bounded wait (capped at ${waitLabel(maxWaitMs)}) until every child settles.  A wait BLOCKS YOU — your turn is parked in this tool call, so it is the synchronous \`task\` experience with none of its visibility.  Wait once, briefly, and only when the very next step needs the answer; a second consecutive wait after nothing settled is cut to 10s and answered with what to do instead.  Never wait for a child whose result you do not need — abort it instead ({ cancel: true }).
-- { ids: [...] }: restrict to those child sessions — a host \`task\` child is collectable when you NAME it (its parentage is verified against the host's own session tree, never assumed); { cancel: true }: abort still-running ones.
-- Steer a child while it runs — the same call, no separate tool: { steer: "先停手，验收改成 X", ids: ["<child>"] } admits the line into that child's inbox with delivery "steer" (or "queue") and the host wakes execution at the step boundary.  已受理 is the whole claim: it is NOT proof the child read it, and the reply never says 已送达.  { unread: true, ids: ["<child>"] } lists that child's undelivered inbox items (ids + shape only, never the body); { unsend: {"sessionID":"ses_…","inboxID":"msg_…"} } withdraws one that has not been delivered — an already-delivered item is the documented no-op and is reported as one.  All three ask the host for parentage FIRST and refuse a session that is not yours; a host without the seam answers no-seam instead of pretending.
+- { ids: [...] }: restrict to those child sessions — a host \`task\` child is collectable when you NAME it (its parentage is verified against the host's own session tree, never assumed); { cancel: true }: abort still-running ones.  With explicit ids the host is ALWAYS asked, even for a row this process believes settled — a settled-looking row can have been woken and be running for real.
+- Steer a child while it runs — the same call, no separate tool: { steer: "先停手，验收改成 X", ids: ["<child>"] } admits the line into that child's inbox with delivery "steer" (or "queue") and the host wakes execution at the step boundary.  已受理 is the whole claim: it is NOT proof the child read it, and the reply never says 已送达.  Steer REFUSES a child whose registered state is not running (idle / error / unknown), because the host's doc sentence "Steering wakes session execution" means the line starts a second run that overlaps new dispatches — pass { wake: true } to do that deliberately.  { unread: true, ids: ["<child>"] } lists that child's undelivered inbox items (ids + shape only, never the body); { unsend: {"sessionID":"ses_…","inboxID":"msg_…"} } withdraws one that has not been delivered — an already-delivered item is the documented no-op and is reported as one.  All three ask the host for parentage FIRST and refuse a session that is not yours; a host without the seam answers no-seam instead of pretending.
 - A plugin/host restart does NOT orphan a child: those the host still lists under your session are re-adopted automatically (their rows are marked 接管), and one that answered while nobody was listening is reported 已完成, not lost.
-- Replies come back through the offload pipeline: a long sub-agent report arrives as a handle + ≤80-token preview (page it with tm_fetch), so a batch of parallel work does not multiply your context.  STATUS: blocked/failed children are surfaced first, always.`,
+- Replies come back through the offload pipeline: a long sub-agent report arrives as a handle + ≤80-token preview (page it with tm_fetch), so a batch of parallel work does not multiply your context.  STATUS: blocked/failed children are surfaced first, always.  When a child's own session yields no assistant text, the host's injected \`<subagent sessionID="…">…</subagent>\` envelope in THIS session is read as the body and labelled 正文来源=宿主注入信封 (an id must match exactly).`,
     args: {
       ids: { descriptor: "ids: string[] (optional — only these child sessions)" },
       waitMs: { descriptor: `waitMs: number (optional 0..${maxWaitMs} — bounded wait; a SECOND consecutive wait is cut to 10s, because waiting is not parallel work)` },
@@ -1037,6 +1152,10 @@ export function buildDispatchTools(deps: DispatchDeps): {
       delivery: {
         descriptor:
           "delivery: steer|queue (optional, default steer — applies to steer only. Any other value is refused rather than silently defaulted.)",
+      },
+      wake: {
+        descriptor:
+          "wake: boolean (optional, default false — steer only. A steer into a settled/idle child is REFUSED unless this is true, because the host wakes execution and the child then overlaps new dispatches. Accepts true/false or the strings \"true\"/\"false\".)",
       },
       unread: {
         descriptor:
@@ -1146,6 +1265,47 @@ export function buildDispatchTools(deps: DispatchDeps): {
             : `${target} · ${gate.agent} ·（本进程没有它的登记行，归属由宿主确认）`
 
           if (steerText) {
+            // A steer into a session that is not running is a WAKE, not an interjection:
+            // the host's own doc says "Steering wakes session execution", so it starts a
+            // second run that overlaps whatever the lead dispatched meanwhile.  Measured
+            // cost: a settled child was woken this way and ran concurrently with a fresh
+            // worker, two processes on one device.  Default = refuse; `wake:true` is the
+            // explicit opt-in, and the value is coerced the way the rest of this tool's
+            // boolean args are (`cancel`/`unread` above): boolean or "true"/"false".
+            const wakeRaw = args.wake
+            let wakeRequested = false
+            if (wakeRaw !== undefined && wakeRaw !== null) {
+              if (wakeRaw === true || wakeRaw === false) wakeRequested = wakeRaw
+              else if (typeof wakeRaw === "string" && /^(true|false)$/i.test(wakeRaw.trim())) {
+                wakeRequested = /^true$/i.test(wakeRaw.trim())
+              } else {
+                return toToolResult(
+                  tmError(tool, "args", `wake 只接受 true/false（布尔或 "true"/"false" 字符串），收到 ${shorten(String(wakeRaw), 24)}，未发送。`),
+                )
+              }
+            }
+            // The registry can be stale in the dangerous direction too (an event we
+            // missed would leave a settled child looking running); ask the host before
+            // trusting "running" when it offers a status map.
+            if (row && row.state === "running" && typeof api?.status === "function") {
+              await refreshFromStatus(directory)
+            }
+            const rowState = row?.state
+            if (rowState !== "running" && !wakeRequested) {
+              log({
+                step_id: "join",
+                event: "steer_refused",
+                child: target,
+                agent: gate.agent,
+                reason: "not-running",
+                state: rowState ?? "unregistered",
+                // the LENGTH, never the text — R6 binds the audit trail as much as the reply
+                chars: steerText.length,
+              })
+              return toToolResult(
+                `没有发送：该子代理已结算（或状态未知）；插话会唤醒它并与新派发并发——要停止用 cancel:true，要复活请显式 wake:true。\n目标：${rowLine}`,
+              )
+            }
             let outcome: SteerOutcome = "no-seam"
             let inboxID: string | undefined
             let note: string | undefined
@@ -1170,6 +1330,7 @@ export function buildDispatchTools(deps: DispatchDeps): {
               delivery,
               outcome,
               ok: outcome === "steered",
+              wake: wakeRequested,
               ...(inboxID ? { inboxID } : {}),
               ...(seam ? { seam } : {}),
               // the LENGTH, never the text — R6 binds the audit trail as much as the reply
@@ -1179,8 +1340,8 @@ export function buildDispatchTools(deps: DispatchDeps): {
             tally[outcome] = 1
             log({ step_id: "join", event: "steer_summary", count: 1, outcomes: steerOutcomeParts(tally).join(" / ") })
             const wake =
-              row && row.state !== "running"
-                ? `\n它现在不是运行中（${row.state === "error" ? "失败" : "已结算"}）；按文档 steer 会唤醒它的执行，但唤醒之后它做什么，要等它结算才看得到。`
+              outcome === "steered" && wakeRequested && row && row.state !== "running"
+                ? `\n已按 wake:true 唤醒：它当时不是运行中（${row.state === "error" ? "失败" : "已结算"}），宿主把这条插话当成新的执行输入——它会和新派发的 worker 并发，留意这一点。`
                 : ""
             return toToolResult(
               `插话目标：${rowLine}\n插话结果：${steerVerdictLine(outcome, { inboxID, note, seam })}\n插话计数：${steerOutcomeParts(tally).join(" · ")}${wake}`,
@@ -1317,38 +1478,77 @@ export function buildDispatchTools(deps: DispatchDeps): {
         let cancelTally: Partial<Record<CancelOutcome, number>> | null = null
         if (args.cancel === true || args.cancel === "true") {
           cancelTally = {}
-          for (const r of stillRunning) {
+          // B: an EXPLICITLY named id is always asked of the host.  The registry is this
+          // process's memory, not the host's truth — the live failure was a row settled
+          // HERE while the host had just been made to run it by a steer, and the old loop
+          // over `stillRunning` answered "没有运行中的子代理可停" without ever calling the
+          // host.  With no ids the shipped behaviour stays ("only those we still believe
+          // are running"), because "cancel everything" must not interrogate every settled
+          // child of the session.
+          const cancelTargets = idFilter ? mine.filter((r) => idFilter.has(r.sessionID)) : stillRunning
+          for (const r of cancelTargets) {
+            const wasRunning = r.state === "running"
             let outcome: CancelOutcome
             let note: string | undefined
             if (typeof api?.abort === "function") {
-              // v1's path, byte-exact and FIRST: the personality is frozen and a shipped
-              // test pins "aborted on request".
+              // v1's path, byte-exact and FIRST for a RUNNING row: the personality is
+              // frozen and a shipped test pins "aborted on request".
               const un = unwrapClientResult(await api.abort({ path: { id: r.sessionID } }))
-              outcome = un.ok ? "stopped" : "threw"
-              r.error = un.ok ? "aborted on request" : `abort failed: ${shorten(un.message ?? "", 60)}`
-              r.state = "error"
+              if (wasRunning) {
+                outcome = un.ok ? "stopped" : "threw"
+                r.error = un.ok ? "aborted on request" : `abort failed: ${shorten(un.message ?? "", 60)}`
+                r.state = "error"
+              } else {
+                // v1's abort returns no `interrupted` boolean, so an already-settled row
+                // cannot honestly be called stopped OR failed from this answer.
+                outcome = un.ok ? "unknown" : "threw"
+                note = un.ok ? "v1 的 abort 不返回 interrupted 布尔" : un.message
+                r.cancelNote = cancelVerdictLine(outcome, note)
+              }
             } else if (typeof api?.interrupt === "function") {
               const got = cancelOutcomeOf(await api.interrupt({ path: { id: r.sessionID } }))
               outcome = got.outcome
               note = got.note
-              // `idle` is the host saying there was no active execution: the registry row
-              // was stale, not a failed stop. Anything else closes as undelivered.
-              r.state = outcome === "idle" ? "idle" : "error"
               r.cancelNote = cancelVerdictLine(outcome, note)
-              if (r.state === "error") r.error = r.cancelNote
+              if (wasRunning) {
+                // `idle` is the host saying there was no active execution: the registry row
+                // was stale, not a failed stop. Anything else closes as undelivered.
+                r.state = outcome === "idle" ? "idle" : "error"
+                if (r.state === "error") r.error = r.cancelNote
+              } else if (outcome === "stopped") {
+                // A row we believed settled was in fact executing (a woken session is the
+                // measured case): the host just stopped it, and the row must say so.
+                r.state = "error"
+                r.error = r.cancelNote
+              }
+              // idle / unknown / no-seam / threw on an already-settled row leave its settle
+              // verdict alone — the stop attempt is extra evidence, not a re-settlement.
             } else {
               outcome = "no-seam"
-              r.error = "宿主无 abort 接口，未取消"
-              r.state = "error"
+              if (wasRunning) {
+                r.error = "宿主无 abort 接口，未取消"
+                r.state = "error"
+              } else {
+                r.cancelNote = cancelVerdictLine("no-seam")
+              }
             }
-            r.finishedAt = now()
+            if (wasRunning || r.finishedAt === undefined) r.finishedAt = now()
             cancelTally[outcome] = (cancelTally[outcome] ?? 0) + 1
-            log({ step_id: "join", event: "cancel", child: r.sessionID, agent: r.agent, outcome, ok: outcome === "stopped" })
+            log({
+              step_id: "join",
+              event: "cancel",
+              child: r.sessionID,
+              agent: r.agent,
+              outcome,
+              explicit: Boolean(idFilter),
+              was_running: wasRunning,
+              ok: outcome === "stopped",
+            })
           }
           log({
             step_id: "join",
             event: "cancel_summary",
-            count: stillRunning.length,
+            count: cancelTargets.length,
             outcomes: cancelOutcomeParts(cancelTally).join(" / "),
           })
         }
@@ -1364,7 +1564,13 @@ export function buildDispatchTools(deps: DispatchDeps): {
         if (cancelTally) {
           const parts = cancelOutcomeParts(cancelTally)
           header.push(
-            `取消尝试：${parts.join(" · ") || "没有运行中的子代理可停"} —— ` +
+            `取消尝试：${
+              parts.join(" · ") ||
+              // Never leave "没有运行中的子代理可停" as the ONLY answer: with no ids the
+              // default restricted the attempt to rows we believed running, and the lead
+              // must know that a settled-looking row was therefore not asked about.
+              "没有运行中的子代理可停（未显式给 ids 时只对登记为运行中的子代理发起取消；若你怀疑某个已结算的子会话其实在跑，用 ids 点名——我会先去问宿主）"
+            } —— ` +
               `只有「已由宿主中断」是宿主确认过的停止；「空闲未中断」说明它当时没在活动执行里` +
               `（登记行过时了，不是失败）；「未确认」说明中断调用成功但宿主没回 interrupted 布尔。` +
               `这三种结论不要混成一句"已取消"转述给用户。`,
@@ -1468,7 +1674,7 @@ export function buildDispatchTools(deps: DispatchDeps): {
         const bodyStatus: string[] = []
         if (wantText) {
           for (const r of collectible) {
-            const reply = await fetchReply(r.sessionID, directory)
+            const reply = await fetchReply(r.sessionID, directory, parent)
             const text = reply.text
             r.bodyComplete = reply.bodyComplete === true
             r.bodyCompletedAt = reply.bodyCompletedAt
@@ -1482,7 +1688,10 @@ export function buildDispatchTools(deps: DispatchDeps): {
             bodyStatus.push(
               `正文：${!hasBody ? "缺失" : r.bodyComplete ? "完整" : half ? "半截（推定）" : "未带完成时间"} · ${r.agent} "${r.label}"`,
             )
-            const src = text && reply.via ? ` ·正文来源=${reply.via}` : ""
+            // C labels the fallback in the lead's words: the body above came from the
+            // host's own completion injection, not from the child's session context.
+            const viaLabel = reply.via === "host-envelope" ? "宿主注入信封" : reply.via
+            const src = text && viaLabel ? ` ·正文来源=${viaLabel}` : ""
             // Which seam answered, per child — an id, a seam name and the SHAPE it saw, never
             // a body (R6 binds a diagnostic too). This is the line that makes "正文来源=…"
             // checkable later, and the only place the three outcomes stay distinguishable:

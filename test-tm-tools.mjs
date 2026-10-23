@@ -2760,6 +2760,154 @@ try {
         }
       }
 
+      // ── A/B/C: wake-gated steer, explicit-id cancel, parent-envelope body ──────
+      // Measured live in another project, twice in one day: (1) a steer to an already
+      // settled child WOKE it (host doc: "Steering wakes session execution") and it ran
+      // concurrently with a fresh worker; (2) `cancel:true` then answered "没有运行中的
+      // 子代理可停" without calling the host, because the registry row was idle; (3) the
+      // settled child's reply was unreadable in its own context, while the host had already
+      // injected it into the PARENT as `<subagent sessionID=…>…</subagent>`.
+      {
+        const V2LEAD = { agent: "team", sessionID: "ses_v2lead", directory: "." }
+        const envelope = (sid, body, state = "completed") => `<subagent sessionID="${sid}" state="${state}">${body}</subagent>`
+        const rowsOf = (rt) =>
+          fs.existsSync(rt.store.trajectoryFile())
+            ? fs.readFileSync(rt.store.trajectoryFile(), "utf8").split(/\r?\n/).filter(Boolean).map((l) => JSON.parse(l))
+            : []
+        // The v2 steer seam, minimal: only the methods tm_join reads, and every one of
+        // them counts its calls — the assertions below are about whether the host was
+        // ASKED, not about how the answer was worded.
+        const v2JoinFake = (over = {}) => {
+          const calls = { messages: [], prompt: [], interrupt: [], get: [], status: [] }
+          const ns = {
+            __sdkNamespace: "session",
+            v2SteerSeam: true,
+            messages: async function (o) {
+              assert.equal(this?.__sdkNamespace, "session", "session.messages must be called as a METHOD")
+              calls.messages.push(o.path.id)
+              return { ok: true, data: (over.messages ?? {})[o.path.id] ?? [] }
+            },
+            get: async function (o) {
+              assert.equal(this?.__sdkNamespace, "session", "session.get must be called as a METHOD")
+              calls.get.push(o.path.id)
+              return { ok: true, data: { id: o.path.id, parentID: (over.parents ?? {})[o.path.id], agent: "implementer" } }
+            },
+            status: async function () {
+              assert.equal(this?.__sdkNamespace, "session", "session.status must be called as a METHOD")
+              calls.status.push(1)
+              return { ok: true, data: over.statusMap ?? {} }
+            },
+            interrupt: async function (o) {
+              assert.equal(this?.__sdkNamespace, "session", "session.interrupt must be called as a METHOD")
+              calls.interrupt.push(o.path.id)
+              return { data: { outcome: over.interruptOutcome ?? "idle", message: over.interruptMessage } }
+            },
+            prompt: async function (o) {
+              assert.equal(this?.__sdkNamespace, "session", "session.prompt must be called as a METHOD")
+              calls.prompt.push(o)
+              return { data: { outcome: "steered", inboxID: over.inboxID ?? "msg_w1", seam: "session.prompt" } }
+            },
+          }
+          return { client: { session: ns }, calls }
+        }
+        const v2Runtime = async (name, over) => {
+          const f = v2JoinFake(over)
+          const rt = await mkRuntime({ directory: mktmp(name), client: f.client, $: fake$Ok("") }, {})
+          return { rt, calls: f.calls }
+        }
+        const settle = (rt, sid, agent = "implementer", label = "跑") => {
+          assert.equal(
+            rt.registerHostChild({ sessionID: sid, parentSessionID: "ses_v2lead", agent, label }),
+            true,
+            "the host child is registered the way v2-subagent does it",
+          )
+          assert.equal(rt.settleHostChild(sid, "completed"), true, "and settled the way the host envelope does")
+        }
+
+        // A. steer to a SETTLED child refuses by default; wake:true delivers
+        {
+          const { rt, calls } = await v2Runtime("join-steer-wake", { parents: { ses_kidA: "ses_v2lead" } })
+          settle(rt, "ses_kidA")
+          const refused = await rt.tools.tm_join.execute({ steer: "停止", ids: ["ses_kidA"] }, V2LEAD)
+          assert.equal(calls.prompt.length, 0, "A: a settled child is NOT steered by default — nothing reaches the host")
+          assert.ok(refused.output.includes("插话会唤醒它"), "A: the refusal names the wake hazard: " + refused.output.replace(/\n/g, " | ").slice(0, 240))
+          assert.ok(refused.output.includes("cancel:true") && refused.output.includes("wake:true"), "A: and both escape hatches")
+          assert.ok(refused.output.includes("已结算"), "A: and says the row is settled, not running")
+          const woke = await rt.tools.tm_join.execute({ steer: "继续修 B", ids: ["ses_kidA"], wake: "true" }, V2LEAD)
+          assert.equal(calls.prompt.length, 1, "A: wake:\"true\" (the string form) is the explicit opt-in and it delivers")
+          assert.match(calls.prompt[0].text, /继续修 B/, "A: carrying the line itself")
+          assert.ok(woke.output.includes("已按 wake:true 唤醒"), "A: the reply states the wake was explicit")
+          assert.ok(woke.output.includes("已受理"), "A: the ordinary acceptance verdict still rides along")
+          const bad = await rt.tools.tm_join.execute({ steer: "x", ids: ["ses_kidA"], wake: "sure" }, V2LEAD)
+          assert.equal(calls.prompt.length, 1, "A: an invalid wake value is refused BEFORE any host write")
+          assert.ok(bad.output.includes("wake 只接受"), "A: and the args error names the accepted spellings")
+          await rt.dispose()
+        }
+
+        // B. cancel:true with an EXPLICIT id always asks the host, even when our row is idle
+        {
+          const { rt, calls } = await v2Runtime("join-cancel-explicit", { parents: { ses_kidB: "ses_v2lead" }, interruptOutcome: "idle" })
+          settle(rt, "ses_kidB", "tester", "测 B")
+          const idleCancel = await rt.tools.tm_join.execute({ cancel: true, ids: ["ses_kidB"] }, V2LEAD)
+          assert.equal(calls.interrupt.length, 1, "B: the host interrupt seam was CALLED once for the named child")
+          assert.equal(calls.interrupt[0], "ses_kidB", "B: against that child's own id")
+          assert.ok(idleCancel.output.includes("空闲未中断"), "B: interrupted=false is reported as the host's real answer (idle), not refused and not \"已停止\"")
+          const defaultCancel = await rt.tools.tm_join.execute({ cancel: true }, V2LEAD)
+          assert.equal(calls.interrupt.length, 1, "B: the no-ids default still only asks about rows believed running")
+          assert.ok(defaultCancel.output.includes("用 ids 点名"), "B: and names the escape hatch instead of leaving the old sentence as the whole answer")
+          await rt.dispose()
+        }
+
+        // C. the child context has no body → the host's PARENT envelope is the fallback
+        {
+          const parentMessages = [
+            { info: { role: "user" }, parts: [{ type: "text", text: "brief" }] },
+            { info: { role: "assistant" }, parts: [{ type: "text", text: "已派发" }] },
+            {
+              // two envelopes in ONE message for the same child: the LAST one wins
+              info: { role: "user" },
+              parts: [
+                {
+                  type: "text",
+                  text:
+                    envelope("ses_kidC", "STATUS: done\nEVIDENCE: 旧正文，不该被取") + "\n" +
+                    envelope("ses_kidC", "STATUS: done\nEVIDENCE: 信封里的正文"),
+                },
+              ],
+            },
+            { info: { role: "user" }, parts: [{ type: "text", text: envelope("ses_other", "STATUS: done\nEVIDENCE: 别人的正文") }] },
+          ]
+          const { rt } = await v2Runtime("join-envelope", {
+            parents: { ses_kidC: "ses_v2lead" },
+            messages: { ses_v2lead: parentMessages },
+          })
+          settle(rt, "ses_kidC", "implementer", "跑 C")
+          const got = await rt.tools.tm_join.execute({ ids: ["ses_kidC"] }, V2LEAD)
+          assert.ok(got.output.includes("信封里的正文"), "C: the parent envelope supplies the body when the child context has none")
+          assert.ok(!got.output.includes("旧正文"), "C: within one message the LAST matching envelope wins")
+          assert.ok(!got.output.includes("别人的正文"), "C: an envelope for another session is never adopted")
+          assert.ok(got.output.includes("正文来源=宿主注入信封"), "C: and the block labels exactly where the body came from")
+          assert.ok(got.output.includes("正文：完整"), "C: a completion envelope is a finished body, not a fragment")
+          const bodyRow = rowsOf(rt).filter((e) => e.event === "child_body" && e.child === "ses_kidC").pop()
+          assert.equal(bodyRow?.via, "host-envelope", "C: the trajectory records the seam that actually answered")
+          await rt.dispose()
+        }
+        {
+          // no matching envelope → the exact old reading, `child_body_missing`, unchanged
+          const { rt } = await v2Runtime("join-envelope-miss", {
+            parents: { ses_kidD: "ses_v2lead" },
+            messages: { ses_v2lead: [{ info: { role: "user" }, parts: [{ type: "text", text: envelope("ses_someone_else", "不是它的正文") }] }] },
+          })
+          settle(rt, "ses_kidD", "reviewer", "审 D")
+          const none = await rt.tools.tm_join.execute({ ids: ["ses_kidD"] }, V2LEAD)
+          assert.ok(none.output.includes("正文：缺失"), "C: no matching envelope keeps the unchanged missing-body status")
+          assert.ok(!none.output.includes("宿主注入信封") && !none.output.includes("不是它的正文"), "C: a mismatched envelope is neither used nor quoted")
+          const missRow = rowsOf(rt).filter((e) => e.event === "child_body_missing" && e.child === "ses_kidD").pop()
+          assert.ok(missRow, "C: the mismatch still reports child_body_missing — the wording did not move")
+          await rt.dispose()
+        }
+      }
+
       // the pure helpers that outlived the dispatcher
       assert.deepEqual(dmod.parseIdList('["ses_a","ses_b"]'), ["ses_a", "ses_b"], "a JSON-array string parses (real models send this)")
       assert.deepEqual(dmod.parseIdList(["ses_a", " ses_b "]), ["ses_a", "ses_b"], "a real array still parses (trimmed)")
@@ -2775,7 +2923,7 @@ try {
       assert.equal(dmod.parseDispatchTitle("Explore the repo (@tester subagent)", ["tester"]), null, "a host task child's title never parses — that is what the marker is for")
       assert.equal(dmod.parseDispatchTitle("随便一个会话", ["tester"]), null, "an ordinary session is not ours")
     }
-    console.log("10. tm_dispatch removed (not registered, lead denied) + tm_join as the collect side: adoption of leftovers (both title shapes) with a host task child never claimed on speculation, named-id claims verified against host parentage, status/event settle, cancel, offloaded fat replies, the wait budget and its chained-wait cut, the presumed-settle body-completeness warning (complete / half / missing), the goal tripwire with the todowrite escape, and the pure helpers")
+    console.log("10. tm_dispatch removed (not registered, lead denied) + tm_join as the collect side: adoption of leftovers (both title shapes) with a host task child never claimed on speculation, named-id claims verified against host parentage, status/event settle, cancel, offloaded fat replies, the wait budget and its chained-wait cut, the presumed-settle body-completeness warning (complete / half / missing), the goal tripwire with the todowrite escape, the wake-gated steer + explicit-id cancel (host always asked) + parent-envelope body fallback, and the pure helpers")
   }
 
   // ---------- 11. bash timeout clamp — RETIRED with the v1 personality ----------
