@@ -93,13 +93,27 @@ export interface ChildRecord {
    *  through this tool — so the row reports state and the settle moment and must never
    *  be rendered as if we held the text. */
   via?: "host-injection"
-  /** How this row reached its settled state.  `event` is the host naming the child
-   *  session in a `session.idle`; `parent-idle` is the inference that a still-running
-   *  host child of a session that just went idle has been collected by the host — the
-   *  v2 plugin ctx gives no way to read a child's state directly, and a row that stayed
-   *  运行中 forever would be the same overstated claim in the opposite direction.  A
-   *  presumption is printed as one. */
-  settleSource?: "event" | "parent-idle" | "injection"
+  /** How this row reached its settled state — four sources, kept apart because their
+   *  EVIDENCE differs:
+   *   - `event`: the host named this child session in a `session.idle`;
+   *   - `injection`: the host's own completion envelope reached the parent;
+   *   - `session-get`: the host's own `session.get` record carried a `time.idle` — the
+   *     strongest source, and the only one that also carries the host's `outcome` word;
+   *   - `parent-idle`: an INFERENCE, now only a fallback for a host that cannot be asked:
+   *     a still-running host child of a session that just went idle has been collected.
+   *     Printed as a presumption, never as 完成.
+   *  Measured on 2.1.4: a child's own `session.idle` is not forwarded to plugin subscribers,
+   *  while `session.get({sessionID})` answers `time.idle` on an idle session — so the
+   *  presumption is the fallback, not the default. */
+  settleSource?: "event" | "parent-idle" | "injection" | "session-get"
+  /** The host's own `outcome` word for the finished run (`succeeded`, …), copied verbatim
+   *  and never translated: it is the only first-hand statement about how it ended. */
+  outcome?: string
+  /** The host's own run window from `session.get`: `time.created` / `time.idle`.  Reported
+   *  as the child's duration instead of ours (an adopted row's `startedAt` is our discovery
+   *  moment, not the run's start). */
+  hostCreatedAt?: number
+  hostIdleAt?: number
   /** Whether the body tm_join actually READ was a finished turn: true only when the last
    *  assistant message carried `time.completed`.  Absent/false is NOT "the child failed" —
    *  it is the measurement that lets a presumed settle avoid presenting the text written
@@ -218,6 +232,50 @@ export function sessionApiOf(client: unknown): SessionApi | null {
   const api = session as SessionApi
   if (typeof api.messages !== "function") return null
   return api
+}
+
+/** What the host's own `session.get` said about ONE session, reduced to the facts that can
+ *  settle a row.  Measured on 2.1.4: `ctx.session.get({sessionID})` returns
+ *  `{id, projectID, agent, model, cost, tokens, outcome, time:{created, updated, idle, viewed},
+ *  title, permissions, location}` — `time.idle` exists exactly when the session has finished
+ *  a run, and `outcome` is the host's own word for how it went.
+ *
+ *  `answered:false` means "we could not ask", NEVER "it is still running".  The two lead to
+ *  opposite conclusions (fall back to the presumption vs keep 运行中), so they stay separate
+ *  fields rather than one boolean plus a guess. */
+export interface HostSessionState {
+  answered: boolean
+  createdAt?: number
+  idleAt?: number
+  outcome?: string
+}
+
+export async function readHostSessionState(
+  api: SessionApi | null,
+  sessionID: string,
+): Promise<HostSessionState> {
+  const id = String(sessionID ?? "").trim()
+  if (!api || typeof api.get !== "function" || !id) return { answered: false }
+  try {
+    // The flat `{sessionID}` spelling is the measured one; the v2 bridge also retries the
+    // older `{path:{id}}` shape, so either call convention still lands.
+    const un = unwrapClientResult(await api.get({ sessionID: id }))
+    if (!un.ok) return { answered: false }
+    const d = un.data as { time?: { created?: unknown; idle?: unknown }; outcome?: unknown } | null | undefined
+    if (!d || typeof d !== "object") return { answered: false }
+    const createdAt = typeof d.time?.created === "number" && d.time.created > 0 ? d.time.created : undefined
+    const idleAt = typeof d.time?.idle === "number" && d.time.idle > 0 ? d.time.idle : undefined
+    const outcome = typeof d.outcome === "string" && d.outcome.trim() ? d.outcome.trim() : undefined
+    return {
+      answered: true,
+      ...(createdAt ? { createdAt } : {}),
+      ...(idleAt ? { idleAt } : {}),
+      ...(outcome ? { outcome } : {}),
+    }
+  } catch {
+    // A throwing seam is "we could not ask" — never "it settled".
+    return { answered: false }
+  }
 }
 
 /** The host's OWN visible-and-non-blocking sub-agent path: its built-in `task`
@@ -473,11 +531,29 @@ export function describeHostError(err: unknown, max = 220): string {
 export const INCOMPLETE_PRESUMED_BODY_WARNING =
   "⚠ 推定结算且正文未带完成时间：这可能是最后一次工具调用前的半截话，不要据此判定交付；稍后再次 tm_join 可复核（或让子代理续跑）。"
 
-/** One child's status line — the lead reads these, so keep them terse. */
+/** One child's status line — the lead reads these, so keep them terse.  The tag is chosen by
+ *  the settle SOURCE, because the same word would otherwise cover a host-confirmed finish, an
+ *  unreachable seam and a guess: only `session-get` may print the host's outcome, and nothing
+ *  but a real settlement may print 完成. */
 export function renderChildLine(c: ChildRecord, elapsedMs: number): string {
   const secs = Math.round(elapsedMs / 1000)
+  const hostRunSecs =
+    c.hostIdleAt !== undefined && c.hostCreatedAt !== undefined && c.hostIdleAt > c.hostCreatedAt
+      ? Math.round((c.hostIdleAt - c.hostCreatedAt) / 1000)
+      : secs
   const tag =
-    c.state === "running" ? `运行中 ${secs}s` : c.state === "error" ? `失败：${shorten(c.error ?? "", 80)}` : `已完成 ${secs}s`
+    c.state === "running"
+      ? `运行中 ${secs}s`
+      : c.state === "error"
+        ? `失败：${shorten(c.error ?? "", 80)}`
+        : c.settleSource === "session-get"
+          ? // The host's own record answered with a finished run: the only form allowed to
+            // print its outcome word, and it never says 推定.
+            `已结算（${c.outcome ?? "宿主未给 outcome"}）· 运行 ${hostRunSecs}s`
+          : c.settleSource === "parent-idle"
+            ? // An inference.  完成 is exactly the word this may not borrow.
+              `推定已结算（未确认完成）· 派发后 ${secs}s`
+            : `已完成 ${secs}s`
   // #33: a row the host reported IDLE for a stop attempt is not a delivery — the lead
   // needs to see that the child was never running, not a bare 已完成.
   const stop = c.state === "idle" && c.cancelNote ? ` ·${c.cancelNote}` : ""
@@ -488,6 +564,36 @@ export function renderChildLine(c: ChildRecord, elapsedMs: number): string {
         ? " ·（宿主 subagent 派发）"
         : ""
   }`
+}
+
+/**
+ * One line saying HOW the round's rows reached their state: `宿主确认` (the host's own record,
+ * event or envelope), `推定` (our inference) and `未结算` (still running).  A lead skimming two
+ * rows that both read 已结算 otherwise cannot tell which one the host actually confirmed — and
+ * that difference is the whole point of asking `session.get` first.
+ */
+export function settleTallyLine(children: readonly ChildRecord[]): string {
+  if (!children.length) return ""
+  let confirmed = 0
+  let presumed = 0
+  let open = 0
+  const outcomes = new Map<string, number>()
+  for (const c of children) {
+    if (c.state === "running") {
+      open++
+      continue
+    }
+    if (c.settleSource === "parent-idle") {
+      presumed++
+      continue
+    }
+    confirmed++
+    if (c.outcome) outcomes.set(c.outcome, (outcomes.get(c.outcome) ?? 0) + 1)
+  }
+  const named = [...outcomes.entries()].map(([o, n]) => `${o} ${n}`)
+  const withoutOutcome = confirmed - [...outcomes.values()].reduce((a, b) => a + b, 0)
+  if (withoutOutcome > 0) named.push(`宿主未给 outcome ${withoutOutcome}`)
+  return `结算：宿主确认 ${confirmed}${named.length ? `（${named.join(" · ")}）` : ""} / 推定 ${presumed} / 未结算 ${open}`
 }
 
 /** Verdicts tm_join can actually observe (issue #7's "leader keeps control"). */
@@ -605,9 +711,9 @@ export function cancelOutcomeParts(tally: Partial<Record<CancelOutcome, number>>
  * #steer — the THREE outcomes an interjection can produce, kept as data for the same
  * reason #33 kept five: the host admitting input is an observation (it named the inbox
  * item), and the host answering without naming one is not.  `steered` is the only bucket
- * allowed to print 已受理, and even it says 已受理 rather than 已送达 — the documented
- * behaviour is "Steering wakes session execution", i.e. delivery happens at a step
- * boundary and whether the child READ the line is a later fact, not this call's claim.
+ * allowed to print 已受理, and acceptance is all the WRITE itself proves — delivery happens
+ * at a step boundary, and whether the child acted on the line is a later fact.  That is why
+ * `verifySteerDelivery` exists: `已送达` is a second, separate observation.
  */
 export type SteerOutcome = "steered" | "not-steered" | "no-seam"
 
@@ -663,6 +769,60 @@ export function steerVerdictLine(
       return `这个宿主没给插话的缝（ctx.session 既没有 prompt 也没有 synthetic），未发送${opts?.note ? `：${shorten(opts.note, 80)}` : ""}`
     case "not-steered":
       return `未插话${seam}：${shorten(opts?.note ?? "宿主没有回 inbox id", 120)}`
+  }
+}
+
+/** C: 已受理 vs 已送达.  An interjection is DELIVERED at a step boundary, so the write itself
+ *  only proves admission.  The one checkable fact afterwards is whether the item still sits
+ *  in that child's inbox — gone = the host handed it over, present = still queued.  A list we
+ *  cannot read is `unverified`, never `delivered`: a missing answer is not evidence. */
+export type SteerDelivery = "delivered" | "queued" | "unverified"
+
+/** What the lead reads after the delivery check.  Every branch says out loud that delivery is
+ *  not obedience — the composition must never promise what the child will do. */
+export function steerDeliveryLine(v: SteerDelivery, inboxID?: string, note?: string): string {
+  const inbox = inboxID ? `（inbox=${inboxID}）` : ""
+  switch (v) {
+    case "delivered":
+      return `已送达${inbox}：该 inbox 项已经不在待投递清单里，宿主把它交给了子会话。投递不等于子代理照做 —— 它是否按这条改，仍要看下一次结算与正文。`
+    case "queued":
+      return `已受理（未送达，宿主在步边界投递）${inbox}：该项仍在待投递清单里。投递≠执行，别把这一句当成子代理会照做。`
+    case "unverified":
+      return `已受理${inbox}（未验证送达${note ? `：${shorten(note, 80)}` : "：宿主没有给出可核对的待投递清单"}）。投递≠执行。`
+  }
+}
+
+/** Re-read the child's inbox once after a successful steer and answer the only question that
+ *  can be answered: is the item still pending?  `unverified` covers every shape we cannot
+ *  read — no seam, a throwing call, a payload with items we could not identify — because
+ *  "absent" must not be inferred from "unreadable". */
+export async function verifySteerDelivery(
+  api: SessionApi | null,
+  sessionID: string,
+  inboxID: string,
+): Promise<{ verdict: SteerDelivery; note?: string }> {
+  if (!api || api.v2SteerSeam !== true || typeof api.inboxList !== "function") {
+    return { verdict: "unverified", note: "这个宿主没有 session.inbox.list 的缝" }
+  }
+  try {
+    const un = unwrapClientResult(await api.inboxList({ sessionID }))
+    if (!un.ok) return { verdict: "unverified", note: un.message }
+    const data = un.data as { outcome?: unknown; items?: unknown; message?: unknown } | null | undefined
+    const seamOut = String(data?.outcome ?? "")
+    if (seamOut === "threw" || seamOut === "no-seam") {
+      return {
+        verdict: "unverified",
+        note: seamOut === "no-seam" ? "宿主没给 session.inbox.list" : String(data?.message ?? "查询被宿主拒绝"),
+      }
+    }
+    const listed = inboxItemLines(data?.items)
+    // An item we could not parse is not an item that is gone: `skipped` covers unknown id
+    // shapes AND the overflow past the list cap, and both make "absent" unprovable.
+    if (listed.skipped > 0) return { verdict: "unverified", note: `清单里有 ${listed.skipped} 项没被列出（id 形状或条数上限）` }
+    const stillQueued = listed.lines.some((l) => l.split(" · ")[0] === `id=${inboxID}`)
+    return stillQueued ? { verdict: "queued" } : { verdict: "delivered" }
+  } catch (err) {
+    return { verdict: "unverified", note: describeHostError(err, 120) }
   }
 }
 
@@ -852,6 +1012,15 @@ export function buildDispatchTools(deps: DispatchDeps): {
   // comparable with this one.  Renaming would split the history in two.
   const log = (e: Record<string, unknown>) => store.appendTrajectory({ tool: "tm_dispatch", ...e })
   const children = new Map<string, ChildRecord>()
+  /** Settle checks still in flight.  `observeEvent` is a synchronous hook — the host does not
+   *  await it — while asking `session.get` is async, so the read is tracked here and DRAINED by
+   *  tm_join before it reports.  Without that, a join issued right after a parent-idle event
+   *  could answer from a row we were in the middle of updating. */
+  const settling = new Set<Promise<void>>()
+  const trackSettle = (p: Promise<void>): void => {
+    settling.add(p)
+    void p.finally(() => settling.delete(p))
+  }
   /** Per-parent memory of the LAST join's outcome.  A wait is not parallelism
    *  — while tm_join is in flight the lead's turn is blocked exactly like a
    *  synchronous `task` call — so a SECOND wait that inherited a first wait
@@ -1129,7 +1298,7 @@ export function buildDispatchTools(deps: DispatchDeps): {
 - No args: status snapshot of every open child of THIS session — running / idle(done) / error, with elapsed seconds.  Cheap and non-blocking: use it to decide whether to keep working or start merging.
 - { waitMs: 30000 }: bounded wait (capped at ${waitLabel(maxWaitMs)}) until every child settles.  A wait BLOCKS YOU — your turn is parked in this tool call, so it is the synchronous \`task\` experience with none of its visibility.  Wait once, briefly, and only when the very next step needs the answer; a second consecutive wait after nothing settled is cut to 10s and answered with what to do instead.  Never wait for a child whose result you do not need — abort it instead ({ cancel: true }).
 - { ids: [...] }: restrict to those child sessions — a host \`task\` child is collectable when you NAME it (its parentage is verified against the host's own session tree, never assumed); { cancel: true }: abort still-running ones.  With explicit ids the host is ALWAYS asked, even for a row this process believes settled — a settled-looking row can have been woken and be running for real.
-- Steer a child while it runs — the same call, no separate tool: { steer: "先停手，验收改成 X", ids: ["<child>"] } admits the line into that child's inbox with delivery "steer" (or "queue") and the host wakes execution at the step boundary.  已受理 is the whole claim: it is NOT proof the child read it, and the reply never says 已送达.  Steer REFUSES a child whose registered state is not running (idle / error / unknown), because the host's doc sentence "Steering wakes session execution" means the line starts a second run that overlaps new dispatches — pass { wake: true } to do that deliberately.  { unread: true, ids: ["<child>"] } lists that child's undelivered inbox items (ids + shape only, never the body); { unsend: {"sessionID":"ses_…","inboxID":"msg_…"} } withdraws one that has not been delivered — an already-delivered item is the documented no-op and is reported as one.  All three ask the host for parentage FIRST and refuse a session that is not yours; a host without the seam answers no-seam instead of pretending.
+- Steer a child while it runs — the same call, no separate tool: { steer: "先停手，验收改成 X", ids: ["<child>"] } admits the line into that child's inbox with delivery "steer" (or "queue") and the host wakes execution at the step boundary.  已受理 means the host took the line into that inbox — NOT that the child read or obeyed it.  After a successful steer the tool re-reads that inbox ONCE: an item gone from the pending list is reported 已送达, still pending is 已受理（未送达，宿主在步边界投递）, and an inbox it cannot read is 已受理（未验证送达）— delivery is never inferred from the write alone, and none of the three means the child followed it.  Steer REFUSES a child whose registered state is not running (idle / error / unknown), because the host's doc sentence "Steering wakes session execution" means the line starts a second run that overlaps new dispatches — pass { wake: true } to do that deliberately.  { unread: true, ids: ["<child>"] } lists that child's undelivered inbox items (ids + shape only, never the body); { unsend: {"sessionID":"ses_…","inboxID":"msg_…"} } withdraws one that has not been delivered — an already-delivered item is the documented no-op and is reported as one.  All three ask the host for parentage FIRST and refuse a session that is not yours; a host without the seam answers no-seam instead of pretending.
 - A plugin/host restart does NOT orphan a child: those the host still lists under your session are re-adopted automatically (their rows are marked 接管), and one that answered while nobody was listening is reported 已完成, not lost.
 - Replies come back through the offload pipeline: a long sub-agent report arrives as a handle + ≤80-token preview (page it with tm_fetch), so a batch of parallel work does not multiply your context.  STATUS: blocked/failed children are surfaced first, always.  When a child's own session yields no assistant text, the host's injected \`<subagent sessionID="…">…</subagent>\` envelope in THIS session is read as the body and labelled 正文来源=宿主注入信封 (an id must match exactly).`,
     args: {
@@ -1180,6 +1349,9 @@ export function buildDispatchTools(deps: DispatchDeps): {
         // wrote its governed result — so the token table read "0 调用 / 2 结果",
         // which looks like a broken counter rather than a tool that ran.
         store.appendTrajectory({ tool, step_id: "join", event: "call" })
+        // A settle check may still be talking to the host (see `settling`).  Drain it before
+        // reading the registry so this reply never mixes a fresh table with a half-updated row.
+        if (settling.size) await Promise.allSettled([...settling])
         const directory = typeof c.directory === "string" && c.directory ? c.directory : undefined
         const idList = parseIdList(args.ids)
         const idFilter = idList && idList.length ? new Set(idList) : null
@@ -1322,6 +1494,21 @@ export function buildDispatchTools(deps: DispatchDeps): {
               // and a verdict read off whatever came back.
               note = "这个客户端不是 v2 的 ctx.session 桥（v1 的 session.prompt 走 {path,body}，没有 delivery 字段），未调用"
             }
+            // C — the write only proves ADMISSION.  Ask the same inbox once more for the one
+            // checkable fact: is the item still pending?  Nothing is claimed when the seam
+            // cannot answer (see steerDeliveryLine's unverified branch).
+            const verified =
+              outcome === "steered" && inboxID ? await verifySteerDelivery(api, target, inboxID) : null
+            if (verified) {
+              log({
+                step_id: "join",
+                event: "steer_delivery",
+                child: target,
+                inboxID,
+                verdict: verified.verdict,
+                ...(verified.note ? { reason: shorten(verified.note, 120) } : {}),
+              })
+            }
             log({
               step_id: "join",
               event: "steer",
@@ -1332,6 +1519,7 @@ export function buildDispatchTools(deps: DispatchDeps): {
               ok: outcome === "steered",
               wake: wakeRequested,
               ...(inboxID ? { inboxID } : {}),
+              ...(verified ? { delivered: verified.verdict } : {}),
               ...(seam ? { seam } : {}),
               // the LENGTH, never the text — R6 binds the audit trail as much as the reply
               chars: steerText.length,
@@ -1343,8 +1531,11 @@ export function buildDispatchTools(deps: DispatchDeps): {
               outcome === "steered" && wakeRequested && row && row.state !== "running"
                 ? `\n已按 wake:true 唤醒：它当时不是运行中（${row.state === "error" ? "失败" : "已结算"}），宿主把这条插话当成新的执行输入——它会和新派发的 worker 并发，留意这一点。`
                 : ""
+            const deliveryLine = verified
+              ? `\n投递核对：${steerDeliveryLine(verified.verdict, inboxID, verified.note)}`
+              : ""
             return toToolResult(
-              `插话目标：${rowLine}\n插话结果：${steerVerdictLine(outcome, { inboxID, note, seam })}\n插话计数：${steerOutcomeParts(tally).join(" · ")}${wake}`,
+              `插话目标：${rowLine}\n插话结果：${steerVerdictLine(outcome, { inboxID, note, seam })}\n插话计数：${steerOutcomeParts(tally).join(" · ")}${deliveryLine}${wake}`,
             )
           }
 
@@ -1553,8 +1744,10 @@ export function buildDispatchTools(deps: DispatchDeps): {
           })
         }
         const sums = summarizeStates(mine)
+        const settleLine = settleTallyLine(mine)
         const header = [
           `派发汇总：${sums.idle} 完成 / ${sums.running} 运行中 / ${sums.error} 失败${settled ? "（全部已结算）" : `（未等到全部结算 · 本次已等 ${Math.round((now() - waitStart) / 1000)}s）`}`,
+          ...(settleLine ? [settleLine] : []),
           ...mine.map((r) => renderChildLine(r, (r.finishedAt ?? now()) - r.startedAt)),
         ]
         // The `正文：` line belongs directly under the child rows it describes, but the
@@ -1746,6 +1939,64 @@ export function buildDispatchTools(deps: DispatchDeps): {
     },
   }
 
+  /** Settle the still-running HOST children of a session that just went idle — by ASKING the
+   *  host, not by assuming.  One `session.get` per child, three outcomes kept apart:
+   *   - `time.idle` present → settled, `settleSource="session-get"`, host `outcome` kept;
+   *   - answered WITHOUT idle → the child is still running: the row is left alone and the
+   *     attempt is counted (`settle_unchecked`), because a live child reported as settled is
+   *     the exact overstatement this tool was already fixed for;
+   *   - no seam / a throwing call → the old `parent-idle` presumption, printed as one.
+   *  `idle_settled` and `idle_presumed` are separate trajectory rows on purpose: tm_stats can
+   *  then show how often the host actually confirmed a finish. */
+  async function reconcileHostChildren(rows: readonly ChildRecord[]): Promise<void> {
+    for (const child of rows) {
+      if (child.state !== "running") continue
+      const st = await readHostSessionState(api, child.sessionID)
+      if (st.idleAt) {
+        child.state = "idle"
+        child.finishedAt = st.idleAt
+        child.hostIdleAt = st.idleAt
+        if (st.createdAt !== undefined) child.hostCreatedAt = st.createdAt
+        child.settleSource = "session-get"
+        if (st.outcome) child.outcome = st.outcome
+        log({
+          step_id: "events",
+          event: "idle_settled",
+          source: "session-get",
+          child: child.sessionID,
+          agent: child.agent,
+          ...(st.outcome ? { outcome: st.outcome } : {}),
+          ms: st.idleAt - child.startedAt,
+        })
+        continue
+      }
+      if (st.answered) {
+        log({
+          step_id: "events",
+          event: "settle_unchecked",
+          source: "session-get",
+          reason: "still-running",
+          child: child.sessionID,
+          agent: child.agent,
+        })
+        continue
+      }
+      presumeParentIdle([child])
+    }
+  }
+
+  /** The FALLBACK: a still-running host child of a session that just went idle, on a host we
+   *  could not ask.  Recorded as `parent-idle` and printed as a presumption — never 完成. */
+  function presumeParentIdle(rows: readonly ChildRecord[]): void {
+    for (const child of rows) {
+      if (child.state !== "running") continue
+      child.state = "idle"
+      child.finishedAt = now()
+      child.settleSource = "parent-idle"
+      log({ step_id: "events", event: "idle_presumed", child: child.sessionID, agent: child.agent, ms: child.finishedAt - child.startedAt })
+    }
+  }
+
   const observeEvent = (event: HostEvent): void => {
     const rawType = String(event?.type ?? "")
     if (!rawType.startsWith("session.")) return
@@ -1767,19 +2018,22 @@ export function buildDispatchTools(deps: DispatchDeps): {
     if (!sid) return
     const rec = children.get(sid)
     if (!rec) {
-      // The parent's own idle is the only completion signal v2 gives us for a host
-      // child: the background reply is injected into the parent before the parent's turn
-      // ends (measured: child injected …824730, parent idle …829038), and the plugin has
-      // no endpoint to read a child session's state.  So settle the still-running host
-      // children of THIS session — and say plainly that it is a presumption.
+      // The parent's own idle is the only completion signal the host gives us for a HOST
+      // child — and it is not the strongest one available: `session.get({sessionID})` answers
+      // the child's own `time.idle` (verified on 2.1.4), so we ASK first and only fall back to
+      // the inference when the host cannot be asked.  A row that stayed 运行中 forever would be
+      // an overstatement in reverse; a row presumed settled when the host says it is still
+      // executing is the overstatement this tool exists to refuse.
       if (type === "session.idle") {
-        for (const child of children.values()) {
-          if (child.via !== "host-injection" || child.state !== "running") continue
-          if (child.parentSessionID !== sid) continue
-          child.state = "idle"
-          child.finishedAt = now()
-          child.settleSource = "parent-idle"
-          log({ step_id: "events", event: "idle_presumed", child: child.sessionID, agent: child.agent, ms: child.finishedAt - child.startedAt })
+        const pending = [...children.values()].filter(
+          (child) => child.via === "host-injection" && child.state === "running" && child.parentSessionID === sid,
+        )
+        if (pending.length) {
+          // No seam at all → the fallback needs no round-trip, so it lands HERE and the
+          // synchronous hook stays synchronously readable.  A seam that EXISTS is asked, and
+          // that read is tracked so tm_join drains it before reporting.
+          if (!api || typeof api.get !== "function") presumeParentIdle(pending)
+          else trackSettle(reconcileHostChildren(pending))
         }
       }
       return

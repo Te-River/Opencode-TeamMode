@@ -2388,12 +2388,33 @@ try {
           calls.status.push(1)
           return { ok: true, data: over.statusMap ?? { ses_child_1: { type: "busy" } } }
         },
-        // the parentID chain tm_dispatch walks for its subagent_depth check
-        get: async function (o) {
-          assert.equal(this?.__sdkNamespace, "session", "client.session.get must be called as a METHOD")
-          calls.get.push(o.path.id)
-          return { ok: true, data: { id: o.path.id, parentID: (over.parents ?? {})[o.path.id] } }
-        },
+        // session.get has TWO consumers now: the parentage chain, and the SETTLE read — the
+        // flat `{sessionID}` spelling measured on 2.1.4, whose `time.idle` is what settles a
+        // host child.  Both spellings are accepted here because the v2 bridge retries exactly
+        // those two.  `sessionRecord[sid]` is the host's own record: `idle` (0/absent = still
+        // running), `created`, and `outcome`.
+        get: over.noGet
+          ? undefined
+          : async function (o) {
+              assert.equal(this?.__sdkNamespace, "session", "client.session.get must be called as a METHOD")
+              const id = String(o?.sessionID ?? o?.path?.id ?? "")
+              calls.get.push(id)
+              if (over.getThrows) throw new Error("ECONNRESET")
+              const rec = (over.sessionRecord ?? {})[id]
+              return {
+                ok: true,
+                data: {
+                  id,
+                  parentID: (over.parents ?? {})[id],
+                  ...(rec
+                    ? {
+                        outcome: rec.outcome,
+                        time: { created: rec.created ?? 1000, updated: rec.idle ?? 0, idle: rec.idle ?? 0 },
+                      }
+                    : {}),
+                },
+              }
+            },
         // GET /session/{id}/todo — read-only, and the goal tripwire's source
         todo: over.todos === undefined
           ? undefined
@@ -2619,6 +2640,10 @@ try {
             replies: { ses_body_half: "改到一半：src/a.ts 已改，测试还没跑" },
             completedFor: [], // the message the host hands us carries no completion time
             statusMap: {},
+            // No `session.get` seam at all: this is the case where the parent-idle
+            // PRESUMPTION is still the only answer, so the fragment warning below keeps a
+            // row to fire on (the settlement itself is pinned in the group after this one).
+            noGet: true,
           })
           assert.equal(
             rt.registerHostChild({ sessionID: "ses_body_half", parentSessionID: "ses_lead", agent: "implementer", label: "修 A" }),
@@ -2654,6 +2679,8 @@ try {
             completedFor: ["ses_body_done"],
             completedAt: 9000,
             statusMap: {},
+            // the host's own record: this child's run finished at 9000 and it succeeded
+            sessionRecord: { ses_body_done: { created: 1000, idle: 9000, outcome: "succeeded" } },
           })
           rt.registerHostChild({ sessionID: "ses_body_done", parentSessionID: "ses_lead", agent: "implementer", label: "修 B" })
           rt.observeDispatchEvent({ type: "session.idle", properties: { sessionID: "ses_lead" } })
@@ -2686,6 +2713,91 @@ try {
             joined.output.includes("正文：未带完成时间"),
             "the status states the measurement (no completion time) rather than pretending 完整 or 半截",
           )
+          await rt.dispose()
+        }
+      }
+
+      // ── SETTLEMENT ASKS THE HOST FIRST; the presumption is the fallback ─────────
+      // Measured on 2.1.4: a child's own `session.idle` is NOT forwarded to plugin
+      // subscribers, but `ctx.session.get({sessionID})` answers `{…, outcome, time:{created,
+      // updated, idle}}` — `time.idle` exists exactly when the run finished.  So "the parent
+      // went idle, assume the child was collected" becomes the LAST resort: a child the host
+      // still reports running must stay 运行中, and only a host we cannot ask may be presumed.
+      {
+        const rowsOf = (rt) =>
+          fs.readFileSync(rt.store.trajectoryFile(), "utf8").split(/\r?\n/).filter(Boolean).map((l) => JSON.parse(l))
+        const eventNames = (rt) => rowsOf(rt).map((e) => e.event)
+
+        // ① the host's record settles it — and the row keeps the host's own outcome word
+        {
+          const { rt } = await seeded("disp-settle-get", {
+            replies: { ses_get_ok: "STATUS: done\nEVIDENCE: 8/8" },
+            completedFor: ["ses_get_ok"],
+            statusMap: {},
+            sessionRecord: { ses_get_ok: { created: 1000, idle: 9000, outcome: "succeeded" } },
+          })
+          rt.registerHostChild({ sessionID: "ses_get_ok", parentSessionID: "ses_lead", agent: "implementer", label: "改 A" })
+          rt.observeDispatchEvent({ type: "session.idle", properties: { sessionID: "ses_lead" } })
+          const joined = await rt.tools.tm_join.execute({}, LEAD)
+          const row = rt.hostChildren().find((c) => c.sessionID === "ses_get_ok")
+          assert.equal(row?.settleSource, "session-get", "a host record with time.idle settles the row as CONFIRMED")
+          assert.equal(row?.outcome, "succeeded", "…keeping the host's own outcome verbatim")
+          assert.ok(
+            joined.output.includes("已结算（succeeded）"),
+            "the row prints the host's outcome: " + joined.output.replace(/\n/g, " | ").slice(0, 260),
+          )
+          assert.ok(joined.output.includes("运行 8s"), "the duration is time.idle - time.created, not our clock")
+          assert.ok(!joined.output.includes("推定已结算"), "a host-confirmed settle never says 推定")
+          assert.ok(joined.output.includes("结算：宿主确认 1（succeeded 1） / 推定 0 / 未结算 0"), "the tally names the source")
+          assert.ok(eventNames(rt).includes("idle_settled"), "trajectory: idle_settled")
+          assert.ok(!eventNames(rt).includes("idle_presumed"), "…and NOT idle_presumed")
+          await rt.dispose()
+        }
+
+        // ② the host answered and said NOTHING about being idle → the child is still running.
+        //    Presuming a settle here is the exact overstatement this tool exists to refuse.
+        {
+          const { rt } = await seeded("disp-settle-live", {
+            replies: {},
+            completedFor: [],
+            statusMap: {},
+            sessionRecord: { ses_live: { created: 1000, idle: 0 } },
+          })
+          rt.registerHostChild({ sessionID: "ses_live", parentSessionID: "ses_lead", agent: "tester", label: "跑 B" })
+          rt.observeDispatchEvent({ type: "session.idle", properties: { sessionID: "ses_lead" } })
+          const joined = await rt.tools.tm_join.execute({}, LEAD)
+          const row = rt.hostChildren().find((c) => c.sessionID === "ses_live")
+          assert.equal(row?.state, "running", "the host says it is still executing — the row STAYS running")
+          assert.equal(row?.settleSource, undefined, "and no settle source is invented for it")
+          assert.ok(joined.output.includes("运行中"), "the table says 运行中")
+          assert.ok(!/已完成 \d+s/.test(joined.output), "…and never 已完成 for a live child")
+          assert.ok(!joined.output.includes("推定已结算"), "…nor a presumption")
+          assert.ok(joined.output.includes("未结算 1"), "the tally counts it as unsettled")
+          assert.ok(eventNames(rt).includes("settle_unchecked"), "trajectory: settle_unchecked (asked, answer = running)")
+          assert.ok(!eventNames(rt).includes("idle_presumed"), "…and definitely not a presumption")
+          await rt.dispose()
+        }
+
+        // ③ the seam throws → the presumption is allowed, and it says so
+        {
+          const { rt } = await seeded("disp-settle-throw", {
+            replies: {},
+            completedFor: [],
+            statusMap: {},
+            getThrows: true,
+          })
+          rt.registerHostChild({ sessionID: "ses_throw", parentSessionID: "ses_lead", agent: "architect", label: "设 C" })
+          rt.observeDispatchEvent({ type: "session.idle", properties: { sessionID: "ses_lead" } })
+          const joined = await rt.tools.tm_join.execute({}, LEAD)
+          const row = rt.hostChildren().find((c) => c.sessionID === "ses_throw")
+          assert.equal(row?.settleSource, "parent-idle", "a throwing session.get falls back to the presumption")
+          assert.ok(
+            joined.output.includes("推定已结算（未确认完成）"),
+            "…printed as a presumption: " + joined.output.replace(/\n/g, " | ").slice(0, 260),
+          )
+          assert.ok(joined.output.includes("推定 1 / 未结算 0"), "and the tally counts it under 推定")
+          assert.ok(eventNames(rt).includes("idle_presumed"), "trajectory: idle_presumed")
+          assert.ok(!eventNames(rt).includes("idle_settled"), "…not idle_settled")
           await rt.dispose()
         }
       }
@@ -2778,7 +2890,7 @@ try {
         // them counts its calls — the assertions below are about whether the host was
         // ASKED, not about how the answer was worded.
         const v2JoinFake = (over = {}) => {
-          const calls = { messages: [], prompt: [], interrupt: [], get: [], status: [] }
+          const calls = { messages: [], prompt: [], interrupt: [], get: [], status: [], inbox: [] }
           const ns = {
             __sdkNamespace: "session",
             v2SteerSeam: true,
@@ -2789,8 +2901,9 @@ try {
             },
             get: async function (o) {
               assert.equal(this?.__sdkNamespace, "session", "session.get must be called as a METHOD")
-              calls.get.push(o.path.id)
-              return { ok: true, data: { id: o.path.id, parentID: (over.parents ?? {})[o.path.id], agent: "implementer" } }
+              const id = String(o?.sessionID ?? o?.path?.id ?? "")
+              calls.get.push(id)
+              return { ok: true, data: { id, parentID: (over.parents ?? {})[id], agent: "implementer" } }
             },
             status: async function () {
               assert.equal(this?.__sdkNamespace, "session", "session.status must be called as a METHOD")
@@ -2807,6 +2920,24 @@ try {
               calls.prompt.push(o)
               return { data: { outcome: "steered", inboxID: over.inboxID ?? "msg_w1", seam: "session.prompt" } }
             },
+            // C: the DELIVERY check reads the same inbox back.  `inboxItems` is what the host
+            // still has pending (default: the item we just wrote — the realistic instant after
+            // a write, since delivery happens at a step boundary); "THROW" is an inbox that
+            // cannot be read, which must never be mistaken for "not pending".
+            inboxList: over.noInboxList
+              ? undefined
+              : async function (o) {
+                  assert.equal(this?.__sdkNamespace, "session", "session.inbox.list must be called as a METHOD")
+                  calls.inbox.push(o.sessionID)
+                  if (over.inboxItems === "THROW") throw new Error("inbox unreachable")
+                  return {
+                    ok: true,
+                    data: {
+                      outcome: "listed",
+                      items: over.inboxItems ?? [{ inboxID: over.inboxID ?? "msg_w1", kind: "user" }],
+                    },
+                  }
+                },
           }
           return { client: { session: ns }, calls }
         }
@@ -2822,6 +2953,65 @@ try {
             "the host child is registered the way v2-subagent does it",
           )
           assert.equal(rt.settleHostChild(sid, "completed"), true, "and settled the way the host envelope does")
+        }
+
+        // D/E/F. 已受理 has to be upgraded to a CHECKED 已送达 when the host lets us look.
+        // The write only admits the line; delivery happens at a step boundary.  Reading the
+        // same inbox back is the one fact available: gone = delivered, still there = queued,
+        // unreadable = 未验证送达 (never "delivered", because a missing answer is not evidence).
+        {
+          const runningChild = (rt, sid, label) => {
+            assert.equal(
+              rt.registerHostChild({ sessionID: sid, parentSessionID: "ses_v2lead", agent: "implementer", label }),
+              true,
+              "a RUNNING host child is registered",
+            )
+          }
+
+          // D: the item is gone from the inbox → 已送达
+          {
+            const { rt, calls } = await v2Runtime("join-deliver-gone", {
+              parents: { ses_kidD: "ses_v2lead" },
+              inboxItems: [],
+            })
+            runningChild(rt, "ses_kidD", "投 D")
+            const out = await rt.tools.tm_join.execute({ steer: "改用方案 B", ids: ["ses_kidD"] }, V2LEAD)
+            assert.equal(calls.inbox.length, 1, "D: the inbox was re-read exactly once after the write")
+            assert.equal(calls.inbox[0], "ses_kidD", "D: against the child that was steered")
+            assert.ok(out.output.includes("已送达"), "D: an item no longer pending is reported DELIVERED: " + out.output.replace(/\n/g, " | ").slice(0, 300))
+            assert.ok(!out.output.includes("未送达"), "D: and the queued wording is gone")
+            assert.ok(out.output.includes("投递不等于子代理照做"), "D: delivery is still not obedience")
+            const row = rowsOf(rt).filter((e) => e.event === "steer_delivery").pop()
+            assert.equal(row?.verdict, "delivered", "D: trajectory steer_delivery=delivered")
+            await rt.dispose()
+          }
+
+          // E: the item is still pending → 已受理（未送达）
+          {
+            const { rt } = await v2Runtime("join-deliver-queued", {
+              parents: { ses_kidE: "ses_v2lead" },
+              inboxItems: [{ inboxID: "msg_w1", kind: "user", text: "改用方案 B" }],
+            })
+            runningChild(rt, "ses_kidE", "投 E")
+            const out = await rt.tools.tm_join.execute({ steer: "改用方案 B", ids: ["ses_kidE"] }, V2LEAD)
+            assert.ok(out.output.includes("已受理（未送达"), "E: a still-pending item is 已受理（未送达: " + out.output.replace(/\n/g, " | ").slice(0, 300))
+            assert.ok(!out.output.includes("已送达"), "E: …and never 已送达")
+            await rt.dispose()
+          }
+
+          // F: the inbox cannot be read → 已受理 + 未验证送达
+          {
+            const { rt } = await v2Runtime("join-deliver-throw", {
+              parents: { ses_kidF: "ses_v2lead" },
+              inboxItems: "THROW",
+            })
+            runningChild(rt, "ses_kidF", "投 F")
+            const out = await rt.tools.tm_join.execute({ steer: "改用方案 B", ids: ["ses_kidF"] }, V2LEAD)
+            assert.ok(out.output.includes("已受理"), "F: the acceptance verdict survives")
+            assert.ok(out.output.includes("未验证送达"), "F: …and says the delivery was not verified: " + out.output.replace(/\n/g, " | ").slice(0, 300))
+            assert.ok(!/已送达/.test(out.output), "F: an unreadable inbox is never called delivered")
+            await rt.dispose()
+          }
         }
 
         // A. steer to a SETTLED child refuses by default; wake:true delivers
