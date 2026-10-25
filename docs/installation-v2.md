@@ -48,7 +48,7 @@ implied:
 |---|---|---|
 | The six roles | injected by the plugin at boot | `~/.config/opencode/agents/*.md`, written by the generator below — a plugin cannot add an agent |
 | The six `/team-*` commands | injected by the plugin | `~/.config/opencode/commands/*.md`, same generator |
-| Default agent | filled only if the user left it alone | **Team is the default on every boot** (the API has no getter), plus `default_agent: "Team"` in config, which is the checkable one. Opt out with `{ "package": "@te-river/opencode-team-mode@latest", "options": { "defaultAgent": false } }` in `plugins` — the object form, not the 1.x tuple (measured 2026-10-06: a tuple is rejected with `path=$.plugins.1 kind=invalid`, the object form is delivered) |
+| Default agent | filled only if the user left it alone | **the installer writes `default_agent: "Team"`** — the 2.1.x plugin ctx has no `agent.default` at all (`typeof === "undefined"`), so a plugin cannot promote anything, and the boot row reports which role the installer named (`agents_default: installer:Team` / `installer:other`); `default_agent` in config is the checkable part. Opt out with `{ "package": "@te-river/opencode-team-mode@latest", "options": { "defaultAgent": false } }` in `plugins` — the object form, not the 1.x tuple (measured 2026-10-06: a tuple is rejected with `path=$.plugins.1 kind=invalid`, the object form is delivered) |
 | Non-blocking commands | `tm_pty` — **removed with v1 support** | **not registered at all** — the v2 plugin context has no pty domain, so the tool could only ever report its own missing seam. Run a slow step as its own `shell` call (one per call, each with its own `timeout`) and tee the output to a log you can read back |
 | File access | `tm_read` / `tm_grep` / `tm_bash` — **removed with v1 support** | the host's own `read` / `grep` / `glob` / `shell` — **governed anyway**: oversized results are offloaded through `tool.execute.after`, and out-of-project paths go through the host's own `external_directory` permission (a dialog, where v1 had a hard refusal) |
 | Batch calls | `tm_ptc_run` — **removed with v1 support** | the host's own `execute` (Code Mode) |
@@ -98,11 +98,12 @@ A **local directory** is the other legal spelling, and the one a development tre
 { "plugins": ["./vendor/team-mode"] }        // relative to this file, or an absolute dir
 ```
 
-The directory **must contain a root `index.js`**. The host resolves a directory as
-`<dir>/index` and nothing else — a `package.json#exports` map is honoured for an installed
-package but not for a path — and a directory whose entrypoint does not resolve is skipped
-**silently**: no error, no log line, no plugin. This package ships that `index.js` for
-exactly that reason.
+The target **must be a directory** — the official plugin docs state that a single FILE is
+skipped. The host loads the directory's `server` or `index` module; a `package.json#exports`
+map is honoured for an installed package but not for a path, and a directory whose entrypoint
+does not resolve is skipped **silently**: no error, no log line, no plugin. This package ships
+a root `index.js` for exactly that reason. Changing the config directory reloads plugins
+automatically; `opencode service restart` stays the most reliable way to activate a change.
 
 `opencode plugin add` cannot do this: it refuses a path with "Plugin target must be an npm
 registry package or Git package specifier".
@@ -137,7 +138,7 @@ returning cleanly is not evidence the plugin loaded.
       snapshot from BEFORE the config directory merges. "Step 3 has not run" shows up at the host
       (`--agent Team` does not resolve), never as a row in this table.
    - If the log shows nothing at all about our id, the entry is under a key the host does
-     not read (`plugin`, singular) or the directory has no root `index.js`. Both failures
+     not read (`plugin`, singular) or the directory has neither a `server` nor an `index` module. Both failures
      are silent by design; the absence of an error is not a success signal.
 6. Say which of the two spellings you left installed, and whether the package came from
    npm or from a local path — the Extensions panel cannot tell them apart (a loader file
@@ -256,14 +257,15 @@ env-file line). It is zero-token by default; `--turns` adds the checks that need
 ### Layered configuration (`team-mode.jsonc`)
 
 `team-mode.jsonc` is the **only** configuration source — every `TM_*` configuration environment
-variable is gone. Two layers, mirroring the host's own config:
+variable is gone. **Three** layers, mirroring the host's own config:
 
 | layer | file |
 |---|---|
 | global | `~/.config/opencode/team-mode.jsonc` (honours `OPENCODE_CONFIG_DIR`) |
 | project | `<project>/team-mode.jsonc`, or `<project>/.opencode/team-mode.jsonc` (the `.opencode` one wins) |
+| system | `%ProgramData%\opencode\team-mode.jsonc` (Windows) / `/etc/opencode/team-mode.jsonc` (POSIX) — the admin-managed layer |
 
-Precedence is `global < project`. **The plugin writes the global file for you at boot** when it is
+Precedence is `global < project < system`: `system` is the host's managed-settings layer and outranks every user layer (on Windows without `PROGRAMDATA` it does not exist, and the report says so). **The plugin writes the global file for you at boot** when it is
 absent: a fully-commented, INERT template — every key appears as a comment (`// "key": <default>,`)
 under its one-line doc, so the file sets nothing until you uncomment a line. It is idempotent and
 never overwrites an existing file. Turn it off with the plugin option `autoCreate: false` (or the
@@ -274,7 +276,7 @@ Keys are camelCase (`offloadThreshold`, `searchDefaultEngine`, …) — the regi
 `src/tm/config-layers.ts` is the single source of truth (58 keys, each with its type, default and
 doc). Five keys are **red lines a PROJECT file may not change** — `envProtect`, `r6FineAsk`,
 `privateSpace`, `webfetchAllowedDomains`, `bashReadonlyAllowed`; they are settable only in the
-global file, and a project value is ignored and reported. A file that fails to parse is skipped
+global or `system` file, and a project value is ignored and reported. A file that fails to parse is skipped
 **whole** (half a config is worse than none), while a single bad key loses only itself. Unknown keys
 warn at boot and are never applied. `tm_stats` shows which layer each key came from, the red-line
 keys a file tried to set and lost, the unknown keys, the skipped layers, and the auto-create state.
@@ -283,7 +285,7 @@ keys a file tried to set and lost, the unknown keys, the skipped layers, and the
 values are `strict` / `standard` / `off`). A Team role's native `read` of a `.env` is denied
 outright, and a shell command that reads the environment goes to the host's own permission prompt.
 Turn it off with the plugin option `envProtect: false` or with `"envProtect": "off"` in the
-**global** file (it is a red-line key); on 2.x the shell face is an `ask` (the host's dialog — a
+**global or `system`** file (it is a red-line key); on 2.x the shell face is an `ask` (the host's dialog — a
 plugin cannot raise one) while the env-FILE face is a hard `deny` with no consent path.
 
 The only `TM_*` environment variables left are internal/test switches, not configuration:
@@ -314,7 +316,7 @@ dump) and `TM_CONFIG_AUTOCREATE` (the auto-create off switch).
 | A tool's output arrives un-offloaded | `"nativeOffload": "off"` in the config file (or a missing `tool.execute.after` seam on an older 2.x build) — `tm_stats` names which |
 | Sessions used to compact at 75% on their own; they do not any more | That trigger was **removed in 1.7.1** (it shipped in 1.7.0). The host owns when a conversation is summarized again, exactly as if the plugin were not installed. The three knobs that drove it (`TM_COMPACT_TRIGGER`, `TM_COMPACT_AT_PERCENT`, `TM_COMPACT_MIN_MS`) are gone, and a `team-mode.jsonc` that still names them reports them as unknown keys at boot instead of applying them. What stays is additive and only runs when the HOST compacts: the survival list is pushed on `session.hook("compaction")` (the `compactionContext` key is a v1-only parse-compat entry) |
 | The plugin behaves oddly — two dialogs, doubled hooks, tools registered twice | It is loaded twice. `opencode.json` and `opencode.jsonc` are merged, and the host's dedupe matches only an identical string, so the same package under two spellings (or in both files) is two personalities. Count the Team entries across BOTH files; `msg="loading plugin"` appearing twice for one id is the proof |
-| You wrote the entry and the host says nothing at all about it | Two silent causes, both by design: the key is singular `plugin` (2.x reads `plugins`), or a directory entry without a root `index.js`. The loader resolves a directory as `<dir>/index` only and drops it with no message when that fails — absence of an error is not a success signal here |
+| You wrote the entry and the host says nothing at all about it | Two silent causes, both by design: the key is singular `plugin` (2.x reads `plugins`), or a directory entry with neither a `server` nor an `index` module. The loader tries only those two entry names for a directory and drops it with no message when neither resolves — absence of an error is not a success signal here |
 | A background sub-agent's reply is huge | The child is registered, collectable AND readable: `tm_join` lists it (marked 宿主 subagent 派发), reads its report back through `ctx.session.context`, and credits the seam it came from (`正文来源=ctx.session.context`) — so the reply arrives through the same JIT pipeline as everything else (offload + ≤80-token preview + `tm_fetch` handle when it is oversized). What v2 still never gives a plugin is the injected message BEFORE the host persists it, so we can read a report but cannot rewrite the injection — which is why a >~50-line DELIVERABLE still belongs on the blackboard file with its path in the reply |
 | You want a plugin's own browser visible in the side panel | Not possible — the panel attaches to the server's own browser service (`docs/research/browser-pane.md`), and the self-built `tm_browser` was removed in 1.7.0. What IS reachable is a still frame: hand a screenshot to the host's `browser_preview { path }`, which renders a server-local png/html/md/pdf into that panel. Not yet confirmed in a real GUI session |
 | You need to know what the host actually exposes | `TM_V2_PROBE=<path>.jsonl` records tool and action **names and counts only** — never a command, path, URL or value — and `tm_stats` renders the capability matrix |
@@ -336,10 +338,10 @@ dump) and `TM_CONFIG_AUTOCREATE` (the auto-create off switch).
 |---|---|---|
 | 六个角色 | 插件启动时注入 | `~/.config/opencode/agents/*.md`，由下面的生成器写出——插件没有"造 agent"的接口 |
 | 六条 `/team-*` 命令 | 插件注入 | 同一个生成器写 `commands/*.md` |
-| 默认 agent | 只在用户没动过时补位 | **每次启动都把 Team 设成默认**（v2 没有读取接口），再加配置里的 `default_agent: "Team"`（这一条才是你核对得动的）。退出方式：`plugins` 里写 `{ "package": "@te-river/opencode-team-mode@latest", "options": { "defaultAgent": false } }`——必须是对象形状，不是 1.x 的元组（2026-10-06 实测：元组被拒 `path=$.plugins.1 kind=invalid`，对象形状能送达） |
+| 默认 agent | 只在用户没动过时补位 | **由安装器写 `default_agent: "Team"`**——2.1.x 插件 ctx 根本没有 `agent.default`（`typeof === "undefined"`），插件提不了默认；启动行会报安装器写的是谁（`agents_default: installer:Team` / `installer:other`），配置里的 `default_agent` 才是可核对的那一条。退出方式：`plugins` 里写 `{ "package": "@te-river/opencode-team-mode@latest", "options": { "defaultAgent": false } }`——必须是对象形状，不是 1.x 的元组（2026-10-06 实测：元组被拒 `path=$.plugins.1 kind=invalid`，对象形状能送达） |
 | 读文件 / 搜代码 / 跑命令 | `tm_read` / `tm_grep` / `tm_bash`——**已随 v1 支持一起移除** | 宿主的 `read` / `grep` / `glob` / `shell`，**治理照旧**：超大结果照样在 `tool.execute.after` 被卸载成预览 + 句柄，跨出项目的路径走宿主自己的 `external_directory` 权限（v1 是硬拒，v2 是弹窗） |
 | 批量调用 | `tm_ptc_run`——**已随 v1 支持一起移除** | 宿主自己的 `execute`（Code Mode） |
-| 入口文件（v2 主机的硬要求） | — | 宿主把插件**目录**解析成 `<目录>/index.js`；只写 `package.json#exports` 的目录会被**静默忽略**（连错误都没有）。本包根目录的 `index.js` 就是为这条存在的——`plugins: ["./vendor/team-mode"]` 这类官方写法能加载，靠的是它 |
+| 入口文件（v2 主机的硬要求） | — | 宿主只接受插件**目录**（单文件被跳过），并加载其中的 `server` 或 `index` 模块；只写 `package.json#exports` 的目录会被**静默忽略**（连错误都没有）。本包根目录的 `index.js` 就是为这条存在的——`plugins: ["./vendor/team-mode"]` 这类官方写法能加载，靠的是它 |
 | 交互式浏览 | `tm_browser`（我们自己起的 playwright/CDP 浏览器）——**已在 1.7.0 移除** | **宿主自己的 `browser_*` 是唯一的浏览器**——只有它是桌面端侧边栏里那个浏览器（`docs/research/browser-pane.md`）。原生目录由 `src/host/v2-browser-gate.ts` 管（`execute.before` 上判 URL / 地址红线 / 环境文件路径，并且有"漏过去就把页面换成拒绝语"的兜底）。快照是**截断**而不是卸载，所以下一次点击要的 `[ref=…]` 都留在上下文里。**已知代价：** 没有原生浏览器目录的宿主（CLI / standalone）从此没有浏览器可用——agent 如实报告这个缺口，绝不模拟。调用约定：`evaluate` 的参数是 `{tabID, script}`，`script` 是表达式，返回值要自己 stringify；快照记号形如 `@e8 [link]` |
 | 子代理结算检测 | 宿主的 `event` 钩子 | `ctx.event.subscribe()`——零依赖的 async iterable，按事件类型名过滤（`src/host/v2-events.ts`）。没有它 `tm_join` 分不清「已结算」和「仍在跑」；`tm_stats` 会给出转发了多少、哪些类型名没认出来（只记名字，绝不记负载） |
 | 任务清单 | 宿主 `todowrite` | **`tm_ledger`**，存在宿主的 `ctx.storage` 里（v2 不给插件 `todowrite`） |
@@ -383,9 +385,10 @@ Node 20+ 还会额外启用 Playwright 浏览器引擎）。
 { "plugins": ["./vendor/team-mode"] }        // 相对本文件，或者绝对路径的目录
 ```
 
-这个目录**必须有根 `index.js`**。宿主解析目录只试 `<dir>/index`，别的不试 ——
+目标**必须是目录**——官方插件文档写明单文件会被跳过。宿主加载目录里的 `server` 或 `index` 模块；
 `package.json#exports` 只对已安装的包生效，对路径不生效 —— 而解析不出入口的目录会被
-**静默跳过**：没有报错、没有日志、也没有插件。本包发布时带上那个 `index.js` 就是为了这件事。
+**静默跳过**：没有报错、没有日志、也没有插件。本包发布时带上根 `index.js` 就是为了这件事。
+配置目录有变更会自动重载插件；`opencode service restart` 仍是最稳的激活方式。
 
 `opencode plugin add` 干不了这件事：给它路径会被拒绝
 （"Plugin target must be an npm registry package or Git package specifier"）。
@@ -413,7 +416,7 @@ Node 20+ 还会额外启用 Playwright 浏览器引擎）。
    - 新建一个 Team 会话 → `tm_stats` 的 `启动与人格`：`tools_registered: 9`，以及 `作用域`
      那一行。角色这一项看的是可见性行，不再是缺名字段（boot 行的 `agents_missing` 已经去掉）：它区分"已装而看不见"——`agents_editor_unseen` 有值，且 `agents_resolved_in_request` 也有值，说明宿主在真实请求里解析过这些 id——和"本进程无法区分"，因为 `ctx.agent.transform` 拿到的是配置目录合并**之前**的角色集。"第 3 步没做"要到宿主那边才看得见（`--agent Team` 解析不到），不会在这张表里变成一行结论。
    - 日志里关于我们的 id 一个字都没有 → 条目写在了宿主不读的键下（单数 `plugin`），或者那个
-     目录没有根 `index.js`。这两种失败都是设计上静默的，所以"没报错"不是成功信号。
+     目录里既没有 `server` 也没有 `index` 模块。这两种失败都是设计上静默的，所以"没报错"不是成功信号。
 6. 明确说清你留下的是哪种写法、包来自 npm 还是本地路径 —— 扩展面板分不出来：一个叫
    `team-mode.js` 的 loader 文件，和一个插件 id 恰好是 `@te-river/opencode-team-mode` 的目录条目，显示出来一模一样。
 
@@ -515,26 +518,27 @@ node ~/.config/opencode/node_modules/@te-river/opencode-team-mode/scripts/gen-v2
 
 ### 分层配置（`team-mode.jsonc`）
 
-`team-mode.jsonc` 是**唯一**的配置源——所有 `TM_*` 配置环境变量都已移除。两层，与宿主自己的配置同构：
+`team-mode.jsonc` 是**唯一**的配置源——所有 `TM_*` 配置环境变量都已移除。**三层**，与宿主自己的配置同构：
 
 | 层 | 文件 |
 |---|---|
 | 全局 | `~/.config/opencode/team-mode.jsonc`（认 `OPENCODE_CONFIG_DIR`） |
 | 项目 | `<project>/team-mode.jsonc`，或 `<project>/.opencode/team-mode.jsonc`（后者胜） |
+| system | `%ProgramData%\opencode\team-mode.jsonc`（Windows）/ `/etc/opencode/team-mode.jsonc`（POSIX）——管理员托管层 |
 
-优先级 `全局 < 项目`。**全局文件由插件在启动时自动生成**（文件不存在时）：一份全注释的**惰性**模板——
+优先级 `全局 < 项目 < system`：system 是宿主的 managed-settings 层，压过所有用户层（没有 `PROGRAMDATA` 的 Windows 上这一层不存在，报告里会写明）。**全局文件由插件在启动时自动生成**（文件不存在时）：一份全注释的**惰性**模板——
 每个键都以注释形式出现（`// "key": <默认值>,`），注释行就是它的一行说明，所以在你取消注释之前，这个文件什么都不设置。
 幂等、原子写入，绝不覆盖已存在的文件。关闭方式：插件选项 `autoCreate: false`（或内部开关 `TM_CONFIG_AUTOCREATE=off`）；
 启动行会记录 `config_autocreate`（`created` / `present` / `off` / `failed`）。
 
 键名是 camelCase（`offloadThreshold`、`searchDefaultEngine` …）——`src/tm/config-layers.ts` 里的注册表是唯一事实来源
 （58 个键，每个都带类型、默认值与说明）。有五个键是**项目文件不许改写的红线**——`envProtect`、`r6FineAsk`、
-`privateSpace`、`webfetchAllowedDomains`、`bashReadonlyAllowed`；它们只能在全局文件里设置，项目文件里写了会被忽略并报告。
+`privateSpace`、`webfetchAllowedDomains`、`bashReadonlyAllowed`；它们只能在**全局或 system 文件**里设置，项目文件里写了会被忽略并报告。
 解析失败的那一层**整层跳过**（半份配置比没有配置更危险），单个坏键只丢它自己。未知键在启动时告警、**不应用**。
 `tm_stats` 会显示每个键最终来自哪一层、被忽略的红线键、未知键、被跳过的层，以及自动生成的状态。
 
 **R6（环境变量保护）默认开启**（`envProtect` 默认 `"strict"`；规范取值 `strict` / `standard` / `off`）。Team 角色用原生 `read` 读 `.env` 会被直接拒；
-读环境变量的 shell 命令会走宿主自己的权限提示。关闭方式：插件选项 `envProtect: false`，或在**全局**文件里写 `"envProtect": "off"`（它是红线键）。
+读环境变量的 shell 命令会走宿主自己的权限提示。关闭方式：插件选项 `envProtect: false`，或在**全局/system**文件里写 `"envProtect": "off"`（它是红线键）。
 2.x 上 shell 面是 `ask`（宿主的对话框——插件弹不出来），env-FILE 面是硬 `deny`、没有同意路径。
 
 仅存的 `TM_*` 环境变量是内部/测试开关，不是配置：`TM_STORE_RECLAIM`（测试覆盖 `storeReclaim` 键）、
@@ -564,7 +568,7 @@ node ~/.config/opencode/node_modules/@te-river/opencode-team-mode/scripts/gen-v2
 | 某个工具的输出没被卸载 | 配置文件里写 `"nativeOffload": "off"`（或者那个 2.x 构建没有 `tool.execute.after` 缝）——`tm_stats` 会告诉你是哪一种 |
 | 会话不再自己提前压缩了（1.7.0 曾是模型窗口的 75%） | 那个触发器在 **1.7.1 已整体移除**（它随 1.7.0 发布）。压缩时机重新完全归宿主，跟没装插件一样。驱动它的三个开关（`TM_COMPACT_TRIGGER`、`TM_COMPACT_AT_PERCENT`、`TM_COMPACT_MIN_MS`）已删除；`team-mode.jsonc` 里若还留着它们，启动时会报为未知键而不是照旧生效。保留下来的是"只在宿主自己压缩时"才追加的一项：必须存活清单在 `session.hook("compaction")` 上推送（`compactionContext` 键是 v1-only 的解析兼容项） |
 | 插件行为怪：两次弹窗、钩子重复、工具像注册了两遍 | 它被加载了两次。`opencode.json` 与 `opencode.jsonc` 是合并读取的，而宿主去重只认完全相同的字符串，所以同一个包换两种写法（或者同时躺在两个文件里）就是两套人格。把两个文件里指向 Team 的条目一起数一遍；`msg="loading plugin"` 对同一个 id 出现两条就是证据 |
-| 写了条目，但宿主日志里关于它一个字都没有 | 两个"设计上静默"的原因：键名写成了单数 `plugin`（2.x 读 `plugins`），或者目录条目缺根 `index.js`。宿主解析目录只试 `<dir>/index`，试不出来就直接丢掉、不留任何消息 —— 在这里"没报错"不是成功信号 |
+| 写了条目，但宿主日志里关于它一个字都没有 | 两个"设计上静默"的原因：键名写成了单数 `plugin`（2.x 读 `plugins`），或者目录里既没有 `server` 也没有 `index` 模块。宿主解析目录只认这两个入口名，试不出来就直接丢掉、不留任何消息 —— 在这里"没报错"不是成功信号 |
 | 后台子代理的回复太长 | 子会话现在会被登记、可被收集（`tm_join` 会列出它，行上标着「宿主 subagent 派发」），但它的**正文**仍然是宿主的注入消息，v2 不会在落盘前把这条消息交给插件；我们也不改写发出的消息（猜错那一层的形状等于静默删证据）。所以超限交付走黑板文件：正文进文件、回复里带路径，领队读那个文件 |
 | `tm_join` 说"没有匹配的派发"，可孩子明明跑完了 | 活体在 2.0.16 上复现过：领队用的是**宿主的** `subagent{background:true}`，插件不创建子会话所以登记里没有它，而收养/按 id 认领原本走 `client.session.children` / `client.session.get`——v2 的插件上下文里根本没有 client。所以回复是通过宿主自己的完成注入到达领队的，不是通过我们的收集通道。这条待补的桥是 `ctx.session.get` 做父子校验（事件流已经能给出候选 sessionID） |
 | 想在侧边栏看到插件自己的浏览器页面 | 做不到（面板挂的是服务端自己的浏览器服务；见 `docs/research/browser-pane.md`，自建 `tm_browser` 已在 1.7.0 移除）。能看到的是**静帧**：让 agent 把截图交给宿主的 `browser_preview { path }`，它会把服务端本地文件（png/html/md/pdf/mermaid）渲染进面板——这条尚未在你的 GUI 里验证过 |
@@ -572,7 +576,7 @@ node ~/.config/opencode/node_modules/@te-river/opencode-team-mode/scripts/gen-v2
 
 ### v2 专属的开关
 
-配置键写在 `team-mode.jsonc` 里（红线键只能在全局文件里设）；环境变量只剩三个内部/测试开关。
+配置键写在 `team-mode.jsonc` 里（红线键只能在全局或 system 文件里设）；环境变量只剩三个内部/测试开关。
 
 | 键 / 变量 | 默认 | 作用 |
 |---|---|---|
@@ -582,4 +586,4 @@ node ~/.config/opencode/node_modules/@te-river/opencode-team-mode/scripts/gen-v2
 | `TM_V2_PROBE`（环境，内部） | 未设 | 把宿主真实工具面/动作名记成 JSONL（只有名字和计数） |
 | `TM_STORE_RECLAIM`（环境，内部） | on | 测试覆盖 `storeReclaim` 键：off 时启动不回收存储分片 |
 | `TM_CONFIG_AUTOCREATE`（环境，内部） | on | off 时不在启动时自动生成全局 `team-mode.jsonc` |
-| `{ "package": "@te-river/opencode-team-mode@latest", "options": { "defaultAgent": false } }` | 不设置 = Team 永远默认 | 退出默认位抢占（2.x 必须用对象形状；1.x 的元组会被宿主拒：`path=$.plugins.1 kind=invalid`） |
+| `{ "package": "@te-river/opencode-team-mode@latest", "options": { "defaultAgent": false } }` | 不设置 = 检查并报告安装器写的 `default_agent` | 跳过默认角色检查（2.1.x 插件 ctx 没有 `agent.default`，插件本身提不了默认；默认由安装器写 `default_agent` 决定。2.x 必须用对象形状；1.x 的元组会被宿主拒：`path=$.plugins.1 kind=invalid`） |

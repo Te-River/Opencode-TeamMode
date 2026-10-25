@@ -69,7 +69,7 @@
 | 🧪 **Tester** | 测试工程师 | 带真边界条件的测试；静态验证（构建 / 类型检查 / lint）；经宿主原生 `browser_*` 工具的治理化 UI 验证 |
 | 🔎 **Researcher** | 找资料 | 本地仓库优先，然后才是网络——两个联网角色之一（另一个是 Lead） |
 
-开箱即用时 **Team 就是你的默认 agent**——新会话直接进编排者（可在 [配置](#️-配置)里关掉）。
+开箱即用时 **Team 就是你的默认 agent**——安装器会写 `default_agent: "Team"`，新会话直接进编排者（见[配置](#️-配置)）。
 
 ## 📦 安装
 
@@ -224,10 +224,11 @@ HTML 引擎在中国大陆**全部免 Key 可达**，且全部在种子域名白
 | 层 | 路径 | 优先级 |
 |---|---|---|
 | **全局** | `~/.config/opencode/team-mode.jsonc`（认宿主的 `OPENCODE_CONFIG_DIR`） | 最低——对所有项目生效 |
-| **项目** | `<目录>/team-mode.jsonc`，从工作区**一路向上直到文件系统根**逐级找 | 更高——直系文件由远及近合并 |
-| **项目** | `<目录>/.opencode/team-mode.jsonc`，同样的向上查找 | **最高**——每个 `.opencode/` 文件都覆盖每个直系文件 |
+| **项目** | `<目录>/team-mode.jsonc`，从工作区**一路向上直到文件系统根**逐级找 | 居中——直系文件由远及近合并 |
+| **项目** | `<目录>/.opencode/team-mode.jsonc`，同样的向上查找 | 用户层里最高——每个 `.opencode/` 文件都覆盖每个直系文件 |
+| **system** | `%ProgramData%\opencode\team-mode.jsonc`（Windows）/ `/etc/opencode/team-mode.jsonc`（POSIX） | **整体最高**——宿主的 managed-settings 层压过所有用户层 |
 
-这套查找与优先级就是宿主自己的配置分层规则，照抄而不是发明。JSONC 受支持：`//` 和 `/* */` 注释按字节偏移打掩码，被注释掉的键不会被读成生效的键。解析失败的一层被**整体**跳过（半份配置比没有更糟），单个坏键只丢自己；未知键会告警且永不应用。`tm_stats` 会把结果渲染出来：每个键的来源、跳过的层、未知键、自动创建状态。
+所以文件层一共**三层**（`global < project < system`）；这套查找与优先级就是宿主自己的配置分层规则，照抄而不是发明。推不出根目录的平台（没有 `PROGRAMDATA` 的 Windows）就是没有这一层，报告里也会这样写。JSONC 受支持：`//` 和 `/* */` 注释按字节偏移打掩码，被注释掉的键不会被读成生效的键。解析失败的一层被**整体**跳过（半份配置比没有更糟），单个坏键只丢自己；未知键会告警且永不应用。`tm_stats` 会把结果渲染出来：每个键的来源、跳过的层、未知键、自动创建状态。
 
 ### 它会自己写一份
 
@@ -237,7 +238,7 @@ HTML 引擎在中国大陆**全部免 Key 可达**，且全部在种子域名白
 // 全局配置。取消注释即可生效；默认全部注释 = 什么都不设置。
 {
   // "offloadThreshold": 2000,            // 卸载阈值（估算 token；等于阈值也卸载）。
-  // "envProtect": "strict",              // R6 环境防护模式（strict/standard/off）。（红线：仅全局）
+  // "envProtect": "strict",              // R6 环境防护模式（strict/standard/off）。（红线：仅全局或 system）
   // …共 64 个键，每个都带一行说明
 }
 ```
@@ -246,7 +247,7 @@ HTML 引擎在中国大陆**全部免 Key 可达**，且全部在种子域名白
 
 ### 红线键
 
-有五个键**只在全局文件里被认**：`envProtect`、`r6FineAsk`、`privateSpace`、`webfetchAllowedDomains`、`bashReadonlyAllowed`。项目文件可以写它们，但那个值**被忽略并被报出来**——一份会被提交的项目配置不该能给所有克隆这份仓库的人关掉某个守卫。这条规则由注册表本身推导（规格上的 `redLine: true`），所以新加的红线键天然就是红线。
+有五个键**只在全局或 `system` 文件里被认**：`envProtect`、`r6FineAsk`、`privateSpace`、`webfetchAllowedDomains`、`bashReadonlyAllowed`。项目文件可以写它们，但那个值**被忽略并被报出来**——一份会被提交的项目配置不该能给所有克隆这份仓库的人关掉某个守卫；`system` 层是管理员托管的那一层，所以它可以设。这条规则由注册表本身推导（规格上的 `redLine: true`），所以新加的红线键天然就是红线。
 
 ### 插件选项
 
@@ -263,7 +264,7 @@ HTML 引擎在中国大陆**全部免 Key 可达**，且全部在种子域名白
 
 | 选项 | 默认 | 含义 |
 |---|---|---|
-| `defaultAgent` | `true` | 把 Team 提为默认 agent 位。用 `false` 退出。 |
+| `defaultAgent` | `true` | 检查并报告安装器写的 `default_agent` 指向谁。2.1.x 插件 ctx 没有 `agent.default`，插件无法提默认；`false` 只跳过这项检查。 |
 | `autoCreate` | `true` | 全局 `team-mode.jsonc` 缺失时在启动时写入那份惰性模板。 |
 | `ttlDays`（别名 `blackboardTtlDays`） | `5` | 黑板保留期，有效区间 (0, 365]。 |
 | `envProtect` | `true` | 插件级总开关；`false` 会把 R6 模式解析成 `off`。 |
@@ -414,7 +415,7 @@ HTML 引擎在中国大陆**全部免 Key 可达**，且全部在种子域名白
 - **静态验证：** 构建 / 类型检查 / lint / 测试。禁止临时起意的浏览器自动化；未验证的 UI 工作以 `UI NOT VERIFIED: <待人工检查项>` 收尾。
 - **证据标准：** "完成 / 修好 / 通过"必须带可验证证据——输出、日志、diff。**用你的语言，不是工具的语言：** 受治理工具回复的是中文，所以每个角色的散文保持你的语言，只在"它本身就是证据"时逐字引用中文字符串。
 
-**架构，三行说完。** 包只导出 `{id, setup}`；加载器调一次 `setup(ctx)`：注册 `tm_*` 工具、解析那两层配置、在 `permission.evaluate` 上装 R6/地址守卫、在 `tool.execute.after` 上挂 JIT 治理、并发布黑板注记——你自定义的同名 agent 永远优先。让这层配置值得信任的规则只有一条：**`CONFIG_KEYS` 就是注册表，也是唯一事实来源**，不在里面的键会被报成未知且永不应用，红线集合由这个注册表推导而不是手工列一遍。模块地图、每个文件的接缝和实测到的宿主事实都在 [AGENTS.md](./AGENTS.md)；每条 v2 论断背后的带日期证据在 [docs/v2-port-notes.md](./docs/v2-port-notes.md)。
+**架构，三行说完。** 包只导出 `{id, setup}`；加载器调一次 `setup(ctx)`：注册 `tm_*` 工具、解析那三层配置（`global < project < system`）、在 `permission.evaluate` 上装 R6/地址守卫、在 `tool.execute.after` 上挂 JIT 治理、并发布黑板注记——你自定义的同名 agent 永远优先。让这层配置值得信任的规则只有一条：**`CONFIG_KEYS` 就是注册表，也是唯一事实来源**，不在里面的键会被报成未知且永不应用，红线集合由这个注册表推导而不是手工列一遍。模块地图、每个文件的接缝和实测到的宿主事实都在 [AGENTS.md](./AGENTS.md)；每条 v2 论断背后的带日期证据在 [docs/v2-port-notes.md](./docs/v2-port-notes.md)。
 
 ## 🔧 自定义
 
@@ -445,7 +446,7 @@ HTML 引擎在中国大陆**全部免 Key 可达**，且全部在种子域名白
 }
 ```
 
-**停用一个：** `"researcher": { "disable": true }`。黑板保留期、自动创建、默认 agent 位和 R6 总开关都是插件条目上的 `options`——见[配置](#️-配置)。
+**停用一个：** `"researcher": { "disable": true }`。黑板保留期、自动创建、默认角色检查和 R6 总开关都是插件条目上的 `options`——见[配置](#️-配置)。
 
 ## ❓ 故障排查
 

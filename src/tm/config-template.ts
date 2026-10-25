@@ -20,8 +20,8 @@ import { CONFIG_FILE_NAME } from "./config-files.js"
 const HEADER = [
   "// team-mode.jsonc — TeamMode 唯一配置源",
   "// 本文件由插件首次启动时自动生成；删除后下次启动会重新生成。",
-  "// 层序：全局（本文件） < 项目（<repo>/team-mode.jsonc 或 <repo>/.opencode/team-mode.jsonc）",
-  "// 红线键（redLine）只能在本全局文件里设置；项目文件设置会被忽略。",
+  "// 层序：全局（本文件） < 项目（<repo>/team-mode.jsonc 或 <repo>/.opencode/team-mode.jsonc） < system（%ProgramData%\\opencode 或 /etc/opencode，最高）",
+  "// 红线键（redLine）只能在全局或 system 文件里设置；项目文件设置会被忽略并报告。",
 ].join("\n")
 
 /** Render the full global config file (JSONC, every registry key listed).

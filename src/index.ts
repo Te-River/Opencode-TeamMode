@@ -12,12 +12,16 @@
  * Options (read from `ctx.options`):
  *   "plugin": [["@te-river/opencode-team-mode@latest", { "ttlDays": 7 }]]
  * - `ttlDays`      → blackboard auto-cleanup TTL; default 5.
- * - `defaultAgent` → Team is the default agent (opt-out: set `false`).
- *                    Owning the default slot means the picker pins it
- *                    FIRST — order becomes team, build, plan.  Set
- *                    `false` for build-as-default with Team in its
- *                    alphabetical slot: build, plan, team (the two are
- *                    mutually exclusive by the server's sort).
+ * - `defaultAgent` → check and report which agent the installer's
+ *                    `default_agent` names (opt-out: set `false` skips the
+ *                    check).  The 2.1.x plugin ctx has NO `agent.default`
+ *                    (`typeof ctx.agent.default === "undefined"`, measured on
+ *                    2.1.4), so this plugin cannot promote anything: the
+ *                    default role is decided by the installer writing
+ *                    `default_agent` into the global `opencode.jsonc`, and the
+ *                    boot row publishes it as `agents_default`
+ *                    (`installer:Team` / `installer:other` / `missing` /
+ *                    `no-config` / `unreadable`).
  */
 
 import type { V2Plugin } from "./host/v2-types.js"
