@@ -7,6 +7,8 @@ registry saw 1.5.0 as the install-script fix release).
 
 ## [Unreleased]
 
+## [1.8.8] - 2026-10-25
+
 ### Fixed
 
 - **`tm_join` 不再把整段会话的历史子代理铺进主表：只列「还可能在跑」的，已结算的只报一行计数。**
