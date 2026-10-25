@@ -7,6 +7,27 @@ registry saw 1.5.0 as the install-script fix release).
 
 ## [Unreleased]
 
+### Fixed
+
+- **`tm_join` 在服务重启后重新认识子代理：宿主没有 `session.children` 时，从父会话历史里认领（2.1.4 + 1.8.6 实测导出）。**
+  原文：插件进程重启后进程内 registry 清空，而 2.1.4 没有 `session.children`，`tm_join` 对仍在跑的子代理答「没有待收集
+  的派发」——用户在界面上看得见它们在跑，lead 却据此重复派发。现在 `tm_join` 每次调用读一次**调用方自己的会话历史**
+  （v2 上是 `ctx.session.context`，进程内），从中提取两种宿主自己的证据：后台派发的 ack
+  `The subagent is working in the background (sessionID: ses_…)`（= 存在且在跑）与完成信封
+  `<subagent sessionID="…" state="completed" …>正文</subagent>`（= 已结束，信封正文即报告）。候选**先向宿主核对归属**
+  （`session.get` 的 `parentID === 调用方`）才登记为 `via:"host-injection"` 的行；`completed` 行以
+  `settleSource:"injection"` 结算，其余仍向宿主问 `time.idle` / `outcome`（唯一带 outcome 的一手来源）。
+  `adoption.why` 现在区分三种状态：有 children API 且看过、没有 children 但历史认领到、两边都没有；计数落在
+  `adopt_history` 轨迹行（候选数 / 新增数 / 跳过数），已登记的 id 不会被重复认领（幂等）。钉住：`test-tm-tools` §10-G
+  （ack → 认领并由 `session.get` 结算为 `已结算(succeeded)`；完成信封 → 正文=信封正文且标 `正文来源=宿主注入信封`；
+  同一 id 预登记 → `adopt_history` 报 2/1/1 且不再问宿主），反向验证做过（`childrenFromParentHistory` 返回空 → §10 红 → 还原）。
+- **`tm_join` 现在报告宿主后台 shell：`后台 shell：N 个（sh_… 运行中 / sh_… 已完成）`。**
+  同一次实测：用户明确说「你的子代理和 shell 正在跑」，而 `tm_join` 对后台 shell 完全不可见。现在它扫父会话历史里的
+  `<shell id="sh_…" state="running|completed|failed|error" command="…">`（引号内允许 `>`，否则带重定向的命令会把标签
+  截断在 `state` 之前），并在每个回复的末尾——包括「没有待收集的派发」那一轮——追加一节；运行中的明确写
+  「还在跑 —— 别重复派同类活」。只报告、不 kill：shell 的生命周期归宿主。钉住：`test-tm-tools` §10-G（空轮也要报；
+  running → 还在跑；completed → 已完成且无警告），反向验证做过（`renderBackgroundShells` 恒返回 null → §10 红 → 还原）。
+
 ## [1.8.6] - 2026-10-25
 
 ### Fixed

@@ -481,6 +481,201 @@ export function hostEnvelopeBody(messages: unknown, sessionID: string): string |
   return null
 }
 
+/** One sub-agent candidate the PARENT transcript still names — the recovery source on a
+ *  host that has no `session.children` (measured absent on 2.1.4 while `ctx.session.get`
+ *  still answers).  Two spellings carry the evidence, and both are the host's own words:
+ *   · the ACK of a background dispatch — `The subagent is working in the background
+ *     (sessionID: ses_…)` — which proves the child EXISTS and was running;
+ *   · the completion envelope `<subagent sessionID="…" state="completed" …>body</subagent>`,
+ *     which additionally proves how it ended and carries the report itself.
+ *  A candidate is a CLAIM, never an adoption: `adoptFromParentHistory` still asks the host
+ *  for the parentage before it opens a registry row (the same lock `claimNamedChild` uses). */
+export interface ParentHistoryChild {
+  sessionID: string
+  state: "running" | "completed" | "error"
+  /** the envelope body when the evidence was a `state="completed"` envelope */
+  body?: string
+  label: string
+}
+
+/** One background shell the host announced in the parent transcript
+ *  (`<shell id="sh_…" state="running|completed|failed|error" command="…">…</shell>`).
+ *  Reported only: the host owns its shells' lifetime, so nothing here kills one. */
+export interface BackgroundShell {
+  id: string
+  state: string
+  command?: string
+}
+
+const HISTORY_ACK_RE = /The subagent is working in the background \(sessionID: (ses_[A-Za-z0-9]+)\)/gi
+const SESSION_ID_RE = /^ses_[A-Za-z0-9]+$/
+const SHELL_ID_RE = /^sh_[A-Za-z0-9]+$/
+
+/**
+ * The text bodies a transcript carries, for the HISTORY scanners only.
+ *
+ * Deliberately wider than `transcriptTexts` above, which keeps the body-collection policy
+ * (`type:"text"`): a background dispatch's ACK reaches the parent as a TOOL RESULT part, and
+ * the v2 seam hands tool parts through untouched (`normaliseContextMessages` moves
+ * `content[]` to `parts[]` and keeps their kind).  Reading only `type:"text"` would make
+ * this whole recovery path structurally dead — the exact shape of the task-offload bug,
+ * where a matcher that never fired was mistaken for "nothing to match".  `textsOf` in
+ * `src/host/v2-subagent.ts` reads `{text}` off every part for the same reason.
+ */
+function historyTexts(messages: unknown): string[] {
+  const list = Array.isArray(messages) ? messages : []
+  const out: string[] = []
+  for (const entry of list) {
+    const e = entry as { parts?: unknown; text?: unknown } | null | undefined
+    if (typeof e?.text === "string" && e.text.trim()) out.push(e.text)
+    if (!Array.isArray(e?.parts)) continue
+    const joined = e.parts
+      .map((p) => {
+        const t = (p as { text?: unknown } | null | undefined)?.text
+        return typeof t === "string" ? t : ""
+      })
+      .filter((s) => s.trim())
+      .join("\n")
+    if (joined.trim()) out.push(joined)
+  }
+  return out
+}
+
+/** End index of the tag that starts at `from`, honouring quotes: a shell `command` may
+ *  contain `>` (a redirect), and cutting the tag there would lose the `state` after it. */
+function historyTagEnd(text: string, from: number): number {
+  let quote = ""
+  for (let i = from; i < text.length; i++) {
+    const ch = text[i]
+    if (quote) {
+      if (ch === "\\") i++
+      else if (ch === quote) quote = ""
+      continue
+    }
+    if (ch === '"' || ch === "'") quote = ch
+    else if (ch === ">") return i
+  }
+  return -1
+}
+
+function historyTagAttr(tag: string, name: string): string {
+  const m = new RegExp(`\\b${name}\\s*=\\s*(?:"([^"]*)"|'([^']*)')`).exec(tag)
+  return (m?.[1] ?? m?.[2] ?? "").trim()
+}
+
+/** A label for a candidate whose evidence carried none: the nearest line above the ACK (the
+ *  dispatch description usually rides there), else the line below it, else `"host child"`. */
+function historyLabelNear(text: string, index: number): string {
+  const before = text
+    .slice(0, index)
+    .split(/\r?\n/)
+    .map((s) => s.trim())
+    .filter(Boolean)
+  const after = text
+    .slice(index)
+    .split(/\r?\n/)
+    .map((s) => s.trim())
+    .filter(Boolean)
+  const cand = before[before.length - 1] ?? after[1] ?? ""
+  return cand.replace(/^[-*·\s]+/, "").slice(0, 40) || "host child"
+}
+
+function historyStateOf(raw: string): "running" | "completed" | "error" {
+  const s = raw.toLowerCase()
+  if (s === "running" || s === "started" || s === "busy") return "running"
+  if (s === "completed" || s === "succeeded" || s === "done") return "completed"
+  return "error"
+}
+
+/** Sub-agent candidates named by a parent transcript, in transcript order (a later
+ *  envelope overwrites the earlier ACK for the same id — that is what "last one wins"
+ *  means for a child that was woken and re-ran). */
+export function childrenFromParentHistory(messages: unknown): ParentHistoryChild[] {
+  const found = new Map<string, ParentHistoryChild>()
+  for (const text of historyTexts(messages)) {
+    for (const m of text.matchAll(HISTORY_ACK_RE)) {
+      const sid = m[1]
+      const prior = found.get(sid)
+      // An envelope already read for this id carries a stronger state; an ACK after it is a
+      // re-dispatch, so it wins — both cases reduce to "the later evidence wins".
+      found.set(sid, { sessionID: sid, state: "running", label: prior?.label ?? historyLabelNear(text, m.index ?? 0) })
+    }
+    let from = 0
+    for (;;) {
+      const open = text.indexOf("<subagent", from)
+      if (open < 0) break
+      if (!/\s/.test(text[open + "<subagent".length] ?? "")) {
+        from = open + 9
+        continue
+      }
+      const gt = historyTagEnd(text, open)
+      if (gt < 0) break
+      const tag = text.slice(open, gt + 1)
+      const sid = historyTagAttr(tag, "sessionID")
+      const stateRaw = historyTagAttr(tag, "state")
+      const close = text.indexOf("</subagent>", gt + 1)
+      if (SESSION_ID_RE.test(sid) && stateRaw) {
+        const state = historyStateOf(stateRaw)
+        const body = close >= 0 && state === "completed" ? text.slice(gt + 1, close).trim() : ""
+        const described = historyTagAttr(tag, "description").slice(0, 40)
+        found.set(sid, {
+          sessionID: sid,
+          state,
+          ...(body ? { body } : {}),
+          label: described || found.get(sid)?.label || "host child",
+        })
+      }
+      from = close >= 0 ? close + "</subagent>".length : gt + 1
+    }
+  }
+  return [...found.values()]
+}
+
+/** Background shells the host announced in a parent transcript, last state per id. */
+export function backgroundShellsFromParentHistory(messages: unknown): BackgroundShell[] {
+  const found = new Map<string, BackgroundShell>()
+  for (const text of historyTexts(messages)) {
+    let from = 0
+    for (;;) {
+      const open = text.indexOf("<shell", from)
+      if (open < 0) break
+      if (!/\s/.test(text[open + "<shell".length] ?? "")) {
+        from = open + 6
+        continue
+      }
+      const gt = historyTagEnd(text, open)
+      if (gt < 0) break
+      const tag = text.slice(open, gt + 1)
+      const id = historyTagAttr(tag, "id")
+      if (SHELL_ID_RE.test(id)) {
+        const state = (historyTagAttr(tag, "state") || "running").toLowerCase()
+        const command = historyTagAttr(tag, "command")
+        found.set(id, { id, state, ...(command ? { command: command.slice(0, 80) } : {}) })
+      }
+      from = gt + 1
+    }
+  }
+  return [...found.values()]
+}
+
+/** The `后台 shell` section tm_join appends.  A running shell is named as RUNNING and told
+ *  not to be re-dispatched: the user can see those processes, and a lead that cannot see
+ *  them dispatches the same work twice.  Nothing is killed here — the host owns the shell. */
+export function renderBackgroundShells(shells: readonly BackgroundShell[]): string | null {
+  if (!shells.length) return null
+  const verdict = (s: BackgroundShell): string =>
+    s.state === "running" ? "运行中" : s.state === "completed" ? "已完成" : `失败(${s.state})`
+  const parts = shells.map((s) => `${s.id} ${verdict(s)}${s.command ? ` · ${shorten(s.command, 60)}` : ""}`)
+  const running = shells.filter((s) => s.state === "running")
+  const lines = [`后台 shell：${shells.length} 个（${parts.join(" / ")}）`]
+  if (running.length) {
+    lines.push(
+      `⏳ ${running.map((s) => s.id).join("、")} 还在跑 —— 别重复派同类活（宿主的 shell 自己收输出，这里只报告，不 kill）。`,
+    )
+  }
+  return lines.join("\n")
+}
+
 /**
  * Turn whatever the host puts in an error slot into ONE readable line.
  *
@@ -1205,6 +1400,122 @@ export function buildDispatchTools(deps: DispatchDeps): {
     return { adopted, looked: true, why: adopted ? "" : "会话树里没有被认领标题的子会话" }
   }
 
+  /** Read the CALLING session's own transcript.  On a host with no `session.children`
+   *  (2.1.4) this is the only recovery source left, and it is also where the host announces
+   *  its background shells.  Never throws: a failure is a reported `why`, because
+   *  "we could not look" and "there was nothing" must not print the same. */
+  async function readParentMessages(
+    parent: string,
+    directory: string | undefined,
+  ): Promise<{ ok: boolean; data?: unknown; why: string }> {
+    if (!parent) return { ok: false, why: "调用方会话 id 缺失，读不到父会话历史" }
+    if (typeof api?.messages !== "function") {
+      return { ok: false, why: "这个宿主客户端没有给出读取会话正文的缝（v2 上是 ctx.session.context），父会话历史读不到" }
+    }
+    try {
+      const un = unwrapClientResult(
+        await api.messages({ path: { id: parent }, ...(directory ? { query: { directory } } : {}) }),
+      )
+      if (!un.ok) return { ok: false, why: `读取父会话历史失败：${shorten(un.message ?? "", 90)}` }
+      return { ok: true, data: un.data, why: "" }
+    } catch (err) {
+      return {
+        ok: false,
+        why: `读取父会话历史失败：${describeHostError((err as { message?: unknown })?.message ?? err, 90)}`,
+      }
+    }
+  }
+
+  /**
+   * Adopt the children the PARENT TRANSCRIPT still names — the second recovery path, for a
+   * host whose `session.children` does not exist.  Measured live (2.1.4 + 1.8.6): a service
+   * restart empties this in-process registry, `session.children` is gone, so tm_join
+   * answered `没有待收集的派发` while the user could still see the sub-agents running — and
+   * the lead re-dispatched work that was already in flight.
+   *
+   * The transcript is not trusted as ownership: every candidate is verified through the
+   * host's own `session.get` (`parentID === the caller`) before a row is opened, because an
+   * envelope names a session, it does not prove the session is OURS.  A candidate the host
+   * will not confirm is counted as skipped and never shown as a child.
+   *
+   * The row's state comes from the evidence: `state="completed"` envelope → settled
+   * (`settleSource="injection"`, the host's own injection is the evidence);
+   * `state="error"` → failed; an ACK or `state="running"` → running, and the host's own
+   * `time.idle` is still asked for (it is the only source carrying the `outcome` word).
+   */
+  async function adoptFromParentHistory(
+    parent: string,
+    parentMessages: unknown,
+    directory: string | undefined,
+    only: Set<string> | null,
+  ): Promise<{ adopted: number; looked: boolean; candidates: number; skipped: number; why: string }> {
+    const candidates = childrenFromParentHistory(parentMessages)
+    let adopted = 0
+    let skipped = 0
+    for (const cand of candidates) {
+      const sid = cand.sessionID
+      if (!sid || sid === parent || children.has(sid) || (only && !only.has(sid))) {
+        skipped++
+        continue
+      }
+      const gate = await parentageOf(sid, parent, directory)
+      if (!gate.ok) {
+        skipped++
+        log({ step_id: "join", event: "adopt_history_refused", child: sid, reason: "parentage" })
+        continue
+      }
+      const hostAgent = gate.agent.trim().toLowerCase()
+      // T3: this registry never carries a lead, whatever a stale transcript says.
+      const agent = hostAgent && !sameAgent(hostAgent, leadAgent) ? hostAgent : "subagent"
+      const startedAt = now()
+      const rec: ChildRecord = {
+        sessionID: sid,
+        agent,
+        label: cand.label || "host child",
+        parentSessionID: parent,
+        startedAt,
+        state: "running",
+        via: "host-injection",
+      }
+      if (cand.state === "completed") {
+        rec.state = "idle"
+        rec.finishedAt = startedAt
+        rec.settleSource = "injection"
+      } else if (cand.state === "error") {
+        rec.state = "error"
+        rec.finishedAt = startedAt
+        rec.error = "宿主注入信封报告 state=error（正文随注入消息送达）"
+      } else {
+        // Still running, as far as the transcript knows — but the host's own record is a
+        // better witness and it also carries `outcome`, which no envelope does.
+        const st = await readHostSessionState(api, sid)
+        if (st.idleAt) {
+          rec.state = "idle"
+          rec.finishedAt = st.idleAt
+          rec.hostIdleAt = st.idleAt
+          if (st.createdAt !== undefined) rec.hostCreatedAt = st.createdAt
+          rec.settleSource = "session-get"
+          if (st.outcome) rec.outcome = st.outcome
+        } else if (st.createdAt !== undefined) {
+          rec.hostCreatedAt = st.createdAt
+        }
+      }
+      children.set(sid, rec)
+      deps.onChildSession?.(sid, agent)
+      adopted++
+      log({ step_id: "join", event: "adopt", child: sid, agent, state: cand.state, source: "parent-history" })
+    }
+    // One summary row per call: the counters are what makes "I looked and there was
+    // nothing" distinguishable from "I never looked" in the trajectory.
+    log({ step_id: "join", event: "adopt_history", candidates: candidates.length, adopted, skipped, source: "parent-history" })
+    const why = !candidates.length
+      ? "父会话历史里没有子代理派发记录（既没有后台 ack，也没有 <subagent> 信封；历史若被压缩过，这条也不算数）"
+      : adopted
+        ? ""
+        : `父会话历史里 ${candidates.length} 个候选都没能认领（${skipped} 个已登记或宿主未确认归属）`
+    return { adopted, looked: true, candidates: candidates.length, skipped, why }
+  }
+
   /** Claim ONE explicitly named child of the calling session — the host's own
    *  `task` child included, which `adoptFromHost` must never pick up on its
    *  own.  The lock is the host's parentage (`parentID === the caller`), read
@@ -1299,7 +1610,8 @@ export function buildDispatchTools(deps: DispatchDeps): {
 - { waitMs: 30000 }: bounded wait (capped at ${waitLabel(maxWaitMs)}) until every child settles.  A wait BLOCKS YOU — your turn is parked in this tool call, so it is the synchronous \`task\` experience with none of its visibility.  Wait once, briefly, and only when the very next step needs the answer; a second consecutive wait after nothing settled is cut to 10s and answered with what to do instead.  Never wait for a child whose result you do not need — abort it instead ({ cancel: true }).
 - { ids: [...] }: restrict to those child sessions — a host \`task\` child is collectable when you NAME it (its parentage is verified against the host's own session tree, never assumed); { cancel: true }: abort still-running ones.  With explicit ids the host is ALWAYS asked, even for a row this process believes settled — a settled-looking row can have been woken and be running for real.
 - Steer a child while it runs — the same call, no separate tool: { steer: "先停手，验收改成 X", ids: ["<child>"] } admits the line into that child's inbox with delivery "steer" (or "queue") and the host wakes execution at the step boundary.  已受理 means the host took the line into that inbox — NOT that the child read or obeyed it.  After a successful steer the tool re-reads that inbox ONCE: an item gone from the pending list is reported 已送达, still pending is 已受理（未送达，宿主在步边界投递）, and an inbox it cannot read is 已受理（未验证送达）— delivery is never inferred from the write alone, and none of the three means the child followed it.  Steer REFUSES a child whose registered state is not running (idle / error / unknown), because the host's doc sentence "Steering wakes session execution" means the line starts a second run that overlaps new dispatches — pass { wake: true } to do that deliberately.  { unread: true, ids: ["<child>"] } lists that child's undelivered inbox items (ids + shape only, never the body); { unsend: {"sessionID":"ses_…","inboxID":"msg_…"} } withdraws one that has not been delivered — an already-delivered item is the documented no-op and is reported as one.  All three ask the host for parentage FIRST and refuse a session that is not yours; a host without the seam answers no-seam instead of pretending.
-- A plugin/host restart does NOT orphan a child: those the host still lists under your session are re-adopted automatically (their rows are marked 接管), and one that answered while nobody was listening is reported 已完成, not lost.
+- A plugin/host restart does NOT orphan a child: those the host still lists under your session are re-adopted automatically (their rows are marked 接管), and on a host with no \`session.children\` the children your own transcript still names — the background ACK \`(sessionID: ses_…)\` and the \`<subagent sessionID="…" state="…">\` envelope — are claimed after the host confirms their parentage.  One that answered while nobody was listening is reported 已完成, not lost.
+- Background SHELLS the host announced in this session are reported at the end of every reply (\`后台 shell：N 个\`), with the running ones named as still running.  Nothing is killed by this tool: re-run a shell only if a completed one failed, and never dispatch the same work again while one is still running.
 - Replies come back through the offload pipeline: a long sub-agent report arrives as a handle + ≤80-token preview (page it with tm_fetch), so a batch of parallel work does not multiply your context.  STATUS: blocked/failed children are surfaced first, always.  When a child's own session yields no assistant text, the host's injected \`<subagent sessionID="…">…</subagent>\` envelope in THIS session is read as the body and labelled 正文来源=宿主注入信封 (an id must match exactly).`,
     args: {
       ids: { descriptor: "ids: string[] (optional — only these child sessions)" },
@@ -1353,6 +1665,15 @@ export function buildDispatchTools(deps: DispatchDeps): {
         // reading the registry so this reply never mixes a fresh table with a half-updated row.
         if (settling.size) await Promise.allSettled([...settling])
         const directory = typeof c.directory === "string" && c.directory ? c.directory : undefined
+        // Read the CALLER's own transcript ONCE per call: it is the floor recovery source
+        // when the host has no `session.children`, and the only place a background shell is
+        // ever announced.  In-process on v2 (`ctx.session.context`), one hop on v1.
+        const parentHistory = await readParentMessages(parent, directory)
+        // Shells are REPORTED, never claimed: they are the host's processes, and this tool
+        // only exists to keep the lead from re-dispatching what is already running.
+        const shellSection = parentHistory.ok
+          ? renderBackgroundShells(backgroundShellsFromParentHistory(parentHistory.data))
+          : null
         const idList = parseIdList(args.ids)
         const idFilter = idList && idList.length ? new Set(idList) : null
         const owned = (): ChildRecord[] =>
@@ -1373,6 +1694,23 @@ export function buildDispatchTools(deps: DispatchDeps): {
         if (mine.length < (idFilter ? idFilter.size : 1)) {
           adoption = await adoptFromHost(parent, directory, idFilter)
           if (adoption.adopted) mine = owned()
+          // Second recovery source, for the host that has no `session.children` at all
+          // (measured 2.1.4): the parent transcript still names its children.  Only asked
+          // when the tree walk did not settle the question — never instead of it.
+          if (mine.length < (idFilter ? idFilter.size : 1)) {
+            const hist = parentHistory.ok
+              ? await adoptFromParentHistory(parent, parentHistory.data, directory, idFilter)
+              : { adopted: 0, looked: false, candidates: 0, skipped: 0, why: parentHistory.why }
+            if (hist.adopted) mine = owned()
+            // The `why` has to keep the three states apart: a children API that looked, no
+            // children API but the history claimed something, and neither source yielding a
+            // child.  Fusing them is the overstatement this path was built to stop.
+            adoption = {
+              adopted: adoption.adopted + hist.adopted,
+              looked: adoption.looked,
+              why: [adoption.why, hist.why].filter(Boolean).join("；"),
+            }
+          }
           // Plan B: a NAMED id may be the host's own `task` child (no ·tm
           // marker, so the tree walk above never claims it).  Collecting it is
           // how the lead reads back a result we replaced with a pointer — the
@@ -1645,7 +1983,11 @@ export function buildDispatchTools(deps: DispatchDeps): {
               // the transcript, and the honest reason is that a synchronous host
               // task never enters this registry at all.
               `如果你用的是同步 \`task\`：宿主自己就把结果收回来了，它从不登记在这里，这不是派发失败。` +
-              `只有后台 \`task {background:true}\`（或显式带 ids）需要 tm_join 来取。`,
+              `只有后台 \`task {background:true}\`（或显式带 ids）需要 tm_join 来取。` +
+              // A round with no collectable CHILD is still not an empty round when the host
+              // has shell commands in flight: the user can see them and the lead cannot, so
+              // silence here is what produced a duplicate dispatch.
+              (shellSection ? `\n\n${shellSection}` : ""),
           )
         }
         await settleAdopted(mine, directory)
@@ -1936,7 +2278,7 @@ export function buildDispatchTools(deps: DispatchDeps): {
         // One `正文：` line per child, directly under the child rows it describes, and only
         // when bodies were actually read (`includeText:false` has no body to judge).
         if (bodyStatus.length) header.splice(childRowsEnd, 0, ...bodyStatus)
-        const body = [...header, ...(blocks.length ? ["", blocks.join("\n")] : [])].join("\n")
+        const body = [...header, ...(blocks.length ? ["", blocks.join("\n")] : []), ...(shellSection ? ["", shellSection] : [])].join("\n")
         const stepId = deps.pipelines.nextStepId()
         return toToolResult(
           await deps.pipelines.govern(stepId, tool, body, {

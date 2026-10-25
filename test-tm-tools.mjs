@@ -2940,7 +2940,20 @@ try {
               assert.equal(this?.__sdkNamespace, "session", "session.get must be called as a METHOD")
               const id = String(o?.sessionID ?? o?.path?.id ?? "")
               calls.get.push(id)
-              return { ok: true, data: { id, parentID: (over.parents ?? {})[id], agent: "implementer" } }
+              // `sessionRecord` is the host's own record for a finished run (`time.idle` +
+              // `outcome`), which is what settles a row the host confirms.
+              const rec = (over.sessionRecord ?? {})[id]
+              return {
+                ok: true,
+                data: {
+                  id,
+                  parentID: (over.parents ?? {})[id],
+                  agent: "implementer",
+                  ...(rec
+                    ? { outcome: rec.outcome, time: { created: rec.created ?? 1000, updated: rec.idle ?? 0, idle: rec.idle ?? 0 } }
+                    : {}),
+                },
+              }
             },
             status: async function () {
               assert.equal(this?.__sdkNamespace, "session", "session.status must be called as a METHOD")
@@ -3133,6 +3146,151 @@ try {
           assert.ok(missRow, "C: the mismatch still reports child_body_missing — the wording did not move")
           await rt.dispose()
         }
+
+        // G. RESTART RECOVERY WITHOUT `session.children` (2.1.4 measured) + background shells
+        //    A service restart empties this in-process registry, and 2.1.4 has no
+        //    `session.children` — so tm_join answered 没有待收集的派发 while the user could
+        //    still see the sub-agents running, and the lead re-dispatched work already in
+        //    flight.  The parent transcript still names them, and `session.get` still
+        //    answers.  The same transcript is where the host announces its background SHELLS,
+        //    which this tool could not see at all.
+        {
+          const ack = (sid) =>
+            `The subagent is working in the background (sessionID: ${sid}). You will be notified when it completes.`
+          const env = (sid, body, state = "completed") =>
+            `<subagent sessionID="${sid}" state="${state}" description="修登录">${body}</subagent>`
+          const shellTag = (id, state, command = "npm test") => `<shell id="${id}" state="${state}" command="${command}">…</shell>`
+          const parentText = (...texts) => texts.map((text) => ({ info: { role: "user" }, parts: [{ type: "text", text }] }))
+
+          // ① the pure scanners — a matcher that never fires would look exactly like "no
+          //    candidates", which is the shape of the dead task-offload matcher.
+          assert.deepEqual(
+            dmod.childrenFromParentHistory(parentText(ack("ses_hist1"))).map((c) => [c.sessionID, c.state]),
+            [["ses_hist1", "running"]],
+            "G: the host's background ACK is a running candidate",
+          )
+          assert.deepEqual(
+            dmod.childrenFromParentHistory(parentText(env("ses_hist2", "BODY"))).map((c) => [c.sessionID, c.state, c.body]),
+            [["ses_hist2", "completed", "BODY"]],
+            "G: the completion envelope carries its own body",
+          )
+          assert.deepEqual(
+            dmod
+              .backgroundShellsFromParentHistory(parentText(shellTag("sh_a", "running") + "\n" + shellTag("sh_b", "completed")))
+              .map((s) => [s.id, s.state]),
+            [["sh_a", "running"], ["sh_b", "completed"]],
+            "G: shell tags are read with their state",
+          )
+
+          // ② ACK-only history → claimed, then settled by the host's own record
+          {
+            const { rt, calls } = await v2Runtime("join-history-ack", {
+              parents: { ses_hist1: "ses_v2lead" },
+              messages: { ses_v2lead: parentText(ack("ses_hist1")) },
+              sessionRecord: { ses_hist1: { created: 1000, idle: 9000, outcome: "succeeded" } },
+            })
+            const joined = await rt.tools.tm_join.execute({}, V2LEAD)
+            assert.ok(calls.get.includes("ses_hist1"), "G1: a candidate's parentage is READ from the host before it is claimed")
+            const row = rt.hostChildren().find((c) => c.sessionID === "ses_hist1")
+            assert.equal(row?.via, "host-injection", "G1: the row is a host child, not a plugin-spawned one")
+            assert.equal(row?.settleSource, "session-get", "G1: time.idle from the host settles it — no presumption involved")
+            assert.equal(row?.outcome, "succeeded", "G1: …keeping the host's own outcome word")
+            assert.ok(
+              joined.output.includes("已结算（succeeded）"),
+              "G1: the row reads 已结算(outcome): " + joined.output.replace(/\n/g, " | ").slice(0, 260),
+            )
+            const hist = rowsOf(rt).filter((e) => e.event === "adopt_history").pop()
+            assert.deepEqual(
+              [hist?.candidates, hist?.adopted, hist?.skipped],
+              [1, 1, 0],
+              "G1: trajectory adopt_history counts candidates / adopted / skipped",
+            )
+            await rt.dispose()
+          }
+
+          // ③ completed envelope → claimed settled, body = the envelope's own body
+          {
+            const { rt } = await v2Runtime("join-history-envelope", {
+              parents: { ses_hist2: "ses_v2lead" },
+              messages: { ses_v2lead: parentText(ack("ses_hist2"), env("ses_hist2", "BODY-OF-HIST2")) },
+            })
+            const joined = await rt.tools.tm_join.execute({}, V2LEAD)
+            const row = rt.hostChildren().find((c) => c.sessionID === "ses_hist2")
+            assert.equal(row?.state, "idle", "G2: a completed envelope settles the row")
+            assert.equal(row?.settleSource, "injection", "G2: …because the host's own injection IS the evidence")
+            assert.equal(row?.label, "修登录", "G2: the envelope's description supplies the label")
+            assert.ok(
+              joined.output.includes("BODY-OF-HIST2"),
+              "G2: the envelope body is the collected reply: " + joined.output.replace(/\n/g, " | ").slice(0, 300),
+            )
+            assert.ok(joined.output.includes("正文来源=宿主注入信封"), "G2: …and the block names where that body came from")
+            await rt.dispose()
+          }
+
+          // ④ background shells are reported even when there is no child to collect
+          {
+            const { rt } = await v2Runtime("join-shells-running", {
+              messages: {
+                ses_v2lead: parentText(
+                  shellTag("sh_13ac0e96", "running", "npm run build") + "\n" + shellTag("sh_done01", "completed", "npm test"),
+                ),
+              },
+            })
+            const joined = await rt.tools.tm_join.execute({}, V2LEAD)
+            assert.ok(joined.output.includes("没有待收集的派发"), "G3: no child to collect is still said")
+            assert.ok(
+              joined.output.includes("后台 shell：2 个"),
+              "G3: the shells are reported on an otherwise empty round: " + joined.output.replace(/\n/g, " | ").slice(0, 300),
+            )
+            assert.ok(joined.output.includes("sh_13ac0e96 运行中"), "G3: …with the running one named as running")
+            assert.ok(joined.output.includes("sh_done01 已完成"), "G3: …and the finished one as finished")
+            assert.ok(
+              joined.output.includes("还在跑") && joined.output.includes("别重复派同类活"),
+              "G3: a running shell explicitly forbids re-dispatching the same work",
+            )
+            await rt.dispose()
+
+            const { rt: doneRt } = await v2Runtime("join-shells-done", {
+              messages: { ses_v2lead: parentText(shellTag("sh_done02", "completed")) },
+            })
+            const done = await doneRt.tools.tm_join.execute({}, V2LEAD)
+            assert.ok(
+              done.output.includes("后台 shell：1 个") && done.output.includes("已完成"),
+              "G3: a completed shell is reported as completed",
+            )
+            assert.ok(!done.output.includes("还在跑"), "G3: nothing running → no re-dispatch warning")
+            await doneRt.dispose()
+          }
+
+          // ⑤ idempotence: an id the registry already holds is SKIPPED, never re-adopted
+          {
+            const { rt, calls } = await v2Runtime("join-history-idempotent", {
+              parents: { ses_hist4a: "ses_v2lead", ses_hist4b: "ses_v2lead" },
+              messages: { ses_v2lead: parentText(ack("ses_hist4a") + "\n" + ack("ses_hist4b")) },
+            })
+            rt.registerHostChild({ sessionID: "ses_hist4a", parentSessionID: "ses_v2lead", agent: "implementer", label: "已在册" })
+            const joined = await rt.tools.tm_join.execute({ ids: ["ses_hist4a", "ses_hist4b"] }, V2LEAD)
+            const hist = rowsOf(rt).filter((e) => e.event === "adopt_history").pop()
+            assert.deepEqual(
+              [hist?.candidates, hist?.adopted, hist?.skipped],
+              [2, 1, 1],
+              "G4: an already-registered child is skipped, never re-adopted",
+            )
+            assert.equal(
+              rt.hostChildren().filter((c) => c.sessionID === "ses_hist4a").length,
+              1,
+              "G4: …so exactly one row exists for it",
+            )
+            assert.ok(!calls.get.includes("ses_hist4a"), "G4: …and the host is not even asked about it again")
+            assert.ok(joined.output.includes("ses_hist4b"), "G4: the unknown one IS claimed")
+            assert.equal(
+              (joined.output.match(/ses_hist4a · /g) ?? []).length,
+              1,
+              "G4: the known child appears once in the table",
+            )
+            await rt.dispose()
+          }
+        }
       }
 
       // the pure helpers that outlived the dispatcher
@@ -3150,7 +3308,7 @@ try {
       assert.equal(dmod.parseDispatchTitle("Explore the repo (@tester subagent)", ["tester"]), null, "a host task child's title never parses — that is what the marker is for")
       assert.equal(dmod.parseDispatchTitle("随便一个会话", ["tester"]), null, "an ordinary session is not ours")
     }
-    console.log("10. tm_dispatch removed (not registered, lead denied) + tm_join as the collect side: adoption of leftovers (both title shapes) with a host task child never claimed on speculation, named-id claims verified against host parentage, status/event settle, cancel, offloaded fat replies, the wait budget and its chained-wait cut, the presumed-settle body-completeness warning (complete / half / missing), the goal tripwire with the todowrite escape, the wake-gated steer + explicit-id cancel (host always asked) + parent-envelope body fallback, and the pure helpers")
+    console.log("10. tm_dispatch removed (not registered, lead denied) + tm_join as the collect side: adoption of leftovers (both title shapes) with a host task child never claimed on speculation, named-id claims verified against host parentage, status/event settle, cancel, offloaded fat replies, the wait budget and its chained-wait cut, the presumed-settle body-completeness warning (complete / half / missing), the goal tripwire with the todowrite escape, the wake-gated steer + explicit-id cancel (host always asked) + parent-envelope body fallback, restart recovery from the PARENT TRANSCRIPT (ACK / completion envelope, parentage verified, adopt_history counters, idempotent), the background-shell section (running forbids re-dispatch, completed is reported), and the pure helpers")
   }
 
   // ---------- 11. bash timeout clamp — RETIRED with the v1 personality ----------
