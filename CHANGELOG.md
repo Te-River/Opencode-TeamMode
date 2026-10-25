@@ -7,6 +7,31 @@ registry saw 1.5.0 as the install-script fix release).
 
 ## [Unreleased]
 
+### Fixed
+
+- **五个专科角色的 `mode` 改为 `all`：`/team-architect` 等命令现在真的能切过去。** v2 文档
+  （`/v2/docs/agents`，读于 2026-10-25）写明 `mode: "subagent"` = **只在子会话中运行**，而命令的
+  `agent:` 键是**切换当前会话的 agent**——五个专科此前全部是 `subagent`，`/team-plan` 之类的命令切过去
+  等于选了一个在主会话里跑不起来的角色。lead 保持 `primary`（它只在主会话用）。T3（只有 lead 能派发）
+  不依赖 mode，仍由每个专科的 `subagent: deny` 权限三元组保住——权限矩阵这次一个字没动。
+  钉住：`test-blackboard`（角色 mode）、`test-v2-adapter`（生成器投影出的 `mode: "all"`）。
+
+- **不再调用 `agent.default("Team")`：2.1.x 的插件 ctx 没有这个方法，默认角色由安装器写
+  `default_agent` 决定。** 2.1.4 只读探针实测 `typeof ctx.agent.default === "undefined"`，`agent`
+  域只有 `get / list / transform / reload`；旧代码的调用必然落进自己的 `catch`，而 boot 行报的
+  `called-unverified` 是谁都没量过的状态。现在 boot 的 `agents_default` 如实反映唯一真实机制：读全局
+  `opencode.jsonc` 的 `default_agent`，写 `installer:Team` / `installer:other` / `missing` /
+  `no-config` / `unreadable`（`defaultAgent:false` 时为 `opt-out`，且 `default_agent_check` 同样报
+  `opt-out`，不再把「没查」写成 `no-config`）；note 说明「插件 ctx 无 `agent.default`，默认只能由安装器
+  写 `default_agent` 决定」并给出重跑安装器的出口。`defaultAgent:false` 语义保留：跳过检查与报告，不再
+  暗示插件能提升默认。`v2-types.ts` 删掉 `V2AgentEditor.default` 声明——把调用加回去会先被 `tsc` 拒绝。
+  钉住：`test-default-agent`（0 次调用计数 / 四种 installer 口径 / 没有 `default` 方法时不抛且 boot 行
+  仍写出 / opt-out）与 `test-v2-adapter` 的同口径用例；反向验证做过（把调用加回 → 断言红 → 还原）。
+
+### Fixed
+
+- **配置层补上宿主的 system（托管设置）层，优先级最高。** 官方 v2 文档（`opencode.ai/v2/docs/config`）除了全局与项目层，还有 `/etc/opencode`、`%ProgramData%\opencode` 这一层，并写明 *Managed settings have the highest precedence*；此前只读全局 + 项目，一旦系统层存在，红线键的作用域判断就不完整，系统层的值也完全不生效。现在层序是 **全局 < 项目 < 系统**（`system` 最后合并）：Windows 取 `%ProgramData%\opencode`（`ProgramData` 缺失则整层缺席，不猜路径），POSIX 取 `/etc/opencode`，解析失败按既有规则**整层跳过并报告**；`perKeySource` 增加 `system`，`tm_stats` 的分层配置小节直接显示新层与其文件有无。**红线键改为只在全局或系统层生效**（`RED_LINE_LAYERS`），项目层（含 `.opencode/`）设置照旧被忽略并按来源层报告——系统层是管理员下发的、不可提交共享，项目文件则相反。`ConfigFileRoots.systemDir` 是可注入的，测试因此不碰真实机器路径（`test-config-layers.mjs` 组 19–22）。
+
 ## [1.8.5] - 2026-10-23
 
 ### Fixed

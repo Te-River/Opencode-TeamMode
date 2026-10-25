@@ -4,12 +4,16 @@
  *
  * Package ① (`config-layers.ts`) is the PURE layer: it takes raw JSONC text
  * and returns the merged view.  This module is the IO half — it LOCATES and
- * READS the two file layers, then hands the merged JSON values to
- * `resolveConfig` (the registry-driven validator).
+ * READS the file layers, then hands the merged JSON values to `resolveConfig`
+ * (the registry-driven validator).
  *
- * Two layers only, low→high: `全局 < 项目`.  There is NO session layer and
+ * Three layers, low→high: `全局 < 项目 < 系统`.  There is NO session layer and
  * NO env layer (the host's own config has none either —
- * `opencode.ai/v2/docs/config`).
+ * `opencode.ai/v2/docs/config`), but the host DOES have a managed-settings
+ * layer (`/etc/opencode`, `%ProgramData%\opencode`) and its docs put it above
+ * every user layer ("Managed settings have the highest precedence"), so the
+ * system file is read LAST and wins — including for the red-line keys, which
+ * a project file still cannot set.
  *
  * The project layer MIRRORS the host's layering semantics: search from the
  * current directory up to the filesystem root; merge the DIRECT files
@@ -47,6 +51,10 @@ export interface ConfigFileRoots {
   projectDir?: string
   /** Home dir used to derive the default global dir (default `os.homedir()`). */
   home?: string
+  /** Directory holding the SYSTEM (managed settings) file.  Defaults to the
+   *  platform root (`%ProgramData%\opencode` / `/etc/opencode`); injectable so
+   *  a test never reads — or writes — the real machine-wide path. */
+  systemDir?: string
 }
 
 export interface ConfigFileRead {
@@ -62,6 +70,13 @@ export interface ConfigFileRead {
   projectPaths: string[]
   /** The `.opencode/` subset of `projectPaths` (for the report). */
   opencodePaths: string[]
+  /** The resolved system dir, or null when this platform has none derivable
+   *  (Windows without `ProgramData`). */
+  systemDir: string | null
+  /** System (managed settings) file raw JSONC, or null when absent. */
+  systemLayer: string | null
+  /** Absolute path of the system file when it was read. */
+  systemPath: string | null
   /** Files dropped WHOLE because they failed to parse (never half-applied). */
   skipped: Array<{ name: string; reason: string }>
 }
@@ -131,15 +146,43 @@ export function resolveGlobalDir(roots: ConfigFileRoots = {}, env: EnvLike = pro
   return roots.globalDir ?? override ?? path.join(home, ".config", "opencode")
 }
 
-/** Locate and read both file layers.  Pure IO — no globals beyond the
- *  injected roots. */
+/**
+ * The resolved SYSTEM (managed settings) config dir — the host's own
+ * highest-precedence layer (`opencode.ai/v2/docs/config`): `/etc/opencode` on
+ * POSIX, `%ProgramData%\opencode` on Windows.  Returns `null` when the root
+ * cannot be derived (Windows with `ProgramData` unset), and the layer is then
+ * simply absent rather than guessed at.  No IO, so `envOnly` may still resolve
+ * it for the report.
+ */
+export function resolveSystemDir(
+  roots: ConfigFileRoots = {},
+  env: EnvLike = process.env,
+  platform: NodeJS.Platform = process.platform,
+): string | null {
+  if (roots.systemDir) return roots.systemDir
+  if (platform === "win32") {
+    const pd = typeof env.ProgramData === "string" ? env.ProgramData.trim() : ""
+    return pd ? path.join(pd, "opencode") : null
+  }
+  return "/etc/opencode"
+}
+
+/** Locate and read every file layer.  Pure IO — no globals beyond the injected
+ *  roots. */
 export function readConfigFiles(roots: ConfigFileRoots = {}, env: EnvLike = process.env): ConfigFileRead {
   const globalDir = resolveGlobalDir(roots, env)
   const projectDir = roots.projectDir ?? process.cwd()
+  const systemDir = resolveSystemDir(roots, env)
   const skipped: Array<{ name: string; reason: string }> = []
 
   const globalPath = path.join(globalDir, CONFIG_FILE_NAME)
   const globalLayer = readTextFile(globalPath)
+
+  // The system file is handed to the pure layer as TEXT: a parse failure is
+  // then reported as a skipped `system` layer — the same whole-layer rule the
+  // global file follows (no second parser here).
+  const systemPathCandidate = systemDir ? path.join(systemDir, CONFIG_FILE_NAME) : null
+  const systemLayer = systemPathCandidate ? readTextFile(systemPathCandidate) : null
 
   const directEntries: Array<{ name: string; text: string }> = []
   const opencodeEntries: Array<{ name: string; text: string }> = []
@@ -168,6 +211,9 @@ export function readConfigFiles(roots: ConfigFileRoots = {}, env: EnvLike = proc
     projectLayer: [mergeTexts(directEntries, skipped), mergeTexts(opencodeEntries, skipped)],
     projectPaths,
     opencodePaths,
+    systemDir,
+    systemLayer,
+    systemPath: systemLayer !== null ? systemPathCandidate : null,
     skipped,
   }
 }
@@ -193,13 +239,16 @@ export interface ResolveLayeredTmConfigOptions {
   env?: EnvLike
 }
 
-const EMPTY_FILES = (globalDir: string): ConfigFileRead => ({
+const EMPTY_FILES = (globalDir: string, systemDir: string | null): ConfigFileRead => ({
   globalDir,
   globalLayer: null,
   globalPath: null,
   projectLayer: [null, null],
   projectPaths: [],
   opencodePaths: [],
+  systemDir,
+  systemLayer: null,
+  systemPath: null,
   skipped: [],
 })
 
@@ -217,10 +266,13 @@ export function resolveLayeredTmConfig(
   const env = opts.env ?? process.env
   const envOnly = opts.envOnly ?? false
   const globalDir = resolveGlobalDir(roots, env)
-  const files: ConfigFileRead = envOnly ? EMPTY_FILES(globalDir) : readConfigFiles(roots, env)
+  const files: ConfigFileRead = envOnly
+    ? EMPTY_FILES(globalDir, resolveSystemDir(roots, env))
+    : readConfigFiles(roots, env)
   const base = resolveLayeredConfig({
     globalLayer: files.globalLayer,
     projectLayer: files.projectLayer,
+    systemLayer: files.systemLayer,
     envOnly,
   })
   const layered: LayeredConfigResult = {
@@ -255,8 +307,9 @@ export function renderConfigSection(
 ): string {
   const lines: string[] = ["", "### 分层配置（team-mode.jsonc）", ""]
   lines.push(
-    `- 层序 全局 < 项目 · 全局文件 ${files.globalPath ? "有" : "无"} · ` +
+    `- 层序 全局 < 项目 < 系统（最高） · 全局文件 ${files.globalPath ? "有" : "无"} · ` +
       `项目文件 ${files.projectPaths.length} 个（其中 .opencode ${files.opencodePaths.length} 个）· ` +
+      `系统文件 ${files.systemPath ? "有" : files.systemDir ? "无" : "本平台无此层"} · ` +
       `envOnly ${layered.envOnlyActive ? "开（文件层已全部忽略）" : "关"}`,
   )
   if (autoCreate) {
@@ -270,7 +323,7 @@ export function renderConfigSection(
   )
   if (layered.ignoredRedLineKeys.length) {
     lines.push(
-      `- 红线键被项目文件尝试设置（已忽略，仅全局生效）：${layered.ignoredRedLineKeys.map((r) => `${r.key}（${r.layer}）`).join(" · ")}`,
+      `- 红线键被项目文件尝试设置（已忽略，仅全局与系统层生效）：${layered.ignoredRedLineKeys.map((r) => `${r.key}（${r.layer}）`).join(" · ")}`,
     )
   }
   if (layered.unknownKeys.length) {

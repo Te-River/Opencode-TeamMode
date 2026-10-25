@@ -6,10 +6,11 @@
  * its one-line doc, and the template generator (`config-template.ts`) renders
  * the global file straight from it, so a comment and a key can never drift.
  *
- * Two file layers only, per the user's decision (2026-10-06): the host's own
- * config has NO session layer (opencode.ai/v2/docs/config), so neither do we.
- *
- *   global  <  project
+ * Three file layers, low→high: `global < project < system`.  The host's own
+ * config has NO session layer (opencode.ai/v2/docs/config), so neither do we;
+ * it DOES have a managed-settings layer (`/etc/opencode`,
+ * `%ProgramData%\opencode`) which the docs place ABOVE every user layer
+ * ("Managed settings have the highest precedence") — hence `system` last.
  *
  * Within the project layer the `.opencode/` file wins over the direct one,
  * mirroring the host's own discovery order (direct files merged
@@ -27,8 +28,10 @@
  *     parse");
  *   - a single key with the WRONG TYPE is dropped from that layer only, and
  *     the next layer down answers for it;
- *   - a RED-LINE key is honored ONLY in the GLOBAL file (D1).  Written in a
- *     project file it is IGNORED outright and reported (see RED_LINE_EXEMPT_KEYS).
+ *   - a RED-LINE key is honored ONLY in the GLOBAL or SYSTEM file (D1).  Written
+ *     in a project file it is IGNORED outright and reported with its layer (see
+ *     RED_LINE_EXEMPT_KEYS / RED_LINE_LAYERS) — a project file can be committed
+ *     and shared, an admin-managed system file cannot.
  */
 
 /** Env-like record — kept local so this module has no import cycle with config.ts. */
@@ -48,7 +51,7 @@ export interface ConfigKeySpec {
   default: unknown
   /** One-line Chinese doc — the template comment's only source. */
   doc: string
-  /** Red-line: honored ONLY in the global file; a project value is ignored. */
+  /** Red-line: honored ONLY in the global or system file; a project value is ignored. */
   redLine?: boolean
   /** Why a project file may not override it (shown in the ignored-key report). */
   redLineReason?: string
@@ -256,7 +259,13 @@ export const RED_LINE_EXEMPT_KEYS: readonly string[] = CONFIG_KEYS.filter((k) =>
 const KEY_BY_NAME = new Map(CONFIG_KEYS.map((k) => [k.key, k]))
 
 /** Standard layer names, low→high. */
-export type LayerSource = "global" | "project" | "project:.opencode"
+export type LayerSource = "global" | "project" | "project:.opencode" | "system"
+
+/** The layers a RED-LINE key is honored in: the user's own global file and the
+ *  admin-managed system file.  Every PROJECT layer loses (a project file is
+ *  committed and shared, so it must not be able to widen a red line). */
+export const RED_LINE_LAYERS: readonly LayerSource[] = ["global", "system"]
+const RED_LINE_LAYER_SET = new Set<string>(RED_LINE_LAYERS)
 
 export interface SkippedLayer {
   name: string
@@ -283,7 +292,8 @@ export interface LayeredConfigResult {
   perKeySource: Record<string, LayerSource>
   /** Layers dropped whole because they failed to parse. */
   skippedLayers: SkippedLayer[]
-  /** Red-line keys a PROJECT file tried to set (ignored; global/default answers). */
+  /** Red-line keys a PROJECT file tried to set (ignored; global/system/default
+   *  answers). */
   ignoredRedLineKeys: IgnoredRedLineKey[]
   /** Keys not in the registry (warned, never applied). */
   unknownKeys: UnknownKey[]
@@ -297,6 +307,9 @@ export interface ResolveLayeredConfigInput {
   /** Project file(s).  A single raw text, or an array ordered low→high
    *  (`[direct, .opencode]`) so the `.opencode/` file wins. */
   projectLayer?: string | null | Array<string | null>
+  /** System (managed settings) file raw JSONC, or null/undefined when absent.
+   *  The HIGHEST-precedence layer — see the module header. */
+  systemLayer?: string | null
   /** Override the red-line exempt set (defaults to RED_LINE_EXEMPT_KEYS). */
   exempt?: readonly string[]
   /** Remove every file layer (test injection). */
@@ -441,10 +454,12 @@ export function resolveLayeredConfig(input: ResolveLayeredConfigInput): LayeredC
   const envOnlyActive = input.envOnly ?? false
 
   // Ordered low→high.  envOnly removes every file layer BEFORE any parse.
+  // `system` is LAST: the host's managed settings outrank every user layer.
   const fileLayers: Array<{ name: string; text: string }> = []
   if (!envOnlyActive) {
     if (typeof input.globalLayer === "string") fileLayers.push({ name: "global", text: input.globalLayer })
     fileLayers.push(...projectLayerList(input.projectLayer))
+    if (typeof input.systemLayer === "string") fileLayers.push({ name: "system", text: input.systemLayer })
   }
 
   const skippedLayers: SkippedLayer[] = []
@@ -471,8 +486,8 @@ export function resolveLayeredConfig(input: ResolveLayeredConfigInput): LayeredC
         unknownKeys.push({ key, layer: layer.name })
         continue
       }
-      // D1: a red-line key is honored ONLY in the global file.
-      if (spec.redLine && layer.name !== "global") {
+      // D1: a red-line key is honored ONLY in the global or system file.
+      if (spec.redLine && !RED_LINE_LAYER_SET.has(layer.name)) {
         ignoredRedLineKeys.push({ key, layer: layer.name, value })
         continue
       }

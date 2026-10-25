@@ -28,6 +28,14 @@
  *  18. TIER INHERITANCE through the FILE READER: the auto-created (inert) file
  *      leaves the tiers at their defaults; a user edit of `offloadThreshold`
  *      reaches both tiers; an explicit tier wins
+ *  19. SYSTEM LAYER is the HIGHEST (global < project < system): it overrides
+ *      both user layers, per-key source = `system`
+ *  20. RED-LINE at the system layer: honored there, still refused in project /
+ *      `.opencode` and reported with its layer
+ *  21. a MISSING / unparseable system file skips that layer whole and leaves
+ *      the other layers answering; envOnly drops it too
+ *  22. SYSTEM DIR RESOLUTION: `%ProgramData%\opencode` / `/etc/opencode`, no
+ *      crash when ProgramData is unset, injected systemDir wins
  */
 
 import assert from "node:assert"
@@ -39,12 +47,14 @@ import {
   parseJsonc,
   maskJsoncComments,
   RED_LINE_EXEMPT_KEYS,
+  RED_LINE_LAYERS,
   CONFIG_KEYS,
 } from "./dist/tm/config-layers.js"
 import {
   readConfigFiles,
   resolveLayeredTmConfig,
   renderConfigSection,
+  resolveSystemDir,
   CONFIG_FILE_NAME,
 } from "./dist/tm/config-files.js"
 import { resolveConfig, coerceValue } from "./dist/tm/config.js"
@@ -508,4 +518,175 @@ const eq = (a, b, msg) => assert.strictEqual(a, b, msg)
   console.log("18. tier inheritance through the file reader: OK (inert -> defaults; edit 8000 -> 8000/8000; explicit tier wins)")
 }
 
-console.log(`\ntest-config-layers.mjs: ALL PASS (18 groups)`)
+// ---------------------------------------------------------------------------
+// 19. SYSTEM LAYER = HIGHEST precedence (global < project < system) — the
+//     host's managed-settings layer, which the v2 docs place above every user
+//     layer ("Managed settings have the highest precedence").
+// ---------------------------------------------------------------------------
+{
+  // pure: the same key in all three layers -> system wins; the rest keep theirs
+  const pure = resolveLayeredConfig({
+    globalLayer: `{ "offloadThreshold": 1000, "previewLines": 10 }`,
+    projectLayer: `{ "offloadThreshold": 2000, "searchMaxHits": 5 }`,
+    systemLayer: `{ "offloadThreshold": 3000 }`,
+  })
+  eq(pure.values.offloadThreshold, 3000, "system overrides both user layers")
+  eq(pure.perKeySource.offloadThreshold, "system", "source = system")
+  eq(pure.perKeySource.searchMaxHits, "project", "a project-only key keeps its source")
+  eq(pure.perKeySource.previewLines, "global", "a global-only key keeps its source")
+
+  // end to end through the file reader, with an INJECTED system dir
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "tm-sys-"))
+  const globalDir = path.join(tmp, "cfg")
+  const proj = path.join(tmp, "proj")
+  const sys = path.join(tmp, "sys")
+  fs.mkdirSync(globalDir, { recursive: true })
+  fs.mkdirSync(proj, { recursive: true })
+  fs.mkdirSync(sys, { recursive: true })
+  fs.writeFileSync(path.join(globalDir, CONFIG_FILE_NAME), `{ "offloadThreshold": 6000, "previewLines": 30 }`)
+  fs.writeFileSync(path.join(proj, CONFIG_FILE_NAME), `{ "offloadThreshold": 7000 }`)
+  fs.writeFileSync(path.join(sys, CONFIG_FILE_NAME), `{ "offloadThreshold": 9000 }`)
+
+  const roots = { globalDir, projectDir: proj, systemDir: sys }
+  const files = readConfigFiles(roots)
+  eq(files.systemDir, sys, "system dir resolved")
+  eq(files.systemPath, path.join(sys, CONFIG_FILE_NAME), "system file located")
+  eq(files.globalPath, path.join(globalDir, CONFIG_FILE_NAME), "global file still located")
+
+  const r = resolveLayeredTmConfig(roots)
+  eq(r.cfg.offloadThreshold, 9000, "the system value wins through the runtime")
+  eq(r.layered.perKeySource.offloadThreshold, "system", "…and tm_stats will name it")
+  eq(r.cfg.previewLines, 30, "a lower layer's untouched key still applies")
+
+  const section = renderConfigSection(r.layered, r.files)
+  assert.match(section, /层序 全局 < 项目 < 系统/, "section states the three-layer order")
+  assert.match(section, /系统文件 有/, "section reports the system file")
+  assert.match(section, /offloadThreshold=system/, "section names the winning system layer")
+  fs.rmSync(tmp, { recursive: true, force: true })
+  console.log("19. system layer = highest: OK (overrides global+project, source=system, section renders it)")
+}
+
+// ---------------------------------------------------------------------------
+// 20. RED-LINE at the SYSTEM layer — honored there (an admin-managed file is
+//     not a shared project file), still refused in project / `.opencode`
+// ---------------------------------------------------------------------------
+{
+  assert.deepEqual([...RED_LINE_LAYERS], ["global", "system"], "the red-line layers are exactly global + system")
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "tm-sys-redline-"))
+  const globalDir = path.join(tmp, "cfg")
+  const proj = path.join(tmp, "proj")
+  const sys = path.join(tmp, "sys")
+  fs.mkdirSync(globalDir, { recursive: true })
+  fs.mkdirSync(path.join(proj, ".opencode"), { recursive: true })
+  fs.mkdirSync(sys, { recursive: true })
+  fs.writeFileSync(path.join(globalDir, CONFIG_FILE_NAME), `{ "envProtect": "standard" }`)
+  fs.writeFileSync(path.join(proj, CONFIG_FILE_NAME), `{ "envProtect": "off", "webfetchAllowedDomains": ["evil.example"] }`)
+  fs.writeFileSync(path.join(proj, ".opencode", CONFIG_FILE_NAME), `{ "envProtect": "off" }`)
+  fs.writeFileSync(path.join(sys, CONFIG_FILE_NAME), `{ "envProtect": "off" }`)
+
+  const roots = { globalDir, projectDir: proj, systemDir: sys }
+  const r = resolveLayeredTmConfig(roots)
+  eq(r.cfg.envProtect, "off", "a red-line key IS honored at the system layer")
+  eq(r.layered.perKeySource.envProtect, "system", "…and its source is system, not global")
+  assert.ok(
+    r.layered.ignoredRedLineKeys.some((x) => x.key === "envProtect" && x.layer === "project"),
+    "the direct project attempt is reported",
+  )
+  assert.ok(
+    r.layered.ignoredRedLineKeys.some((x) => x.key === "envProtect" && x.layer === "project:.opencode"),
+    "the .opencode attempt is reported too",
+  )
+  assert.ok(!r.layered.ignoredRedLineKeys.some((x) => x.layer === "system"), "the system layer is never reported as ignored")
+  assert.ok(!r.cfg.webfetchAllowedDomains.includes("evil.example"), "a project file still cannot widen the allowlist")
+  assert.match(renderConfigSection(r.layered, r.files), /仅全局与系统层生效/, "the section states the widened rule")
+
+  // with the system file gone, the global value answers; the project never does
+  fs.rmSync(path.join(sys, CONFIG_FILE_NAME))
+  const r2 = resolveLayeredTmConfig(roots)
+  eq(r2.cfg.envProtect, "standard", "no system file -> the global red-line value answers")
+  assert.ok(
+    r2.layered.ignoredRedLineKeys.some((x) => x.key === "envProtect" && x.layer === "project"),
+    "the project attempt is still refused",
+  )
+  fs.rmSync(tmp, { recursive: true, force: true })
+  console.log("20. red-line at system: OK (system honored, project/.opencode refused + reported, global fallback)")
+}
+
+// ---------------------------------------------------------------------------
+// 21. SYSTEM layer TL;DR: a missing / unparseable system file skips that layer
+//     whole and leaves the other layers answering; envOnly drops it too.
+// ---------------------------------------------------------------------------
+{
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "tm-sys-skip-"))
+  const globalDir = path.join(tmp, "cfg")
+  const proj = path.join(tmp, "proj")
+  const sys = path.join(tmp, "sys")
+  fs.mkdirSync(globalDir, { recursive: true })
+  fs.mkdirSync(proj, { recursive: true })
+  fs.mkdirSync(sys, { recursive: true })
+  fs.writeFileSync(path.join(globalDir, CONFIG_FILE_NAME), `{ "previewLines": 20 }`)
+  fs.writeFileSync(path.join(proj, CONFIG_FILE_NAME), `{ "offloadThreshold": 7000 }`)
+  const roots = { globalDir, projectDir: proj, systemDir: sys }
+
+  // (a) an absent system file is simply no layer — never an error
+  const absent = resolveLayeredTmConfig(roots)
+  eq(absent.files.systemDir, sys, "system dir is still resolved")
+  eq(absent.files.systemPath, null, "no system file read")
+  eq(absent.cfg.offloadThreshold, 7000, "the project value answers as before")
+  assert.ok(!absent.layered.skippedLayers.some((s) => s.name === "system"), "an absent file is not a skipped layer")
+
+  // (b) a system file that fails to parse is skipped WHOLE (never half-applied)
+  fs.writeFileSync(path.join(sys, CONFIG_FILE_NAME), `{ "offloadThreshold": 9000,, "previewLines": 99 }`)
+  const broken = resolveLayeredTmConfig(roots)
+  eq(broken.cfg.offloadThreshold, 7000, "the broken system layer does not apply")
+  eq(broken.cfg.previewLines, 20, "…not even the keys that happened to parse")
+  assert.ok(broken.layered.skippedLayers.some((s) => s.name === "system"), "the system layer is reported as skipped")
+
+  // (c) a non-object top level is skipped the same way
+  fs.writeFileSync(path.join(sys, CONFIG_FILE_NAME), `[1, 2]`)
+  const notObj = resolveLayeredTmConfig(roots)
+  assert.ok(
+    notObj.layered.skippedLayers.some((s) => s.name === "system" && /顶层不是 JSON 对象/.test(s.reason)),
+    "a non-object system layer is skipped with a reason",
+  )
+  eq(notObj.cfg.offloadThreshold, 7000, "…and the lower layers still answer")
+
+  // (d) a valid system file applies; envOnly drops it like every other layer
+  fs.writeFileSync(path.join(sys, CONFIG_FILE_NAME), `{ "offloadThreshold": 9000 }`)
+  eq(resolveLayeredTmConfig(roots).cfg.offloadThreshold, 9000, "a valid system file applies")
+  const envOnly = resolveLayeredTmConfig(roots, { envOnly: true })
+  eq(envOnly.cfg.offloadThreshold, 2000, "envOnly: the system layer is removed before any read")
+  eq(envOnly.files.systemPath, null, "envOnly: no system file was read")
+  eq(envOnly.files.systemDir, sys, "envOnly: the dir is still named for the report")
+  fs.rmSync(tmp, { recursive: true, force: true })
+  console.log("21. system layer skip: OK (absent/broken/non-object skipped whole, envOnly drops it)")
+}
+
+// ---------------------------------------------------------------------------
+// 22. SYSTEM DIR RESOLUTION — `%ProgramData%\opencode` / `/etc/opencode`, no
+//     crash when ProgramData is unset, an injected systemDir wins
+// ---------------------------------------------------------------------------
+{
+  eq(resolveSystemDir({}, {}, "win32"), null, "Windows without ProgramData: no system layer, no crash")
+  eq(resolveSystemDir({}, { ProgramData: "   " }, "win32"), null, "a blank ProgramData is absent too")
+  eq(resolveSystemDir({}, { ProgramData: "D:\\PD" }, "win32"), path.join("D:\\PD", "opencode"), "Windows: %ProgramData%\\opencode")
+  eq(resolveSystemDir({}, {}, "linux"), "/etc/opencode", "POSIX: /etc/opencode")
+  eq(resolveSystemDir({}, {}, "darwin"), "/etc/opencode", "macOS reads the same POSIX path")
+  const injected = path.join(os.tmpdir(), "tm-sys-injected")
+  eq(resolveSystemDir({ systemDir: injected }, { ProgramData: "D:\\PD" }, "win32"), injected, "an injected systemDir beats the platform default")
+
+  // the reader must not throw on any branch — including "no derivable root"
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "tm-sysdir-"))
+  const files = readConfigFiles({ globalDir: tmp, projectDir: tmp, systemDir: path.join(tmp, "none") }, {})
+  eq(files.systemDir, path.join(tmp, "none"), "an injected system dir is what gets read")
+  eq(files.systemPath, null, "a missing system file reads as no layer")
+  if (process.platform === "win32") {
+    const noPd = readConfigFiles({ globalDir: tmp, projectDir: tmp }, {})
+    eq(noPd.systemDir, null, "real Windows branch with ProgramData unset: the reader reports no layer instead of throwing")
+    eq(noPd.systemPath, null, "…and reads nothing")
+  }
+  fs.rmSync(tmp, { recursive: true, force: true })
+  console.log("22. system dir resolution: OK (ProgramData/platform/injected, no crash)")
+}
+
+console.log(`\ntest-config-layers.mjs: ALL PASS (22 groups)`)
