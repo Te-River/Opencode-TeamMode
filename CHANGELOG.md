@@ -7,6 +7,17 @@ registry saw 1.5.0 as the install-script fix release).
 
 ## [Unreleased]
 
+## [1.8.9] - 2026-10-25
+
+### Fixed
+
+- **`tm_join` 读桥接记录时必须穿过 `raw` 包装（1.8.8 现场回归，2026-10-25）。** 真实 v2 桥接的
+  `session.get` 返回 `{ id, parentID, raw: <宿主记录> }`，而 `readHostSessionState` 只读外层的
+  `time`/`outcome`——于是 `time.idle` 永远不可见，重启后认领的 27 个**已结算**历史子代理被全部报成
+  「运行中（时长未知）」（1.8.7 当时走的是另一条读取路径，所以看起来是对的）。现在两种形状都在同一处
+  归一化（外层有 `raw` 就用 `raw`），测试 fake 也改为按生产形状回答（`{ raw: { time…, outcome } }`），
+  这条漂移以后会被钉住。真机验证口径：`session_get_resolved` 上升且 `adopt_history.settled` 不为 0。
+
 ## [1.8.8] - 2026-10-25
 
 ### Fixed
