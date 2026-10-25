@@ -2943,6 +2943,10 @@ try {
               // `sessionRecord` is the host's own record for a finished run (`time.idle` +
               // `outcome`), which is what settles a row the host confirms.
               const rec = (over.sessionRecord ?? {})[id]
+              // The by-id STATE read (`{sessionID}`) and the parentage read (`{path:{id}}`) are
+              // different seams on a real host.  `stateGetThrows` fails only the state one, which
+              // is how the envelope fallback is reachable at all (parentage already answered).
+              if (over.stateGetThrows && o?.sessionID) throw new Error("session state read unavailable")
               return {
                 ok: true,
                 data: {
@@ -3182,7 +3186,9 @@ try {
             "G: shell tags are read with their state",
           )
 
-          // ② ACK-only history → claimed, then settled by the host's own record
+          // ② ACK-only history → claimed from the host's own record.  A finished leftover is a
+          //    COUNT, not a table row: after a restart every settled child used to be dumped
+          //    into the table with a fabricated `已完成 0s`.
           {
             const { rt, calls } = await v2Runtime("join-history-ack", {
               parents: { ses_hist1: "ses_v2lead" },
@@ -3195,20 +3201,33 @@ try {
             assert.equal(row?.via, "host-injection", "G1: the row is a host child, not a plugin-spawned one")
             assert.equal(row?.settleSource, "session-get", "G1: time.idle from the host settles it — no presumption involved")
             assert.equal(row?.outcome, "succeeded", "G1: …keeping the host's own outcome word")
+            assert.equal(row?.historySettled, true, "G1: a finished leftover is history, not live work")
             assert.ok(
-              joined.output.includes("已结算（succeeded）"),
-              "G1: the row reads 已结算(outcome): " + joined.output.replace(/\n/g, " | ").slice(0, 260),
+              !joined.output.includes("ses_hist1 · "),
+              "G1: and it is NOT dumped into the live table: " + joined.output.replace(/\n/g, " | ").slice(0, 260),
+            )
+            assert.ok(
+              joined.output.includes("另有 1 条已结算的历史子代理（正文可用 ids 取回）"),
+              "G1: it is counted in ONE line instead: " + joined.output.replace(/\n/g, " | ").slice(0, 260),
             )
             const hist = rowsOf(rt).filter((e) => e.event === "adopt_history").pop()
             assert.deepEqual(
-              [hist?.candidates, hist?.adopted, hist?.skipped],
-              [1, 1, 0],
-              "G1: trajectory adopt_history counts candidates / adopted / skipped",
+              [hist?.candidates, hist?.adopted, hist?.skipped, hist?.settled, hist?.running],
+              [1, 1, 0, 1, 0],
+              "G1: trajectory adopt_history counts candidates / adopted / skipped / settled / running",
+            )
+            // …and the documented escape hatch still returns the row plus the host's verdict
+            const named = await rt.tools.tm_join.execute({ ids: ["ses_hist1"] }, V2LEAD)
+            assert.ok(
+              named.output.includes("ses_hist1 · ") && named.output.includes("已结算（succeeded）· 运行 8s"),
+              "G1: naming it with ids returns the row and the host's own run window: " + named.output.replace(/\n/g, " | ").slice(0, 300),
             )
             await rt.dispose()
           }
 
-          // ③ completed envelope → claimed settled, body = the envelope's own body
+          // ③ session.get OUTRANKS the transcript envelope: a `state="completed"` envelope whose
+          //    host session carries no `time.idle` is still RUNNING, and no body is claimed for
+          //    a run the host has not reported finished.
           {
             const { rt } = await v2Runtime("join-history-envelope", {
               parents: { ses_hist2: "ses_v2lead" },
@@ -3216,14 +3235,106 @@ try {
             })
             const joined = await rt.tools.tm_join.execute({}, V2LEAD)
             const row = rt.hostChildren().find((c) => c.sessionID === "ses_hist2")
-            assert.equal(row?.state, "idle", "G2: a completed envelope settles the row")
-            assert.equal(row?.settleSource, "injection", "G2: …because the host's own injection IS the evidence")
-            assert.equal(row?.label, "修登录", "G2: the envelope's description supplies the label")
+            assert.equal(row?.state, "running", "G2: no host time.idle ⇒ still running, whatever the envelope said")
+            assert.equal(row?.settleSource, undefined, "G2: …and no settle verdict is borrowed")
+            assert.equal(row?.label, "修登录", "G2: the envelope's description still supplies the label")
             assert.ok(
-              joined.output.includes("BODY-OF-HIST2"),
-              "G2: the envelope body is the collected reply: " + joined.output.replace(/\n/g, " | ").slice(0, 300),
+              joined.output.includes("ses_hist2 · ") && joined.output.includes("运行中（时长未知）"),
+              "G2: it stays in the live table with an honest duration (never 0s): " + joined.output.replace(/\n/g, " | ").slice(0, 300),
             )
-            assert.ok(joined.output.includes("正文来源=宿主注入信封"), "G2: …and the block names where that body came from")
+            assert.ok(!joined.output.includes("BODY-OF-HIST2"), "G2: a running child has no collected body")
+            await rt.dispose()
+          }
+
+          // ③b the ONLY case where the envelope decides: the per-session state read cannot
+          //     answer.  Then the state is an INFERENCE and the row has to say so.
+          {
+            const { rt } = await v2Runtime("join-history-envelope-fallback", {
+              parents: { ses_histF: "ses_v2lead" },
+              messages: { ses_v2lead: parentText(ack("ses_histF"), env("ses_histF", "F-BODY", "completed")) },
+              stateGetThrows: true,
+            })
+            const joined = await rt.tools.tm_join.execute({}, V2LEAD)
+            const row = rt.hostChildren().find((c) => c.sessionID === "ses_histF")
+            assert.equal(row?.settleSource, "injection", "G2b: with no state seam the envelope is the evidence")
+            assert.equal(row?.historyInferred, true, "G2b: …recorded as an inference")
+            assert.ok(joined.output.includes("另有 1 条已结算"), "G2b: it is history, told as a count")
+            const named = await rt.tools.tm_join.execute({ ids: ["ses_histF"] }, V2LEAD)
+            assert.ok(
+              named.output.includes("按历史信封推断"),
+              "G2b: the row does NOT borrow the host's verdict: " + named.output.replace(/\n/g, " | ").slice(0, 320),
+            )
+            assert.ok(named.output.includes("F-BODY"), "G2b: the envelope body is the collected text")
+            assert.ok(named.output.includes("正文来源=宿主注入信封"), "G2b: …and the block names where it came from")
+            assert.ok(
+              named.output.includes("已完成 时长未知") && !named.output.includes("已完成 0s"),
+              "G2b: no fake 0s on a row whose start nobody measured",
+            )
+            await rt.dispose()
+          }
+
+          // ③c the 1.8.7 counter-example, verbatim: a history `state="error"` envelope was taken
+          //     as the verdict, so tm_join answered 0 运行中 / 3 失败 while the host's own UI
+          //     still showed two of those children running.  An envelope is NOT a verdict.
+          {
+            const { rt } = await v2Runtime("join-history-error-envelope", {
+              parents: { ses_histE: "ses_v2lead" },
+              messages: { ses_v2lead: parentText(ack("ses_histE"), env("ses_histE", "ERR-BODY", "error")) },
+              sessionRecord: { ses_histE: { created: Date.now() - 30_000, idle: 0 } },
+            })
+            const joined = await rt.tools.tm_join.execute({}, V2LEAD)
+            const row = rt.hostChildren().find((c) => c.sessionID === "ses_histE")
+            assert.equal(row?.state, "running", "G3c: no time.idle from the host ⇒ RUNNING, whatever the envelope's state says")
+            assert.ok(
+              !joined.output.includes("失败："),
+              "G3c: …and the round does not claim a failure the host never reported: " + joined.output.replace(/\n/g, " | ").slice(0, 260),
+            )
+            assert.ok(
+              joined.output.includes("ses_histE · ") && !joined.output.includes("运行中（时长未知）"),
+              "G3c: it is a live row, timed from the host's own time.created",
+            )
+            const hist = rowsOf(rt).filter((e) => e.event === "adopt_history").pop()
+            assert.deepEqual([hist?.settled, hist?.running], [0, 1], "G3c: the trajectory counts it as running")
+            await rt.dispose()
+          }
+
+          // ③d THE SPLIT: only what can still be running stays in the table; the rest becomes
+          //     ONE count, and naming one still returns its row + body.
+          {
+            const { rt } = await v2Runtime("join-history-split", {
+              parents: { ses_histA: "ses_v2lead", ses_histB: "ses_v2lead", ses_histC: "ses_v2lead" },
+              messages: { ses_v2lead: parentText(ack("ses_histA"), ack("ses_histB"), ack("ses_histC")) },
+              sessionRecord: {
+                ses_histA: { created: 1000, idle: 9000, outcome: "succeeded" },
+                ses_histB: { created: 2000, idle: 8000, outcome: "error" },
+              },
+            })
+            const joined = await rt.tools.tm_join.execute({}, V2LEAD)
+            const hist = rowsOf(rt).filter((e) => e.event === "adopt_history").pop()
+            assert.deepEqual(
+              [hist?.candidates, hist?.adopted, hist?.skipped, hist?.settled, hist?.running],
+              [3, 3, 0, 2, 1],
+              "G3d: the trajectory splits the leftovers into settled / running",
+            )
+            assert.ok(
+              joined.output.includes("另有 2 条已结算的历史子代理（正文可用 ids 取回）"),
+              "G3d: TWO finished leftovers are one line: " + joined.output.replace(/\n/g, " | ").slice(0, 300),
+            )
+            assert.ok(
+              !joined.output.includes("ses_histA · ") && !joined.output.includes("ses_histB · "),
+              "G3d: …and their rows are gone from the table",
+            )
+            assert.ok(joined.output.includes("ses_histC · "), "G3d: the one that can still be running is the table")
+            assert.ok(joined.output.includes("运行中（时长未知）"), "G3d: no time.created ⇒ 时长未知, never 0s")
+            assert.ok(
+              !joined.output.includes("已完成 0s") && !joined.output.includes("运行中 0s"),
+              "G3d: no fabricated 0s anywhere in the output",
+            )
+            const named = await rt.tools.tm_join.execute({ ids: ["ses_histB"] }, V2LEAD)
+            assert.ok(
+              named.output.includes("ses_histB · ") && named.output.includes("已结算（error）· 运行 6s"),
+              "G3d: an explicitly named settled leftover still returns its row + verdict: " + named.output.replace(/\n/g, " | ").slice(0, 300),
+            )
             await rt.dispose()
           }
 
@@ -3308,7 +3419,7 @@ try {
       assert.equal(dmod.parseDispatchTitle("Explore the repo (@tester subagent)", ["tester"]), null, "a host task child's title never parses — that is what the marker is for")
       assert.equal(dmod.parseDispatchTitle("随便一个会话", ["tester"]), null, "an ordinary session is not ours")
     }
-    console.log("10. tm_dispatch removed (not registered, lead denied) + tm_join as the collect side: adoption of leftovers (both title shapes) with a host task child never claimed on speculation, named-id claims verified against host parentage, status/event settle, cancel, offloaded fat replies, the wait budget and its chained-wait cut, the presumed-settle body-completeness warning (complete / half / missing), the goal tripwire with the todowrite escape, the wake-gated steer + explicit-id cancel (host always asked) + parent-envelope body fallback, restart recovery from the PARENT TRANSCRIPT (ACK / completion envelope, parentage verified, adopt_history counters, idempotent), the background-shell section (running forbids re-dispatch, completed is reported), and the pure helpers")
+    console.log("10. tm_dispatch removed (not registered, lead denied) + tm_join as the collect side: adoption of leftovers (both title shapes) with a host task child never claimed on speculation, named-id claims verified against host parentage, status/event settle, cancel, offloaded fat replies, the wait budget and its chained-wait cut, the presumed-settle body-completeness warning (complete / half / missing), the goal tripwire with the todowrite escape, the wake-gated steer + explicit-id cancel (host always asked) + parent-envelope body fallback, restart recovery from the PARENT TRANSCRIPT (ACK / completion envelope, parentage verified, adopt_history counters incl. settled/running, idempotent, and the SPLIT: only children that can still be running stay in the table while finished leftovers are one `另有 N 条` count yet still readable by `ids`; the host's session.get outranks the envelope — a history `state=error` envelope may not turn a live child into 失败 — and the envelope decides only when that read fails, labelled 按历史信封推断; no `0s` from an unmeasured start), the background-shell section (running forbids re-dispatch, completed is reported), and the pure helpers")
   }
 
   // ---------- 11. bash timeout clamp — RETIRED with the v1 personality ----------

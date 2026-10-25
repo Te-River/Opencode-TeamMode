@@ -80,7 +80,14 @@ export interface ChildRecord {
   agent: string
   label: string
   parentSessionID: string
+  /** When the RUN started, as far as anybody measured it: the host's own `time.created` for a
+   *  history row, our dispatch moment otherwise.  `startedAtUnknown` marks the case where it is
+   *  merely our DISCOVERY moment — an adopted history row the host answered about without a
+   *  `created` — so `elapsedOf` can say 时长未知 instead of printing a `0s` nobody measured. */
   startedAt: number
+  /** `startedAt` is our discovery moment, not the run's start: no duration may be derived from
+   *  it.  Set by the history adoption path; cleared the moment the host supplies a `created`. */
+  startedAtUnknown?: boolean
   finishedAt?: number
   state: "running" | "idle" | "error"
   error?: string
@@ -106,6 +113,16 @@ export interface ChildRecord {
    *  while `session.get({sessionID})` answers `time.idle` on an idle session — so the
    *  presumption is the fallback, not the default. */
   settleSource?: "event" | "parent-idle" | "injection" | "session-get"
+  /** Adopted from the PARENT TRANSCRIPT and already finished when we found it.  Such a row is
+   *  NOT part of the live table — the table answers "what can still be running", and a restart
+   *  left 26 finished history rows burying the one that mattered.  It is reported as one count
+   *  (`另有 N 条已结算的历史子代理`) and returned, body and all, only when the lead names it
+   *  with `ids`. */
+  historySettled?: boolean
+  /** The state came from the transcript's `<subagent … state=…>` envelope, NOT from the host's
+   *  `session.get` — the only evidence left on a host whose per-session read failed.  Printed
+   *  as `按历史信封推断` so an inference never wears the host's verdict. */
+  historyInferred?: boolean
   /** The host's own `outcome` word for the finished run (`succeeded`, …), copied verbatim
    *  and never translated: it is the only first-hand statement about how it ended. */
   outcome?: string
@@ -726,33 +743,50 @@ export function describeHostError(err: unknown, max = 220): string {
 export const INCOMPLETE_PRESUMED_BODY_WARNING =
   "⚠ 推定结算且正文未带完成时间：这可能是最后一次工具调用前的半截话，不要据此判定交付；稍后再次 tm_join 可复核（或让子代理续跑）。"
 
+/** Wall-clock elapsed for a row, or `null` when NOBODY measured a start.  `startedAt` is only
+ *  set when it is a real measurement (the host's own `time.created` for an adopted history row,
+ *  our dispatch moment otherwise); the host's run window (`hostCreatedAt` → `hostIdleAt`) is the
+ *  fallback.  A history row is discovered long after its run began, so our discovery moment is
+ *  not a start — printing `0s` from it is the fake duration this split exists to remove. */
+export function elapsedOf(c: ChildRecord, at: number = Date.now()): number | null {
+  if (!c.startedAtUnknown) return (c.finishedAt ?? at) - c.startedAt
+  if (typeof c.hostCreatedAt === "number") return (c.hostIdleAt ?? c.finishedAt ?? at) - c.hostCreatedAt
+  return null
+}
+
 /** One child's status line — the lead reads these, so keep them terse.  The tag is chosen by
  *  the settle SOURCE, because the same word would otherwise cover a host-confirmed finish, an
  *  unreachable seam and a guess: only `session-get` may print the host's outcome, and nothing
  *  but a real settlement may print 完成. */
-export function renderChildLine(c: ChildRecord, elapsedMs: number): string {
-  const secs = Math.round(elapsedMs / 1000)
+export function renderChildLine(c: ChildRecord, elapsedMs: number | null): string {
+  const secs = elapsedMs === null ? null : Math.round(elapsedMs / 1000)
+  /** Seconds, or the truth when nobody measured a start — never `0s`. */
+  const dur = (n: number | null): string => (n === null ? "时长未知" : `${n}s`)
   const hostRunSecs =
     c.hostIdleAt !== undefined && c.hostCreatedAt !== undefined && c.hostIdleAt > c.hostCreatedAt
       ? Math.round((c.hostIdleAt - c.hostCreatedAt) / 1000)
       : secs
   const tag =
     c.state === "running"
-      ? `运行中 ${secs}s`
+      ? secs === null
+        ? "运行中（时长未知）"
+        : `运行中 ${secs}s`
       : c.state === "error"
         ? `失败：${shorten(c.error ?? "", 80)}`
         : c.settleSource === "session-get"
           ? // The host's own record answered with a finished run: the only form allowed to
             // print its outcome word, and it never says 推定.
-            `已结算（${c.outcome ?? "宿主未给 outcome"}）· 运行 ${hostRunSecs}s`
+            `已结算（${c.outcome ?? "宿主未给 outcome"}）· 运行 ${dur(hostRunSecs)}`
           : c.settleSource === "parent-idle"
             ? // An inference.  完成 is exactly the word this may not borrow.
-              `推定已结算（未确认完成）· 派发后 ${secs}s`
-            : `已完成 ${secs}s`
+              `推定已结算（未确认完成）· 派发后 ${dur(secs)}`
+            : `已完成 ${dur(secs)}`
   // #33: a row the host reported IDLE for a stop attempt is not a delivery — the lead
   // needs to see that the child was never running, not a bare 已完成.
   const stop = c.state === "idle" && c.cancelNote ? ` ·${c.cancelNote}` : ""
-  return `${c.sessionID} · ${c.agent} · "${c.label}" · ${tag}${stop}${c.adopted ? " ·（本进程重启后由宿主会话树接管）" : ""}${
+  // A state read off the transcript envelope is not the host's verdict, and the row says so.
+  const inferred = c.historyInferred ? " ·（按历史信封推断）" : ""
+  return `${c.sessionID} · ${c.agent} · "${c.label}" · ${tag}${inferred}${stop}${c.adopted ? " ·（本进程重启后由宿主会话树接管）" : ""}${
     c.via === "host-injection" && c.settleSource === "parent-idle"
       ? " ·（宿主子代理：随父会话空闲推定已结算；宿主未给该子会话 idle 事件）"
       : c.via === "host-injection"
@@ -1438,23 +1472,55 @@ export function buildDispatchTools(deps: DispatchDeps): {
    * envelope names a session, it does not prove the session is OURS.  A candidate the host
    * will not confirm is counted as skipped and never shown as a child.
    *
-   * The row's state comes from the evidence: `state="completed"` envelope → settled
-   * (`settleSource="injection"`, the host's own injection is the evidence);
-   * `state="error"` → failed; an ACK or `state="running"` → running, and the host's own
-   * `time.idle` is still asked for (it is the only source carrying the `outcome` word).
+   * The row's state comes from the HOST, for every candidate: `time.idle` → settled with the
+   * host's own `outcome` word; answered WITHOUT `time.idle` → RUNNING, whatever the transcript's
+   * envelope says (1.8.7 took three `state="error"` envelopes as conclusions and answered
+   * `0 运行中 / 3 失败` while the host's own UI still showed two of those children running).
+   * The envelope's state is the fallback ONLY when the per-session read cannot answer, and the
+   * row then prints `按历史信封推断` instead of borrowing the host's verdict.
+   *
+   * A candidate that is already FINISHED does not enter the live table: it becomes one count
+   * (`另有 N 条已结算的历史子代理`) and is returned, body and all, when named with `ids`.
    */
   async function adoptFromParentHistory(
     parent: string,
     parentMessages: unknown,
     directory: string | undefined,
     only: Set<string> | null,
-  ): Promise<{ adopted: number; looked: boolean; candidates: number; skipped: number; why: string }> {
+  ): Promise<{
+    adopted: number
+    looked: boolean
+    candidates: number
+    skipped: number
+    settled: number
+    running: number
+    why: string
+  }> {
     const candidates = childrenFromParentHistory(parentMessages)
     let adopted = 0
     let skipped = 0
+    let settled = 0
+    let running = 0
+    // The split is counted per candidate, so the trajectory says how many of the leftovers were
+    // still work and how many were already history.  An already-registered row is tallied from
+    // its own record — it is still part of what this transcript names.
+    const tally = (r: ChildRecord): void => {
+      if (r.state === "running") running++
+      else settled++
+    }
     for (const cand of candidates) {
       const sid = cand.sessionID
-      if (!sid || sid === parent || children.has(sid) || (only && !only.has(sid))) {
+      if (!sid || sid === parent) {
+        skipped++
+        continue
+      }
+      const known = children.get(sid)
+      if (known) {
+        skipped++
+        if (!only || only.has(sid)) tally(known)
+        continue
+      }
+      if (only && !only.has(sid)) {
         skipped++
         continue
       }
@@ -1467,53 +1533,79 @@ export function buildDispatchTools(deps: DispatchDeps): {
       const hostAgent = gate.agent.trim().toLowerCase()
       // T3: this registry never carries a lead, whatever a stale transcript says.
       const agent = hostAgent && !sameAgent(hostAgent, leadAgent) ? hostAgent : "subagent"
-      const startedAt = now()
       const rec: ChildRecord = {
         sessionID: sid,
         agent,
         label: cand.label || "host child",
         parentSessionID: parent,
-        startedAt,
+        // Our discovery moment — never the run's start.  Replaced below by the host's own
+        // `time.created` when it answers with one; until then the row reports 时长未知.
+        startedAt: now(),
+        startedAtUnknown: true,
         state: "running",
         via: "host-injection",
       }
-      if (cand.state === "completed") {
+      // ASK THE HOST FIRST, for every candidate.  The transcript proves a dispatch existed; it
+      // does not decide whether the run is over — the host's `time.idle` does.  A 1.8.7 live
+      // session read three `state="error"` envelopes as verdicts and reported 0 运行中 / 3 失败
+      // while the host's UI still showed two children running.
+      const st = await readHostSessionState(api, sid)
+      if (st.createdAt !== undefined) {
+        // The host's own start: the only clock a duration may be derived from.
+        rec.hostCreatedAt = st.createdAt
+        rec.startedAt = st.createdAt
+        rec.startedAtUnknown = false
+      }
+      if (st.idleAt) {
         rec.state = "idle"
-        rec.finishedAt = startedAt
+        rec.finishedAt = st.idleAt
+        rec.hostIdleAt = st.idleAt
+        rec.settleSource = "session-get"
+        if (st.outcome) rec.outcome = st.outcome
+      } else if (st.answered) {
+        // Answered, and no finished run on record → still running.  No `time.created` means no
+        // duration; the row says so rather than counting from our discovery moment.
+      } else if (cand.state === "completed" || cand.state === "error") {
+        // The per-session read could not answer: the envelope is the only evidence left, and
+        // the row is marked so the lead can see whose word this is.
+        rec.historyInferred = true
         rec.settleSource = "injection"
-      } else if (cand.state === "error") {
-        rec.state = "error"
-        rec.finishedAt = startedAt
-        rec.error = "宿主注入信封报告 state=error（正文随注入消息送达）"
-      } else {
-        // Still running, as far as the transcript knows — but the host's own record is a
-        // better witness and it also carries `outcome`, which no envelope does.
-        const st = await readHostSessionState(api, sid)
-        if (st.idleAt) {
+        if (cand.state === "completed") {
           rec.state = "idle"
-          rec.finishedAt = st.idleAt
-          rec.hostIdleAt = st.idleAt
-          if (st.createdAt !== undefined) rec.hostCreatedAt = st.createdAt
-          rec.settleSource = "session-get"
-          if (st.outcome) rec.outcome = st.outcome
-        } else if (st.createdAt !== undefined) {
-          rec.hostCreatedAt = st.createdAt
+        } else {
+          rec.state = "error"
+          rec.error = "宿主注入信封报告 state=error（正文随注入消息送达）"
         }
       }
+      // A candidate that is already finished leaves the LIVE table (it cannot be running) and
+      // becomes a count.  `owned` still returns it when the lead names it with `ids`.
+      if (rec.state !== "running") rec.historySettled = true
+      tally(rec)
       children.set(sid, rec)
       deps.onChildSession?.(sid, agent)
       adopted++
-      log({ step_id: "join", event: "adopt", child: sid, agent, state: cand.state, source: "parent-history" })
+      log({ step_id: "join", event: "adopt", child: sid, agent, state: rec.state, source: "parent-history" })
     }
     // One summary row per call: the counters are what makes "I looked and there was
-    // nothing" distinguishable from "I never looked" in the trajectory.
-    log({ step_id: "join", event: "adopt_history", candidates: candidates.length, adopted, skipped, source: "parent-history" })
+    // nothing" distinguishable from "I never looked" in the trajectory — and `settled` /
+    // `running` are what makes "the transcript named them" distinguishable from "they are
+    // live work".
+    log({
+      step_id: "join",
+      event: "adopt_history",
+      candidates: candidates.length,
+      adopted,
+      skipped,
+      settled,
+      running,
+      source: "parent-history",
+    })
     const why = !candidates.length
       ? "父会话历史里没有子代理派发记录（既没有后台 ack，也没有 <subagent> 信封；历史若被压缩过，这条也不算数）"
       : adopted
         ? ""
         : `父会话历史里 ${candidates.length} 个候选都没能认领（${skipped} 个已登记或宿主未确认归属）`
-    return { adopted, looked: true, candidates: candidates.length, skipped, why }
+    return { adopted, looked: true, candidates: candidates.length, skipped, settled, running, why }
   }
 
   /** Claim ONE explicitly named child of the calling session — the host's own
@@ -1610,7 +1702,7 @@ export function buildDispatchTools(deps: DispatchDeps): {
 - { waitMs: 30000 }: bounded wait (capped at ${waitLabel(maxWaitMs)}) until every child settles.  A wait BLOCKS YOU — your turn is parked in this tool call, so it is the synchronous \`task\` experience with none of its visibility.  Wait once, briefly, and only when the very next step needs the answer; a second consecutive wait after nothing settled is cut to 10s and answered with what to do instead.  Never wait for a child whose result you do not need — abort it instead ({ cancel: true }).
 - { ids: [...] }: restrict to those child sessions — a host \`task\` child is collectable when you NAME it (its parentage is verified against the host's own session tree, never assumed); { cancel: true }: abort still-running ones.  With explicit ids the host is ALWAYS asked, even for a row this process believes settled — a settled-looking row can have been woken and be running for real.
 - Steer a child while it runs — the same call, no separate tool: { steer: "先停手，验收改成 X", ids: ["<child>"] } admits the line into that child's inbox with delivery "steer" (or "queue") and the host wakes execution at the step boundary.  已受理 means the host took the line into that inbox — NOT that the child read or obeyed it.  After a successful steer the tool re-reads that inbox ONCE: an item gone from the pending list is reported 已送达, still pending is 已受理（未送达，宿主在步边界投递）, and an inbox it cannot read is 已受理（未验证送达）— delivery is never inferred from the write alone, and none of the three means the child followed it.  Steer REFUSES a child whose registered state is not running (idle / error / unknown), because the host's doc sentence "Steering wakes session execution" means the line starts a second run that overlaps new dispatches — pass { wake: true } to do that deliberately.  { unread: true, ids: ["<child>"] } lists that child's undelivered inbox items (ids + shape only, never the body); { unsend: {"sessionID":"ses_…","inboxID":"msg_…"} } withdraws one that has not been delivered — an already-delivered item is the documented no-op and is reported as one.  All three ask the host for parentage FIRST and refuse a session that is not yours; a host without the seam answers no-seam instead of pretending.
-- A plugin/host restart does NOT orphan a child: those the host still lists under your session are re-adopted automatically (their rows are marked 接管), and on a host with no \`session.children\` the children your own transcript still names — the background ACK \`(sessionID: ses_…)\` and the \`<subagent sessionID="…" state="…">\` envelope — are claimed after the host confirms their parentage.  One that answered while nobody was listening is reported 已完成, not lost.
+- A plugin/host restart does NOT orphan a child: those the host still lists under your session are re-adopted automatically (their rows are marked 接管), and on a host with no \`session.children\` the children your own transcript still names — the background ACK \`(sessionID: ses_…)\` and the \`<subagent sessionID="…" state="…">\` envelope — are claimed after the host confirms their parentage.  Their STATE is the host's \`session.get\`: no \`time.idle\` means still RUNNING, whatever an old envelope in the transcript says.  One that answered while nobody was listening is not lost — it stops being a table row (only children that can still be running are listed) and is counted as \`另有 N 条已结算的历史子代理\`; name it with \`ids\` to get that row and its body back.
 - Background SHELLS the host announced in this session are reported at the end of every reply (\`后台 shell：N 个\`), with the running ones named as still running.  Nothing is killed by this tool: re-run a shell only if a completed one failed, and never dispatch the same work again while one is still running.
 - Replies come back through the offload pipeline: a long sub-agent report arrives as a handle + ≤80-token preview (page it with tm_fetch), so a batch of parallel work does not multiply your context.  STATUS: blocked/failed children are surfaced first, always.  When a child's own session yields no assistant text, the host's injected \`<subagent sessionID="…">…</subagent>\` envelope in THIS session is read as the body and labelled 正文来源=宿主注入信封 (an id must match exactly).`,
     args: {
@@ -1678,8 +1770,31 @@ export function buildDispatchTools(deps: DispatchDeps): {
         const idFilter = idList && idList.length ? new Set(idList) : null
         const owned = (): ChildRecord[] =>
           [...children.values()].filter(
-            (r) => (!parent || r.parentSessionID === parent) && (!idFilter || idFilter.has(r.sessionID)),
+            (r) =>
+              (!parent || r.parentSessionID === parent) &&
+              (!idFilter || idFilter.has(r.sessionID)) &&
+              // A settled HISTORY row is a count, not a table row — the table answers "what can
+              // still be running".  Naming it with `ids` is the documented way to re-read it,
+              // so an explicit filter always includes it.
+              (!r.historySettled || Boolean(idFilter)),
           )
+        /** Settled history rows this session knows about, minus the ones the lead NAMED (those
+         *  are rendered as rows instead).  Reported as ONE line, never as N rows: 26 finished
+         *  history children used to bury the single live one. */
+        const historySettledCount = (): number => {
+          let n = 0
+          for (const r of children.values()) {
+            if (!r.historySettled) continue
+            if (parent && r.parentSessionID !== parent) continue
+            if (idFilter?.has(r.sessionID)) continue
+            n++
+          }
+          return n
+        }
+        const historyLine = (): string => {
+          const n = historySettledCount()
+          return n ? `另有 ${n} 条已结算的历史子代理（正文可用 ids 取回）。` : ""
+        }
         let mine = owned()
         // Whether we got to LOOK at the host's tree, and what it said — the empty
         // answer must not claim "there is nothing to adopt" on a host we cannot
@@ -1700,7 +1815,7 @@ export function buildDispatchTools(deps: DispatchDeps): {
           if (mine.length < (idFilter ? idFilter.size : 1)) {
             const hist = parentHistory.ok
               ? await adoptFromParentHistory(parent, parentHistory.data, directory, idFilter)
-              : { adopted: 0, looked: false, candidates: 0, skipped: 0, why: parentHistory.why }
+              : { adopted: 0, looked: false, candidates: 0, skipped: 0, settled: 0, running: 0, why: parentHistory.why }
             if (hist.adopted) mine = owned()
             // The `why` has to keep the three states apart: a children API that looked, no
             // children API but the history claimed something, and neither source yielding a
@@ -1771,7 +1886,7 @@ export function buildDispatchTools(deps: DispatchDeps): {
           }
           const row = children.get(target)
           const rowLine = row
-            ? renderChildLine(row, (row.finishedAt ?? now()) - row.startedAt)
+            ? renderChildLine(row, elapsedOf(row, now()))
             : `${target} · ${gate.agent} ·（本进程没有它的登记行，归属由宿主确认）`
 
           if (steerText) {
@@ -1984,6 +2099,10 @@ export function buildDispatchTools(deps: DispatchDeps): {
               // task never enters this registry at all.
               `如果你用的是同步 \`task\`：宿主自己就把结果收回来了，它从不登记在这里，这不是派发失败。` +
               `只有后台 \`task {background:true}\`（或显式带 ids）需要 tm_join 来取。` +
+              // A round whose leftovers are ALL settled is still not empty: they are history,
+              // and the lead must know they exist (and how to read them) without the whole
+              // table being dumped again.
+              (historyLine() ? `\n\n${historyLine()}` : "") +
               // A round with no collectable CHILD is still not an empty round when the host
               // has shell commands in flight: the user can see them and the lead cannot, so
               // silence here is what produced a duplicate dispatch.
@@ -2102,7 +2221,10 @@ export function buildDispatchTools(deps: DispatchDeps): {
         const header = [
           `派发汇总：${sums.idle} 完成 / ${sums.running} 运行中 / ${sums.error} 失败${settled ? "（全部已结算）" : `（未等到全部结算 · 本次已等 ${Math.round((now() - waitStart) / 1000)}s）`}`,
           ...(settleLine ? [settleLine] : []),
-          ...mine.map((r) => renderChildLine(r, (r.finishedAt ?? now()) - r.startedAt)),
+          // Just under the summary: the settled HISTORY rows, as one count.  Their bodies are
+          // still reachable with `ids`, which is exactly what the line promises.
+          ...(historyLine() ? [historyLine()] : []),
+          ...mine.map((r) => renderChildLine(r, elapsedOf(r, now()))),
         ]
         // The `正文：` line belongs directly under the child rows it describes, but the
         // body's completeness is only knowable once the bodies have been read — remember
@@ -2320,7 +2442,10 @@ export function buildDispatchTools(deps: DispatchDeps): {
           child: child.sessionID,
           agent: child.agent,
           ...(st.outcome ? { outcome: st.outcome } : {}),
-          ms: st.idleAt - child.startedAt,
+          ...(() => {
+            const ms = elapsedOf(child, st.idleAt)
+            return ms === null ? {} : { ms }
+          })(),
         })
         continue
       }
@@ -2347,7 +2472,8 @@ export function buildDispatchTools(deps: DispatchDeps): {
       child.state = "idle"
       child.finishedAt = now()
       child.settleSource = "parent-idle"
-      log({ step_id: "events", event: "idle_presumed", child: child.sessionID, agent: child.agent, ms: child.finishedAt - child.startedAt })
+      const ms = elapsedOf(child)
+      log({ step_id: "events", event: "idle_presumed", child: child.sessionID, agent: child.agent, ...(ms === null ? {} : { ms }) })
     }
   }
 
@@ -2397,7 +2523,8 @@ export function buildDispatchTools(deps: DispatchDeps): {
         rec.state = "idle"
         rec.finishedAt = now()
         rec.settleSource = "event"
-        log({ step_id: "events", event: "idle", child: sid, agent: rec.agent, ms: (rec.finishedAt ?? 0) - rec.startedAt })
+        const ms = elapsedOf(rec)
+        log({ step_id: "events", event: "idle", child: sid, agent: rec.agent, ...(ms === null ? {} : { ms }) })
       }
       return
     }
@@ -2454,7 +2581,8 @@ export function buildDispatchTools(deps: DispatchDeps): {
       rec.state = "idle"
     }
     rec.settleSource = "injection"
-    log({ step_id: "events", event: "idle_injection", child: rec.sessionID, agent: rec.agent, ms: rec.finishedAt - rec.startedAt })
+    const ms = elapsedOf(rec)
+    log({ step_id: "events", event: "idle_injection", child: rec.sessionID, agent: rec.agent, ...(ms === null ? {} : { ms }) })
     return true
   }
 
