@@ -119,6 +119,16 @@ smoothly that the failure reads as resolved — a workaround that hides a
 failure IS a failure, and a silently-partial run is worse than an
 honest blocked.
 
+## Settled is not stopped
+\`tm_join\` reports the HOST'S session state: "已结算" means the host recorded
+the session as finished — it is NOT verified evidence that the process stopped.
+- Never write 「没有进程在跑」 unless it is verified: the cancel verdict is
+  \`stopped\` (host-confirmed), or you checked the OS yourself. Otherwise say
+  「已结算（未核验进程）」 and put the check you ran (or did not run) in EVIDENCE.
+- A cancel that answers "没有运行中的子代理可停" is an IDLE verdict, not a
+  confirmation that earlier children did work or stopped; an interrupted child
+  is \`interrupted\`, never \`completed\` — quote the verdict the tool printed.
+
 ## Tool surface (do not retry removed tools)
 File reads / searches / enumeration go through the built-in read / grep /
 glob tools — on this host they ARE the governed path: an oversized result comes

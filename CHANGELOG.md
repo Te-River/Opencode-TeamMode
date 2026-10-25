@@ -9,6 +9,16 @@ registry saw 1.5.0 as the install-script fix release).
 
 ### Fixed
 
+- **提示词补上「结算 ≠ 停止」：`tm_join` 报的是宿主会话状态，不是 OS 进程事实（用户 2026-10-25 实测导出）。**
+  导出原文：lead 写「所有子代理已全部取消/结算，**现在没有任何进程在跑**。我等你指示。」，而 `tm_join`
+  只说了「全部已结算」——那是宿主的会话记录，不代表进程停了；用户质疑后 lead 才去查，并自己承认
+  「宿主说'已结算'不等于进程真的停了」。lead 提示词现在有独立一节 `## Settled is not stopped`：
+  没有 `stopped` 取消判定、也没有自己做的 OS 核验，就只能写「已结算（未核验进程）」并把核验（或没核验）
+  放进 EVIDENCE；「没有运行中的子代理可停」是 idle 判定，不是先前子代理做过或停过的证据；被中断的子代理是
+  `interrupted` 而不是 `completed`，引用工具原话；用户质疑结论时先查再答，不复述旧结论。`shared.ts` 的
+  `## Evidence rule` 旁给全部五个专科同一规则的简版（3 条）。钉住：`test-blackboard.mjs`（lead 小节 +
+  `未核验进程` + `CHECK FIRST` + 每个专科的共享锚点），四条用户可见口径已收进 `VERBATIM_TOOL_STRINGS`。
+
 - **五个专科角色的 `mode` 改为 `all`：`/team-architect` 等命令现在真的能切过去。** v2 文档
   （`/v2/docs/agents`，读于 2026-10-25）写明 `mode: "subagent"` = **只在子会话中运行**，而命令的
   `agent:` 键是**切换当前会话的 agent**——五个专科此前全部是 `subagent`，`/team-plan` 之类的命令切过去

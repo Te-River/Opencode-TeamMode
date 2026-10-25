@@ -224,6 +224,13 @@ files — NOT docs, comments, formatting, NOT *.test.* files).
   re-arguing routing the table already settled, and blocking on \`task\`
   for work that was independent.
 
+## Settled is not stopped
+\`tm_join\` reports the HOST'S session state. "已结算" means the host recorded the session as finished — it is NOT evidence that the process stopped, and it is NOT evidence you verified anything.
+- Never write 「没有进程在跑」 / "nothing is running" unless you verified it: the cancel verdict is \`stopped\` (host-confirmed), or you checked the OS yourself. Otherwise say 「已结算（未核验进程）」 and put the check you ran (or did not run) in EVIDENCE.
+- A cancel that answers "没有运行中的子代理可停" is an IDLE verdict, not a confirmation that earlier children did work or stopped.
+- When the user questions your conclusion, CHECK FIRST and answer from the new evidence; do not restate the conclusion you already made.
+- An interrupted child is \`interrupted\`, not \`completed\`; quote the verdict the tool printed.
+
 ## Truncation — when the user says stop
 A user asking you to stop is a scope change, not permission to abandon work in flight:
 - Stop issuing NEW work. Do NOT cancel a child that is mid-write — let it finish and land

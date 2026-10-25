@@ -520,6 +520,12 @@ assert.ok(leadPrompt.includes("<session-key>"), "lead: session layer in board pa
          else was added.  A new Chinese token still fails this scan by name. */
       "已落盘", "未开始", "验证", "提交与发布", "未进行", "已进行", "已做", "未做",
       "未提交", "未发布", "未安装",
+      /* Settled ≠ stopped (user measurement 2026-10-25, exported session): the lead
+         read a tm_join 「全部已结算」 as an OS fact and wrote 「现在没有任何进程在跑」.
+         These four runs are the USER-VISIBLE wording the rule has to quote verbatim —
+         a settlement verdict plus the unverified-process caveat — not a licence for
+         Chinese prose.  Same closed set as above: a new token still fails here. */
+      "已结算", "未核验进程", "没有进程在跑", "没有运行中的子代理可停",
     ]
     const strayByRole = []
     for (const [name, a] of Object.entries(cfg2.agent)) {
@@ -551,6 +557,14 @@ assert.ok(!leadPrompt.includes("DELETE the task directory"), "lead: no manual-de
 assert.ok(leadPrompt.includes("TTL sweeper"), "lead: TTL sweeper is sole cleanup path")
 assert.ok(leadPrompt.includes("VERBATIM CONTRACTS"), "lead: api-contract verbatim rule (kept)")
 assert.ok(leadPrompt.includes("## Evidence standard"), "lead: evidence standard (kept)")
+/* Settled ≠ stopped (user measurement 2026-10-25).  tm_join reports the HOST'S
+   session state; the lead read 全部已结算 as an OS fact and wrote 「现在没有任何
+   进程在跑」, then only checked after the user pushed back.  The rule has to name
+   all three: the section, the caveat it obliges, and checking BEFORE answering. */
+assert.ok(leadPrompt.includes("## Settled is not stopped"), "lead: settled ≠ stopped is a named section")
+assert.ok(leadPrompt.includes("未核验进程"), "lead: the unverified-process caveat is spelled out (not 「没有进程在跑」)")
+assert.ok(leadPrompt.includes("CHECK FIRST"), "lead: a challenged conclusion is re-checked, not restated")
+assert.ok(leadPrompt.includes("is an IDLE verdict"), "lead: an idle cancel answer is not read as a confirmation of work done or stopped")
 assert.ok(leadPrompt.includes("## Docs sync"), "lead: docs-sync rule (CHANGELOG + AGENTS.md)")
 assert.ok(leadPrompt.includes("## Efficiency first"), "lead: the efficiency mandate is there, spelled in English like the rest of the prompt")
 assert.ok(leadPrompt.includes("## Reply language"), "lead: output language follows the USER, not the tool output")
@@ -628,6 +642,13 @@ for (const expert of EXPERTS) {
 
   assert.ok(cfg2.agent[expert].prompt.includes("Do not re-open"), expert + ": no README/AGENTS.md re-reading")
   assert.ok(cfg2.agent[expert].prompt.includes("## Evidence rule"), expert + ": evidence rule")
+  /* The same rule for every specialist: a child's 已结算 is the HOST'S record,
+     not a physical fact — only a verified verdict licenses 「没有进程在跑」. */
+  assert.ok(cfg2.agent[expert].prompt.includes("## Settled is not stopped"), expert + ": settled ≠ stopped is shared with every role")
+  assert.ok(
+    cfg2.agent[expert].prompt.includes("NOT verified evidence that the process stopped") && cfg2.agent[expert].prompt.includes("未核验进程"),
+    expert + ": the shared rule separates settled (host record) from verified (the only licence for 「没有进程在跑」)",
+  )
   assert.ok(cfg2.agent[expert].prompt.includes("## Efficiency first"), expert + ": the efficiency mandate is shared by every role, not just the lead")
   assert.ok(cfg2.agent[expert].prompt.includes("## Reply language"), expert + ": output language follows the user, not the tool output")
   // A Chinese tool string must not drag an English conversation into Chinese,
