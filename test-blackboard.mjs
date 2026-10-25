@@ -194,7 +194,13 @@ const BASH_GRANTED = ["implementer", "reviewer", "tester"]
 // would assert a shape the product no longer produces.
 for (const expert of EXPERTS) {
   const a = cfg.agent[expert]
-  assert.equal(a.mode, "subagent", expert + " is subagent")
+  // `mode: "subagent"` means "runs ONLY in a child session" (v2 docs, 2026-10-25),
+  // and a command's `agent:` SWITCHES the current session's agent — so a specialist
+  // pinned to subagent could not be selected by /team-plan & co at all.  T3 ("only
+  // the lead dispatches") is NOT held by mode: it is the `subagent: deny` triple
+  // asserted below, which every specialist keeps.
+  assert.equal(a.mode, "all", expert + " is mode all (selectable by a /team-* command)")
+
   assert.ok(a.prompt.includes("## Blackboard rules"), expert + " has blackboard rules")
   // The board used to require a file tool, so for architect/researcher (no
   // write, no edit, not even bash) every oversized deliverable was forced

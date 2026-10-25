@@ -201,20 +201,129 @@ assert.match(
 )
 console.log(`   OK (${registered.length} tools, parameter surfaces translated)`)
 
-console.log("1b. Team owns the default slot")
-assert.equal(
-  fake.agents.__default,
-  "Team",
-  "editor.default('Team') runs on every boot — v2 has no getter, so 'only if the user left it alone' is not expressible and the standing instruction wins",
-)
-const optedOut = makeFakeCtx({ directory: ws, agents: sixAgents, options: { defaultAgent: false } })
-const oo = await withCapturedConsole(() => plugin.setup(optedOut.ctx))
-assert.equal(
-  optedOut.agents.__default,
-  undefined,
-  "defaultAgent:false opts out of the promotion, the same knob v1 documents",
-)
-await oo.value?.()
+console.log("1b. the default slot belongs to the INSTALLER, not the plugin")
+// Probed on a live 2.1.4 host (2026-10-25): the plugin ctx `agent` domain is
+// `get / list / transform / reload` — `typeof ctx.agent.default === "undefined"`.
+// The old `editor.default("Team")` could only throw into its own catch and then
+// publish `called-unverified`: a verdict nobody had measured.  The fake KEEPS the
+// method on purpose and counts calls, so a regression cannot hide behind a missing
+// function.
+const readDeathRows = (root) =>
+  fs
+    .readdirSync(path.join(root, "runs"))
+    .flatMap((run) =>
+      fs
+        .readFileSync(path.join(root, "runs", run, "steps.jsonl"), "utf8")
+        .split(/\r?\n/)
+        .filter(Boolean)
+        .map((l) => {
+          try {
+            return JSON.parse(l)
+          } catch {
+            return null
+          }
+        })
+        .filter(Boolean),
+    )
+{
+  const f = makeFakeCtx({ directory: workspace("def-call"), agents: sixAgents })
+  let calls = 0
+  const vanilla = f.agents.default
+  f.agents.default = (id) => {
+    calls++
+    return vanilla.call(f.agents, id)
+  }
+  const b = await withCapturedConsole(() => plugin.setup(f.ctx))
+  assert.equal(calls, 0, "editor.default is never called — 2.1.4 has no such method (and on 2.0.16 it was a no-op)")
+  assert.equal(f.agents.__default, undefined, "…so the editor's default slot stays exactly as the host left it")
+  await b.value?.()
+}
+{
+  const optedOut = makeFakeCtx({ directory: workspace("def-optout"), agents: sixAgents, options: { defaultAgent: false } })
+  let calls = 0
+  optedOut.agents.default = () => {
+    calls++
+  }
+  const oo = await withCapturedConsole(() => plugin.setup(optedOut.ctx))
+  assert.equal(calls, 0, "defaultAgent:false keeps its documented meaning (skip the check/report) and no longer implies a promotion")
+  assert.ok(
+    !(oo.warns ?? []).some((w) => /默认角色|Team 不是默认/.test(w)),
+    "…and it is silent about the default instead of reporting a promotion it never attempted",
+  )
+  await oo.value?.()
+}
+{
+  // The verdict now comes from the ONLY working mechanism: the installer's
+  // `default_agent` in the global opencode.jsonc.  Four readings, each named — so
+  // "the plugin cannot set it" arrives as a measurement, not a comment.
+  const root = workspace("def-installer")
+  const cfgDir = path.join(root, "cfg")
+  const tjRoot = path.join(root, "tj")
+  fs.mkdirSync(path.join(cfgDir, "agents"), { recursive: true })
+  fs.writeFileSync(path.join(cfgDir, "agents", "Team.md"), "---\n---\n", "utf8")
+  fs.writeFileSync(path.join(cfgDir, "agents", "architect.md"), "---\n---\n", "utf8")
+  const prev = process.env.OPENCODE_CONFIG_DIR
+  process.env.OPENCODE_CONFIG_DIR = cfgDir
+  writeCfg({ trajectoryDir: tjRoot, dynamicTail: "off" })
+  const bootWith = async (json) => {
+    const file = path.join(cfgDir, "opencode.jsonc")
+    if (json === null) fs.rmSync(file, { force: true })
+    else fs.writeFileSync(file, json, "utf8")
+    const dir = workspace("def-case")
+    const f = makeFakeCtx({ directory: dir, agents: sixAgents })
+    const b = await withCapturedConsole(() => plugin.setup(f.ctx))
+    await b.value?.()
+    // Each boot gets its own run dir and readdir order is not chronological, so the
+    // row is matched by THIS boot's workspace rather than "last v2-boot row".
+    const row = readDeathRows(tjRoot)
+      .filter((e) => e.step_id === "v2-boot" && path.basename(String(e.directory ?? "")) === path.basename(dir))
+      .pop()
+    return { row, warns: (b.warns ?? []).join(" ") }
+  }
+  try {
+    const team = await bootWith('{ "default_agent": "Team" }')
+    assert.equal(team.row?.agents_default, "installer:Team", "default_agent=Team (role file present) reads as installer:Team")
+    assert.ok(!/Team 不是默认/.test(team.warns), "…and no note contradicts a confirmed default")
+    const other = await bootWith('{ "default_agent": "architect" }')
+    assert.equal(other.row?.agents_default, "installer:other", "another role reads as installer:other")
+    assert.ok(
+      /default_agent="architect"/.test(other.warns) && /agent\.default/.test(other.warns),
+      `the note names the role AND the missing 2.1.x seam: ${other.warns}`,
+    )
+    const missing = await bootWith('{ "theme": "dark" }')
+    assert.equal(missing.row?.agents_default, "missing", "no default_agent key reads as missing")
+    const none = await bootWith(null)
+    assert.equal(none.row?.agents_default, "no-config", "no config file reads as no-config, never a guess")
+    assert.ok(/default_agent/.test(none.warns), "and the note still names the mechanism that decides it")
+  } finally {
+    process.env.OPENCODE_CONFIG_DIR = prev
+    fs.rmSync(path.join(cfgDir, "opencode.jsonc"), { force: true })
+    clearCfg()
+  }
+}
+{
+  // Regression for the 2.1.4 domain SHAPE itself: `default` is ABSENT, not a stub.
+  // Boot must not throw, and its rows must still be written.
+  const root = workspace("def-nomethod")
+  const tjRoot = path.join(root, "tj")
+  writeCfg({ trajectoryDir: tjRoot, dynamicTail: "off" })
+  const nmDir = workspace("def-nomethod-ws")
+  const f = makeFakeCtx({ directory: nmDir, agents: sixAgents })
+  delete f.agents.default
+  assert.equal(typeof f.agents.default, "undefined", "the fake now mirrors 2.1.4: no agent.default at all")
+  const b = await withCapturedConsole(() => plugin.setup(f.ctx))
+  assert.equal((b.errors ?? []).length, 0, `boot does not throw without agent.default: ${(b.errors ?? []).join(" | ")}`)
+  await b.value?.()
+  const boot = readDeathRows(tjRoot)
+    .filter((e) => e.step_id === "v2-boot" && path.basename(String(e.directory ?? "")) === path.basename(String(nmDir)))
+    .pop()
+  assert.ok(boot, "the boot row is still written")
+  assert.ok(
+    ["installer:Team", "installer:other", "missing", "no-config", "unreadable"].includes(String(boot.agents_default)),
+    `agents_default stays one of the installer verdicts (got ${boot.agents_default})`,
+  )
+  clearCfg()
+}
 
 // How our tools reach the model AT ALL.  The 2.0.16 binary decides it with
 // `options.codemode`: not-false means "catalog only", where the host keeps the
@@ -249,20 +358,26 @@ assert.equal(
 // …and the claim is only made when it can be OBSERVED.  A live 2.0.16 standalone
 // boot showed the editor holding 7 agents with build and plan present and NONE of
 // ours — the transform receives the agent set from before the config directory
-// merges — while `--agent team` was nonetheless executing as Team.  "get() found
-// nothing" is therefore not evidence the host lacks the role, and it is certainly
-// not evidence the promotion landed.  The call is still attempted (it is the only
-// channel there is), but an unverifiable promotion must not print as a success.
+// merges — while `--agent Team` was nonetheless executing as Team.  "get() found
+// nothing" is not evidence the host lacks the role, and it is certainly not evidence
+// a promotion landed.  On 2.1.4 there is no promotion to land at all, so what this
+// pins is: no call, and no all-clear printed from an observation we do not have.
 {
   const builtinOnly = makeFakeCtx({
     directory: ws,
     agents: [{ id: "build", name: "build" }, { id: "plan", name: "plan" }],
   })
+  let calls = 0
+  builtinOnly.agents.default = () => {
+    calls++
+  }
   const b = await withCapturedConsole(() => plugin.setup(builtinOnly.ctx))
-  assert.equal(builtinOnly.agents.__default, "Team", "the promotion is still attempted against a host whose editor lacks our roles")
+  assert.equal(calls, 0, "no editor.default call against a host whose editor lacks our roles either")
+  assert.equal(builtinOnly.agents.__default, undefined, "…so the slot is never touched")
   const line = (b.warns ?? []).join(" ") + (b.errors ?? []).join(" ")
-  assert.ok(/无法核验/.test(line) && /default_agent/.test(line), "…and says out loud that it could not be verified, pointing at the installer key that does work")
-  assert.ok(!/Team 已经是默认/.test(line), "no all-clear is printed for an unobserved promotion")
+  assert.ok(!/无法核验/.test(line), "the retired `called-unverified` wording is gone")
+  assert.ok(/default_agent/.test(line) && /agent\.default/.test(line), `…and the installer key plus the missing seam are named: ${line}`)
+  assert.ok(!/Team 已经是默认/.test(line), "no all-clear is printed for a default the plugin never measured")
   await b.value?.()
 }
 
@@ -602,23 +717,22 @@ assert.ok(
   "the log names all six roles the installer must provide",
 )
 // This used to assert the OPPOSITE — that the promotion is withheld when
-// editor.get('team') finds nothing.  A live 2.0.16 boot falsified the premise: the
-// transform's editor holds only the built-ins (the config directory has not merged
-// yet), so gating on that look-up suppressed the promotion in the ordinary case and
-// did so silently.  The call is made regardless now, and what is guaranteed instead
-// is that an unverified promotion is SAID, not hidden.
+// editor.get('team') finds nothing.  Both halves are gone: on 2.1.4 the plugin has
+// no `agent.default` to call at all, and on 2.0.16 the call landed on an editor that
+// cannot see the config-directory roles anyway.  What must hold now: no call, and a
+// note that names the installer key AND the missing seam.
 assert.equal(
   bare.agents.__default,
-  "Team",
-  "the promotion is attempted even against an editor that has not merged the config roles",
+  undefined,
+  "no editor.default call is attempted against an editor that has not merged the config roles",
 )
 assert.ok(
-  second.warns.some((w) => /无法核验/.test(w) && /default_agent/.test(w)),
-  "…and the boot says the promotion could not be verified, pointing at the installer key that can",
+  !second.warns.some((w) => /无法核验/.test(w)),
+  "the retired `called-unverified` wording is gone from the boot log",
 )
 assert.ok(
-  second.warns.some((w) => /没装过安装器就别假定/.test(w)),
-  `and the note tells the user not to assume the default holds: ${second.warns.join(" | ")}`,
+  second.warns.some((w) => /default_agent/.test(w) && /agent\.default/.test(w)),
+  `…and the note names the installer key and the missing 2.1.x seam: ${second.warns.join(" | ")}`,
 )
 console.log("   OK (a v2 plugin cannot create agents, so it says which are missing)")
 await second.value?.()
@@ -1256,7 +1370,11 @@ assert.deepEqual(
 const teamMd = fs.readFileSync(path.join(genRoot, "agents", "Team.md"), "utf8")
 const archMd = fs.readFileSync(path.join(genRoot, "agents", "architect.md"), "utf8")
 assert.match(teamMd, /^mode: "primary"$/m, "the lead is selectable as a primary agent")
-assert.match(archMd, /^mode: "subagent"$/m, "the specialists are subagent-mode")
+assert.match(
+  archMd,
+  /^mode: "all"$/m,
+  "the specialists are mode:all — a /team-* command SWITCHES the current session's agent, and `mode: subagent` runs only in a child session (v2 docs, 2026-10-25)",
+)
 assert.match(
   archMd,
   /action: "subagent"\s*\n\s*resource: "\*"\s*\n\s*effect: "deny"/,

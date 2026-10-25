@@ -16,11 +16,15 @@
  * Two host limits are stated rather than discovered later:
  *  - creating agents: `AgentEditor` has no `add`, so the six roles must come
  *    from the user's config (the installer writes `agents/*.md`).
- *  - the default-agent promotion: `default(id)` has NO getter, so "only if the
- *    user did not choose" is not expressible — the choice is between never
- *    promoting and promoting every boot.  The user's standing instruction
- *    (2026-09-25) is that Team is ALWAYS the default, so this promotes
- *    unconditionally; `defaultAgent: false` in the plugin options opts out.
+ *  - the default agent: NOT a plugin capability.  Probed on a live 2.1.4 host
+ *    (2026-10-25), the plugin ctx `agent` domain carries `get / list / transform /
+ *    reload` and no `default` at all (`typeof ctx.agent.default === "undefined"`),
+ *    so the old `editor.default("Team")` call could only throw into its own catch
+ *    and then report a state nobody had measured.  The one mechanism that works is
+ *    the installer writing `default_agent` into the global `opencode.jsonc`, so the
+ *    boot reports what THAT key says.  `defaultAgent: false` in the plugin options
+ *    opts out of the check and the report — it never implied the plugin could
+ *    promote anything.
  *
  * The official confirmation dialog is absent as well, and for a different
  * reason: probed on the live host, a plugin has no way to raise one.
@@ -98,24 +102,6 @@ export const v2Personality: V2Plugin = {
     }
 
     const directory = directoryOf(ctx)
-    // ---------- #38 runtime fallback: is the configured default role on disk? ----------
-    // The plugin cannot see config-directory roles through ctx.agent (probed: the
-    // editor snapshot holds only the 7 built-ins), so a `default_agent` naming a
-    // missing role would make the host fall back to `build` SILENTLY.  Reading the
-    // global config from disk is the only way to say so.  Never throws, never
-    // affects startup, and prints only the role name + the file path it looked for.
-    let defaultAgentCheck: DefaultAgentCheck = { state: "no-config" }
-    try {
-      defaultAgentCheck = checkDefaultAgentRole({ configDir: globalConfigDir() })
-    } catch {
-      defaultAgentCheck = { state: "unreadable" }
-    }
-    if (defaultAgentCheck.state === "missing-role") {
-      console.warn(
-        `[team-mode] 全局配置的 default_agent="${defaultAgentCheck.defaultAgent}" 指向的角色文件不存在（${defaultAgentCheck.roleFile}）：` +
-          "宿主会静默退回 build，会话不再是 Team。重跑 scripts/install.ps1（Windows）或 scripts/install.sh 修复。",
-      )
-    }
     // ---------- Team-scope isolation (#22, the user's requirement 2026-09-25) ----------
     // Every v2 hook fires for EVERY agent on this host.  This one object is what
     // each layer asks before it mutates a request, a result, or a permission —
@@ -240,6 +226,67 @@ export const v2Personality: V2Plugin = {
 
     const registrations: V2Registration[] = []
     const notes: string[] = []
+
+    // ---------- the default agent belongs to the INSTALLER, not the plugin ----------
+    // Probed on a live 2.1.4 host (2026-10-25): `typeof ctx.agent.default === "undefined"`
+    // — the ctx `agent` domain is `get / list / transform / reload`.  The
+    // `editor.default("Team")` call this file used to make therefore could only ever
+    // throw into its own catch, and the boot row then published a verdict nobody had
+    // measured (`called-unverified`).  The mechanism that actually decides the default
+    // is the installer writing `default_agent` into the global `opencode.jsonc`, so the
+    // boot reads THAT file and reports what it says.  `defaultAgent:false` keeps its
+    // documented meaning — skip the check/report — and no longer implies a promotion.
+    //
+    // #38's warning survives unchanged in substance: the plugin cannot see
+    // config-directory roles through ctx.agent (the editor snapshot holds only the 7
+    // built-ins), so a `default_agent` naming a role file that does not exist makes the
+    // host fall back to `build` SILENTLY.  Reading the global config is the only way to
+    // say so; it never throws, never affects startup, and prints only the role name and
+    // the file path it looked for (never config content).
+    const defaultAgentEnabled = options.defaultAgent !== false
+    let defaultAgentCheck: DefaultAgentCheck = { state: "no-config" }
+    if (defaultAgentEnabled) {
+      try {
+        defaultAgentCheck = checkDefaultAgentRole({ configDir: globalConfigDir() })
+      } catch {
+        defaultAgentCheck = { state: "unreadable" }
+      }
+    }
+    /** The boot rows' `agents_default` — which role the INSTALLER's `default_agent`
+     *  names, never a promotion verdict.  `missing` = no usable key on disk,
+     *  `no-config` = no global config file to read, `unreadable` = it exists but did
+     *  not parse, `opt-out` = the `defaultAgent:false` option. */
+    const agentsDefault: string = !defaultAgentEnabled
+      ? "opt-out"
+      : defaultAgentCheck.state === "ok"
+        ? normalizeAgentName(defaultAgentCheck.defaultAgent ?? "") === normalizeAgentName("team")
+          ? "installer:Team"
+          : "installer:other"
+        : defaultAgentCheck.state === "missing-role" || defaultAgentCheck.state === "no-default"
+          ? "missing"
+          : defaultAgentCheck.state === "unreadable"
+            ? "unreadable"
+            : "no-config"
+    if (defaultAgentEnabled) {
+      if (defaultAgentCheck.state === "missing-role") {
+        console.warn(
+          `[team-mode] 全局配置的 default_agent="${defaultAgentCheck.defaultAgent}" 指向的角色文件不存在（${defaultAgentCheck.roleFile}）：` +
+            "宿主会静默退回 build，会话不再是 Team。重跑 scripts/install.ps1（Windows）或 scripts/install.sh 修复。" +
+            "（2.1.x 插件 ctx 没有 agent.default，默认只能由安装器写 default_agent 决定。）",
+        )
+      } else if (agentsDefault !== "installer:Team") {
+        // Only spoken when the default is NOT confirmed to be Team: a measured
+        // "installer:Team" needs no note (the boot row carries it), and a note that
+        // repeated the happy case would just train the reader to skip the block.
+        notes.push(
+          agentsDefault === "installer:other"
+            ? `Team 不是默认角色：全局 default_agent="${defaultAgentCheck.defaultAgent}"。` +
+                "2.1.x 插件 ctx 没有 agent.default，插件无法设置默认——默认只能由安装器写 default_agent 决定，重跑 scripts/install.ps1 / install.sh 即可。"
+            : `默认角色不是 Team（installer 口径：${agentsDefault}）。` +
+                "2.1.x 插件 ctx 没有 agent.default，插件无法设置默认——默认只能由安装器写 default_agent 决定，重跑 scripts/install.ps1 / install.sh 即可。",
+        )
+      }
+    }
 
     // ---------- register the governed tools ----------
     const entries = Object.entries(tmRuntime.tools as Record<string, ToolDefinition>)
@@ -603,14 +650,6 @@ export const v2Personality: V2Plugin = {
     // `TM_R6_FINE_ASK=off`, or no hook installed to hand the decision to.
     const escalateShellAsk =
       envProtectMode !== "off" && needsCoarseShellAsk(cfg, guards.installed)
-    // Team is ALWAYS the default (the user's standing instruction — see the
-    // header for why there is no conservative form).  `default()` on
-    // an agent that does not exist would just make the host fall back to build
-    // silently, so it is gated on the role actually being present, and the
-    // refusal to promote is reported rather than hidden.
-    const promoteTeamDefault = options.defaultAgent !== false
-    let defaultPromoted: boolean | null = null
-    let defaultPostCheck = "not-attempted"
     if (typeof ctx.agent?.transform === "function") {
       registrations.push(
         await ctx.agent.transform((editor) => {
@@ -633,29 +672,13 @@ export const v2Personality: V2Plugin = {
             const merged = mergeTriples((existing as V2AgentInfo).permissions, triples, V1_ONLY_TOOLS)
             if (merged.changed) editor.update(id, (a) => { a.permissions = merged.triples })
           }
-          if (promoteTeamDefault) {
-            // `editor.get("Team")` returning nothing is NOT evidence the host does
-            // not know the role — the live run is literally executing as `team` while
-            // this snapshot lists only the 7 built-ins, so the transform receives the
-            // agent set from BEFORE the config directory merged.  Gating the
-            // promotion on that stale look-up is how "Team is always the default"
-            // silently stopped being true, so the call is attempted regardless and
-            // the AFTER view is what gets recorded.
-            let ok = true
-            try {
-              editor.default("Team")
-            } catch {
-              ok = false
-            }
-            defaultPromoted = ok
-            defaultPostCheck = editor.get?.("Team") ? "present-after" : "absent-after"
-          }
           // Recorded HERE, at the moment of observation.  The host defers this
-          // callback (a live boot reached the trajectory line with
-          // defaultPromoted still null, which printed as a clean-looking "n/a"), so
-          // the boot record cannot claim anything about what has not happened yet —
-          // least of all `agents_missing: ""`, which reads as "all six roles found"
-          // when the truth at that instant was "nobody has looked".
+          // callback, so the boot record cannot claim anything about what has not
+          // happened yet — least of all `agents_missing: ""`, which reads as
+          // "all six roles found" when the truth at that instant was "nobody has
+          // looked".  `agents_default` is NOT part of the observation: it comes from
+          // the installer's `default_agent` key (read synchronously at boot), because
+          // 2.1.x gives the plugin no `editor.default` to call at all.
           try {
             tmRuntime.pipelines.store.appendTrajectory({
               tool: "host",
@@ -671,10 +694,9 @@ export const v2Personality: V2Plugin = {
               agents_editor_rounds: agentsEditorRounds,
               agents_editor_unseen: missingAgents.join(","),
               agents_resolved_in_request: resolvedAgentIds().join(","),
-              agents_default: defaultPromoted === null ? "opt-out" : defaultPostCheck === "present-after" ? "team" : "called-unverified",
+              agents_default: agentsDefault,
               agents_unmapped: [...unmappedActions].join(" "),
               agents_normalized: true,
-              agents_default_post: defaultPostCheck,
               // Is "all six missing" the host having no roles, or the callback
               // firing before it loaded them?  Those need different fixes and the
               // difference is not guessable from the outside — the editor's own view
@@ -707,20 +729,6 @@ export const v2Personality: V2Plugin = {
       )
     } else {
       notes.push("ctx.agent.transform 不存在，角色权限矩阵未规范化")
-    }
-    if (defaultPromoted === false) {
-      notes.push("Team 没有成为默认：editor.default(\"Team\") 抛错了")
-    } else if (defaultPromoted && defaultPostCheck !== "present-after") {
-      // Measured on a live 2.0.16 standalone boot: the call is accepted, `team` is
-      // absent from the editor before AND after, and `default_agent` in
-      // opencode.jsonc keeps the user's value.  The plugin therefore cannot promote
-      // the default on v2 — the transform receives the agent set from before the
-      // config directory merges.  Saying so is the whole point: this file used to
-      // claim the promotion was live-verified, and the only thing that actually
-      // makes Team the default is the installer writing the key.
-      notes.push(
-        "Team 默认：editor.default(\"team\") 已被宿主接受但**无法核验生效**（transform 拿到的是配置合并前的角色集，实测调用后 editor 里仍无 team）。真正让这个要求成立的是安装器写 `default_agent: \"team\"`——没装过安装器就别假定 Team 是默认。",
-      )
     }
     if (unmappedActions.size) {
       notes.push(`白名单里这些键在 v2 没有对应动作，已如实丢弃：${[...unmappedActions].join(",")}`)
@@ -1230,7 +1238,11 @@ export const v2Personality: V2Plugin = {
         agents_editor_rounds: agentsEditorRounds,
         agents_editor_unseen: agentsEditorRounds ? missingAgents.join(",") : "",
         agents_resolved_in_request: resolvedAgentIds().join(","),
-        agents_default: defaultPromoted === null ? "待观察（宿主异步调用 transform，见 v2-agents 行）" : defaultPromoted ? "team" : "not-promoted",
+        // The INSTALLER's verdict, read synchronously at boot (see the block beside
+        // `notes`): `installer:Team` / `installer:other` / `missing` / `no-config` /
+        // `unreadable` / `opt-out`.  Not a promotion verdict — 2.1.4 gives the plugin
+        // no `agent.default`, so the plugin has nothing to promote with.
+        agents_default: agentsDefault,
         request_hooks: session.registrations.length,
         guard_hooks: guards.registrations.length,
         storage_probe: storageProbe.state,
@@ -1252,9 +1264,11 @@ export const v2Personality: V2Plugin = {
         request_removed_plan: removedPlanSizes,
         board_ttl_days: ttlDays,
         // #38: the runtime fallback's verdict — "ok" / "missing-role" / "no-default"
-        // / "no-config" / "unreadable".  `default_agent_missing` names the role only
-        // when one is actually missing, so a clean boot prints an empty string.
-        default_agent_check: defaultAgentCheck.state,
+        // / "no-config" / "unreadable", plus "opt-out" when `defaultAgent:false` told
+        // us to skip the check entirely (so a skipped read is never printed as
+        // "no-config").  `default_agent_missing` names the role only when one is
+        // actually missing, so a clean boot prints an empty string.
+        default_agent_check: defaultAgentEnabled ? defaultAgentCheck.state : "opt-out",
         default_agent_missing: defaultAgentCheck.state === "missing-role" ? defaultAgentCheck.defaultAgent ?? "" : "",
         env_protect: envProtectMode,
         note: notes.join(" · "),

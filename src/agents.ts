@@ -199,6 +199,16 @@ function applyNetworkPermission(permission: AgentPermission, isWebRole: boolean,
 /*  Agent definitions                                                  */
 /* ------------------------------------------------------------------ */
 
+/* `mode` and who is allowed to run where (docs: https://opencode.ai/v2/docs/agents,
+ * read 2026-10-25).  `mode: "subagent"` means "runs ONLY in a child session", and a
+ * command's `agent:` key SWITCHES THE CURRENT SESSION's agent — so a specialist
+ * pinned to `subagent` could not be selected by `/team-architect` & co at all.  All
+ * five specialists are therefore `mode: "all"` (either way: dispatchable as a child
+ * AND selectable in the primary session); the lead stays `primary` because it only
+ * ever runs the main session.  T3 ("only the lead dispatches") does NOT ride on
+ * `mode` — it is the `subagent: deny` permission triple in `whitelist()`, which every
+ * specialist keeps, so widening the mode grants no dispatch right. */
+
 const teamLead: AgentConfig = {
   mode: "primary",
   description:
@@ -221,7 +231,7 @@ const teamLead: AgentConfig = {
 }
 
 const architect: AgentConfig = {
-  mode: "subagent",
+  mode: "all",
   description:
     "System architect — designs module structure, API contracts, data models, " +
     "and technical strategy; revises designs when review or testing exposes a " +
@@ -241,7 +251,7 @@ const architect: AgentConfig = {
 }
 
 const implementer: AgentConfig = {
-  mode: "subagent",
+  mode: "all",
   description:
     "Core implementer — writes production code, creates files, and builds " +
     "features according to the architect's design; applies review-driven fix " +
@@ -256,7 +266,7 @@ const implementer: AgentConfig = {
 }
 
 const reviewer: AgentConfig = {
-  mode: "subagent",
+  mode: "all",
   description:
     "Code reviewer — reviews ONE dimension per dispatch (completeness / " +
     "correctness / impact) with severity-graded, actionable findings; the " +
@@ -276,7 +286,7 @@ const reviewer: AgentConfig = {
 }
 
 const tester: AgentConfig = {
-  mode: "subagent",
+  mode: "all",
   description:
     "Test engineer — writes and runs unit/integration tests, classifies " +
     "failures (product bug vs bad test vs environment), verifies via build, " +
@@ -295,7 +305,7 @@ const tester: AgentConfig = {
 }
 
 const researcher: AgentConfig = {
-  mode: "subagent",
+  mode: "all",
   description:
     "Researcher — investigates the local repository (code, configs, " +
     "installed/vendored packages, shipped documentation) and, when local " +

@@ -149,7 +149,11 @@ export interface V2AgentInfo {
 export interface V2AgentEditor {
   list(): ReadonlyArray<V2AgentInfo>
   get(id: string): V2AgentInfo | undefined
-  default(id: string | undefined): void
+  // `default(id)` is DELETED on purpose: probed on a live 2.1.4 host (2026-10-25),
+  // the ctx `agent` domain is `get / list / transform / reload` and
+  // `typeof ctx.agent.default === "undefined"`.  On 2.0.16 it existed and was a
+  // no-op anyway.  The only mechanism for the default agent is the installer's
+  // `default_agent` key in the global opencode.jsonc — do NOT call this.
   update(id: string, update: (agent: V2AgentInfo) => void): void
   remove(id: string): void
 }
