@@ -2947,6 +2947,13 @@ try {
               // different seams on a real host.  `stateGetThrows` fails only the state one, which
               // is how the envelope fallback is reachable at all (parentage already answered).
               if (over.stateGetThrows && o?.sessionID) throw new Error("session state read unavailable")
+              // The REAL v2 bridge wraps the host record: `{ id, parentID, raw: <record> }`.
+              // A fake that only ever answered with the unwrapped shape is exactly how 1.8.8
+              // shipped a reader that could not see `time.idle` on the live host — so a
+              // `raw` seed here is the production shape, not a special case.
+              if (rec && rec.raw) {
+                return { ok: true, data: { id, parentID: (over.parents ?? {})[id], raw: rec.raw } }
+              }
               return {
                 ok: true,
                 data: {
@@ -3193,7 +3200,7 @@ try {
             const { rt, calls } = await v2Runtime("join-history-ack", {
               parents: { ses_hist1: "ses_v2lead" },
               messages: { ses_v2lead: parentText(ack("ses_hist1")) },
-              sessionRecord: { ses_hist1: { created: 1000, idle: 9000, outcome: "succeeded" } },
+              sessionRecord: { ses_hist1: { raw: { time: { created: 1000, idle: 9000 }, outcome: "succeeded" } } },
             })
             const joined = await rt.tools.tm_join.execute({}, V2LEAD)
             assert.ok(calls.get.includes("ses_hist1"), "G1: a candidate's parentage is READ from the host before it is claimed")

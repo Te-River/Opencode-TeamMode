@@ -278,11 +278,20 @@ export async function readHostSessionState(
     // older `{path:{id}}` shape, so either call convention still lands.
     const un = unwrapClientResult(await api.get({ sessionID: id }))
     if (!un.ok) return { answered: false }
-    const d = un.data as { time?: { created?: unknown; idle?: unknown }; outcome?: unknown } | null | undefined
+    const d = un.data as { time?: { created?: unknown; idle?: unknown }; outcome?: unknown; raw?: unknown } | null | undefined
     if (!d || typeof d !== "object") return { answered: false }
-    const createdAt = typeof d.time?.created === "number" && d.time.created > 0 ? d.time.created : undefined
-    const idleAt = typeof d.time?.idle === "number" && d.time.idle > 0 ? d.time.idle : undefined
-    const outcome = typeof d.outcome === "string" && d.outcome.trim() ? d.outcome.trim() : undefined
+    // The v2 bridge answers with `{ id, parentID, raw: <host record> }` while a direct
+    // host call answers with the record itself.  Reading only the outer shape made
+    // `time.idle` invisible on 2.1.4 (1.8.8 live: 27 settled children reported as
+    // running).  Normalise BOTH here — this is the one place that decides "is the run
+    // over", so it may not depend on which seam answered.
+    const rec = (d.raw && typeof d.raw === "object" ? (d.raw as typeof d) : d) as {
+      time?: { created?: unknown; idle?: unknown }
+      outcome?: unknown
+    }
+    const createdAt = typeof rec.time?.created === "number" && rec.time.created > 0 ? rec.time.created : undefined
+    const idleAt = typeof rec.time?.idle === "number" && rec.time.idle > 0 ? rec.time.idle : undefined
+    const outcome = typeof rec.outcome === "string" && rec.outcome.trim() ? rec.outcome.trim() : undefined
     return {
       answered: true,
       ...(createdAt ? { createdAt } : {}),
