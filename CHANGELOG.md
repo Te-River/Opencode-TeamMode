@@ -7,6 +7,8 @@ registry saw 1.5.0 as the install-script fix release).
 
 ## [Unreleased]
 
+## [1.8.7] - 2026-10-25
+
 ### Changed
 
 - **`tm_ledger` 容量 200 → 1000，且越过上限改为自动归档，不再撞墙式拒绝。** 真机反馈：一个长项目的 lead 在满 200 条后
