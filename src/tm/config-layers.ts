@@ -206,7 +206,7 @@ export const CONFIG_KEYS: readonly ConfigKeySpec[] = [
   { key: "splitBriefTokens", type: "number", default: 4000, min: 200, max: 200_000, doc: "触发拆分建议的 brief token 阈值。" },
   { key: "splitMaxCriteria", type: "number", default: 3, min: 1, max: 50, doc: "拆分建议里每条交付的验收标准上限。" },
   { key: "v2BrowserGate", type: "string", default: "on", enum: ["on", "off"], doc: "原生 browser_* 目录的域名/地址/R6 门禁；off = 关闭。" },
-  { key: "ledgerMaxItems", type: "number", default: 200, min: 10, max: 100_000, doc: "tm_ledger 每个会话的最大条目数。" },
+  { key: "ledgerMaxItems", type: "number", default: 1000, min: 10, max: 100_000, doc: "tm_ledger 每个会话的最大条目数。默认 1000；超出时先把已完成的条目归档（team-mode/ledger-archive，归档也放不下才拒绝）。" },
   { key: "stateCard", type: "string", default: "on", enum: ["on", "off"], doc: "任务状态卡：给 lead 组装请求时注入一条 ≤300 token 的当前状态（账本进行/阻塞/待办、运行中子代理、看板根）；状态未变化时一个字节都不动，off = 不注册该层。" },
   { key: "dynamicTail", type: "string", default: "off", enum: ["on", "off"], doc: "易变上下文尾部注入；宿主 2.1.x 会把它当作真实用户消息持久化并回放（实测 2026-10-22），故默认关闭，仅在确认宿主行为安全后手动开启。on = 易变上下文（状态卡/窗口/重试指令/拆分建议）合并为请求末尾的一条消息，system 保持稳定以命中前缀缓存；off = 1.9.x 前的 system 注入行为（字节级一致）。" },
   { key: "subagentConcurrency", type: "number", default: 8, min: -1, max: 100, doc: "子代理并发上限（running + 在飞派发）；0 = 不限；负值无效，回落默认 8（不夹到 0——0 是“不限”，一个笔误不该把上限关掉）。" },

@@ -7,6 +7,21 @@ registry saw 1.5.0 as the install-script fix release).
 
 ## [Unreleased]
 
+### Changed
+
+- **`tm_ledger` 容量 200 → 1000，且越过上限改为自动归档，不再撞墙式拒绝。** 真机反馈：一个长项目的 lead 在满 200 条后
+  被宿主拒绝新增，只能把决策记进项目记忆、后面不再往里塞，用户的评价正是「太小了这个容量」。现在
+  `LEDGER_MAX_ITEMS_DEFAULT` 与配置键 `ledgerMaxItems` 的默认都是 **1000**（min 10 / max 100000 不变）。
+  并且 `add` 越过上限时先把 `status === "done"` 的条目**最旧优先**移进归档键
+  `team-mode/ledger-archive/<sessionID>`：合并已有归档、同 id 幂等、`Ledger.seq` 高水位保证归档里的 `#1`
+  不会被重新铸出来；回复里报「已归档 N 条已完成条目（归档共 M 条）」。归档**先写**、清单后写——归档写不进去就
+  整体不动，不会出现「已完成条目凭空消失却回一句已写入」。真的没有 done 可归时仍然拒绝，但文案升级为点名
+  `ledgerMaxItems`、当前条数与归档条数，并给出两个出口（调大 `ledgerMaxItems` / 先把做完的标成 done）。
+  `list` 头部只报「归档：M 条已完成（team-mode/ledger-archive）」，归档正文不铺回清单。钉住：`test-v2-adapter` 3b
+  （10 条 done + 第 11 条 → 「已归档 9 条」且真的落到归档键、`list` 报 9 条；第二次溢出归档累加且 id 不重复；
+  无 done 时拒绝且文案含 `ledgerMaxItems=12`、两处计数、两个出口；默认值 1000 + min/max 不变；
+  归档清空后新条目编号继续、不会与归档撞 id），反向验证做过（关闭归档 → 用例①红 → 还原）。
+
 ### Fixed
 
 - **`tm_join` 在服务重启后重新认识子代理：宿主没有 `session.children` 时，从父会话历史里认领（2.1.4 + 1.8.6 实测导出）。**

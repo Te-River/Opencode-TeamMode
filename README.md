@@ -322,7 +322,7 @@ Your own agents named `team` / `architect` / … always take precedence; the plu
 | `boardMaxChars` | number | `200000` | `tm_board_write` per-file cap — over it the write refuses (with a split-the-topic hint) rather than truncating a deliverable. |
 | `boardMaxFiles` | number | `200` | Markdown files per session folder; the TTL sweeper is the only reclaim path, so the refusal names it. |
 | `joinMaxWaitMs` | number | `60000` | Ceiling on `tm_join { waitMs }`; a second consecutive wait that settled nothing is cut to 10 s with a "stop waiting" directive. |
-| `ledgerMaxItems` | number | `200` | `tm_ledger` items per session; past it the list refuses rather than quietly dropping the oldest asks. |
+| `ledgerMaxItems` | number | `1000` | `tm_ledger` items per session; past it the oldest DONE items are archived to `team-mode/ledger-archive` (and reported), and only when nothing is left to archive does the list refuse — it never quietly drops an ask. |
 | **Memory** | | | |
 | `memoryGlobalDir` | string | auto | GLOBAL tier store; empty = `~/.opencode-team/memories/global`. |
 | `memorySessionTtlMin` | number | `240` | Session-tier entry TTL (lazy + boot sweep). |

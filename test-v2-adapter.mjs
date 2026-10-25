@@ -452,25 +452,91 @@ assert.equal(ledgerGoalLine(normalizeLedger(await fake.ctx.storage.get(LED_KEY))
 const notLead = await led.execute({ action: "list" }, { ...CTX, agent: "researcher" })
 assert.match(textOf(notLead), /领队/, "the list is the lead's instrument; a specialist answers in STATUS instead")
 // ctx.storage has no TTL and no quota (measured on a live 2.0.16), so a list that
-// only grows is a leak. The cap REFUSES and says why; truncating silently would
-// leave the lead believing its oldest asks were still on the list somewhere.
+// only grows is a leak.  The FIRST answer was a 200-item cap that simply refused,
+// and a live lead hit it on a long project and started parking decisions in project
+// memory instead (the user's verdict: 「太小了这个容量」).  So the cap moved to 1000
+// AND the overflow ARCHIVES finished items instead of refusing on contact.
 {
+  const arch = makeFakeCtx({ directory: ws, agents: [] })
+  const cfgFile = path.join(process.env.OPENCODE_CONFIG_DIR, "team-mode.jsonc")
+  fs.writeFileSync(cfgFile, `{ "ledgerMaxItems": 10 }`)
+  await arch.ctx.storage.set("team-mode/ledger/ses_arch", {
+    sessionID: "ses_arch",
+    updated: Date.now(),
+    items: Array.from({ length: 10 }, (_, i) => ({ id: i + 1, text: `已完成 ${i}`, status: "done", at: 1000 + i })),
+  })
+  const ac = await withCapturedConsole(() => plugin.setup(arch.ctx))
+  const atools = Object.fromEntries(arch.tools.list().map((t) => [t.id ?? t.name, t]))
+  const ACTX = { ...CTX, sessionID: "ses_arch" }
+  const over = await atools.tm_ledger.execute({ action: "add", text: "第 11 条" }, ACTX)
+  assert.match(textOf(over), /已记 #11 /, "the 11th ask is RECORDED — crossing the cap is no longer a wall")
+  // Over the cap, finished items leave as a BODY: ids 1..9 move, the newest done
+  // (#10) stays as this round's context, and the new #11 is untouched.
+  assert.match(textOf(over), /已归档 9 条已完成条目（归档共 9 条）/, "the reply says exactly how much moved and how big the bin is now")
+  assert.equal((await arch.ctx.storage.get("team-mode/ledger/ses_arch")).items.length, 2, "the stored list really shrank — the note is not cosmetic")
+  const bin = await arch.ctx.storage.get("team-mode/ledger-archive/ses_arch")
+  assert.equal(bin?.items?.length, 9, "the finished items MOVED to their own storage key, they were not deleted")
+  assert.deepEqual(bin.items.map((i) => i.id).sort((a, b) => a - b), [1, 2, 3, 4, 5, 6, 7, 8, 9], "oldest-first, no gaps")
+  const afterList = await atools.tm_ledger.execute({ action: "list" }, ACTX)
+  assert.match(textOf(afterList), /归档：9 条已完成（team-mode\/ledger-archive）/, "list reports the bin by count")
+  assert.ok(!/已完成 0/.test(textOf(afterList)), "…and never pastes the archive body back into the list")
+  // Second overflow on the SAME session: the bin is MERGED, and ids never repeat.
+  await atools.tm_ledger.execute({ action: "done", id: 11 }, ACTX)
+  for (let i = 0; i < 9; i++) {
+    await atools.tm_ledger.execute({ action: "add", text: `第二批 ${i}` }, ACTX)
+  }
+  const bin2 = await arch.ctx.storage.get("team-mode/ledger-archive/ses_arch")
+  const ids = bin2.items.map((i) => i.id)
+  assert.equal(new Set(ids).size, ids.length, "a second archive pass appends to the same bin without duplicating an id")
+  assert.ok(bin2.items.length > 9, `the bin accumulated across two overflows (${bin2.items.length})`)
+  fs.rmSync(cfgFile, { force: true })
+  await ac.value?.()
+}
+{
+  // Nothing is `done` → the archive cannot make room, so the REFUSAL survives — but
+  // it now names the knob, both counts, and the two exits out.
   const capped = makeFakeCtx({ directory: ws, agents: [] })
   const cfgFile = path.join(process.env.OPENCODE_CONFIG_DIR, "team-mode.jsonc")
   fs.writeFileSync(cfgFile, `{ "ledgerMaxItems": 12 }`)
   await capped.ctx.storage.set("team-mode/ledger/ses_cap", {
     sessionID: "ses_cap",
     updated: Date.now(),
-    items: Array.from({ length: 12 }, (_, i) => ({ id: i + 1, text: `旧条目 ${i}`, status: "done", at: Date.now() })),
+    items: Array.from({ length: 12 }, (_, i) => ({ id: i + 1, text: `还没做完 ${i}`, status: "open", at: Date.now() })),
   })
   const cc = await withCapturedConsole(() => plugin.setup(capped.ctx))
   const ctools = Object.fromEntries(capped.tools.list().map((t) => [t.id ?? t.name, t]))
   const over = await ctools.tm_ledger.execute({ action: "add", text: "再来一条" }, { ...CTX, sessionID: "ses_cap" })
-  assert.match(textOf(over), /超过上限 12/, "the ceiling bites before the write, not after")
-  assert.match(textOf(over), /不设 TTL/, "…and the refusal names the reason a ceiling exists at all")
+  assert.match(textOf(over), /超过上限 12/, "the ceiling still bites when the archive has nothing to take")
+  assert.match(textOf(over), /ledgerMaxItems=12/, "…and names the knob rather than an anonymous limit")
+  assert.match(textOf(over), /清单 12 条 \+ 这次 1 条 = 13 条/, "…with both counts, so the lead can see how far over it is")
+  assert.match(textOf(over), /归档 0 条/, "…and the archive size, which is why nothing could move")
+  assert.match(textOf(over), /调大 team-mode\.jsonc 里的 ledgerMaxItems/, "exit 1: raise the knob")
   assert.equal((await capped.ctx.storage.get("team-mode/ledger/ses_cap")).items.length, 12, "nothing was appended to the stored list")
+  assert.equal(await capped.ctx.storage.get("team-mode/ledger-archive/ses_cap"), undefined, "and a refused add writes no empty bin")
   fs.rmSync(cfgFile, { force: true })
   await cc.value?.()
+}
+{
+  // The id high-water mark: archiving every finished item empties the list, and the
+  // next add must NOT re-mint an id the bin already holds (the merge would drop it).
+  const { addItem, archiveDoneItems } = await import("./dist/tm/ledger.js")
+  const seeded = { sessionID: "s", items: [
+    { id: 1, text: "旧的 a", status: "done", at: 1 },
+    { id: 2, text: "旧的 b", status: "done", at: 2 },
+  ], updated: 1 }
+  const emptied = archiveDoneItems(seeded, null, 0, 3)
+  assert.equal(emptied.ledger.items.length, 0, "archiving to target 0 empties the list")
+  const next = addItem(emptied.ledger, "新的一条", 4)
+  assert.equal(next.item.id, 3, "the id continues past the archive instead of colliding with it")
+}
+{
+  // The default is the user-facing capacity claim, so it is asserted, not assumed.
+  const { CONFIG_KEYS } = await import("./dist/tm/config-layers.js")
+  const key = CONFIG_KEYS.find((k) => k.key === "ledgerMaxItems")
+  assert.equal(key?.default, 1000, "ledgerMaxItems defaults to 1000 (the 200 wall is what the user called too small)")
+  assert.equal(key?.min, 10, "min is unchanged")
+  assert.equal(key?.max, 100_000, "max is unchanged")
+  assert.match(key?.doc ?? "", /归档/, "the doc says what happens at the cap, so a user reading the template is not surprised")
 }
 {
   const bad = makeFakeCtx({ directory: ws, agents: [] })
