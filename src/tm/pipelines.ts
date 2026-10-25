@@ -27,7 +27,7 @@ import {
   buildStructureSummary,
   detectContentType,
 } from "./preview.js"
-import { HANDLE_INVALID_MESSAGE, tmError } from "./result.js"
+import { HANDLE_PAYLOAD_MISSING_MESSAGE, HANDLE_TOKEN_INVALID_MESSAGE, tmError } from "./result.js"
 import { cleanShellError } from "./shell-bridge.js"
 
 // ---------- args coercion (pipelines are runtime-defensive) ------------------
@@ -294,7 +294,9 @@ export function buildPipelines(deps: TmDeps) {
       // the moment the plugin restarted even though the payload was still on
       // disk (live: a command that reloaded the plugin, then tm_fetch).
       if (!verifyToken(deps.hmacKey, parsed.runId, token)) {
-        return tmError(tool, "permission", `句柄校验失败（token 校验失败）。${HANDLE_INVALID_MESSAGE}`)
+        // Only the reason we measured: the token did not verify.  Saying anything about
+        // the payload here claimed a TTL sweep we never checked.
+        return tmError(tool, "permission", `句柄校验失败（token 校验失败）。${HANDLE_TOKEN_INVALID_MESSAGE}`)
       }
       // The payload is read from the run the REF names, not from this process's
       // run — that is what makes a pre-restart handle fetchable.
@@ -309,7 +311,8 @@ export function buildPipelines(deps: TmDeps) {
       const ttlPast = entry ? isExpired(entry.expire_at, now) : false
       const loaded = store.readStepFile(parsed.stepId, parsed.runId)
       if (!loaded) {
-        return tmError(tool, "store", `找不到载荷文件。${HANDLE_INVALID_MESSAGE}`)
+        // The token verified, so the handle IS ours — the file is what is missing.
+        return tmError(tool, "store", `找不到载荷文件。${HANDLE_PAYLOAD_MISSING_MESSAGE}`)
       }
       // T4 json field projection — `fields: "<dot-path>"` on a json handle
       // returns ONLY the projected values.  A non-json handle IGNORES the

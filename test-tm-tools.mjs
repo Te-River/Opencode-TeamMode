@@ -769,7 +769,14 @@ try {
     assert.ok(cross.includes("[tm_fetch 失败 · phase=permission]"), "foreign store: structured error rendered as text (BUG#1)")
     assert.ok(cross.includes("token 校验失败"), "foreign store: token signed by another store's key is refused")
     assert.ok(!cross.includes("run 不匹配"), "the removed run-mismatch reason is gone")
-    assert.ok(cross.includes(tm.HANDLE_INVALID_MESSAGE), "foreign store: spec message")
+    // The user-visible fix (live 2.1.4): the token branch once ALSO asserted a TTL
+    // sweep it had never measured, so one refusal carried two contradictory causes.
+    assert.ok(cross.includes("签名无效") && cross.includes("不属于本存储"), "foreign store: the refusal names the TOKEN (bad signature / not this store's)")
+    assert.ok(!cross.includes("TTL 清扫"), "…and does NOT claim the payload was swept — that is the reason it never checked")
+    // the exact live repro: a completely foreign ref + a junk token
+    const fakeRef = (await fetchTool.execute({ ref: "tm://runs/nope/steps/s0001/result", access_token: "x" }, ctx)).output
+    assert.ok(fakeRef.includes("签名无效"), "a fake ref with a junk token is refused on the TOKEN")
+    assert.ok(!fakeRef.includes("TTL 清扫"), "…and the reply never borrows the TTL-sweep reason (the contradiction the user hit)")
     // tampered token
     const tampered = hTok.slice(0, -1) + (hTok.endsWith("0") ? "1" : "0")
     const bad = (await fetchTool.execute({ ref: hRef, access_token: tampered }, ctx)).output
@@ -790,7 +797,9 @@ try {
     const missingRef = `tm://runs/${runtime.runId}/steps/s9999/result`
     const missing = (await fetchTool.execute({ ref: missingRef, access_token: hTok }, ctx)).output
     assert.ok(missing.includes("找不到载荷文件"), "missing payload -> 找不到载荷文件")
-    assert.ok(missing.includes(tm.HANDLE_INVALID_MESSAGE), "missing payload carries the spec message (which now names the TTL sweep as the only reaper)")
+    assert.ok(missing.includes(tm.HANDLE_INVALID_MESSAGE), "missing payload carries the TTL message (the only reaper that removes a payload)")
+    assert.ok(missing.includes("载荷文件已被 TTL 清扫"), "…and that message says the TTL sweep, which IS the reason here")
+    assert.ok(!missing.includes("签名无效"), "…without borrowing the token reason (valid token, absent payload)")
     assert.ok(!missing.includes("token 校验失败"), "missing payload does not borrow the other reason")
     // (b) nonexistent RUN: a token signed for that run verifies (it proves
     // key-holder issuance), then the payload check refuses
@@ -2569,6 +2578,34 @@ try {
           assert.ok(/没能查看宿主会话树/.test(broken.output) && !/会话树里也没有可认领/.test(broken.output), "a failed query reports as a failed query, never as an empty tree")
           assert.match(broken.output, /ECONNREFUSED/, "…and carries the host's own reason so the lead can tell transport from absence")
           await threw.dispose()
+        }
+        // ── the READER report and the TREE report are two different facts ──────
+        // Measured on 2.1.4: `ctx.session.get({sessionID})` answers while
+        // `session.children` does not exist.  The old sentence merged both into
+        // "可辨认的 session API 缺失" and printed the LAST shape's decode error as its
+        // conclusion, so a lead read "the host has no session API" over a host that was
+        // perfectly readable by id — and stopped looking.
+        {
+          const { rt: readerOk } = await seeded("disp-reader-ok", { noChildren: true }, {
+            sessionReaderReport: () => ({ attempted: 1, resolved: 1, usedShape: "sessionID", failedShapes: [] }),
+          })
+          const ok = await readerOk.tools.tm_join.execute({ ids: ["ses_nonexistent"] }, LEAD)
+          assert.match(ok.output, /session\.get 可用/, "a session CAN be read by id — the reply says which shape worked")
+          assert.match(ok.output, /没有 session\.children/, "…while the missing seam is named as the LISTING one, not the whole API")
+          assert.match(ok.output, /在本机不存在或无权限/, "…and the miss is attributed to the id, not to a broken host")
+          assert.ok(!/Missing key/.test(ok.output), "an abandoned shape's decode error is NOT the conclusion once a shape worked")
+          assert.ok(!/session API 缺失/.test(ok.output), "the reply never claims the host has no session API")
+          await readerOk.dispose()
+
+          const { rt: readerDead } = await seeded("disp-reader-dead", { noChildren: true }, {
+            sessionReaderReport: () => ({ attempted: 3, resolved: 0, failedShapes: ["sessionID", "path", "flat"], lastError: 'Missing key at ["sessionID"]' }),
+          })
+          const dead = await readerDead.tools.tm_join.execute({ ids: ["ses_nonexistent"] }, LEAD)
+          assert.match(dead.output, /按 id 读子会话也失败/, "when EVERY shape failed the reply says the by-id read failed")
+          assert.match(dead.output, /sessionID→path→flat/, "…keeping the shapes it actually tried")
+          assert.match(dead.output, /Missing key/, "…and the host's own last error, so a real decode failure is distinguishable from absence")
+          assert.ok(!/session API 缺失/.test(dead.output), "…without upgrading that to 'the host has no session API'")
+          await readerDead.dispose()
         }
         await noKids.dispose()
       }

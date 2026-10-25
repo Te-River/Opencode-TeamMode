@@ -1170,7 +1170,7 @@ export function buildDispatchTools(deps: DispatchDeps): {
     // The reason names the MISSING SEAM, not a host generation: the same absence
     // occurs on a v1-shaped client that lacks `session.messages`, and a sentence
     // blaming "v2" there would be false in the opposite direction.
-    if (typeof api?.children !== "function") return { adopted: 0, looked: false, why: "这个宿主客户端没有给出 session.children（可辨认的 session API 缺失），我没有看过会话树" }
+    if (typeof api?.children !== "function") return { adopted: 0, looked: false, why: "这个宿主客户端没有给出 session.children（缺的只是「列举会话树」这一条缝，不是我整个 session API 不可用），我没有看过会话树" }
     if (!parent) return { adopted: 0, looked: false, why: "调用方会话 id 缺失，无从查询子会话" }
     let un: Unwrapped
     try {
@@ -1610,18 +1610,30 @@ export function buildDispatchTools(deps: DispatchDeps): {
           const saw = adoption.looked
           const inner = idFilter
             ? (() => {
-                // Naming the shapes the v2 session bridge tried is the whole point:
-                // without it, a claim that failed because `ctx.session.get` answered
-                // in a shape we do not know prints the same sentence as a tree we
-                // did query, and the lead goes back to waiting for a report that
-                // exists.
+                // TWO independent facts live here, and they used to be fused into one
+                // sentence: what the session READER can do, and whether the CHILDREN
+                // endpoint exists.  On 2.1.4 `ctx.session.get({sessionID})` answers while
+                // `session.children` does not, so the old text ("可辨认的 session API 缺失"
+                // plus the last error of a shape already abandoned) told the lead the host
+                // had no session API at all — and it went back to assuming its id was
+                // fine and the host broken.  State them separately, and name the shapes
+                // only when EVERY shape failed: a shape that worked makes the abandoned
+                // ones irrelevant, not evidence.
                 const sr = deps.sessionReaderReport?.()
-                const bridge = sr && sr.attempted > 0
-                  ? `；我试过的 ctx.session 形状：${(sr.failedShapes.length ? sr.failedShapes.join("→") : sr.usedShape ?? "?")}${sr.lastError ? `（宿主最后一次的错误：${shorten(sr.lastError, 90)}）` : "（宿主没有报错，只是没给出 parentID）"}`
-                  : ""
+                const bridge =
+                  sr && sr.attempted > 0
+                    ? sr.usedShape
+                      ? `；ctx.session.get 可用（形状 ${sr.usedShape}）：宿主没有 session.children，按 id 读单条会话可以，列举会话树不行`
+                      : `；按 id 读子会话也失败：试过的 ctx.session 形状 ${sr.failedShapes.length ? sr.failedShapes.join("→") : "?"}${sr.lastError ? `（宿主最后一次的错误：${shorten(sr.lastError, 90)}）` : "（宿主没有报错，只是没给出 parentID）"}`
+                    : ""
+                // A named id that neither our registry nor the host's by-id read could
+                // resolve is a miss about THAT id — saying it means the host has no
+                // session API is the claim this branch exists to stop making.
+                const named = [...idFilter].slice(0, 3).map((s) => shorten(s, 40)).join("、")
+                const miss = `ids 未匹配到本会话的子代理：${named} 在本机不存在或无权限`
                 return saw
-                  ? `（ids 未匹配到本会话的子代理，宿主会话树里也没有可认领的子会话）${bridge}`
-                  : `（ids 未匹配到；而且我没能查看宿主会话树：${adoption.why}）${bridge}`
+                  ? `（${miss}；宿主会话树里也没有可认领的子会话${bridge}）`
+                  : `（${miss}；而且我没能查看宿主会话树：${adoption.why}${bridge}）`
               })()
             : saw
               ? ""

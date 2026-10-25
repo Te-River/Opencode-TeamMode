@@ -24,8 +24,24 @@ export function tmError(tool: string, phase: TmPhase, message: string, line?: nu
   return { error: body }
 }
 
-/** Fixed invalid-handle message (spec-pinned wording for tm_fetch). */
-export const HANDLE_INVALID_MESSAGE = "载荷文件已被 TTL 清扫，重跑原工具即可重新卸载（句柄寿命等于载荷文件寿命，过期时间只作提示、不作拒绝）。"
+/**
+ * tm_fetch refuses for TWO unrelated reasons, so it owns TWO messages.  They used to
+ * share one sentence: a bad token answered "token 校验失败" and then asserted the payload
+ * had been swept by the TTL reaper — a second cause nobody had verified, printed as fact
+ * (live 2.1.4: a fake ref produced both headlines at once).  A refusal may only state
+ * the reason it actually measured.
+ */
+export const HANDLE_TOKEN_INVALID_MESSAGE =
+  "句柄签名无效或不属于本存储——确认 ref 与 access_token 来自同一次卸载（同一 run；另一个存储根签发的句柄，用本进程的 token 永远验不过）。"
+
+/** The payload FILE is gone; the TTL sweep is the only reaper that removes one. */
+export const HANDLE_PAYLOAD_MISSING_MESSAGE =
+  "载荷文件已被 TTL 清扫，重跑原工具即可重新卸载（句柄寿命等于载荷文件寿命，过期时间只作提示、不作拒绝）。"
+
+/** @deprecated kept only for the barrel re-export in `tm/index.ts`; call the specific
+ *  constant instead.  Its value is the payload-missing text it has always carried, so an
+ *  installed consumer that still imports this name keeps its old (correct) wording. */
+export const HANDLE_INVALID_MESSAGE = HANDLE_PAYLOAD_MISSING_MESSAGE
 
 export function isTmErrorBody(res: unknown): res is TmErrorBody {
   return Boolean(res) && typeof res === "object" && "error" in (res as Record<string, unknown>)

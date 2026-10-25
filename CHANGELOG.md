@@ -9,6 +9,27 @@ registry saw 1.5.0 as the install-script fix release).
 
 ### Fixed
 
+- **两条拒绝理由不再互相冒充：`tm_fetch` 的 token 失败不再顺带宣布「载荷已被 TTL 清扫」。** 真机
+  2.1.4 实测：`tm_fetch { ref:"tm://runs/nope/steps/s0001/result", access_token:"x" }` 同一句里既说
+  「句柄校验失败（token 校验失败）」又说「载荷文件已被 TTL 清扫」——后半句是没人量过的第二种原因
+  （根因：`result.ts` 的一条 `HANDLE_INVALID_MESSAGE` 被 token 分支与载荷缺失分支共用）。现在拆成
+  `HANDLE_TOKEN_INVALID_MESSAGE`（「句柄签名无效或不属于本存储——确认 ref 与 access_token 来自同一次
+  卸载」）与 `HANDLE_PAYLOAD_MISSING_MESSAGE`（保留 TTL 语义），两个分支各说各的原因，谁都不再借另一条；
+  `HANDLE_INVALID_MESSAGE` 作为旧别名只留给 `tm/index.ts` 的再导出（值仍是 TTL 文案）。钉住：
+  `test-tm-tools`（假 ref 含「签名无效」且不含「TTL 清扫」；有效 token + 无载荷反之），反向验证做过
+  （把两条文案合并回去 → 用例红 → 还原）。
+- **`tm_join` 不再把「宿主没有 `session.children`」说成「session API 缺失」（真机 2.1.4 实测导出）。**
+  原文：`ids` 点名一个不存在的会话时，答复写成「这个宿主客户端没有给出 session.children（可辨认的
+  session API 缺失）…我试过的 ctx.session 形状：sessionID→path→flat（宿主最后一次的错误：Missing key
+  at ["sessionID"]）」，而实测 `ctx.session.get({sessionID})` 完全可用——把「列不出会话树」与「按 id 读
+  不了会话」合成一句，再把最后一个形状的解码错误当成总结论，会让 lead 得出「宿主没有会话 API」的错误
+  结论。现在两件事分开陈述：某形状可用时只写「`ctx.session.get` 可用（形状 …）：宿主没有
+  `session.children`，按 id 读单条会话可以，列举会话树不行」，只有**每个**形状都失败时才列
+  shapes + 宿主最后一次的错误，且措辞是「按 id 读子会话也失败」；`ids` 未匹配时明确说这些 id
+  「在本机不存在或无权限」，`adoption.why` 里那句「可辨认的 session API 缺失」也改成「缺的只是列举
+  会话树这一条缝」。钉住：`test-tm-tools`（注入 `sessionReaderReport`：可用分支含「session.get 可用」
+  与「没有 session.children」、不含 `Missing key` / `session API 缺失`；全失败分支保留
+  `sessionID→path→flat` + `Missing key` 且措辞为「按 id 读子会话也失败」），反向验证做过。
 - **提示词补上「结算 ≠ 停止」：`tm_join` 报的是宿主会话状态，不是 OS 进程事实（用户 2026-10-25 实测导出）。**
   导出原文：lead 写「所有子代理已全部取消/结算，**现在没有任何进程在跑**。我等你指示。」，而 `tm_join`
   只说了「全部已结算」——那是宿主的会话记录，不代表进程停了；用户质疑后 lead 才去查，并自己承认
