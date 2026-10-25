@@ -7,6 +7,8 @@ registry saw 1.5.0 as the install-script fix release).
 
 ## [Unreleased]
 
+## [1.8.6] - 2026-10-25
+
 ### Fixed
 
 - **两条拒绝理由不再互相冒充：`tm_fetch` 的 token 失败不再顺带宣布「载荷已被 TTL 清扫」。** 真机
@@ -58,8 +60,6 @@ registry saw 1.5.0 as the install-script fix release).
   暗示插件能提升默认。`v2-types.ts` 删掉 `V2AgentEditor.default` 声明——把调用加回去会先被 `tsc` 拒绝。
   钉住：`test-default-agent`（0 次调用计数 / 四种 installer 口径 / 没有 `default` 方法时不抛且 boot 行
   仍写出 / opt-out）与 `test-v2-adapter` 的同口径用例；反向验证做过（把调用加回 → 断言红 → 还原）。
-
-### Fixed
 
 - **配置层补上宿主的 system（托管设置）层，优先级最高。** 官方 v2 文档（`opencode.ai/v2/docs/config`）除了全局与项目层，还有 `/etc/opencode`、`%ProgramData%\opencode` 这一层，并写明 *Managed settings have the highest precedence*；此前只读全局 + 项目，一旦系统层存在，红线键的作用域判断就不完整，系统层的值也完全不生效。现在层序是 **全局 < 项目 < 系统**（`system` 最后合并）：Windows 取 `%ProgramData%\opencode`（`ProgramData` 缺失则整层缺席，不猜路径），POSIX 取 `/etc/opencode`，解析失败按既有规则**整层跳过并报告**；`perKeySource` 增加 `system`，`tm_stats` 的分层配置小节直接显示新层与其文件有无。**红线键改为只在全局或系统层生效**（`RED_LINE_LAYERS`），项目层（含 `.opencode/`）设置照旧被忽略并按来源层报告——系统层是管理员下发的、不可提交共享，项目文件则相反。`ConfigFileRoots.systemDir` 是可注入的，测试因此不碰真实机器路径（`test-config-layers.mjs` 组 19–22）。
 
