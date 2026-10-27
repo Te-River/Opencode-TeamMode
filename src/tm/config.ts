@@ -172,6 +172,8 @@ export interface TmConfig {
   stateCard: "on" | "off"
   /** 易变上下文（状态卡/窗口/重试/拆分建议）作为请求末尾的一条消息；`off` = 旧的 system 注入。 */
   dynamicTail: "on" | "off"
+  /** 易变上下文写成宿主的 keyed session instructions（2.2.0+）；宿主没有该缝时人格把它降级成 fallback-system。 */
+  sessionInstructions: "on" | "off"
 }
 
 /** The registry's defaults, keyed by canonical key.  Derived from

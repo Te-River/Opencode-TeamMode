@@ -259,9 +259,39 @@ export interface V2SessionDomain {
    * non-user channel; a plugin writing a user-role message would impersonate the user.
    */
   readonly synthetic?: (input: { sessionID: string; text: string; description?: string; metadata?: Record<string, unknown>; delivery?: string; resume?: boolean }) => Promise<unknown>
+  /**
+   * Keyed session instructions — `ctx.session.instructions.entry.put/list/remove`,
+   * new on host 2.2.0 (ABSENT on 2.1.x, where `ctx.session.instructions` is
+   * `undefined`).  The host's own changelog: an entry is "added as a small update at
+   * the next step" — it does not break the prompt cache, survives compaction and
+   * rewind, and does not start an extra turn.  That is exactly the three properties
+   * `dynamicTail` could not get on 2.1.x, which is why `sessionInstructions` prefers
+   * this seam and falls back to `event.system` when the domain is missing.
+   *
+   * Declared from the official route inventory
+   * (`/api/experimental/session/{sessionID}/instructions/entries`, experimental) and
+   * the zero-token probe of 2.2.0; only `put`/`remove` are required for the seam to
+   * count as present — `list` is optional because nothing here depends on it.
+   */
+  readonly instructions?: V2SessionInstructionsDomain
   readonly prompt?: (input: Record<string, unknown>) => Promise<unknown>
   readonly wait?: (input: { sessionID: string }) => Promise<unknown>
   readonly [key: string]: unknown
+}
+
+export interface V2InstructionEntryInfo {
+  readonly sessionID?: string
+  readonly key: string
+  readonly value?: string
+  readonly time?: unknown
+}
+
+export interface V2SessionInstructionsDomain {
+  readonly entry: {
+    readonly put: (input: { sessionID: string; key: string; value: string }) => Promise<unknown>
+    readonly remove: (input: { sessionID: string; key: string }) => Promise<unknown>
+    readonly list?: (input: { sessionID: string }) => Promise<unknown>
+  }
 }
 
 /**

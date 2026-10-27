@@ -61,6 +61,7 @@ import type { RedriveRequest } from "./v2-retry.js"
 import { applyV2ContextPrune, resolvePruneConfig } from "./v2-prune.js"
 import { applyV2StateCard } from "./v2-state.js"
 import { applyV2DynamicTail, createDynamicSink, resolveDynamicTailConfig } from "./v2-tail.js"
+import { applyV2SessionInstructions, resolveSessionInstructionsConfig, sessionInstructionsSeamOf } from "./v2-session-instructions.js"
 import { checkDefaultAgentRole, globalConfigDir, type DefaultAgentCheck } from "./v2-default-agent.js"
 import { createStorageLedgerStore } from "../tm/ledger.js"
 import { createTeamScope } from "./v2-scope.js"
@@ -790,14 +791,23 @@ export const v2Personality: V2Plugin = {
     const dynamicTailConfig = resolveDynamicTailConfig(cfg)
     const dynamicTailEnabled = dynamicTailConfig.enabled
     const dynamicSink = createDynamicSink()
+    // 易变上下文的去处，优先级写成一条线（而不是三个各自为政的开关）：
+    //   ① 宿主的 keyed session instructions（2.2.0+，`sessionInstructions` 默认 on）——
+    //      官方承诺不破缓存、跨压缩存活、不额外起一轮，所以它是首选；
+    //   ② `dynamicTail`（手动开启）——请求末尾一条消息；
+    //   ③ 今天的 system 注入——两条缝都不在时的回退（`fallback-system`）。
+    // 生产者只认一件事：有没有 sink 可写。所以这里是**唯一**决定它们走哪条路的地方。
+    const sessionInstructionsConfig = resolveSessionInstructionsConfig(cfg)
+    const sessionInstructionsSeam = sessionInstructionsSeamOf(ctx)
+    const sessionInstructionsEnabled = sessionInstructionsConfig.enabled && sessionInstructionsSeam !== null
+    const volatileSink = sessionInstructionsEnabled || dynamicTailEnabled ? dynamicSink : undefined
     const session = await applyV2SessionLayer(ctx, {
       note,
       noteAgents: ["Team"],
       plan,
       scope,
-      // `dynamicTail: "off"` hands `undefined` instead — the pre-1.9 system path,
-      // byte for byte.
-      sink: dynamicTailEnabled ? dynamicSink : undefined,
+      // `undefined` hands the producers the pre-1.9 system path, byte for byte.
+      sink: volatileSink,
       // #49 feature 4: 拆分任务.  The layer owns no store, so the trajectory sink
       // is wired here — same shape as the retry governor's `onEvent`.
       split: resolveSplitConfig(cfg),
@@ -822,8 +832,8 @@ export const v2Personality: V2Plugin = {
       enabled: cfg.stateCard !== "off",
       boardRoot,
       scope,
-      // 状态卡与窗口条目进尾部滞留区（而不是 system）——同一实例，尾层最后统一落一条消息。
-      sink: dynamicTailEnabled ? dynamicSink : undefined,
+      // 状态卡与窗口条目进易变上下文通道（keyed 指令或尾部滞留区，同一实例）——不走 system。
+      sink: volatileSink,
       loadLedger: (sid) => ledgerStore.load(sid),
       children: () => tmRuntime.hostChildren(),
       // The prune layer keeps a CUMULATIVE count; the card renders the delta since
@@ -882,7 +892,7 @@ export const v2Personality: V2Plugin = {
           bindRedrive: (fn) => {
             redriveBound = fn
           },
-          sink: dynamicTailEnabled ? dynamicSink : undefined,
+          sink: volatileSink,
         })
       : { registrations: [], report: retryGovernor.report, cancelRedrive: () => {} }
     registrations.push(...retry.registrations)
@@ -934,6 +944,23 @@ export const v2Personality: V2Plugin = {
       onEvent: (row) => {
         try {
           tmRuntime.pipelines.store.appendTrajectory({ tool: "host", step_id: "v2-prune", event: "prune", api: 2, ...row })
+        } catch {
+          /* a diagnostic that cannot be written never breaks the request it describes */
+        }
+      },
+    })
+    // `sessionInstructions` 层 — 生产者已经把四段易变上下文写进同一个 sink，本层把
+    // 它 drain 成宿主的 keyed 指令（`team-state` / `team-window` / `team-retry` /
+    // `team-advice`），只在内容真的变了时 put。先于尾层注册：两者同时开启时本层先
+    // 取走 sink，尾层看到空 sink 一个字节都不动（首选通道先拿，不是谁先注册谁赢）。
+    // 宿主没有这个缝时它**不注册**，并把实际值报成 `fallback-system`。
+    const sessionInstructions = await applyV2SessionInstructions(ctx, {
+      enabled: sessionInstructionsConfig.enabled,
+      sink: dynamicSink,
+      scope,
+      onEvent: (row) => {
+        try {
+          tmRuntime.pipelines.store.appendTrajectory({ tool: "host", step_id: "v2-instructions", api: 2, ...row })
         } catch {
           /* a diagnostic that cannot be written never breaks the request it describes */
         }
@@ -1005,6 +1032,7 @@ export const v2Personality: V2Plugin = {
     registrations.push(...session.registrations)
     registrations.push(...prune.registrations)
     registrations.push(...stateCard.registrations)
+    registrations.push(...sessionInstructions.registrations)
     registrations.push(...dynamicTail.registrations)
     if (!session.registrations.length) {
       notes.push("ctx.session.hook 不存在：工具面裁剪、温度、黑板根目录三项请求层治理都没装上")
@@ -1108,6 +1136,13 @@ export const v2Personality: V2Plugin = {
       dynamic_tail_foreign_skipped: dynamicTail.report.foreignSkipped,
       dynamic_tail_no_messages: dynamicTail.report.noMessages,
       dynamic_tail_threw: dynamicTail.report.threw,
+      // `sessionInstructions`（2.2.0 keyed 指令）：实际生效的通道 + 三个计数。
+      // `instructions` 是三条路的选择结果：on / off / fallback-system（宿主没有该缝）。
+      instructions: sessionInstructions.report.status,
+      instructions_put: sessionInstructions.report.put,
+      instructions_removed: sessionInstructions.report.removed,
+      instructions_failed: sessionInstructions.report.failed,
+      instructions_absent: sessionInstructions.report.absent,
       // #49 Context Pruning — the history-shrinking half of the budget work.
       prune_enabled: prune.report.enabled,
       prune_at_percent: prune.report.atPercent,
@@ -1387,6 +1422,12 @@ export const v2Personality: V2Plugin = {
           dynamic_tail_foreign_skipped: dynamicTail.report.foreignSkipped,
           dynamic_tail_no_messages: dynamicTail.report.noMessages,
           dynamic_tail_threw: dynamicTail.report.threw,
+          // `sessionInstructions`: 与 surface 行同一口径（两处必须一致）。
+          instructions: sessionInstructions.report.status,
+          instructions_put: sessionInstructions.report.put,
+          instructions_removed: sessionInstructions.report.removed,
+          instructions_failed: sessionInstructions.report.failed,
+          instructions_absent: sessionInstructions.report.absent,
           // #49 feature 3: 错峰重试 — the same counter set as the surface row.
           retry_enabled: retry.report.enabled,
           retry_quota_seen: retry.report.quotaSeen,

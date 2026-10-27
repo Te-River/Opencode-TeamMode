@@ -4722,7 +4722,7 @@ console.log("35. 无损修剪 — 修剪前先离载，stub 带完整 tm_fetch �
   assert.equal(resolveConfig({ pruneOffload: "maybe" }).pruneOffload, "on", "无效值回落默认（不是静默关掉）")
   const offloadSpec = CONFIG_KEYS.find((k) => k.key === "pruneOffload")
   assert.ok(offloadSpec && offloadSpec.type === "string" && offloadSpec.default === "on" && offloadSpec.enum.includes("off"), "pruneOffload 是 on/off 字符串键")
-  assert.equal(CONFIG_KEYS.length, 64, "注册表 64 条（61 + pruneOffload + pruneProtectPatterns + dynamicTail）")
+  assert.equal(CONFIG_KEYS.length, 65, "注册表 65 条（61 + pruneOffload + pruneProtectPatterns + dynamicTail + sessionInstructions）")
 
   const CAT = [{ id: "glm", providerID: "lxns", modelID: "glm", limit: { context: 1000, output: 100 } }]
   const mat = (text, role = "assistant") => ({ role, model: { providerID: "lxns", id: "glm" }, parts: [{ type: "text", text }] })
@@ -5319,7 +5319,7 @@ console.log("38. 修剪保护正则 pruneProtectPatterns — 命中即不剪；�
   assert.equal(spec.type, "string", "type = string")
   assert.equal(spec.default, "", "默认空串（=关闭）")
   assert.match(String(spec.doc), /无效正则被忽略/, "doc 说明无效正则被忽略")
-  assert.equal(CONFIG_KEYS.length, 64, "注册表 64 条（62 + pruneProtectPatterns + dynamicTail）")
+  assert.equal(CONFIG_KEYS.length, 65, "注册表 65 条（62 + pruneProtectPatterns + dynamicTail + sessionInstructions）")
   assert.deepEqual(pc({}).protectPatterns, [], "空串 = 关闭（空数组）")
   assert.equal(pc({ pruneProtectPatterns: "SECRET-FILE|^EVIDENCE BLOCK" }).protectPatterns.length, 1, "逗号分隔 = 一条正则（交替式）")
   assert.equal(pc({ pruneProtectPatterns: "a, b" }).protectPatterns.length, 2, "逗号分隔 + trim = 两条")
@@ -5571,6 +5571,197 @@ console.log("39. 易变上下文尾部注入 dynamicTail — system 逐字节稳
   }
 }
 console.log("   OK (system 逐字节稳定且改变只出现在尾部；旧尾部被剥离不累积；重放/空 sink 一字不动；off 回到 system 且少一层；重试指令 on 进尾部 off 进 system)")
+
+console.log("40. sessionInstructions — 易变上下文写成宿主的 keyed 指令（2.2.0）：hash 门控、清空即 remove、无缝合回退 system、put 抛错当轮保底")
+{
+  const { STATE_CARD_MARKER } = await import("./dist/host/v2-state.js")
+  const { INSTRUCTION_KEYS, applyV2SessionInstructions, sessionInstructionsSeamOf, knownKeysOf } = await import(
+    "./dist/host/v2-session-instructions.js"
+  )
+  const { createDynamicSink } = await import("./dist/host/v2-tail.js")
+  const { createTeamScope } = await import("./dist/host/v2-scope.js")
+  const { CONFIG_KEYS } = await import("./dist/tm/config-layers.js")
+
+  // ---- the key: 默认 on（缝存在时零成本，不存在时人格自己降级）----
+  const spec = CONFIG_KEYS.find((k) => k.key === "sessionInstructions")
+  assert.ok(spec, "sessionInstructions 在注册表里")
+  assert.equal(spec.type, "string", "type = string")
+  assert.equal(spec.default, "on", "默认 on")
+  assert.deepEqual(spec.enum, ["on", "off"], "enum = on / off")
+  assert.match(String(spec.doc), /不破缓存/, "doc 说明它不破 prompt cache")
+  assert.match(String(spec.doc), /跨压缩存活/, "doc 说明跨压缩存活")
+  assert.match(String(spec.doc), /自动回退到 system/, "doc 写明宿主没有该缝时的回退")
+
+  // ---- pure: 四段 → 四个固定 key；缝的探测按字段判定 ----
+  assert.deepEqual(
+    ["state", "window", "retry", "advice"].map((s) => INSTRUCTION_KEYS[s]),
+    ["team-state", "team-window", "team-retry", "team-advice"],
+    "状态卡/窗口/重试/拆分建议 → 四个固定 key",
+  )
+  assert.equal(sessionInstructionsSeamOf({ session: {} }), null, "2.1.x：没有 instructions 域 ⇒ 缝不存在")
+  assert.equal(sessionInstructionsSeamOf({}), null, "连 session 域都没有 ⇒ 缝不存在")
+  assert.equal(
+    sessionInstructionsSeamOf({ session: { instructions: { entry: { put: () => {} } } } }),
+    null,
+    "只有 put 没有 remove 不算缝（看到对象就认会把半条缝当成整条）",
+  )
+  const seamOk = sessionInstructionsSeamOf({ session: { instructions: { entry: { put: () => {}, remove: () => {} } } } })
+  assert.ok(seamOk && typeof seamOk.put === "function" && typeof seamOk.remove === "function", "put + remove 才是缝")
+  assert.deepEqual(knownKeysOf([{ key: "team-state" }, { key: 7 }, {}]), ["team-state"], "list() 只取字符串 key")
+  assert.deepEqual(knownKeysOf({ data: [{ key: "team-retry" }] }), ["team-retry"], "list() 的 {data:[…]} 形状也认")
+
+  // ---- pure: 层本身（sink → put/remove；hash 门控；抛错回退）----
+  {
+    const f = makeFakeCtx({
+      directory: workspace("instr-pure"),
+      sessionData: { instructions: { put: "ok", remove: "ok", list: [] } },
+    })
+    const scope = createTeamScope(["team", "architect", "implementer", "reviewer", "tester", "researcher"])
+    const sink = createDynamicSink()
+    const layer = await applyV2SessionInstructions(f.ctx, { scope, sink, enabled: true })
+    assert.equal(layer.report.status, "on", "有缝 ⇒ status = on")
+    assert.equal(layer.registrations.length, 1, "恰好注册一个 session.context handler")
+    const ev = (system = []) => ({ agent: "team", sessionID: "ses_pure", system, messages: [], tools: {} })
+    sink.set("ses_pure", "state", "卡片正文")
+    const e1 = ev()
+    await f.hook("session.context").fire(e1)
+    assert.deepEqual(f.instructionPutCalls.map((c) => [c.sessionID, c.key, c.value]), [["ses_pure", "team-state", "卡片正文"]], "内容进 put，参数是 {sessionID,key,value}")
+    sink.set("ses_pure", "state", "卡片正文")
+    const e2 = ev()
+    await f.hook("session.context").fire(e2)
+    assert.equal(f.instructionPutCalls.length, 1, "hash 相同 ⇒ 第二次一个字节都不写")
+    assert.equal(layer.report.skipped, 1, "…并且计进 skipped")
+    const e3 = ev()
+    await f.hook("session.context").fire(e3) // 空 sink = 内容消失
+    assert.deepEqual(f.instructionRemoveCalls.map((c) => c.key), ["team-state"], "内容消失 ⇒ remove")
+    assert.equal(layer.report.removed, 1, "remove 计数")
+    assert.equal(layer.report.threw, 0, "全程没抛")
+    // 重放：同一个事件对象再 fire 一次，什么都不做（否则会把刚 put 的条目 remove 掉）
+    sink.set("ses_pure", "state", "卡片正文")
+    const e4 = ev()
+    await f.hook("session.context").fire(e4)
+    const putAfter = f.instructionPutCalls.length
+    await f.hook("session.context").fire(e4)
+    assert.equal(f.instructionPutCalls.length, putAfter, "同一事件对象的重放不再 put")
+    assert.equal(layer.report.replayed, 1, "重放单独计数")
+  }
+
+  // ---- ① 人格接线：lead 的账本状态进 keyed 指令，system 不含卡片；同状态不重复 put；清空即 remove ----
+  const tjA = mktmp("instructions-on")
+  writeCfg({ trajectoryDir: tjA }) // 默认 on
+  const A = makeFakeCtx({
+    directory: workspace("instructions-on"),
+    agents: sixAgents,
+    sessionData: { instructions: { put: "ok", remove: "ok", list: [] } },
+  })
+  const bootA = await withCapturedConsole(() => plugin.setup(A.ctx))
+  const SIDI = "ses_instr_lead"
+  const LEDGER_KEY = `team-mode/ledger/${SIDI}`
+  const seedI = (items) => A.ctx.storage._map.set(LEDGER_KEY, { sessionID: SIDI, items, updated: 1 })
+  const reqI = () => ({ agent: "team", sessionID: SIDI, system: [], messages: [], options: {}, tools: {} })
+  const fireI = async (r) => {
+    await A.hook("session.context").fire(r)
+    return r
+  }
+  const cardIn = (r) => r.system.filter((p) => String(p?.text ?? "").startsWith(STATE_CARD_MARKER))
+  seedI([{ id: 41, text: "把易变上下文写成 keyed 指令", status: "doing", at: 1 }])
+  const rI1 = await fireI(reqI())
+  assert.equal(A.instructionPutCalls.length, 1, "第一次请求：put 恰好一次")
+  assert.equal(A.instructionPutCalls[0].key, "team-state", "key = team-state")
+  assert.equal(A.instructionPutCalls[0].sessionID, SIDI, "写进的是这个会话")
+  assert.ok(String(A.instructionPutCalls[0].value).includes(STATE_CARD_MARKER), "value 就是那张状态卡")
+  assert.ok(String(A.instructionPutCalls[0].value).includes("#41 [doing]"), "卡片内容完整（不是一行占位）")
+  assert.equal(cardIn(rI1).length, 0, "system 里没有状态卡（它去了宿主的 keyed 指令）")
+  assert.equal(rI1.messages.length, 0, "也没有尾部消息：instructions 通道生效时 tail 层不参与")
+  const rI2 = await fireI(reqI())
+  assert.equal(A.instructionPutCalls.length, 1, "同一状态的第二次请求：hash 相同 ⇒ 不再 put")
+  assert.equal(cardIn(rI2).length, 0, "system 仍然干净")
+  seedI([])
+  const rI3 = await fireI(reqI())
+  assert.deepEqual(A.instructionRemoveCalls.map((c) => c.key), ["team-state"], "账本清空 ⇒ remove 掉那条 key")
+  assert.equal(A.instructionRemoveCalls[0].sessionID, SIDI, "remove 的会话也没错")
+  assert.equal(cardIn(rI3).length, 0, "system 里同样没有留高估的旧卡")
+  await bootA.value()
+  const rowA = readDeathRows(tjA).filter((r) => r.step_id === "v2-shutdown").pop()
+  assert.ok(rowA, "A 的 shutdown 行写出来了")
+  assert.equal(rowA.instructions, "on", "观测：instructions = on")
+  assert.ok(rowA.instructions_put >= 1, "观测：instructions_put 有出口")
+  assert.ok(rowA.instructions_removed >= 1, "观测：instructions_removed 有出口")
+  assert.equal(rowA.instructions_failed, 0, "观测：没有失败")
+  assert.equal(rowA.instructions_absent, 0, "观测：缝在（absent=0）")
+
+  // ---- ② 没有这个缝（2.1.x）：层不注册，状态卡回到 system，观测量报 fallback-system ----
+  const tjB = mktmp("instructions-absent")
+  writeCfg({ trajectoryDir: tjB })
+  const B = makeFakeCtx({ directory: workspace("instructions-absent"), agents: sixAgents })
+  const bootB = await withCapturedConsole(() => plugin.setup(B.ctx))
+  B.ctx.storage._map.set(LEDGER_KEY, { sessionID: SIDI, items: [{ id: 42, text: "无缝合回退", status: "doing", at: 1 }], updated: 1 })
+  const rB = { agent: "team", sessionID: SIDI, system: [], messages: [], options: {}, tools: {} }
+  await B.hook("session.context").fire(rB)
+  assert.equal(cardIn(rB).length, 1, "2.1.x：状态卡回到 system（与改动前逐字节一致）")
+  assert.equal(rB.messages.length, 0, "没有尾部消息（dynamicTail 仍默认 off）")
+  assert.equal(
+    B.hook("session.context").handlers.length + 1,
+    A.hook("session.context").handlers.length,
+    "无缝比有缝恰好少一个 handler —— instructions 层根本没注册",
+  )
+  await bootB.value()
+  const rowB = readDeathRows(tjB).filter((r) => r.step_id === "v2-shutdown").pop()
+  assert.equal(rowB.instructions, "fallback-system", "观测：实际值降级为 fallback-system")
+  assert.equal(rowB.instructions_absent, 1, "观测：instructions_absent = 1（宿主没有这个缝）")
+
+  // ---- ③ put 抛错：当轮回退 system.push（不丢内容），failed 计数，钩子不抛 ----
+  const tjC = mktmp("instructions-throws")
+  writeCfg({ trajectoryDir: tjC })
+  const C = makeFakeCtx({
+    directory: workspace("instructions-throws"),
+    agents: sixAgents,
+    sessionData: { instructions: { put: new Error("put refused"), remove: "ok", list: [] } },
+  })
+  const bootC = await withCapturedConsole(() => plugin.setup(C.ctx))
+  C.ctx.storage._map.set(LEDGER_KEY, { sessionID: SIDI, items: [{ id: 43, text: "put 抛错也要保底", status: "doing", at: 1 }], updated: 1 })
+  const rC = { agent: "team", sessionID: SIDI, system: [], messages: [], options: {}, tools: {} }
+  await C.hook("session.context").fire(rC) // 抛错外溢会让这一行 reject，断言因此是「钩子不抛」
+  assert.equal(cardIn(rC).length, 1, "put 抛错 ⇒ 该轮 system 里有卡（内容不丢）")
+  assert.equal(C.instructionPutCalls.length, 1, "put 真的被调用过（不是跳过）")
+  await bootC.value()
+  const rowC = readDeathRows(tjC).filter((r) => r.step_id === "v2-shutdown").pop()
+  assert.equal(rowC.instructions, "on", "缝在 ⇒ 仍然报 on（失败是运行期事件，不是通道降级）")
+  assert.equal(rowC.instructions_failed, 1, "观测：instructions_failed = 1")
+
+  // ---- ④ sessionInstructions:"off"：一次 put 都不调用，system 路径与今天一致 ----
+  const tjD = mktmp("instructions-off")
+  writeCfg({ trajectoryDir: tjD, sessionInstructions: "off" })
+  const D = makeFakeCtx({
+    directory: workspace("instructions-off"),
+    agents: sixAgents,
+    sessionData: { instructions: { put: "ok", remove: "ok", list: [] } },
+  })
+  const bootD = await withCapturedConsole(() => plugin.setup(D.ctx))
+  D.ctx.storage._map.set(LEDGER_KEY, { sessionID: SIDI, items: [{ id: 44, text: "off 下回到 system", status: "doing", at: 1 }], updated: 1 })
+  const rD = { agent: "team", sessionID: SIDI, system: [], messages: [], options: {}, tools: {} }
+  await D.hook("session.context").fire(rD)
+  assert.equal(D.instructionPutCalls.length, 0, "off：一次 put 都没有")
+  assert.equal(D.instructionListCalls.length, 0, "off：连 list 都不问")
+  assert.equal(cardIn(rD).length, 1, "off：状态卡在 system 里")
+  assert.ok(String(cardIn(rD)[0].text).startsWith(`${STATE_CARD_MARKER}\nhash:`), "off：卡片形状与改动前一致（marker + hash 行）")
+  assert.equal(
+    D.hook("session.context").handlers.length + 1,
+    A.hook("session.context").handlers.length,
+    "off 比 on 恰好少一个 session.context handler",
+  )
+  await bootD.value()
+  const rowD = readDeathRows(tjD).filter((r) => r.step_id === "v2-shutdown").pop()
+  assert.equal(rowD.instructions, "off", "观测：instructions = off")
+
+  // ---- ⑤ 两条观测行都带 instructions*（surface 与 shutdown 同一口径）----
+  const v2srcI = fs.readFileSync(path.join(path.dirname(fileURLToPath(import.meta.url)), "src", "host", "v2.ts"), "utf8")
+  for (const field of ["instructions", "instructions_put", "instructions_removed", "instructions_failed"]) {
+    const hits = (v2srcI.match(new RegExp(`${field}: sessionInstructions\\.report`, "g")) ?? []).length
+    assert.equal(hits, 2, `${field} 在 surface 与 shutdown 两行都带（口径一致）`)
+  }
+}
+console.log("   OK (状态卡进 keyed 指令且 system 干净；hash 门控不重复 put；清空即 remove；无缝合回退 system 并报 fallback-system；put 抛错当轮 system 保底且不抛；off 不调用 put)")
 
 
 

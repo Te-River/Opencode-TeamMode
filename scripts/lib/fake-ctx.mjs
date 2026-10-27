@@ -78,6 +78,12 @@ export function makeFakeCtx({
   const syntheticCalls = []
   const inboxListCalls = []
   const inboxCancelCalls = []
+  /** 2.2.0 keyed session instructions — every put/remove/list the layer actually made,
+   *  with args, because "the card is not in system" alone cannot tell "it went to the
+   *  host" from "it was dropped". */
+  const instructionPutCalls = []
+  const instructionRemoveCalls = []
+  const instructionListCalls = []
   /** How many times the catalog was listed — the prune layer's denominator read, so a
    *  per-request catalog re-read is a number and not a shrug. */
   const modelListCalls = []
@@ -151,6 +157,20 @@ export function makeFakeCtx({
             // `inboxFlat` lets a test drive the fallback and pin which one answered.
             ...(has("prompt") ? { prompt: verdictMethod(sessionData.prompt, promptCalls) } : {}),
             ...(has("synthetic") ? { synthetic: verdictMethod(sessionData.synthetic, syntheticCalls) } : {}),
+            // 2.2.0: `session.instructions.entry.put/list/remove`.  Seeded ONLY when a
+            // test asks for it — a fake that always carried the domain would make the
+            // `fallback-system` path (what a 2.1.x host really gets) untestable.
+            ...(has("instructions") && sessionData.instructions
+              ? {
+                  instructions: {
+                    entry: {
+                      put: verdictMethod(sessionData.instructions.put, instructionPutCalls),
+                      remove: verdictMethod(sessionData.instructions.remove, instructionRemoveCalls),
+                      list: verdictMethod(sessionData.instructions.list ?? [], instructionListCalls),
+                    },
+                  },
+                }
+              : {}),
             ...(has("inbox") && sessionData.inbox && !sessionData.inboxFlat
               ? {
                   inbox: {
@@ -215,6 +235,10 @@ export function makeFakeCtx({
     syntheticCalls,
     inboxListCalls,
     inboxCancelCalls,
+    /** 2.2.0 keyed instructions: what the layer actually put/removed/listed. */
+    instructionPutCalls,
+    instructionRemoveCalls,
+    instructionListCalls,
     /** The catalog reads, with their args. */
     modelListCalls,
   }

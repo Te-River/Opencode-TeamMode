@@ -7,6 +7,28 @@ registry saw 1.5.0 as the install-script fix release).
 
 ## [Unreleased]
 
+### Added
+
+- **`sessionInstructions`（默认 `on`）：易变上下文改写进宿主的 keyed session instructions（2.2.0+）。**
+  新层 `src/host/v2-session-instructions.ts` 注册一个 `session.hook("context")`，把四个生产者（状态卡 /
+  窗口占用 / 重试指令 / 拆分建议）已经写进同一 sink 的内容 drain 成宿主的四个 key
+  （`team-state` / `team-window` / `team-retry` / `team-advice`），只在**内容 sha256 变了**时
+  `put`——官方 changelog 的承诺正是 `dynamicTail` 在 2.1.x 上拿不到的三件事：不破 prompt cache、
+  跨压缩/回退存活、不额外起一轮。内容消失的段 `remove`，账本清空后旧卡不会挂成陈旧指令。
+  三个失败面都落成数字而不是静默：宿主没有该缝（2.1.x 的 `ctx.session.instructions` 是
+  undefined）→ 该层不注册、人格把实际值降级为 `fallback-system`（`instructions_absent`），生产者
+  走今天的 `system` 路径；`put` 抛错 → 该 key 当轮回退 `event.system.push`（不丢内容）、计
+  `instructions_failed`、不记 hash 所以下一轮重试，成功的一轮会摘掉兜底副本；`remove` 抛错只计数。
+  按事件对象身份防重放（宿主在进程内重放同一个 context 事件，drained sink 否则会被读成「内容消失」
+  而 remove 掉刚写的条目）；每个会话本进程首个请求 `list()` 一次，上一进程持久化的旧条目会被覆盖
+  或摘除，而不是悄悄留着。`dynamicTail` 保持原样（默认 off，两者同开时 keyed 指令先 drain）。
+  观测：`v2-surface` 与 `v2-shutdown` 两行都带 `instructions`（`on`/`off`/`fallback-system`）+
+  `instructions_put` / `instructions_removed` / `instructions_failed` / `instructions_absent`。
+  注册表 64 → 65 条。钉住：`test-v2-adapter` 组 40（put 一次且 system 无卡、同状态不重复 put、
+  账本清空即 remove、无缝回退 system 并报 fallback-system、put 抛错当轮 system 保底且钩子不抛、
+  `off` 一次 put 都不调用），反向验证做过（去掉 hash 门控 → 组 40「同一状态的第二次请求」红；
+  去掉降级 → 组 40「实际值降级为 fallback-system」红，还原后复跑绿）。
+
 ## [1.8.9] - 2026-10-25
 
 ### Fixed
