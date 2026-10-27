@@ -7,6 +7,8 @@ registry saw 1.5.0 as the install-script fix release).
 
 ## [Unreleased]
 
+## [1.9.1] - 2026-10-27
+
 ### Added
 
 - **`pruneFallbackContextTokens`（默认 `200000`，`0` = 关闭）：目录缺当前模型时的修剪回退窗口。**
