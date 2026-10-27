@@ -33,6 +33,11 @@
  *    rewrite the request.  The card's render and its byte gate never reference
  *    it; an unreadable window (no usage, no catalog entry, a throwing read)
  *    removes the entry rather than rendering a fabricated 0%.
+ *  - **The cache row does not need the window.**  A `v2-cache` trajectory line is
+ *    emitted whenever the newest message carries a usage block
+ *    (`lastCacheUsageOf`) — a hit rate has no denominator to look up.  The
+ *    `[Team 窗口占用]` entry still requires a real `limit.context` and is absent
+ *    when the catalog does not describe the model.
  *  - **A failed read says so, once per session.**  A storage read that throws
  *    injects nothing and writes one `state_skipped` trajectory row; a repeated
  *    failure for the same session does not become a line per request.
@@ -48,7 +53,7 @@
 import { estimateTokens, shorten } from "../tm/config.js"
 import type { Ledger, LedgerItem } from "../tm/ledger.js"
 import { normalizeAgentName } from "../identity.js"
-import { cacheStatsOf, createUsagePercent, type UsagePercentReader, type UsagePercentReading } from "./v2-usage.js"
+import { cacheRateOf, createUsagePercent, lastCacheUsageOf, type UsagePercentReader, type UsagePercentReading } from "./v2-usage.js"
 import type { TeamScope } from "./v2-scope.js"
 import type { DynamicSink } from "./v2-tail.js"
 import type { V2Context, V2Registration, V2SessionContext } from "./v2-types.js"
@@ -403,12 +408,15 @@ export async function applyV2StateCard(ctx: V2Context, input: StateCardInput): P
         } catch {
           windowReading = null
         }
-        // ---- 缓存命中：每请求一行轨迹，就发在这一次读数上（不新增第二次 usage 读取）----
-        // 读不到 usage 就一行都不写：「没读到」落盘后会被当成「0 命中」，那正是这行要防的。
-        // `step_id` 覆盖 v2.ts 包装里的默认值（它在 `...row` 之前），这一行因此按自己的
-        // 口径被 tm_stats 汇总，而不是混进 v2-state 的观测行。
-        if (windowReading) {
-          const cache = cacheStatsOf(windowReading)
+        // ---- 缓存命中：每请求一行轨迹，与窗口读数**解耦** ----
+        // 命中率不需要窗口：`limit.context` 只决定「占比」，而 cache.read/write/input
+        // 是 provider 对这一轮请求的实测。目录里没有当前模型（私有/本地部署）时窗口是
+        // 正常地「不可得」，旧写法把这一行也一起吞了，tm_stats 于是显示「没有 v2-cache
+        // 行」——读起来像「从没命中」，其实是「从没读数」。只读消息自带的 usage 块，
+        // 没有 usage 块仍是一行都不写（「没读到」不能落盘成「0 命中」）。
+        const cache = lastCacheUsageOf((event as { messages?: unknown }).messages)
+        if (cache) {
+          const rate = cacheRateOf(cache)
           emit({
             step_id: "v2-cache",
             event: "cache",
@@ -417,7 +425,7 @@ export async function applyV2StateCard(ctx: V2Context, input: StateCardInput): P
             read: cache.read,
             write: cache.write,
             input: cache.input,
-            rate: cache.hitRate === null ? null : Number(cache.hitRate.toFixed(2)),
+            rate: rate === null ? null : Number(rate.toFixed(2)),
           })
         }
         {

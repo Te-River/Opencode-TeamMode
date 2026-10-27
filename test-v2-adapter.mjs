@@ -3365,6 +3365,7 @@ console.log("28. Context Pruning — settled history becomes pointers, evidence 
   const { resolvePruneConfig, prunePlan, isProtectedMessage, renderPruneStub, applyV2ContextPrune } =
     await import("./dist/host/v2-prune.js")
   const { resolveConfig } = await import("./dist/tm/config.js")
+  const { CONFIG_KEYS } = await import("./dist/tm/config-layers.js")
   const pc = (values) => resolvePruneConfig(resolveConfig(values))
   {
     const d = pc({})
@@ -3382,6 +3383,19 @@ console.log("28. Context Pruning — settled history becomes pointers, evidence 
     assert.equal(pc({ pruneAtPercent: 10 }).atPercent, 40, "clamped up to 40")
     assert.equal(pc({ pruneAtPercent: 101 }).atPercent, 90, "an out-of-range percent is clamped, not honoured")
     assert.equal(pc({ pruneAtPercent: 900 }).atPercent, 90, "and a wild one clamps to the same ceiling")
+
+    // ---- 回退窗口：目录缺当前模型时的替代分母（只喂阈值，不冒充窗口） ----
+    const fbSpec = CONFIG_KEYS.find((k) => k.key === "pruneFallbackContextTokens")
+    assert.ok(fbSpec, "pruneFallbackContextTokens 在注册表里")
+    assert.equal(fbSpec.type, "number", "type = number")
+    assert.equal(fbSpec.default, 200_000, "默认 200k")
+    assert.equal(fbSpec.min, 0, "min 0 = 可关闭")
+    assert.equal(fbSpec.max, 10_000_000, "max 10M")
+    assert.match(String(fbSpec.doc), /仅用于修剪阈值/, "doc 说明它不用于窗口占用条目")
+    assert.equal(pc({}).fallbackContextTokens, 200_000, "默认 200k 生效")
+    assert.equal(pc({ pruneFallbackContextTokens: 0 }).fallbackContextTokens, 0, "0 = 关闭（回到 no_limit）")
+    assert.equal(pc({ pruneFallbackContextTokens: "abc" }).fallbackContextTokens, 200_000, "非数字回落默认")
+    assert.equal(pc({ pruneFallbackContextTokens: -5 }).fallbackContextTokens, 0, "负数夹到 0 = 关闭")
 
     // ---- pure: the hard-protection list ----
     const msg = (text, role = "assistant") => ({ role, parts: [{ type: "text", text }] })
@@ -3481,6 +3495,44 @@ console.log("28. Context Pruning — settled history becomes pointers, evidence 
     }
 
     {
+      // catalog miss + a configured fallback window → the fallback IS the denominator
+      // (≈150 000 tokens of a 200 000 window = 75% ≥ the 70% threshold).
+      const { report, fire, events } = await drive({
+        catalog: [],
+        config: { enabled: true, atPercent: 70, keepTailPercent: 0, fallbackContextTokens: 200_000 },
+      })
+      const heavy = [msg("x".repeat(600_000)), msg("tail", "user")] // ≈150k token by the CJK-aware basis
+      await fire(heavy)
+      assert.equal(report.limitFallback, 1, "目录缺模型 ⇒ 回退窗口顶上，且每请求计一次 prune_limit_fallback")
+      assert.equal(report.noLimit, 0, "…因此不算 no_limit（两种结局互斥）")
+      assert.equal(report.lastPercent, 75, "150k / 200k = 75%")
+      assert.equal(report.prunedMessages, 1, "75% ≥ 70% ⇒ 老消息被剪成指针（该模型不再完全不修剪）")
+      assert.ok(heavy[0].parts[0].text.includes("已裁剪"), "正文换成了桩")
+      assert.equal(heavy[1].parts[0].text, "tail", "尾部逐字不动")
+      const pruneRow = events.find((e) => e.kind === "prune")
+      assert.ok(pruneRow, "修剪决策照旧留一行轨迹")
+      assert.equal(pruneRow.limit_source, "fallback", "轨迹行标明分母来源 = fallback（不是测量值）")
+      assert.equal(pruneRow.limit, 200_000, "…并带上实际用的分母")
+    }
+
+    {
+      // same scene with the fallback switched OFF → today's behaviour, byte for byte
+      const { report, fire, events } = await drive({
+        catalog: [],
+        config: { enabled: true, atPercent: 70, keepTailPercent: 0, fallbackContextTokens: 0 },
+      })
+      const heavy = [msg("x".repeat(600_000)), msg("tail", "user")]
+      await fire(heavy)
+      assert.equal(report.noLimit, 1, "fallback=0 ⇒ 读不到上限就是 no_limit（与改动前一致）")
+      assert.equal(report.limitFallback, 0, "…回退计数保持 0")
+      assert.equal(report.prunedMessages, 0, "一条都不剪")
+      assert.ok(heavy[0].parts[0].text.startsWith("x".repeat(10)), "正文逐字节原样")
+      const noLimitRow = events.find((e) => e.kind === "no_limit")
+      assert.ok(noLimitRow, "no_limit 仍有自己的轨迹行")
+      assert.equal(noLimitRow.limit_source, "none", "…并标明分母来源 = none")
+    }
+
+    {
       // a foreign session is left alone
       const { report, fire } = await drive()
       const messages = [msg(handleText), msg("tail", "user")]
@@ -3504,7 +3556,7 @@ console.log("28. Context Pruning — settled history becomes pointers, evidence 
     assert.ok(/step_id: "v2-prune"/.test(v2src), "the trajectory line is wired")
   }
 }
-console.log("   OK (threshold derived from limit.context; settled bodies become self-explaining pointers; skeleton/handle/GOAL/tail byte-exact; no_limit and foreign counted; throws swallowed; idempotent)")
+console.log("   OK (threshold derived from limit.context; a catalog miss falls back to pruneFallbackContextTokens and says so; settled bodies become self-explaining pointers; skeleton/handle/GOAL/tail byte-exact; no_limit and foreign counted; throws swallowed; idempotent)")
 
 console.log("32. Context Pruning reads the 2.0.24 shapes — a renamed part is counted, never silent (#62)")
 {
@@ -4722,7 +4774,7 @@ console.log("35. 无损修剪 — 修剪前先离载，stub 带完整 tm_fetch �
   assert.equal(resolveConfig({ pruneOffload: "maybe" }).pruneOffload, "on", "无效值回落默认（不是静默关掉）")
   const offloadSpec = CONFIG_KEYS.find((k) => k.key === "pruneOffload")
   assert.ok(offloadSpec && offloadSpec.type === "string" && offloadSpec.default === "on" && offloadSpec.enum.includes("off"), "pruneOffload 是 on/off 字符串键")
-  assert.equal(CONFIG_KEYS.length, 65, "注册表 65 条（61 + pruneOffload + pruneProtectPatterns + dynamicTail + sessionInstructions）")
+  assert.equal(CONFIG_KEYS.length, 66, "注册表 66 条（61 + pruneOffload + pruneFallbackContextTokens + pruneProtectPatterns + dynamicTail + sessionInstructions）")
 
   const CAT = [{ id: "glm", providerID: "lxns", modelID: "glm", limit: { context: 1000, output: 100 } }]
   const mat = (text, role = "assistant") => ({ role, model: { providerID: "lxns", id: "glm" }, parts: [{ type: "text", text }] })
@@ -5102,6 +5154,7 @@ console.log("   OK (窗口占用是独立条目：42%→40%/46%→45% 分桶，�
 console.log("36b. 缓存命中 — cacheStatsOf 的分母口径（没报 cache → null，不是 0%）、每请求一行 v2-cache、tm_stats 的命中率小节")
 {
   const { cacheStatsOf, createUsagePercent } = await import("./dist/host/v2-usage.js")
+  const { WINDOW_MARKER } = await import("./dist/host/v2-state.js")
   const { summarizeEvents, renderStats } = await import("./dist/tm/stats.js")
 
   // ---- pure: the four cases a hit rate has to keep apart ----
@@ -5186,6 +5239,56 @@ console.log("36b. 缓存命中 — cacheStatsOf 的分母口径（没报 cache �
     )
   }
 
+  // ---- A: a model the catalog does NOT describe still gets its cache row ----
+  // The真机 case (2.2.0 + 1.9.0): the session runs a private deployment absent from
+  // `ctx.model.list()`, so there is no percent — but the provider's cache counters are
+  // a measurement with no denominator to look up. Tying the row to the window made the
+  // meter read "没有 v2-cache 行", i.e. "caching never happens".
+  const rootOff = mktmp("cache-offcatalog")
+  writeCfg({ trajectoryDir: path.join(rootOff, "tj"), blackboardDir: path.join(rootOff, "board"), dynamicTail: "off" })
+  const fOff = makeFakeCtx({ directory: workspace("cache-offcatalog"), agents: sixAgents, models: [] })
+  const bootOff = await withCapturedConsole(() => plugin.setup(fOff.ctx))
+  const SID_OFF = "ses_cache_offcatalog"
+  const OUTSIDE = { providerID: "lxns-hikari", id: "deepseek-ai/DeepSeek-V4.1-Flash-1017" }
+  const fireOff = async (messages) => {
+    const req = { agent: "team", sessionID: SID_OFF, system: [], messages, options: {}, tools: {} }
+    await fOff.hook("session.context").fire(req)
+    return req
+  }
+  const offTurn1 = await fireOff([
+    { role: "assistant", model: OUTSIDE, usage: { input: 1000, cache: { read: 9000, write: 2000 } }, parts: [{ type: "text", text: "一句正文" }] },
+  ])
+  assert.equal(
+    offTurn1.system.filter((p) => String(p?.text ?? "").startsWith(WINDOW_MARKER)).length,
+    0,
+    "目录里没有这个模型 ⇒ 窗口占用条目整条不显示（绝不用回退窗口冒充测量值）",
+  )
+  await fireOff([{ role: "assistant", model: OUTSIDE, parts: [{ type: "text", text: "没有 usage 的一轮" }] }])
+  await bootOff.value()
+  const offRows = fs
+    .readdirSync(path.join(rootOff, "tj", "runs"))
+    .flatMap((run) =>
+      fs
+        .readFileSync(path.join(rootOff, "tj", "runs", run, "steps.jsonl"), "utf8")
+        .split(/\r?\n/)
+        .filter(Boolean)
+        .map((l) => {
+          try {
+            return JSON.parse(l)
+          } catch {
+            return null
+          }
+        })
+        .filter(Boolean),
+    )
+  const offCache = offRows.filter((r) => r.tool === "host" && r.step_id === "v2-cache" && r.event === "cache")
+  assert.equal(offCache.length, 1, "有 usage 的那一轮写一行 v2-cache；没有 usage 的那一轮零行（不是 0%）")
+  assert.equal(offCache[0].read, 9000, "行里带 cache.read")
+  assert.equal(offCache[0].write, 2000, "…cache.write")
+  assert.equal(offCache[0].input, 1000, "…input")
+  assert.equal(offCache[0].rate, 0.75, "9000/(9000+2000+1000)=0.75 —— 命中率不需要窗口")
+  assert.equal(offRows.filter((r) => r.step_id === "v2-shutdown").length, 1, "shutdown 行照旧写出（这一轮确实跑完）")
+
   // ---- the tm_stats section ----
   const ts = new Date(1_700_000_000_000).toISOString()
   const md = renderStats(
@@ -5210,7 +5313,7 @@ console.log("36b. 缓存命中 — cacheStatsOf 的分母口径（没报 cache �
   )
   assert.ok(emptyMd.includes("没有 v2-cache 行（不是 0% 命中）"), "一个样本都没有 ⇒ 明说没有行，不是 0% 命中")
 }
-console.log("   OK (9000/12000 = 0.75；缺 cache 与三值全 0 都是 null 而不是 0%；有读数才写一行 v2-cache，没 usage 零行；tm_stats 有样本给三值+1 位小数，无样本说「不是 0%」)")
+console.log("   OK (9000/12000 = 0.75；缺 cache 与三值全 0 都是 null 而不是 0%；有读数才写一行 v2-cache，没 usage 零行；目录缺模型时 v2-cache 照写而窗口条目仍不出现；tm_stats 有样本给三值+1 位小数，无样本说「不是 0%」)")
 
 console.log("37. 修剪地址保留 — 无句柄的桩追加一行 `地址：`（去重、≤3、文档顺序）；没有地址时逐字节不变")
 {
@@ -5319,7 +5422,7 @@ console.log("38. 修剪保护正则 pruneProtectPatterns — 命中即不剪；�
   assert.equal(spec.type, "string", "type = string")
   assert.equal(spec.default, "", "默认空串（=关闭）")
   assert.match(String(spec.doc), /无效正则被忽略/, "doc 说明无效正则被忽略")
-  assert.equal(CONFIG_KEYS.length, 65, "注册表 65 条（62 + pruneProtectPatterns + dynamicTail + sessionInstructions）")
+  assert.equal(CONFIG_KEYS.length, 66, "注册表 66 条（62 + pruneFallbackContextTokens + pruneProtectPatterns + dynamicTail + sessionInstructions）")
   assert.deepEqual(pc({}).protectPatterns, [], "空串 = 关闭（空数组）")
   assert.equal(pc({ pruneProtectPatterns: "SECRET-FILE|^EVIDENCE BLOCK" }).protectPatterns.length, 1, "逗号分隔 = 一条正则（交替式）")
   assert.equal(pc({ pruneProtectPatterns: "a, b" }).protectPatterns.length, 2, "逗号分隔 + trim = 两条")

@@ -10,6 +10,12 @@
  * against. `cacheStatsOf` turns that same block's cache counters into a hit rate — and
  * answers NULL, never 0%, when the provider reported no cache at all.
  *
+ * `lastCacheUsageOf` is the WINDOW-LESS reader: the cache counters come from the
+ * newest usage block alone, so a session running a model the catalog does not
+ * describe still gets a cache reading.  A percent needs a denominator; a cache
+ * hit rate does not, and tying one to the other meant the meter went dark on
+ * exactly the deployments a plugin cannot look up.
+ *
  * Until 1.7.0 these lived in `v2-compaction.ts`, whose layer submitted
  * `ctx.session.compact({sessionID})` on its own once a session crossed 75% of the
  * window. That AUTOMATIC compaction was removed in 1.7.1 — a plugin that summarizes a
@@ -167,11 +173,44 @@ export interface CacheStats {
 export function cacheStatsOf(reading: UsagePercentReading | null | undefined): CacheStats {
   const cache = reading?.cache
   if (!cache) return { read: 0, write: 0, input: 0, hitRate: null }
+  return { read: cache.read, write: cache.write, input: cache.input, hitRate: cacheRateOf(cache) }
+}
+
+/**
+ * The same ratio, taken from the counters alone — the one formula both a
+ * windowed reading (`cacheStatsOf`) and a window-less one use, so the two can
+ * never disagree about what "0%" means.
+ */
+export function cacheRateOf(cache: UsageCacheCounts | null | undefined): number | null {
+  if (!cache) return null
   const denominator = cache.read + cache.write + cache.input
-  if (!cache.present || denominator <= 0) {
-    return { read: cache.read, write: cache.write, input: cache.input, hitRate: null }
+  if (!cache.present || denominator <= 0) return null
+  return cache.read / denominator
+}
+
+/**
+ * Cache accounting of the NEWEST usage block in a transcript — the reader that
+ * does NOT need a context window.
+ *
+ * `createUsagePercent` answers null when the model is absent from
+ * `ctx.model.list()`, because a percent without a denominator is a guess.  The
+ * cache counters have no such dependency: `cache.read / write / input` are what
+ * the provider reported for that request, whatever the catalog knows.  Tying
+ * the `v2-cache` trajectory row to the percent meant a session on a model the
+ * catalog omits emitted NO row at all, and `tm_stats` then renders "no
+ * samples" — which reads like "caching never happens" rather than "we never
+ * looked".  No usage block at all still answers null (zero rows, never 0%);
+ * a block without a `cache` object answers `present: false` so no rate is
+ * invented from a missing field.
+ */
+export function lastCacheUsageOf(messages: unknown): UsageCacheCounts | null {
+  if (!Array.isArray(messages)) return null
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const t = usageBlockOf(messages[i])
+    if (!t) continue
+    return cacheCountsOf(t)
   }
-  return { read: cache.read, write: cache.write, input: cache.input, hitRate: cache.read / denominator }
+  return null
 }
 
 /**

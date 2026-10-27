@@ -1154,6 +1154,8 @@ export const v2Personality: V2Plugin = {
       prune_skipped_protected: prune.report.skippedProtected,
       prune_below: prune.report.below,
       prune_no_limit: prune.report.noLimit,
+      // 目录缺当前模型时用回退窗口顶上的请求条数（阈值用的替代分母，不是测量值）。
+      prune_limit_fallback: prune.report.limitFallback,
       prune_foreign_skipped: prune.report.foreignSkipped,
       prune_threw: prune.report.threw,
       prune_last_percent: prune.report.lastPercent,
@@ -1384,6 +1386,8 @@ export const v2Personality: V2Plugin = {
           prune_skipped_protected: prune.report.skippedProtected,
           prune_below: prune.report.below,
           prune_no_limit: prune.report.noLimit,
+          // 回退窗口计数：与 surface 行同一口径（两处必须一致）。
+          prune_limit_fallback: prune.report.limitFallback,
           prune_no_messages: prune.report.noMessages,
           prune_foreign_skipped: prune.report.foreignSkipped,
           prune_threw: prune.report.threw,

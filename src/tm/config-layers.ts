@@ -192,6 +192,7 @@ export const CONFIG_KEYS: readonly ConfigKeySpec[] = [
   { key: "prune", type: "string", default: "on", enum: ["on", "off"], doc: "上下文裁剪（已结算消息替换为指针）；off = 关闭。" },
   { key: "pruneAtPercent", type: "number", default: 70, min: 40, max: 90, doc: "上下文裁剪启动的窗口占比（%）。" },
   { key: "pruneKeepTailPercent", type: "number", default: 40, min: 0, max: 90, doc: "裁剪时尾部逐字保留的窗口占比（%）。" },
+  { key: "pruneFallbackContextTokens", type: "number", default: 200_000, min: 0, max: 10_000_000, doc: "上下文目录缺少当前模型时的回退窗口（token）；0=关闭。仅用于修剪阈值，不用于窗口占用条目（那需要真实 limit.context）。" },
   { key: "pruneOffload", type: "string", default: "on", enum: ["on", "off"], doc: "修剪前先把消息体离载到 run store 并在 stub 留 tm_fetch 句柄（原文可取回）；off = 今日行为（纯注记，原文不保留）。" },
   { key: "pruneProtectPatterns", type: "string", default: "", doc: "修剪保护正则（逗号分隔，命中任一的消息永不修剪）；无效正则被忽略，空串=关闭。" },
   { key: "retry", type: "string", default: "on", enum: ["on", "off"], doc: "错峰重试：识别限流 + 注入等待 + 冷却，并管住 tm_webfetch/tm_search 的 HTTP 重试；固定阶梯 5s/10s/20s（第1/2/3次重试），off = 两处都关闭。" },

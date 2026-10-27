@@ -7,6 +7,26 @@ registry saw 1.5.0 as the install-script fix release).
 
 ## [Unreleased]
 
+### Added
+
+- **`pruneFallbackContextTokens`（默认 `200000`，`0` = 关闭）：目录缺当前模型时的修剪回退窗口。**
+  真机现场（2.2.0 + 1.9.0，模型 `lxns-hikari/deepseek-ai/DeepSeek-V4.1-Flash-1017` 不在
+  `ctx.model.list()` 里）：`modelLimitOf` 返回 null ⇒ 整轮 `no_limit` ⇒ 该会话**完全不修剪**，
+  上下文只能等宿主压缩。现在读不到目录窗口时用该键顶上，每个这样的请求计一次
+  `prune_limit_fallback`（`v2-surface` 与 `v2-shutdown` 两行都带），轨迹 `prune` 行加
+  `limit_source: "catalog" | "fallback" | "none"`；`0` 时行为与改动前逐字节一致（`no_limit`）。
+  回退只喂**修剪阈值**，`[Team 窗口占用]` 条目仍要求真实 `limit.context`——替代分母绝不冒充测量值。
+  注册表 65 → 66 条。钉住：`test-v2-adapter` 组 28（200k 回退 + ≈150k 用量 = 75% ⇒ 触发且
+  `limit_source="fallback"`；同一场景 `fallback=0` ⇒ `no_limit`、一条不剪）。反向验证：移除
+  fallback 分支 ⇒ 该用例红，还原后绿。
+- **`v2-cache` 缓存读数与窗口解耦。** 新增 `lastCacheUsageOf(messages)`（只读最新 usage 块，
+  缺失记 0、无 usage 块返回 null）与 `cacheRateOf`（与 `cacheStatsOf` 同一分母口径），
+  `v2-cache` 轨迹行不再挂在窗口读数上——目录里没有当前模型时窗口正常「不可得」
+  （`[Team 窗口占用]` 不显示），但缓存行照写，`tm_stats` 的「缓存命中」段不再误报
+  「没有 v2-cache 行」。没有 usage 块仍是零行（不是 0%）。钉住：`test-v2-adapter` 组 36b
+  （目录缺模型 + usage(cache 9000/2000/1000) ⇒ 一行 `rate=0.75`、窗口条目 0 条；无 usage 轮零行）。
+  反向验证：把发射条件改回依赖窗口 ⇒ 该用例红，还原后绿。
+
 ## [1.9.0] - 2026-10-27
 
 ### Added

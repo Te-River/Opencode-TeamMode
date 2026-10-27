@@ -36,7 +36,15 @@
  *    counted (`protectMatched`) instead of silently changing the saving figure.
  *  - **The threshold is derived, never hard-coded.**  `TM_PRUNE_AT_PERCENT`
  *    (default 70) of `limit.context`, the same denominator the desktop's own
- *    usage meter reads.  No `limit.context` → no prune, counted `no_limit`.
+ *    usage meter reads.  No `limit.context` → no prune, counted `no_limit` —
+ *    UNLESS `pruneFallbackContextTokens` (default 200 000) is set, in which case
+ *    the configured window stands in for the missing catalog entry and every
+ *    such request is counted `limitFallback`.  A model the catalog omits (a
+ *    private/local deployment) used to make this layer inert for the whole
+ *    session; the fallback exists because "no denominator" there means "we
+ *    cannot look it up", not "this conversation is small".  It is used for the
+ *    PRUNE THRESHOLD ONLY — the `[Team 窗口占用]` entry keeps requiring a real
+ *    `limit.context`, so a substituted window is never displayed as a measured one.
  *  - **Never throws, never rewrites an untouched message.**  A failure allows
  *    the request through and is counted; a message outside the plan is left
  *    byte-exact.
@@ -66,6 +74,12 @@ export interface PruneConfig {
   atPercent: number
   /** Percent of `limit.context` kept verbatim at the tail (clamped 0–90). */
   keepTailPercent: number
+  /**
+   * Stand-in window (tokens) for a model the catalog does not describe
+   * (`pruneFallbackContextTokens`).  `0` = off, which is the byte-identical
+   * "no denominator → `no_limit`" path this layer always had.
+   */
+  fallbackContextTokens: number
   /**
    * User-supplied protection regexes (`pruneProtectPatterns`, comma separated).
    * A message whose text matches ANY of them is never pruned.  Empty = off, and
@@ -102,9 +116,11 @@ export function resolvePruneConfig(
     prune: string
     pruneAtPercent: number
     pruneKeepTailPercent: number
+    pruneFallbackContextTokens?: number
     pruneProtectPatterns?: string
   } = resolveConfig(),
 ): PruneConfig {
+  const fallback = config.pruneFallbackContextTokens
   return {
     enabled: config.prune !== "off",
     // The floor is 40 ON PURPOSE: a value below it (e.g. 5) is clamped UP by
@@ -112,6 +128,9 @@ export function resolvePruneConfig(
     // prune is looking at the clamp, not at a broken layer.
     atPercent: config.pruneAtPercent,
     keepTailPercent: config.pruneKeepTailPercent,
+    // A hand-built config (a test, an embedder) may predate the key; absent or
+    // non-positive means OFF, which is the pre-existing behaviour.
+    fallbackContextTokens: typeof fallback === "number" && Number.isFinite(fallback) && fallback > 0 ? Math.trunc(fallback) : 0,
     protectPatterns: parseProtectPatterns(config.pruneProtectPatterns),
   }
 }
@@ -668,6 +687,8 @@ export interface PruneReport {
   skippedProtected: number
   below: number
   noLimit: number
+  /** Requests whose denominator came from `pruneFallbackContextTokens` (catalog miss). */
+  limitFallback: number
   noMessages: number
   foreignSkipped: number
   threw: number
@@ -790,6 +811,7 @@ export async function applyV2ContextPrune(ctx: V2Context, input: PruneInput = {}
     skippedProtected: 0,
     below: 0,
     noLimit: 0,
+    limitFallback: 0,
     noMessages: 0,
     foreignSkipped: 0,
     threw: 0,
@@ -837,10 +859,24 @@ export async function applyV2ContextPrune(ctx: V2Context, input: PruneInput = {}
         report.checked++
         report.unknownParts += messagesUnknownParts(messages)
         const sessionID = String((event as { sessionID?: unknown })?.sessionID ?? "")
-        const limit = await modelLimitOf(sessionID, messages)
-        if (!limit || !Number.isFinite(limit) || limit <= 0) {
+        const catalogLimit = await modelLimitOf(sessionID, messages)
+        let limitSource: "catalog" | "fallback" | "none" = "none"
+        let limit = 0
+        if (typeof catalogLimit === "number" && Number.isFinite(catalogLimit) && catalogLimit > 0) {
+          limit = catalogLimit
+          limitSource = "catalog"
+        } else if (config.fallbackContextTokens > 0) {
+          // Catalog miss (a model this host does not describe) is not "this
+          // conversation is small" — the configured window stands in, and the
+          // substitution is counted on every row so a fallback-driven prune is
+          // never mistaken for a measured one.
+          limit = config.fallbackContextTokens
+          limitSource = "fallback"
+          report.limitFallback++
+        }
+        if (!limit) {
           report.noLimit++
-          emit("no_limit", { sessionID })
+          emit("no_limit", { sessionID, limit_source: "none" })
           return
         }
         const used = messagesTokens(messages)
@@ -873,6 +909,7 @@ export async function applyV2ContextPrune(ctx: V2Context, input: PruneInput = {}
             percent: pct,
             used,
             limit,
+            limit_source: limitSource,
             pruned: plan.prune.length,
             saved: plan.savedTokens,
             protected: plan.protectedCount,

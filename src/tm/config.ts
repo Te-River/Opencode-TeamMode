@@ -140,6 +140,8 @@ export interface TmConfig {
   pruneAtPercent: number
   /** Percent of the window kept verbatim at the tail. */
   pruneKeepTailPercent: number
+  /** 上下文目录缺少当前模型时的回退窗口（token）；0 = 关闭。仅用于修剪阈值。 */
+  pruneFallbackContextTokens: number
   /** 修剪前先离载（stub 带 tm_fetch 句柄）；off = 纯注记、原文不保留。 */
   pruneOffload: "on" | "off"
   /** 修剪保护正则（逗号分隔，命中任一的消息永不修剪）；空串 = 关闭。 */
