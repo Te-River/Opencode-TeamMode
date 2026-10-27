@@ -7,6 +7,8 @@ registry saw 1.5.0 as the install-script fix release).
 
 ## [Unreleased]
 
+## [1.9.0] - 2026-10-27
+
 ### Added
 
 - **`sessionInstructions`（默认 `on`）：易变上下文改写进宿主的 keyed session instructions（2.2.0+）。**
