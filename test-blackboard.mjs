@@ -180,7 +180,25 @@ assert.ok(
 assert.ok(leadPrompt.includes("BLACKBOARD WRITE FAILED"), "lead fallback rule")
 assert.equal(lead.mode, "primary", "team visible in Desktop switcher")
 assert.ok(cfg.command["team-run"].template.includes("Approval gate"), "team-run template updated")
-assert.ok(cfg.command["team-plan"].agent === "architect", "command agent binding")
+/* The picker lists Team and nothing else: the five specialists are subagent-only, so a
+ * command naming one of them in `agent:` could not run it in the main session at all.
+ * Every specialist command therefore runs as the LEAD and opens with a dispatch order
+ * naming its specialist.  A template that loses the verb silently becomes a self-run —
+ * which is what the two assertions per command below exist to catch. */
+const SPECIALIST_COMMANDS = {
+  "team-plan": "architect",
+  "team-implement": "implementer",
+  "team-review": "reviewer",
+  "team-test": "tester",
+  "team-research": "researcher",
+}
+assert.equal(cfg.command["team-run"].agent, "Team", "the full-workflow command runs as the lead")
+for (const [name, specialist] of Object.entries(SPECIALIST_COMMANDS)) {
+  const cmd = cfg.command[name]
+  assert.equal(cmd.agent, "Team", `${name} runs as the lead — its specialist is subagent-only`)
+  assert.ok(cmd.template.includes(specialist), `${name}: the brief names the ${specialist} specialist it must dispatch`)
+  assert.ok(/dispatch/i.test(cmd.template), `${name}: the template orders a dispatch, so it cannot quietly become a self-run`)
+}
 
 /* the definition shapes gen-v2-config.mjs projects into agents/*.md */
 for (const [name, a] of Object.entries(cfg.agent)) {
@@ -207,12 +225,12 @@ const BASH_GRANTED = ["implementer", "reviewer", "tester"]
 // would assert a shape the product no longer produces.
 for (const expert of EXPERTS) {
   const a = cfg.agent[expert]
-  // `mode: "subagent"` means "runs ONLY in a child session" (v2 docs, 2026-10-25),
-  // and a command's `agent:` SWITCHES the current session's agent — so a specialist
-  // pinned to subagent could not be selected by /team-plan & co at all.  T3 ("only
-  // the lead dispatches") is NOT held by mode: it is the `subagent: deny` triple
-  // asserted below, which every specialist keeps.
-  assert.equal(a.mode, "all", expert + " is mode all (selectable by a /team-* command)")
+  // `mode: "subagent"` means "runs ONLY in a child session" (v2 docs, 2026-10-25), so
+  // the agent picker shows Team alone; the /team-* commands name `agent: "Team"` and
+  // dispatch the specialist (asserted above).  T3 ("only the lead dispatches") is NOT
+  // held by mode: it is the `subagent: deny` triple asserted below, which every
+  // specialist keeps — narrowing the mode neither grants nor removes it.
+  assert.equal(a.mode, "subagent", expert + " is subagent-only — the picker must list Team alone")
 
   assert.ok(a.prompt.includes("## Blackboard rules"), expert + " has blackboard rules")
   // The board used to require a file tool, so for architect/researcher (no

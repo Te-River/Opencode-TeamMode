@@ -1786,11 +1786,18 @@ assert.deepEqual(
 const teamMd = fs.readFileSync(path.join(genRoot, "agents", "Team.md"), "utf8")
 const archMd = fs.readFileSync(path.join(genRoot, "agents", "architect.md"), "utf8")
 assert.match(teamMd, /^mode: "primary"$/m, "the lead is selectable as a primary agent")
-assert.match(
-  archMd,
-  /^mode: "all"$/m,
-  "the specialists are mode:all — a /team-* command SWITCHES the current session's agent, and `mode: subagent` runs only in a child session (v2 docs, 2026-10-25)",
-)
+// The specialists are deliberately NOT selectable: `mode: subagent` runs only in a
+// child session (v2 docs, 2026-10-25), which is what keeps the agent picker down to
+// Team.  Checked on EVERY role file, not just architect — one role left on `all` puts
+// an extra entry back in the picker.
+for (const id of Object.keys(agents)) {
+  const md = fs.readFileSync(path.join(genRoot, "agents", `${id}.md`), "utf8")
+  assert.match(
+    md,
+    id === "Team" ? /^mode: "primary"$/m : /^mode: "subagent"$/m,
+    `${id}: projected mode — Team primary, every specialist subagent-only (picker = Team alone)`,
+  )
+}
 assert.match(
   archMd,
   /action: "subagent"\s*\n\s*resource: "\*"\s*\n\s*effect: "deny"/,
@@ -1802,8 +1809,25 @@ assert.ok(
 )
 
 const planMd = fs.readFileSync(path.join(genRoot, "commands", "team-plan.md"), "utf8")
-assert.match(planMd, /^agent: "architect"$/m, "the command selects its role")
+assert.match(planMd, /^agent: "Team"$/m, "the command runs as the lead, which dispatches the specialist")
 assert.ok(planMd.includes("$ARGUMENTS"), "the v1 placeholder survives — v2 expands the same tokens")
+// Every specialist command, not only plan: `agent: "Team"` AND the specialist named in
+// the body.  The host cannot run a subagent-only role in the main session, so a command
+// left pointing at one is dead on arrival — and one whose body lost its dispatch order
+// would quietly become the lead doing the specialist's work itself.
+const CMD_SPECIALIST = {
+  "team-plan": "architect",
+  "team-implement": "implementer",
+  "team-review": "reviewer",
+  "team-test": "tester",
+  "team-research": "researcher",
+}
+for (const [name, specialist] of Object.entries(CMD_SPECIALIST)) {
+  const md = fs.readFileSync(path.join(genRoot, "commands", `${name}.md`), "utf8")
+  assert.match(md, /^agent: "Team"$/m, `${name}.md runs as the lead`)
+  assert.ok(md.includes(specialist), `${name}.md names the ${specialist} it dispatches`)
+  assert.match(md, /dispatch/i, `${name}.md orders a dispatch rather than a self-run`)
+}
 assert.ok(
   !/^template:/m.test(planMd.split("---")[1] ?? ""),
   "no `template` key in frontmatter — the docs forbid it because the body supplies it",

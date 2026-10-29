@@ -7,6 +7,15 @@ registry saw 1.5.0 as the install-script fix release).
 
 ## [Unreleased]
 
+### Fixed
+
+- **The agent picker shows Team only.** The five specialists are `mode: "subagent"` and every
+  `/team-*` command now runs as the Lead (`agent: "Team"`) with a dispatch preamble, so a
+  command still reaches the named specialist without putting five extra entries in the picker.
+  This changes the reason the specialists were `mode: "all"` (working around a command that
+  selected a subagent-only role); the commands now select Team and dispatch, which keeps both
+  the command and the picker correct.
+
 ## [1.9.2] - 2026-10-29
 
 ### Added

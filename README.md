@@ -75,7 +75,7 @@ Under the table sits the workflow discipline: deterministic routing, a ≤30-lin
 
 Then restart with `opencode service restart` (or quit Desktop from the tray, not just the window). A restart is safe mid-session: the conversation survives, only an in-flight tool call is aborted.
 
-**2 · Team is your default.** The installer writes `default_agent: "Team"` **last**, after the role files exist — a default naming a missing agent silently falls back to `build`, which is why the order matters and why boot reports what it found. Team is the picker's default; the five specialists are also listed there (`mode: all`, so the `/team-*` commands can run as them) — for ordinary work, stay on **Team**.
+**2 · Team is your default.** The installer writes `default_agent: "Team"` **last**, after the role files exist — a default naming a missing agent silently falls back to `build`, which is why the order matters and why boot reports what it found. Team is the picker's default; the five specialists run as subagents (dispatched by the Lead) and do not appear in the picker. The `/team-*` commands run as Team and dispatch the named specialist.
 
 **3 · Ask.** `/team-run <task>`, or `@team <task>`. If the run needs ≥2 dispatches you get a ≤30-line plan first and it waits for your approval.
 

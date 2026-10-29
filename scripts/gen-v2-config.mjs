@@ -14,13 +14,13 @@
  * through the built `dist/`, including the prompt strings, so the markdown
  * cannot drift from what the v1 personality injects.
  *
- * ONE THING THIS CANNOT VERIFY: the v1 commands carry `agent: architect` (etc.)
- * and that works on v1.  v2 documents `mode: subagent` as "runs ONLY in a child
- * session through the subagent tool", so a command selecting a subagent-only
- * role may not run as that role.  If the live host says so, the fix is one value
- * in src/agents.ts — `mode: "all"` runs either way, and T3 ("only the lead
- * dispatches") is held by the specialists' `subagent: deny` rule rather than by
- * `mode`, so switching costs the picker five extra entries and nothing else.
+ * COMMANDS RUN AS THE LEAD, NOT AS A SPECIALIST: every /team-* command carries
+ * `agent: "Team"` and opens with a dispatch order, and the five specialists are
+ * `mode: "subagent"` — v2 documents that as "runs ONLY in a child session", which is
+ * what keeps the agent picker down to Team.  A command naming a subagent-only role
+ * could not run it in the main session at all, so the lead runs the command and
+ * dispatches the specialist it names.  T3 ("only the lead dispatches") is held by the
+ * specialists' `subagent: deny` rule rather than by `mode`.
  *
  * Usage:
  *   node scripts/gen-v2-config.mjs [--dir <path>] [--print] [--force]

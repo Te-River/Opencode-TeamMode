@@ -15,8 +15,12 @@ import type { CommandConfig } from "./types.js"
 const teamPlan: CommandConfig = {
   description:
     "Create a comprehensive implementation plan — architecture, task breakdown, and risk analysis.",
-  agent: "architect",
-  template: `Analyze the following task and produce a detailed implementation plan.
+  agent: "Team",
+  template: `Dispatch the \`architect\` specialist with the brief below — you are the lead; do not produce the plan yourself. Wait for its report and relay it verbatim.
+
+## Brief for the architect specialist
+
+Analyze the following task and produce a detailed implementation plan.
 
 ## Task
 $ARGUMENTS
@@ -36,8 +40,12 @@ Do not write implementation code — only the plan.`,
 const teamImplement: CommandConfig = {
   description:
     "Implement a feature or task — write production code following the project's conventions.",
-  agent: "implementer",
-  template: `Implement the following task.  Follow the project's existing code style and conventions.
+  agent: "Team",
+  template: `Dispatch the \`implementer\` specialist with the brief below — you are the lead; do not implement it yourself. Wait for its report and relay it verbatim.
+
+## Brief for the implementer specialist
+
+Implement the following task.  Follow the project's existing code style and conventions.
 
 ## Task
 $ARGUMENTS
@@ -52,8 +60,12 @@ $ARGUMENTS
 const teamReview: CommandConfig = {
   description:
     "Review code with a single focused dimension — completeness, correctness, or impact (default: correctness).",
-  agent: "reviewer",
-  template: `Perform a single-dimension code review on the following scope.
+  agent: "Team",
+  template: `Dispatch the \`reviewer\` specialist with the brief below — you are the lead; do not review it yourself. Wait for its report and relay it verbatim.
+
+## Brief for the reviewer specialist
+
+Perform a single-dimension code review on the following scope.
 
 ## Scope
 $ARGUMENTS
@@ -80,8 +92,12 @@ Include file paths, line numbers, and concrete fix suggestions.`,
 const teamTest: CommandConfig = {
   description:
     "Generate comprehensive tests — unit, integration, and edge-case coverage.",
-  agent: "tester",
-  template: `Write comprehensive tests for the following scope.
+  agent: "Team",
+  template: `Dispatch the \`tester\` specialist with the brief below — you are the lead; do not write the tests yourself. Wait for its report and relay it verbatim.
+
+## Brief for the tester specialist
+
+Write comprehensive tests for the following scope.
 
 ## Scope
 $ARGUMENTS
@@ -99,8 +115,12 @@ If no specific scope is given, identify the most recently modified source files 
 const teamResearch: CommandConfig = {
   description:
     "Research a topic — grounded in the local repository (code, configs, installed packages, shipped docs).",
-  agent: "researcher",
-  template: `Research the following topic and provide actionable findings.
+  agent: "Team",
+  template: `Dispatch the \`researcher\` specialist with the brief below — you are the lead; do not research it yourself. Wait for its report and relay it verbatim.
+
+## Brief for the researcher specialist
+
+Research the following topic and provide actionable findings.
 
 ## Topic
 $ARGUMENTS
