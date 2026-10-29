@@ -7,6 +7,56 @@ registry saw 1.5.0 as the install-script fix release).
 
 ## [Unreleased]
 
+## [1.9.2] - 2026-10-29
+
+### Added
+
+- **`tm_goal`：宿主自带 goal 功能（`opencode.goal`）的桥。** 宿主 2.2.x 自带一个
+  `opencode.goal` 插件，只注册 `get({sessionID})`（返回目标或 `null`）；目标状态存在
+  **它自己的** storage 命名空间（DB `kv` 键 `plugin:<utf16hex("opencode.goal")>:session:<sid>`），
+  `ctx.storage` 读不到别的插件命名空间（实测），所以 RPC 是插件唯一的读缝。**没有写 RPC**——
+  写只能走宿主自己的 `/goal` 命令（`session.command({sessionID, name:"goal", text})`），
+  而那条命令会跑完一整轮 goal 流程，因此工具**不 await**（fire-and-forget），答复写明
+  「已提交，不是已生效」，并让调用方下一轮用 `tm_goal { action:"status" }` 复核。
+  读对所有六个角色开放（子会话向上找父会话的目标，最多 5 层、带环保护；某个父会话**读失败**
+  会单列成「没能读到，不能算作"没有目标"」，不冒充空父会话）；写只有领队能发
+  （`onlyAgent` 第二把锁），`set` 在已有目标且状态不是 `complete` 时必须 `replace:true`
+  （未知状态同样拒绝——fail closed），objective 恰好是 `pause`/`resume`/`clear` 三个词之一时
+  直接拒绝——**带引号的同样拒绝**：宿主会先按 `OL()` 剥掉一组成对引号（`"`/`'`/`“”`/`‘’`）
+  再判子命令，所以 `"clear"` 在宿主那里就是 clear（比较用宿主口径的 `hostGoalParseTarget`，
+  下发的仍是用户原文，不加也不删引号），只有引号的目标按空文本拒绝；超过宿主**实测**的 4000
+  字符上限
+  （宿主常量 `var xy=4000`，报错句 `A goal objective is limited to … characters`）时
+  **在任何调用之前**就拒绝，`pause/resume/clear` 读不到目标时干脆不发命令。三种「没有」互不
+  冒充：接缝缺失（`phase=client`）、`get` 抛错（`phase=execute`）、真的 `null`；被 reject 的
+  `session.command` 会走 `onCommandRejected` 记一条轨迹行（不落 objective 正文）。已验证宿主
+  版本：**2.2.1**。钉住：`test-v2-adapter` 组 4b（19 个用例，含「命令永不 settle 也不阻塞
+  调用方」这条 fire-and-forget 反向验证、父会话读失败不许说成没有目标、未知状态必须
+  `replace:true`、三个子命令词不发命令）+ `test-blackboard`（领队 prompt 的
+  `## Host goal — tm_goal` 段、专家 prompt 的只读一行）。`action` 描述符改成不带引号的
+  `status|set|pause|resume|clear`，adapter 才会派生真正的 enum（`tm_ledger.action` 同一个
+  缺陷一并修好）。注册面 8 → 9 个受治理工具，六个角色都显式 allow（写由工具内部按角色把门）。
+
+### Changed
+
+- **README.md / README.zh-CN.md: restructured for the 1.9.x line.** The bilingual pair
+  now shares one section order (hero → agent install → why → quick start → team →
+  what's new → how it works → tools → governance → configuration → troubleshooting →
+  uninstall), names the nine governed tools including `tm_goal`, and states the
+  2.x-only install path. No feature claim was added that the code does not implement.
+
+### Fixed
+
+- **The config generator's file identity now compares 64-bit inodes exactly (BigInt).**
+  `statSync(..., { bigint: true })` plus an exact BigInt compare replace a `Number(ino)`
+  check that could treat two distinct NTFS files above 2^53 as one (measured 5 collisions
+  among 400 files), which could rename a stale role file over the target and made
+  `test-v2-adapter` flake. The suite now pins the counter-example (`2^53` vs `2^53+1`) and
+  the real stat path's BigInt types.
+- **`tm_goal`'s rejected-command trajectory row is covered at the index layer.** The test
+  asserts the row exists, names the seam and the host error, and does NOT contain the
+  objective text (R6).
+
 ## [1.9.1] - 2026-10-27
 
 ### Added
