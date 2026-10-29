@@ -21,6 +21,7 @@ export function makeFakeCtx({
   tools: seedTools = [],
   sessionData = null,
   models: seedModels = null,
+  rpcData = null,
 } = {}) {
   const registrations = []
   const hooks = new Map()
@@ -87,6 +88,16 @@ export function makeFakeCtx({
   /** How many times the catalog was listed — the prune layer's denominator read, so a
    *  per-request catalog re-read is a number and not a shrug. */
   const modelListCalls = []
+  /** The host goal bridge (`opencode.goal`, host 2.2.x): which client definitions were
+   *  asked for, and what each `get` was actually called with.  `rpcData` is seeded only
+   *  when a test wants the seam — a fake that always carried it would let the tool's
+   *  "this host has no read seam" path look unreachable. */
+  const rpcDefs = []
+  const rpcGetCalls = []
+  /** `session.command` — the `/goal` write path.  Logged because "the reply said
+   *  submitted" is not evidence that a command was handed to the host, and the whole
+   *  point of the wording under test is that submitted ≠ active. */
+  const commandCalls = []
 
   /** Turn a seeded verdict into a host-shaped method: a function is called with the args
    *  (so a test can answer per-session), an Error throws, anything else is returned as-is.
@@ -157,6 +168,11 @@ export function makeFakeCtx({
             // `inboxFlat` lets a test drive the fallback and pin which one answered.
             ...(has("prompt") ? { prompt: verdictMethod(sessionData.prompt, promptCalls) } : {}),
             ...(has("synthetic") ? { synthetic: verdictMethod(sessionData.synthetic, syntheticCalls) } : {}),
+            // `session.command` — measured on 2.2.1 as the way a plugin reaches a
+            // user-facing slash command (`{sessionID, name, text}`), and the ONLY write
+            // path of the host's goal feature.  Seeded only on request, because the tool
+            // must also be testable against a host that does not offer it.
+            ...(has("command") ? { command: verdictMethod(sessionData.command, commandCalls) } : {}),
             // 2.2.0: `session.instructions.entry.put/list/remove`.  Seeded ONLY when a
             // test asks for it — a fake that always carried the domain would make the
             // `fallback-system` path (what a 2.1.x host really gets) untestable.
@@ -211,6 +227,20 @@ export function makeFakeCtx({
       },
       event: { subscribe: () => ({ async [Symbol.asyncIterator]() { return { done: true, value: undefined } } }) },
       app: { name: "opencode-fake", version: "2.0.16", channel: "test" },
+      // `ctx.rpc` is a client FACTORY on host 2.2.1 (`typeof ctx.rpc === "function"`),
+      // so the fake hands back a client per definition — the same shape the plugin
+      // reads.  Absent unless seeded, for the reason `rpcData` is documented above.
+      ...(rpcData
+        ? {
+            rpc: (definition) => {
+              rpcDefs.push(definition)
+              return {
+                get: verdictMethod(rpcData.get, rpcGetCalls),
+                events: { changed: {} },
+              }
+            },
+          }
+        : {}),
     },
     /** Introspection for assertions. */
     registrations,
@@ -241,6 +271,10 @@ export function makeFakeCtx({
     instructionListCalls,
     /** The catalog reads, with their args. */
     modelListCalls,
+    /** The host goal bridge: definitions asked for, `get` calls, `/goal` commands. */
+    rpcDefs,
+    rpcGetCalls,
+    commandCalls,
   }
 }
 

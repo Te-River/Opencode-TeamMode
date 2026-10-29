@@ -10,7 +10,7 @@
  * It generates the run identity (run id + store-persisted HMAC key), resolves
  * the env config, sweeps expired run payloads (startup-only TTL reclamation)
  * and assembles the governed tool surface (tm_fetch + tm_memory / tm_search /
- * tm_webfetch / tm_join / tm_stats / tm_board_write / tm_ledger;
+ * tm_webfetch / tm_join / tm_stats / tm_board_write / tm_ledger / tm_goal;
  * T0.4-verified shape: `{ tool: { tm_fetch: { description, args,
  * execute(args, ctx) } } }`).
  */
@@ -37,6 +37,7 @@ import { buildWebfetchArgsSchema, buildMemoryArgsSchema, buildSearchArgsSchema, 
 import { buildStatsTool } from "./stats.js"
 import { buildBoardWriteTool } from "./board.js"
 import { buildLedgerTool } from "./ledger.js"
+import { buildGoalTool } from "./goal.js"
 import { createWebCache } from "./cache.js"
 import type { CapabilityRow } from "../capabilities.js"
 import { buildTmWebfetchTool, setHitBlacklist, setPrivateSpacePolicy } from "./webfetch.js"
@@ -143,6 +144,11 @@ export interface CreateTmToolsOptions {
    *  and therefore registers no `tm_ledger` at all — its tool surface stays the
    *  one the v1 personality was frozen with. */
   ledgerStore?: import("./ledger.js").LedgerStore
+  /** The host's OWN goal feature (`opencode.goal`): the RPC read seam plus the
+   *  `/goal` command write path.  Handed in by v2 (the only personality).  A host
+   *  without the goal plugin still gets the tool — its read path fails closed with
+   *  the missing-seam wording rather than pretending the session has no goal. */
+  goalDeps?: import("./goal.js").GoalToolDeps
   /** What the v2 `ctx.session` bridge saw (attempted shapes, last host error), so
    *  `tm_join` can report WHY a named id could not be claimed. */
   sessionReaderReport?: () => { attempted: number; resolved: number; usedShape?: string; failedShapes: string[]; lastError?: string }
@@ -587,6 +593,39 @@ export async function createTmTools(
   // surface change smuggled in through a v2 feature.
   if (opts.ledgerStore) {
     tools.tm_ledger = buildLedgerTool({ store: opts.ledgerStore, onlyAgent: "Team", config: cfg })
+  }
+  // tm_goal — the host's own goal feature.  Registered whenever the personality
+  // hands in the deps object (v2 always does; the seams inside may still be
+  // missing, and the tool says so in words instead of implying "no goal").
+  // A REJECTED `/goal` command gets its own trajectory row: the promise settles
+  // after this call has answered, so without it a host turn that failed would leave
+  // no trace anywhere.  The objective TEXT is deliberately not recorded — it is the
+  // user's own content (the R6 privacy rule binds our own diagnostics too); the row
+  // carries the seam, the subcommand and the host's error.
+  if (opts.goalDeps) {
+    const explicitRejected = opts.goalDeps.onCommandRejected
+    tools.tm_goal = buildGoalTool({
+      ...opts.goalDeps,
+      onlyAgent: "Team",
+      onCommandRejected: (input, err) => {
+        try {
+          store.appendTrajectory({
+            tool: "tm_goal",
+            event: "command_rejected",
+            seam: "ctx.session.command",
+            name: input.name,
+            error: String((err as Error)?.message ?? err).slice(0, 160),
+          })
+        } catch {
+          /* the trajectory is an extra, never a reason to fail the call */
+        }
+        try {
+          explicitRejected?.(input, err)
+        } catch {
+          /* same rule for a caller-supplied observer */
+        }
+      },
+    })
   }
   return {
     runId,

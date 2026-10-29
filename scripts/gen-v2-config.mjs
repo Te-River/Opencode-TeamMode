@@ -250,8 +250,13 @@ const normPath = (p) => (process.platform === "win32" ? p.toLowerCase() : p)
  */
 export function statIdentity(p) {
   try {
-    const st = statSync(p)
-    return { dev: Number(st.dev), ino: Number(st.ino) }
+    // `bigint: true` is NOT a style choice.  NTFS reports a 64-bit file index and
+    // Node's default `stat.ino` is a DOUBLE, so two distinct files whose indexes
+    // both exceed 2^53 collapse onto ONE value (measured: 5 collisions among 400
+    // freshly created files).  Comparing those doubles made the reclaim treat a
+    // distinct stale role file as the target and rename it OVER the target.
+    const st = statSync(p, { bigint: true })
+    return { dev: st.dev, ino: st.ino }
   } catch {
     return null
   }
@@ -274,11 +279,34 @@ export function statIdentity(p) {
  * answer; when it is unavailable we refuse to delete rather than guess (#48).
  */
 export function identityVerdict(a, b, platform) {
-  const usable = (x) => x != null && Number.isFinite(x.ino) && x.ino !== 0
-  if (usable(a) && usable(b)) {
-    return a.dev === b.dev && a.ino === b.ino ? "same" : "different"
-  }
+  const A = exactIdentity(a)
+  const B = exactIdentity(b)
+  if (A && B) return A.dev === B.dev && A.ino === B.ino ? "same" : "different"
   return platform === "win32" ? "fallback" : "unknown"
+}
+
+/** One stat field as an EXACT integer, or null when it cannot be compared
+ *  exactly (missing, non-integral, or an unusable value).  An integral double
+ *  converts to BigInt losslessly — `BigInt(2**53)` IS the value the double
+ *  represents — so mixed bigint/number inputs keep full precision instead of
+ *  being rounded to whichever type happened to be first. */
+function exactId(v) {
+  if (typeof v === "bigint") return v
+  if (typeof v === "number" && Number.isInteger(v)) return BigInt(v)
+  return null
+}
+
+/** A usable `{dev, ino}` identity or null.  A zero inode is "unavailable", never
+ *  an identity; an unreadable dev is likewise unusable, because a comparison we
+ *  cannot make exactly must fall through to the caller's fail-safe branch (keep
+ *  the file) rather than answer "different" or "same" on a guess. */
+function exactIdentity(x) {
+  if (x == null) return null
+  const ino = exactId(x.ino)
+  if (ino === null || ino === 0n) return null
+  const dev = exactId(x.dev)
+  if (dev === null) return null
+  return { dev, ino }
 }
 
 /**

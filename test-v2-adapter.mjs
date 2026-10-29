@@ -51,16 +51,17 @@ const TM_NAMES = [
   "tm_board_write",
 ]
 /** v1's roster minus what v2 deliberately does not register. */
-// v2 registers eight of the twelve: ptc_run left for the host's Code Mode,
+// v2 registers nine of the twelve: ptc_run left for the host's Code Mode,
 // read/grep/bash left because the governed native tools replaced them (the
 // offload layer is what made that possible, so the order matters), and tm_pty
 // left because the v2 plugin ctx has no pty domain to call at all.
 const V2_RETIRED = ["tm_ptc_run", "tm_read", "tm_grep", "tm_bash", "tm_pty"]
-/** v2 adds what v1 never had: the LEDGER's home, because a v2 host has no
- *  `todowrite` for the mandate to attach to.  v1 registers it not at all — the
- *  v1 personality is frozen, so it arrives through `ledgerStore` being handed
- *  in by v2 alone (see src/tm/index.ts). */
-const V2_ONLY_TOOLS = ["tm_ledger"]
+/** v2 adds what v1 never had: the LEDGER's home (a v2 host has no `todowrite`
+ *  for the mandate to attach to) and the bridge to the HOST's own goal feature
+ *  (`opencode.goal` read through its RPC, written through the `/goal` command).
+ *  v1 registers neither — the v2 personality is what hands in `ledgerStore` and
+ *  `goalDeps` (see src/tm/index.ts). */
+const V2_ONLY_TOOLS = ["tm_ledger", "tm_goal"]
 const V2_NAMES = [...TM_NAMES.filter((n) => !V2_RETIRED.includes(n)), ...V2_ONLY_TOOLS]
 const CTX = { sessionID: "ses_v2", agent: "team", messageID: "msg_1", id: "call_1" }
 const textOf = (res) =>
@@ -117,7 +118,7 @@ for (const gone of ["tm_read", "tm_grep", "tm_bash"]) {
 assert.equal(
   registered.filter((n) => n.startsWith("tm_")).length,
   V2_NAMES.length,
-  `exactly the eight governed tools v2 ships arrive (got ${registered.filter((n) => n.startsWith("tm_")).join(",")})`,
+  `exactly the nine governed tools v2 ships arrive (got ${registered.filter((n) => n.startsWith("tm_")).join(",")})`,
 )
 for (const name of V2_NAMES) {
   assert.ok(String(byName[name].description ?? "").length > 40, `${name} carries a real description`)
@@ -135,7 +136,7 @@ assert.ok(
 // `{additionalProperties:true}` with no parameter guidance at all.  The
 // descriptor branch has to recover names AND types, because a schema that says
 // "string" for an enum parameter is the same guidance-free shape in disguise.
-for (const name of ["tm_join", "tm_stats", "tm_ledger"]) {
+for (const name of ["tm_join", "tm_stats", "tm_ledger", "tm_goal"]) {
   const input = byName[name].input
   assert.notEqual(input.additionalProperties, true, `${name} is not the permissive fallback`)
   assert.ok(Object.keys(input.properties ?? {}).length >= 3, `${name} carries properties`)
@@ -171,6 +172,29 @@ assert.ok(
   `tm_ledger.id accepts a string as well as a number (got ${JSON.stringify(ledgerId.type)})`,
 )
 assert.equal(ledgerId.enum, undefined, "tm_ledger.id is a type union, not a value enum")
+
+// `tm_ledger`'s action is the SHIPPED quoted spelling: the descriptor reader takes
+// its first token and therefore emits a bare `{"type":"string"}`.  That is the
+// surface the tool shipped with, not a regression — the runtime lowercases an
+// action ("Done" / "Status" are accepted by the tool), so a closed enum here would
+// turn a previously-accepted call into a HOST schema rejection.  Pin the permissive
+// shape so nobody "fixes" it back into a narrowing.
+assert.equal(
+  byName.tm_ledger.input.properties.action.type,
+  "string",
+  `tm_ledger.action stays the permissive string the tool shipped with (got ${JSON.stringify(byName.tm_ledger.input.properties.action)})`,
+)
+assert.equal(
+  byName.tm_ledger.input.properties.action.enum,
+  undefined,
+  "…and carries no enum, because the runtime accepts any spelling of the five actions",
+)
+assert.deepEqual(
+  byName.tm_goal.input.properties.action.enum,
+  ["status", "set", "pause", "resume", "clear"],
+  `tm_goal.action derives a real enum (got ${JSON.stringify(byName.tm_goal.input.properties.action)})`,
+)
+assert.equal(byName.tm_goal.input.properties.replace.type, "boolean", "tm_goal.replace reads as a boolean, not a string")
 
 // The union branch must not swallow a VALUE enum: a head whose members are not
 // all type keywords stays an enum of literals, and a union that collapses to one
@@ -613,6 +637,328 @@ for (const [url, why] of [
 }
 console.log("   OK (public hosts unpoliced by default, metadata and private space refused with a real exit or an honest dead end, loopback served, no promise of a dialog that cannot open)")
 
+console.log("4b. tm_goal — the HOST's own goal feature: read through its RPC, written through /goal")
+// Host 2.2.1 ships a built-in plugin `opencode.goal` that registers exactly ONE
+// method (`get({sessionID})` → the goal or null).  The state itself lives in that
+// plugin's own storage namespace, which `ctx.storage` cannot read (per-plugin
+// namespacing), so the RPC is the only read seam a plugin has — and there is NO
+// write method at all.  Writing is the user-facing `/goal` command, reached as
+// `session.command({sessionID, name:"goal", text})`, and that call runs a whole
+// host turn: it must be fire-and-forget, and the reply may say "submitted" but
+// never "active" (product goal #6).
+{
+  const goalState = (over = {}) => ({
+    id: "goal_1",
+    objective: "把 v2 的 goal 接缝接到 tm_goal 上",
+    status: "active",
+    rounds: 3,
+    maxRounds: 50,
+    updatedAt: 1_700_000_000_000,
+    ...over,
+  })
+  const bootGoal = async ({ rpc = null, command, sessions = {} } = {}) => {
+    const f = makeFakeCtx({
+      directory: workspace("goal"),
+      agents: [],
+      rpcData: rpc,
+      sessionData: { sessions, ...(command === undefined ? {} : { command }) },
+    })
+    const booted = await withCapturedConsole(() => plugin.setup(f.ctx))
+    const t = Object.fromEntries(f.tools.list().map((x) => [x.id ?? x.name, x]))
+    return { f, tool: t.tm_goal, cleanup: booted.value }
+  }
+  const GSTX = { sessionID: "ses_goal", agent: "team" }
+
+  // (a) status with a goal: every field the host stores is reported, and the RPC
+  // was asked for by the portable definition (id + the one method it registers).
+  const a = await bootGoal({ rpc: { get: () => goalState() }, command: "ok", sessions: { ses_goal: {} } })
+  const st = textOf(await a.tool.execute({ action: "status" }, GSTX))
+  assert.match(st, /opencode\.goal/, "the reply names the seam it read, so the value is checkable")
+  assert.match(st, /active —— 进行中/, "active is unmistakable — it is the state where the HOST keeps spending turns")
+  assert.match(st, /轮次：3 \/ 50/, "rounds/maxRounds ride along: they are how a stalled goal is spotted")
+  assert.match(st, /把 v2 的 goal 接缝接到 tm_goal 上/, "the objective is the contract, so it is shown verbatim")
+  assert.equal(a.f.rpcDefs[0]?.id, "opencode.goal", "the client factory is asked for the host's own goal plugin")
+  assert.deepEqual(
+    a.f.rpcDefs[0]?.methods?.get?.input?.required,
+    ["sessionID"],
+    "and the get method declares its one required key — a definition the host can decode",
+  )
+
+  // (b) null is an ANSWER, not a failure — and a top-level session says so without
+  // pretending it looked somewhere it did not.
+  const b = await bootGoal({ rpc: { get: () => null }, command: "ok", sessions: { ses_goal: {} } })
+  const bText = textOf(await b.tool.execute({ action: "status" }, GSTX))
+  assert.match(bText, /当前会话没有宿主目标（opencode\.goal 返回 null）/, "null is reported as null")
+  assert.match(
+    bText,
+    /没有读出父会话字段/,
+    "a `session.get` object with no parent field is reported as NOT READ, not as 'this is a top-level session'",
+  )
+  assert.match(bText, /可能是顶层会话，也可能是宿主的字段形状变了/, "…and the uncertainty is spelled out, because three spellings were tried")
+
+  // (c) a child session reports the PARENT's goal: that is the contract the line
+  // of work inherits, and a child that said "no goal" would hide it.
+  const c = await bootGoal({
+    rpc: { get: (args) => (args.sessionID === "ses_parent" ? goalState({ objective: "父会话的目标" }) : null) },
+    command: "ok",
+    sessions: { ses_child: { parentID: "ses_parent" }, ses_parent: {} },
+  })
+  const cText = textOf(await c.tool.execute({ action: "status" }, { ...GSTX, sessionID: "ses_child" }))
+  assert.match(cText, /当前会话没有目标；下面是父会话 ses_parent 的目标/, "the walk is announced, not disguised as this session's goal")
+  assert.match(cText, /父会话的目标/, "…and the parent's objective is what is rendered")
+
+  // (d) a THROW is not "no goal": the goal may exist and we could not see it.
+  const d = await bootGoal({ rpc: { get: () => new Error("goal kv unreadable") }, command: "ok", sessions: { ses_goal: {} } })
+  const dText = textOf(await d.tool.execute({ action: "status" }, GSTX))
+  assert.match(dText, /phase=execute/, "a get() throw is an execution failure")
+  assert.match(dText, /goal kv unreadable/, "…carrying the host's own message")
+  assert.match(dText, /不是"当前会话没有目标"/, "…and saying out loud that this is NOT an empty answer")
+
+  // (e) set over an active goal without replace is a conflict, and NOTHING is sent.
+  const e = await bootGoal({ rpc: { get: () => goalState() }, command: "ok", sessions: { ses_goal: {} } })
+  const eText = textOf(await e.tool.execute({ action: "set", objective: "新的目标" }, GSTX))
+  assert.match(eText, /已经有宿主目标/, "the existing goal is named instead of being silently replaced")
+  assert.match(eText, /replace:true/, "…and the flag is the only way through")
+  assert.equal(e.f.commandCalls.length, 0, "a refused set submits no command at all")
+
+  // (f) set WITH replace fires the host's own command with the raw objective, and
+  // the reply is submitted-not-active.
+  const f = await bootGoal({ rpc: { get: () => goalState() }, command: "accepted", sessions: { ses_goal: {} } })
+  const fText = textOf(await f.tool.execute({ action: "set", objective: " 持续跑到测试全绿 ", replace: true }, { ...GSTX, agent: "Team" }))
+  assert.deepEqual(
+    f.f.commandCalls[0],
+    { sessionID: "ses_goal", name: "goal", text: "持续跑到测试全绿" },
+    "the command is the host's own /goal with the objective as its text",
+  )
+  assert.match(fText, /已把 set 请求提交给宿主的 \/goal 命令/, "the wording is SUBMITTED")
+  assert.match(fText, /这是"已提交"，不是"已生效"/, "never ACTIVE — the host runs that turn, not us")
+  assert.match(fText, /action:"status"\s*\}\s*复核/, "…and the next turn is told how to verify")
+  assert.ok(!/目标已生效/.test(fText), "no claim that the goal is in force")
+
+  // (g) a COMPLETE goal needs no consent: there is nothing to protect.
+  const g = await bootGoal({ rpc: { get: () => goalState({ status: "complete" }) }, command: "accepted", sessions: { ses_goal: {} } })
+  await g.tool.execute({ action: "set", objective: "做完之后的下一个目标" }, GSTX)
+  assert.equal(g.f.commandCalls.length, 1, "a finished goal can be replaced without replace:true")
+
+  // (h) pause / resume / clear send exactly that word.
+  const h = await bootGoal({ rpc: { get: () => goalState() }, command: "accepted", sessions: { ses_goal: {} } })
+  for (const action of ["pause", "resume", "clear"]) {
+    await h.tool.execute({ action }, GSTX)
+  }
+  assert.deepEqual(
+    h.f.commandCalls.map((x) => x.text),
+    ["pause", "resume", "clear"],
+    "one host command per action, with the documented text",
+  )
+  assert.ok(h.f.commandCalls.every((x) => x.name === "goal"), "all three go through the host's /goal command")
+
+  // (i) no goal → no command: a pause that cannot apply must not fire a call that
+  // will only error inside the host's own turn.
+  const i = await bootGoal({ rpc: { get: () => null }, command: "accepted", sessions: { ses_goal: {} } })
+  assert.match(textOf(await i.tool.execute({ action: "pause" }, GSTX)), /没有可暂停的宿主目标/, "the absence is the whole answer")
+  assert.equal(i.f.commandCalls.length, 0, "and nothing was submitted")
+
+  // (j) the host's 4000-char cap is enforced BEFORE any call, so a turn is not spent
+  // learning a limit we can check locally.
+  const j = await bootGoal({ rpc: { get: () => null }, command: "accepted", sessions: { ses_goal: {} } })
+  const jText = textOf(await j.tool.execute({ action: "set", objective: "长".repeat(4001) }, GSTX))
+  assert.match(jText, /超过宿主上限 4000/, "over the cap is an argument error")
+  assert.equal(j.f.commandCalls.length, 0, "…raised before the command seam was touched")
+  assert.equal(j.f.rpcGetCalls.length, 0, "…and before the read RPC: the cap is the host's own, not something to discover by calling")
+
+  // (k) writing is the lead's; reading is everyone's.
+  const k = await bootGoal({ rpc: { get: () => goalState() }, command: "accepted", sessions: { ses_goal: {} } })
+  const kText = textOf(await k.tool.execute({ action: "clear" }, { ...GSTX, agent: "researcher" }))
+  assert.match(kText, /只有领队/, "a specialist cannot move the user's goal")
+  assert.equal(k.f.commandCalls.length, 0, "…and no command left the process")
+  assert.ok(/opencode\.goal/.test(textOf(await k.tool.execute({ action: "status" }, { ...GSTX, agent: "researcher" }))), "but the READ stays open to a specialist")
+
+  // (l) a host with no command seam fails closed — it does not claim to have
+  // submitted anything.
+  const l = await bootGoal({ rpc: { get: () => null }, sessions: { ses_goal: {} } })
+  const lText = textOf(await l.tool.execute({ action: "clear" }, GSTX))
+  assert.match(lText, /phase=client/, "no seam is a client-phase refusal")
+  assert.match(lText, /session\.command/, "…naming the missing seam")
+  assert.ok(!/已提供|已提交/.test(lText), "and never claims a submission that did not happen")
+
+  // (m) no read seam at all: the tool says THIS HOST CANNOT READ, never "no goal".
+  const m = await bootGoal({ sessions: { ses_goal: {} } })
+  const mText = textOf(await m.tool.execute({ action: "status" }, GSTX))
+  assert.match(mText, /opencode\.goal 的读取接缝/, "the missing seam is named")
+  assert.ok(!/没有宿主目标/.test(mText), "a missing seam is NOT an empty answer")
+
+  // (n) FIRE-AND-FORGET: a command that never settles must not park the caller's
+  // turn.  This is the property a `await ctx.session.command(...)` would break.
+  const n = await bootGoal({
+    rpc: { get: () => goalState() },
+    command: () => new Promise(() => {}),
+    sessions: { ses_goal: {} },
+  })
+  const nText = textOf(await n.tool.execute({ action: "clear" }, GSTX))
+  assert.match(nText, /已把 clear 请求提交给宿主的 \/goal 命令/, "the tool answers without waiting for the host's turn")
+  assert.equal(n.f.commandCalls.length, 1, "…and the command really was fired")
+
+  // (o) with no read seam the write still goes out, but the reply says it cannot be
+  // verified — the honest middle, neither "done" nor "failed".
+  const o = await bootGoal({ command: "accepted", sessions: { ses_goal: {} } })
+  const oText = textOf(await o.tool.execute({ action: "pause" }, GSTX))
+  assert.match(oText, /无法复核/, "submitted but unverifiable is stated")
+  assert.equal(o.f.commandCalls.length, 1, "the command is still delivered")
+
+  // (p) a parent whose READ fails is not a parent with no goal.  The old wording
+  // counted the hop before knowing the answer and printed 都没有目标 over a throw —
+  // a fact nobody measured, and the one the lead would act on.
+  const p = await bootGoal({
+    rpc: {
+      get: (args) => (args.sessionID === "ses_parent" ? new Error("parent kv down") : null),
+    },
+    command: "accepted",
+    sessions: { ses_child: { parentID: "ses_parent" }, ses_parent: {} },
+  })
+  const pText = textOf(await p.tool.execute({ action: "status" }, { ...GSTX, sessionID: "ses_child" }))
+  assert.match(pText, /parent kv down/, "the parent's read failure carries the host's own message")
+  assert.match(pText, /没能读到，不能算作"没有目标"/, "…and it is filed as a failed read, separately")
+  assert.ok(!/都没有目标/.test(pText), "the reply does NOT claim the parent has no goal")
+
+  // (q) the replace gate fails CLOSED: an unrecognised status (which
+  // `parseGoalState` passes through verbatim by design) must not be overwritten
+  // without the user's agreement.
+  const q = await bootGoal({
+    rpc: { get: () => goalState({ status: "waiting" }) },
+    command: "accepted",
+    sessions: { ses_goal: {} },
+  })
+  const qText = textOf(await q.tool.execute({ action: "set", objective: "新的目标" }, GSTX))
+  assert.match(qText, /已经有宿主目标（status: waiting）/, "an unknown status is named, not silently replaced")
+  assert.equal(q.f.commandCalls.length, 0, "…and no command was fired")
+  await q.tool.execute({ action: "set", objective: "新的目标", replace: true }, GSTX)
+  assert.equal(q.f.commandCalls.length, 1, "an explicit replace:true still goes through")
+
+  // (r) `/goal clear` IS the clear subcommand: an objective spelled exactly like one
+  // would clear the user's goal instead of setting one, so it is refused before the
+  // command seam is touched (quoting is not a fix — the host strips the quotes).
+  const r = await bootGoal({ rpc: { get: () => null }, command: "accepted", sessions: { ses_goal: {} } })
+  // The host's `OL()` strips ONE leading quote (from `"`, `'`, U+201C, U+2018) and one
+  // trailing quote (from `"`, `'`, U+201D, U+2019) BEFORE it dispatches the command, so
+  // a quoted subcommand word is the same subcommand there.  The guard has to reduce the
+  // objective the same way — the comment said so while the code did not.
+  const subcommandSpellings = ["clear", "Pause", " RESUME ", '"clear"', "\u201Cpause\u201D", "'resume'"]
+  for (const word of subcommandSpellings) {
+    const rText = textOf(await r.tool.execute({ action: "set", objective: word }, GSTX))
+    assert.match(rText, /phase=args/, `objective ${JSON.stringify(word)} is refused before any call`)
+    assert.match(rText, /子命令执行/, `objective ${JSON.stringify(word)} is refused as a subcommand word`)
+  }
+  assert.equal(
+    r.f.commandCalls.length,
+    0,
+    "none of the plain or quoted subcommand spellings ever reached /goal",
+  )
+  assert.equal(r.f.rpcGetCalls.length, 0, "…and none of them even read the goal first")
+
+  // A quotes-only objective parses to the empty text = the `status` subcommand, so it
+  // is refused as empty rather than sent as a "set" that would only print the goal.
+  const emptyQuoted = textOf(await r.tool.execute({ action: "set", objective: '""' }, GSTX))
+  assert.match(emptyQuoted, /phase=args/, "a quotes-only objective is an argument error")
+  assert.equal(r.f.commandCalls.length, 0, "…and fires nothing")
+
+  // A quoted objective that is NOT a subcommand is legitimate: it goes out VERBATIM —
+  // quotes and all — because rewriting the user's words is not ours to do.
+  const rOk = textOf(await r.tool.execute({ action: "set", objective: '"fix the failing test"' }, GSTX))
+  assert.match(rOk, /已把 set 请求提交/, "a quoted objective is still a normal set")
+  assert.equal(r.f.commandCalls.length, 1, "…and it does reach the host")
+  assert.equal(
+    r.f.commandCalls[0].text,
+    '"fix the failing test"',
+    "the ORIGINAL text is sent — the host does the unquoting, not us",
+  )
+
+  // (s) a REJECTED command promise reaches the observer with the exact input and
+  // never throws back into the tool (the reply already said submitted-not-verified).
+  {
+    const { buildGoalTool } = await import("./dist/tm/goal.js")
+    const seen = []
+    const direct = buildGoalTool({
+      rpc: () => ({ get: async () => goalState() }),
+      command: () => Promise.reject(new Error("host turn died")),
+      onCommandRejected: (input, err) => seen.push({ input, message: String(err?.message ?? err) }),
+    })
+    // The RAW definition (no v2 binding), so the reply is `{output}` rather than
+    // content parts — read it directly instead of through textOf.
+    const directOut = await direct.execute({ action: "clear" }, { sessionID: "ses_direct", agent: "team" })
+    const directReply = typeof directOut === "string" ? directOut : String(directOut?.output ?? "")
+    assert.match(directReply, /已把 clear 请求提交/, "the caller is still told the command was submitted")
+    await new Promise((r2) => setImmediate(r2))
+    assert.equal(seen.length, 1, "the rejection reached the observer exactly once")
+    assert.deepEqual(seen[0].input, { sessionID: "ses_direct", name: "goal", text: "clear" }, "with the exact seam input")
+    assert.equal(seen[0].message, "host turn died", "and the host's own error")
+  }
+}
+console.log("   OK (RPC read + parent walk, throw ≠ empty, replace needs consent, /goal fire-and-forget, submitted ≠ active)")
+
+console.log("4c. a REJECTED /goal command leaves exactly ONE trajectory row — the seam and the host's error, never the objective (R6)")
+{
+  // `session.command` runs a whole host turn AFTER tm_goal has answered, so a
+  // rejection has nowhere else to land: without this row a submit that died would
+  // leave no trace at all, and the reply's "已提交" would be the only surviving
+  // record of a turn nobody can check.  The row is written by src/tm/index.ts's
+  // `onCommandRejected` wrapper — this group is the only place it is read back.
+  const { createTmTools } = await import("./dist/tm/index.js")
+  const tjRoot = mktmp("goal-reject")
+  const MARKER = "UNIQUE_OBJECTIVE_MARKER"
+  writeCfg({ trajectoryDir: tjRoot })
+  try {
+    const rt = await createTmTools(
+      { directory: workspace("goal-reject"), project: "", $: undefined },
+      {
+        goalDeps: {
+          // No goal on the session, so `set` reaches the command seam; the write
+          // itself rejects, which is the case under test.
+          rpc: () => ({ get: async () => null }),
+          command: () => Promise.reject(new Error("host down")),
+        },
+      },
+    )
+    const res = await rt.tools.tm_goal.execute(
+      { action: "set", objective: MARKER },
+      { sessionID: "ses_goal_reject", agent: "Team" },
+    )
+    const reply = textOf(res) || String(res?.output ?? "")
+    assert.match(reply, /已把 set 请求提交/, "the tool answers submitted-not-verified — the rejection lands after it answered")
+    // The rejection is a microtask on a promise the tool deliberately never awaits.
+    await new Promise((r) => setImmediate(r))
+    await rt.dispose()
+
+    const raw = fs
+      .readdirSync(path.join(tjRoot, "runs"))
+      .map((run) => fs.readFileSync(path.join(tjRoot, "runs", run, "steps.jsonl"), "utf8"))
+      .join("\n")
+    const rows = raw
+      .split(/\r?\n/)
+      .filter(Boolean)
+      .map((l) => {
+        try {
+          return JSON.parse(l)
+        } catch {
+          return null
+        }
+      })
+      .filter(Boolean)
+    const rejected = rows.filter((r) => r.tool === "tm_goal" && r.event === "command_rejected")
+    assert.equal(rejected.length, 1, `exactly one command_rejected row is written (got ${rejected.length})`)
+    const row = rejected[0]
+    assert.equal(row.seam, "ctx.session.command", "the row names the seam that failed")
+    assert.equal(row.name, "goal", "…and the /goal subcommand it was fired as")
+    assert.equal(row.error, "host down", "…with the host's own error")
+    assert.ok(!("text" in row) && !("objective" in row), "no objective/text FIELD at all — not even an empty one")
+    assert.ok(!JSON.stringify(row).includes(MARKER), "the objective TEXT is nowhere in the row (R6 binds our own diagnostics)")
+    assert.ok(!raw.includes(MARKER), "…nor anywhere else in the audit trail")
+  } finally {
+    clearCfg()
+  }
+}
+console.log("   OK (a rejected host command is one row: seam + subcommand + host error; the objective never rides the trail)")
+
+
 console.log("5. permission triples, user rules, idempotency")
 const team = fake.agents.get("Team")
 const find = (a) => team.permissions.filter((p) => p.action === a)
@@ -804,14 +1150,14 @@ console.log("   OK (a v2 plugin cannot create agents, so it says which are missi
 await second.value?.()
 
 console.log("7. the request layer — the whitelist decides what the model SEES")
-// The synthetic surface is the v2 reality: the native catalog plus the ten
+// The synthetic surface is the v2 reality: the native catalog plus the nine
 // tm_* this personality registers.  tm_read/tm_grep/tm_bash/tm_ptc_run are not
 // listed because a v2 host has no such tool to offer — asserting against them
 // would be asserting against a v1 surface.
 const SURFACE = [
   "read", "grep", "glob", "list", "edit", "write", "patch", "shell", "webfetch", "websearch",
   "skill", "question", "todowrite", "subagent", "browser_navigate", "browser_tabs_list",
-  "tm_fetch", "tm_memory", "tm_board_write", "tm_stats", "tm_join", "tm_ledger",
+  "tm_fetch", "tm_memory", "tm_board_write", "tm_stats", "tm_join", "tm_ledger", "tm_goal",
   "tm_search", "tm_webfetch",
 ]
 const event = (agent, options = {}) => ({
@@ -846,6 +1192,10 @@ for (const gone of [
 for (const keep of ["read", "grep", "glob", "tm_fetch", "tm_memory", "tm_board_write", "tm_stats"]) {
   assert.ok(archLeft.includes(keep), `architect keeps its ${keep} — the v2 file ladder`)
 }
+assert.ok(
+  archLeft.includes("tm_goal"),
+  "a specialist KEEPS tm_goal — reading the host goal is open to every role; only the WRITE is the lead's (gated inside the tool)",
+)
 assert.equal(
   arch.options.temperature,
   undefined,
@@ -3161,6 +3511,49 @@ console.log("23. file identity is platform-neutral — a macOS case-insensitive 
   assert.equal(identityVerdict({ dev: 1, ino: 0 }, { dev: 1, ino: 0 }, "darwin"), "unknown", "ino 0 on macOS → cannot tell (keep)")
   assert.equal(identityVerdict({ dev: 1, ino: 0 }, { dev: 1, ino: 0 }, "win32"), "fallback", "ino 0 on win32 → real-path fallback")
 
+  // (a2) THE COUNTER-EXAMPLE that used to make this flake: NTFS reports a 64-bit
+  // file index while a non-bigint `stat.ino` is a double, so two DISTINCT files
+  // above 2^53 land on one Number — and the reclaim then "recognised" a stale role
+  // file as the target and renamed it over it.  These two BigInts are exactly that
+  // pair: different values, equal as doubles.  The old code rejected BigInt input
+  // outright (Number.isFinite(1n) is false) and answered "fallback"; a caller that
+  // had already truncated them to Numbers got "same".  Both are wrong, and
+  // "different" is the only answer that keeps the target.
+  const inoA = 9007199254740992n // 2^53
+  const inoB = 9007199254740993n // 2^53 + 1
+  assert.notEqual(inoA, inoB, "the two file indexes are genuinely different")
+  assert.equal(Number(inoA), Number(inoB), "…and collapse onto ONE double — the collision this guards")
+  assert.equal(identityVerdict({ dev: 1n, ino: inoA }, { dev: 1n, ino: inoB }, "win32"), "different", "exact comparison still calls them two files")
+  assert.equal(
+    identityVerdict({ dev: 1n, ino: inoA }, { dev: 1n, ino: inoB }, "linux"),
+    "different",
+    "…on every platform, not only the win32 fallback branch",
+  )
+  assert.equal(
+    identityVerdict({ dev: 1n, ino: inoA }, { dev: 1, ino: Number(inoA) }, "linux"),
+    "same",
+    "a bigint identity and its number spelling compare exactly (an integral double converts to BigInt losslessly)",
+  )
+  assert.equal(
+    identityVerdict({ dev: 1n, ino: inoB }, { dev: 1, ino: Number(inoA) }, "linux"),
+    "different",
+    "…and a mixed pair that collides as doubles is still two files (no bigint→Number cast)",
+  )
+  assert.equal(identityVerdict({ dev: 0n, ino: 7n }, { dev: 0n, ino: 7n }, "win32"), "same", "BigInt dev 0 is a real device, not 'unavailable'")
+  assert.equal(identityVerdict({ dev: 1n, ino: 0n }, { dev: 1n, ino: 0n }, "win32"), "fallback", "BigInt ino 0 stays unavailable → win32 fallback")
+  assert.equal(identityVerdict({ dev: 1n, ino: 0n }, { dev: 1n, ino: 0n }, "linux"), "unknown", "…and unknown off win32, so the file is kept")
+
+  // (a3) the REAL stat path is bigint-backed.  If this ever goes back to a plain
+  // `statSync`, the counter-example above becomes unreachable in production — the
+  // collapse happens at the stat, before any verdict is asked for.
+  const sidDir = workspace("stat-identity")
+  const sidFile = path.join(sidDir, "f.txt")
+  fs.writeFileSync(sidFile, "x")
+  const realId = genMod.statIdentity(sidFile)
+  assert.equal(typeof realId.ino, "bigint", `statIdentity reports the inode as BigInt (got ${typeof realId.ino})`)
+  assert.equal(typeof realId.dev, "bigint", "…and the device as BigInt")
+  assert.equal(genMod.statIdentity(path.join(sidDir, "absent.txt")), null, "a failed stat is null, never a zero identity")
+
   // (b) the post-delete recheck: a vanished keep file is reported, and the
   // reporting half sets a NON-ZERO exit code (a broken install must not look
   // like success).
@@ -3202,9 +3595,11 @@ console.log("23. file identity is platform-neutral — a macOS case-insensitive 
   assert.ok(fs.existsSync(path.join(agentsDir23b, "Team.md")), "the target Team.md still exists after the reclaim pass")
   const sameIno = (() => {
     try {
-      const s1 = fs.statSync(path.join(agentsDir23b, "Team.md"))
-      const s2 = fs.statSync(path.join(agentsDir23b, "team.md"))
-      return s1.ino !== 0 && s1.dev === s2.dev && s1.ino === s2.ino
+      // bigint, like the generator's own stat: this is an identity comparison, and
+      // a double inode can call two distinct files one.
+      const s1 = fs.statSync(path.join(agentsDir23b, "Team.md"), { bigint: true })
+      const s2 = fs.statSync(path.join(agentsDir23b, "team.md"), { bigint: true })
+      return s1.ino !== 0n && s1.dev === s2.dev && s1.ino === s2.ino
     } catch {
       return false
     }

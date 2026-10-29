@@ -64,6 +64,7 @@ import { applyV2DynamicTail, createDynamicSink, resolveDynamicTailConfig } from 
 import { applyV2SessionInstructions, resolveSessionInstructionsConfig, sessionInstructionsSeamOf } from "./v2-session-instructions.js"
 import { checkDefaultAgentRole, globalConfigDir, type DefaultAgentCheck } from "./v2-default-agent.js"
 import { createStorageLedgerStore } from "../tm/ledger.js"
+import type { GoalToolDeps } from "../tm/goal.js"
 import { createTeamScope } from "./v2-scope.js"
 import { bindV2Tool, type V2ToolBinding } from "./v2-tool.js"
 import { mergeTriples, triplesFromAgentPermission, V1_ONLY_TOOLS } from "./v2-permissions.js"
@@ -85,6 +86,41 @@ function directoryOf(ctx: V2Context): string {
   if (typeof loc?.directory === "string" && loc.directory) return loc.directory
   if (typeof loc?.project?.directory === "string" && loc.project.directory) return loc.project.directory
   return process.cwd()
+}
+
+/** The live seams the host's own goal feature exposes (measured on host 2.2.1):
+ *  `ctx.rpc` is a client FACTORY, `ctx.session.command` is how a plugin reaches
+ *  the user-facing `/goal` command, and `ctx.session.get` supplies the parent
+ *  link a child session walks.  Typed here rather than in `v2-types.ts` because
+ *  `rpc` is new in this generation and one tool reads it — the v2-types table is
+ *  the host contract every layer shares, not a place for one feature's cast. */
+interface HostGoalSeams {
+  rpc?: (definition: unknown) => { get?: (input: { sessionID: string }) => Promise<unknown> } | null | undefined
+  session?: {
+    command?: (input: { sessionID: string; name: string; text: string }) => unknown
+    get?: (input: { sessionID: string }) => unknown
+  }
+}
+
+/** Resolve the goal bridge from the LIVE ctx, never from a captured method:
+ *  `const f = api.method` drops the receiver and the host answers
+ *  `Cannot read properties of undefined (reading 'client')` (the SDK calling
+ *  rule this file has already paid for once).  Never throws — a host without
+ *  the goal plugin simply leaves those seams `undefined`, and `tm_goal` then
+ *  reports the missing seam instead of pretending the session has no goal. */
+function buildGoalDeps(ctx: V2Context): GoalToolDeps {
+  const deps: GoalToolDeps = {}
+  const host = ctx as unknown as HostGoalSeams
+  if (typeof host.rpc === "function") {
+    deps.rpc = (definition) => (ctx as unknown as HostGoalSeams).rpc?.(definition)
+  }
+  if (host.session && typeof host.session.command === "function") {
+    deps.command = (input) => (ctx as unknown as HostGoalSeams).session?.command?.(input)
+  }
+  if (host.session && typeof host.session.get === "function") {
+    deps.sessionGet = (input) => (ctx as unknown as HostGoalSeams).session?.get?.(input)
+  }
+  return deps
 }
 
 export const v2Personality: V2Plugin = {
@@ -212,6 +248,12 @@ export const v2Personality: V2Plugin = {
         // domain is missing the tool refuses with the reason rather than keeping
         // the list in process memory and calling it recorded.
         ledgerStore,
+        // The host's OWN goal feature, bridged rather than re-implemented: READ
+        // through the `opencode.goal` RPC (its state lives in that plugin's own
+        // storage namespace, which `ctx.storage` cannot see), WRITE through the
+        // user-facing `/goal` command (the RPC has no setter).  The write is
+        // fire-and-forget, so the tool's reply says submitted, never active.
+        goalDeps: buildGoalDeps(ctx),
         sessionReaderReport: () => sessionReader.report,
       },
     )

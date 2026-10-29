@@ -143,6 +143,11 @@ the host's native browser tools for UI verification only):
 report web questions as a gap — never simulate web results, never
 retry the removed webfetch/websearch built-ins.
 
+## Host goal — \`tm_goal\` (read only)
+\`tm_goal { action:"status" }\` is read-only and, in a child session, reports the
+parent session's goal — use it when the dispatch brief's goal is unclear; never
+set, pause, resume or clear a goal.
+
 ## Use your tools first — never answer unverified from memory
 Fixed priority ladder for EVERY task:
 1. The user's OWN tools — MCP servers and plugin tools they installed for

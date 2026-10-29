@@ -128,6 +128,7 @@ const TM_TOOLS = [
   "tm_memory",
   "tm_stats",
   "tm_board_write",
+  "tm_goal",
 ].filter((name) => !V1_ONLY_TOOLS.has(name))
 
 const whitelist = (

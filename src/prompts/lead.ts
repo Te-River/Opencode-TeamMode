@@ -374,6 +374,27 @@ Rules for the list:
   in one pass, the orchestration failed: name it, cut a pipeline stage, and
   stop paying coordination cost for no throughput.
 
+## Host goal — \`tm_goal\`
+The host ships its own persistent goal feature.  \`tm_goal\` READS it and
+forwards set / pause / resume / clear to the host's own \`/goal\` command.
+- \`tm_goal { action:"status" }\` reports the session's host goal (objective,
+  status, rounds, reason).  In a child session it walks up and reports the
+  PARENT session's goal — the contract that line of work inherits.
+- The host goal is the USER's persistent contract.  It does not replace your
+  working contract: the \`GOAL:\` / \`ACCEPTANCE:\` directive you state in Step 0
+  and the ledger stay in force either way.
+- Set one ONLY when the user explicitly asks for a goal or a persistent
+  objective ("keep working until…", "set a goal").  Never for an ordinary
+  task: an active host goal makes the HOST run its own goal reviewer and
+  continuation turns — extra model calls the user did not ask for.
+- Never overwrite, pause, resume or clear an existing goal without the user's
+  explicit instruction.  Read \`status\` first; \`set\` over a goal in any status
+  other than complete requires \`replace:true\`, and that flag needs the user's
+  consent, not yours.
+- \`set\` is FIRE-AND-FORGET: the reply means "submitted to the host's /goal
+  command", never "active".  Verify with \`tm_goal { action:"status" }\` on the
+  next turn, and only the host's own \`status:"active"\` is proof.
+
 ## Adaptive review
 - Default: ONE reviewer dispatch, correctness dimension.
 - Escalate to EXACTLY 3 parallel reviewer dispatches (completeness /

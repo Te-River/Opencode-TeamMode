@@ -164,6 +164,19 @@ assert.ok(note9.includes("/board/root"), "the board note carries the resolved ro
 assert.ok(note9.includes("idle for more than 9 days"), "…and the TTL the sweep promise names")
 assert.ok(leadPrompt.includes("Hybrid blackboard"), "hybrid blackboard protocol present")
 assert.ok(leadPrompt.includes("LEDGER discipline"), "ledger hard rule stays a prompt mandate")
+assert.ok(leadPrompt.includes("## Host goal — `tm_goal`"), "lead: the host's own goal feature is a named section")
+assert.ok(
+  leadPrompt.includes('tm_goal { action:"status" }'),
+  "lead: the read call is spelled out — the goal is read before anything is changed",
+)
+assert.ok(
+  leadPrompt.includes("FIRE-AND-FORGET") && leadPrompt.includes('status:"active"'),
+  "lead: a submitted goal is never reported as active — only the host's own status is proof",
+)
+assert.ok(
+  leadPrompt.includes("never for an ordinary") || leadPrompt.includes("Never for an ordinary"),
+  "lead: setting a goal is reserved for an explicit user ask (it costs extra host turns)",
+)
 assert.ok(leadPrompt.includes("BLACKBOARD WRITE FAILED"), "lead fallback rule")
 assert.equal(lead.mode, "primary", "team visible in Desktop switcher")
 assert.ok(cfg.command["team-run"].template.includes("Approval gate"), "team-run template updated")
@@ -710,6 +723,11 @@ for (const expert of EXPERTS) {
   assert.ok(cfg2.agent[expert].prompt.includes("read / grep / glob / shell alike"), expert + ": the batch trigger counts the host's own tool calls, not only tm_* ones")
   assert.ok(cfg2.agent[expert].prompt.includes("ONE compound `shell`"), expert + ": plain-shell batches prescribe one compound command, not N round-trips")
   assert.ok(cfg2.agent[expert].prompt.includes("aggregated value at the end of the program"), expert + ": the return-data rule (unreturned inline results are lost)")
+  assert.ok(
+    cfg2.agent[expert].prompt.includes('tm_goal { action:"status" }') &&
+      cfg2.agent[expert].prompt.includes("never\nset, pause, resume or clear a goal"),
+    expert + ": the host goal is READ-ONLY for a specialist, and a child sees the parent's goal",
+  )
 assert.ok(cfg2.agent["researcher"].prompt.includes("Recon batching (parallel calls first)"), "researcher: the parallel-calls recon section is present")
 assert.ok(cfg2.agent["researcher"].prompt.includes("## Web lookups (two channels)"), "researcher: two-channel web policy (governed tools first, MCP fallback)")
 assert.ok(cfg2.agent["researcher"].prompt.includes("tm_search (open-ended lookups)"), "researcher: tm_search is the open-ended lookup front")
