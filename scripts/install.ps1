@@ -394,7 +394,15 @@ function Install-V2 {
         $wheelPath = $wheelSrc
         $downloaded = $false
         if ($wheelSrc -match '^https?://') {
-            $wheelPath = Join-Path ([IO.Path]::GetTempPath()) ("computeruse-" + [guid]::NewGuid().ToString("N") + ".whl")
+            # The DOWNLOAD MUST KEEP THE ASSET'S FILENAME.  `uv tool install` derives the
+            # distribution name, version and Python tag from the FILENAME and refuses
+            # anything else ("The wheel filename ... is invalid: Must have a Python tag"),
+            # so a guid-named temp file fails even when the bytes and the sha256 are
+            # perfect.  That is exactly how the first 0.0.2 install failed: hash verified,
+            # install refused, zero config bytes — fail closed, but useless.
+            $assetName = ($wheelSrc -split '/')[-1]
+            if ($assetName -notmatch '^[A-Za-z0-9_.+-]+\.whl$') { $assetName = "computeruse_mcp-$($CU_VERSION)-py3-none-any.whl" }
+            $wheelPath = Join-Path ([IO.Path]::GetTempPath()) $assetName
             Write-Host "↓  downloading $wheelSrc" -ForegroundColor DarkGray
             $prevEap = $ErrorActionPreference
             $ErrorActionPreference = "Continue"

@@ -174,7 +174,17 @@ install_computer_use() {
 
   # ── (b) materialise it: a path as-is; an https asset downloaded to a temp file ──
   if printf '%s' "$src" | grep -Eq '^https?://'; then
-    wheel="$(mktemp 2>/dev/null || echo "${TMPDIR:-/tmp}/computeruse-$$.whl")"
+    # Keep the ASSET'S FILENAME: `uv tool install` reads the distribution name, version and
+    # python tag out of the filename and rejects anything else ("The wheel filename ... is
+    # invalid: Must have a Python tag").  A bare mktemp name fails even when the bytes and
+    # the sha256 are perfect — that is exactly how the first 0.0.2 install failed.
+    asset="${src##*/}"
+    case "$asset" in
+      *.whl) ;;
+      *) asset="computeruse_mcp-${CU_VERSION}-py3-none-any.whl" ;;
+    esac
+    wheel_dir="$(mktemp -d 2>/dev/null || echo "${TMPDIR:-/tmp}")"
+    wheel="${wheel_dir}/${asset}"
     echo "↓  downloading ${src}"
     if command -v curl >/dev/null 2>&1; then
       if ! curl -fsSL -o "$wheel" "$src"; then
