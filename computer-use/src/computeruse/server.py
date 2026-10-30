@@ -69,14 +69,10 @@ TOOL_SPECS: list[dict] = [
     {
         "name": "screenshot",
         "description": (
-            "Capture the virtual desktop to a PNG on disk and return its path, sha1, pixel size, "
-            "virtual-screen rect, active window and cursor. Coordinates for click/scroll/drag are "
-            "CAPTURE PIXELS of this same space. include_image is false by default: read the returned "
-            "path if you need to look at it. include_image=true additionally attaches a downscaled JPEG "
-            "(<=400KB) which stays in the conversation and is re-sent on every later turn. If your "
-            "model accepts image input, prefer include_image=true when you must SEE the layout to "
-            "decide what to click; for confirming that an action landed, the returned sha1 and "
-            "changed_pixels_pct are cheaper and just as honest."
+            "Capture the desktop → PNG path + sha1 + active window; click/scroll/drag use THESE pixels. "
+            "include_image:false by default — an attached JPEG is re-sent on every later turn, so pass "
+            "true only if your model reads images AND you must SEE the layout. Path + sha1 are enough "
+            "to confirm an action landed."
         ),
         "inputSchema": {
             "type": _OBJECT,
@@ -98,9 +94,9 @@ TOOL_SPECS: list[dict] = [
     {
         "name": "click",
         "description": (
-            "Click at capture pixel (x, y). Returns before/after sha1, changed_pixels_pct and a verdict. "
-            "verdict 'no-observable-change' is NOT an error: the screen did not visibly change, so "
-            "re-screenshot, check which window has focus, or try another spot."
+            "Click at capture pixel (x,y) → before/after sha1 + verdict. 'no-observable-change' is not "
+            "an error: the screen did not move, so re-screenshot or change the target; do not repeat "
+            "the same click."
         ),
         "inputSchema": {
             "type": _OBJECT,
@@ -118,11 +114,9 @@ TOOL_SPECS: list[dict] = [
     {
         "name": "type_text",
         "description": (
-            "Type literal text into the focused control via unicode input (layout independent). "
-            "expect_title is REQUIRED: a case-insensitive substring of the foreground window title. "
-            "On mismatch nothing is typed and the call is refused with focus-mismatch. "
-            "Screenshot first, then pass the active_window.title you saw. The text is never echoed "
-            "back and never written to the audit log."
+            "Type text into the focused control; expect_title (substring of the window title) is "
+            "REQUIRED — on mismatch nothing is typed and the call is refused with focus-mismatch. "
+            "Screenshot first and pass the active window title you saw; the text is never echoed back."
         ),
         "inputSchema": {
             "type": _OBJECT,
@@ -138,9 +132,8 @@ TOOL_SPECS: list[dict] = [
     {
         "name": "key",
         "description": (
-            "Press a key combo in the focused window: 'ctrl+s', 'Return', 'alt+Tab', 'shift+F10'. "
-            "expect_title is REQUIRED and checked exactly like type_text's. "
-            "Prefer this over type_text for shortcuts and for anything a text field would swallow."
+            "Press a key combo in the focused window ('ctrl+s', 'alt+Tab'); expect_title REQUIRED, "
+            "checked exactly like type_text. Prefer it over type_text for shortcuts."
         ),
         "inputSchema": {
             "type": _OBJECT,
@@ -156,7 +149,8 @@ TOOL_SPECS: list[dict] = [
     {
         "name": "scroll",
         "description": (
-            "Wheel at capture pixel (x, y). delta is in wheel units: 120 is one notch, positive scrolls up."
+            "Wheel at capture pixel (x,y); delta 120 = one notch, positive scrolls up. Same verdict "
+            "shape as click."
         ),
         "inputSchema": {
             "type": _OBJECT,
@@ -173,8 +167,8 @@ TOOL_SPECS: list[dict] = [
     {
         "name": "drag",
         "description": (
-            "Press the left button at `from`, move to `to` over duration_ms, then release. "
-            "Both points are capture pixels: [x, y]."
+            "Drag with the left button from [x,y] to [x,y]; both are capture pixels. Same verdict "
+            "shape as click."
         ),
         "inputSchema": {
             "type": _OBJECT,
@@ -191,10 +185,8 @@ TOOL_SPECS: list[dict] = [
     {
         "name": "control_status",
         "description": (
-            "Read-only state, and the ONLY authoritative budget reading: control state (ai/user), "
-            "the panic hotkey, actions used vs limit, audit directory and size, runtime versions. "
-            "Takes no arguments — there is deliberately no way to reclaim control or reset the budget "
-            "from here."
+            "Budget + panic + audit path. Read-only, no arguments; the ONLY authoritative budget "
+            "reading, and the first call when you are unsure what state the desktop is in."
         ),
         "inputSchema": {"type": _OBJECT, "additionalProperties": False, "properties": {}},
     },
@@ -796,12 +788,16 @@ class ComputerUseServer:
                         "capabilities": {"tools": {"listChanged": False}},
                         "serverInfo": {"name": SERVER_NAME, "version": __version__},
                         "instructions": (
-                            "Screenshot before you act, pass expect_title to type_text/key, and read the "
-                            "verdict on every mutating call: no-observable-change means the screen did not "
-                            "move, not that the call failed. If your model can read images, prefer "
-                            "include_image=true for the OBSERVATION step — you need to see the window to "
-                            "decide what to click — and use the sha1/changed_pixels_pct when you only "
-                            "need to know whether the screen moved."
+                            "7 tools, all under tools['computeruse']. Start with screenshot(): it returns "
+                            "the PNG path, sha1 and the active window, and ITS pixel space is the coordinate "
+                            "space for click / scroll / drag. type_text and key REQUIRE expect_title (a "
+                            "substring of the foreground window title) — a mismatch refuses and types "
+                            "nothing. Every mutating call answers verdict 'changed' or "
+                            "'no-observable-change'; the latter means the screen did not move (not a "
+                            "failure), so change the target instead of repeating it. include_image:true "
+                            "attaches a JPEG that is re-sent on every later turn — use it only when you must "
+                            "SEE the layout. control_status() reports the budget (200 mutating actions per "
+                            "process), the panic state and the audit path."
                         ),
                     },
                 )
