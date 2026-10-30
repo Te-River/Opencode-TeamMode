@@ -451,11 +451,23 @@ function Install-V2 {
         }
         $env:UV_TOOL_DIR = $toolDirEff
         if (-not $env:UV_TOOL_BIN_DIR) { $env:UV_TOOL_BIN_DIR = Join-Path $toolDirEff "bin" }
-        & uv tool install --force $wheelPath | Out-Host
+        # An UPGRADE cannot replace an executable the host is running: Windows answers
+        # "os error 32 / 拒绝访问" and uv aborts. Renaming the running image is NOT reliable
+        # either (measured 2026-10-30: the rename was refused with a sharing violation), so
+        # this does not pretend to work around it — it names the cause and the exact next
+        # move. Zero config bytes are written either way, which is why the version already
+        # installed keeps working.
+        $cuOut = & uv tool install --force $wheelPath 2>&1
         $inst = $LASTEXITCODE
+        $cuOut | Out-Host
         $ErrorActionPreference = $prevEap
         if ($downloaded) { Remove-Item -LiteralPath $wheelPath -Force -ErrorAction SilentlyContinue }
         if ($inst -ne 0) {
+            if (($cuOut -join "`n") -match 'os error 32|os error 5|另一个程序正在使用|拒绝访问') {
+                Write-Host "!  The MCP server is running, so Windows will not let uv replace its exe." -ForegroundColor Yellow
+                Write-Host "   Quit OpenCode (the server is its child process), re-run this command, then reopen." -ForegroundColor Yellow
+                Write-Host "   Nothing was changed — the version already installed keeps working." -ForegroundColor Yellow
+            }
             Write-Host "!  uv tool install failed (exit $inst) — no config byte was written." -ForegroundColor Yellow
             exit 1
         }
