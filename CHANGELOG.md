@@ -7,6 +7,8 @@ registry saw 1.5.0 as the install-script fix release).
 
 ## [Unreleased]
 
+## [1.9.4] - 2026-10-30
+
 ### Added
 
 - **Bounded divergence in the Lead's Step 0.** When the ask has more than one plausible

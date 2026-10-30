@@ -284,6 +284,18 @@ console.log("4c. default-agent promotion (v1 config hook): SKIPPED — 2.x promo
 
 /* v1.4.3 (kept): triage gate + user boundaries */
 assert.ok(leadPrompt.includes("Triage — classify before acting"), "lead: triage gate")
+assert.ok(
+  leadPrompt.includes("Divergence is bounded and one-shot"),
+  "lead: divergence is bounded — three readings, one recorded choice, never re-opened after approval",
+)
+assert.ok(
+  leadPrompt.includes("A child id is a link, but only if you print it whole"),
+  "lead: a child id is printed whole so the desktop renders it as a chip (an abbreviated id is a dead reference)",
+)
+assert.ok(
+  cfg.agent.architect.prompt.includes("two or three candidate designs"),
+  "architect: candidates before the recommendation, and convergence is one-way",
+)
 assert.ok(leadPrompt.includes("Question ≠ work order"), "lead: question-not-workorder rule")
 assert.ok(leadPrompt.includes("USER-STATED BOUNDARIES ARE SUPREME"), "lead: user boundary supremacy")
 

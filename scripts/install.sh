@@ -56,8 +56,8 @@ esac
 # 0.0.1 asset's, and a wheel whose hash does not match is never installed — an unverified
 # binary is exactly what that constant exists to prevent. Publishing a new asset and
 # filling this in belong in the SAME commit; a stale hash fails closed.
-CU_VERSION="0.0.3"
-CU_WHEEL_SHA256="976ff36581111bff9c1be5058e713bbc853f08ee3eef07ce02c7909848d448f3"
+CU_VERSION="0.0.4"
+CU_WHEEL_SHA256="b8c9a17093fd163552bc4f595e4ae58d4b8a1a4f1b1c2adf3f2e3a82465ca403"
 CU_RELEASE_URL="https://github.com/Te-River/Opencode-TeamMode/releases/download/computeruse-v${CU_VERSION}/computeruse_mcp-${CU_VERSION}-py3-none-any.whl"
 
 echo ""

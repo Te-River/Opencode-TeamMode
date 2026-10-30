@@ -56,8 +56,8 @@ $PKG_NAME = "@te-river/opencode-team-mode"
 # because an unverified binary is exactly what this constant exists to prevent. Publishing
 # a new asset and overwriting this value belong in the SAME commit — a stale hash fails
 # closed, which is the correct failure.
-$CU_VERSION = "0.0.3"
-$CU_WHEEL_SHA256 = "976ff36581111bff9c1be5058e713bbc853f08ee3eef07ce02c7909848d448f3"
+$CU_VERSION = "0.0.4"
+$CU_WHEEL_SHA256 = "b8c9a17093fd163552bc4f595e4ae58d4b8a1a4f1b1c2adf3f2e3a82465ca403"
 $CU_RELEASE_URL = "https://github.com/Te-River/Opencode-TeamMode/releases/download/computeruse-v$($CU_VERSION)/computeruse_mcp-$($CU_VERSION)-py3-none-any.whl"
 
 Write-Host ""
@@ -441,6 +441,7 @@ function Install-V2 {
         # the mcp entry spawns the absolute exe anyway.
         $prevEap = $ErrorActionPreference
         $ErrorActionPreference = "Continue"
+        $callerSetToolDir = [bool]$env:UV_TOOL_DIR
         $toolDirEff = $env:UV_TOOL_DIR
         if (-not $toolDirEff) { $toolDirEff = (& uv tool dir 2>$null | Select-Object -First 1) }
         if (-not $toolDirEff) {
@@ -450,7 +451,11 @@ function Install-V2 {
             exit 1
         }
         $env:UV_TOOL_DIR = $toolDirEff
-        if (-not $env:UV_TOOL_BIN_DIR) { $env:UV_TOOL_BIN_DIR = Join-Path $toolDirEff "bin" }
+        # Only redirect the shim dir when the CALLER redirected the tool dir: a sandbox wants
+        # "rollback = delete one directory", but defaulting it to <toolDir>\bin pollutes uv's
+        # own tools dir with a directory uv then reports as a malformed tool on every
+        # `uv tool list` (measured: "Ignoring malformed tool `bin`").
+        if ($callerSetToolDir -and -not $env:UV_TOOL_BIN_DIR) { $env:UV_TOOL_BIN_DIR = Join-Path $toolDirEff "bin" }
         # An UPGRADE cannot replace an executable the host is running: Windows answers
         # "os error 32 / 拒绝访问" and uv aborts. Renaming the running image is NOT reliable
         # either (measured 2026-10-30: the rename was refused with a sharing violation), so
