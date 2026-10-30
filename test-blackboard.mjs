@@ -271,7 +271,16 @@ assert.equal(cfg.agent["implementer"].permission.tm_memory, "allow", "memory sto
 assert.equal(cfg.agent["Team"].permission.tm_ledger, undefined, "the ledger is NOT named in the matrix — v2-permissions grants tm_ledger by role name, so a second source of the rule would drift")
 assert.equal(cfg.agent["Team"].permission.question, "allow", "lead: question granted (batched blocking questions)")
 assert.equal(cfg.agent["implementer"].permission.question, "deny", "specialists: question denied (lead-only)")
-assert.equal(Object.keys(cfg.agent).length, 6, "exactly 6 agents injected")
+assert.equal(Object.keys(cfg.agent).length, 7, "exactly 7 agents injected")
+assert.equal(cfg.agent.computerUser.mode, "subagent", "ComputerUser is a subagent only — the lead dispatches it, the picker never shows it")
+assert.ok(
+  cfg.agent.computerUser.prompt.includes("the only specialist allowed to drive the user's real desktop"),
+  "ComputerUser's prompt states the monopoly explicitly",
+)
+assert.ok(
+  cfg.agent.Team.prompt.includes("ComputerUser` needs a real computer-use server"),
+  "the lead is told to dispatch ComputerUser only when such an MCP is actually present",
+)
 assert.equal(Object.keys(cfg.command).length, 6, "exactly 6 commands injected")
 
 /* v1's config-hook idempotence and default-agent promotion retired with the
@@ -393,7 +402,7 @@ assert.ok(leadPrompt.includes("No fifth section"), "lead: the four sections are 
   // the bare section names (the shared sentence lists them with slashes, not colons).
   const specialistLabels = ["已落盘", "未开始", "验证", "提交与发布"]
   const specialists = Object.entries(cfg2.agent).filter(([n]) => n.toLowerCase() !== "team")
-  assert.equal(specialists.length, 5, "five specialist prompts were scanned (a vacuous loop is not a pass)")
+  assert.equal(specialists.length, 6, "six specialist prompts were scanned (a vacuous loop is not a pass)")
   for (const [name, a] of specialists) {
     const p = String(a.prompt ?? "")
     assert.ok(p.includes("## Truncation handoff"), `${name}: the stop handoff section is appended`)
@@ -490,7 +499,7 @@ console.log("4d. the v2 projection ON DISK — a retired name may not survive th
     const md = ["agents", "commands"].flatMap((sub) =>
       fs.readdirSync(path.join(genRoot, sub)).map((f) => path.join(genRoot, sub, f)),
     )
-    assert.equal(md.length, 12, "the generator wrote 6 roles + 6 commands (a vacuous scan is not a pass)")
+    assert.equal(md.length, 13, "the generator wrote 7 roles + 6 commands (a vacuous scan is not a pass)")
     for (const file of md) {
       const hit = bannedHit(fs.readFileSync(file, "utf8"))
       assert.ok(!hit, `${path.basename(file)}: the generated markdown on disk never names a retired tool (${hit ?? ""})`)

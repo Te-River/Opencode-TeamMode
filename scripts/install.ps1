@@ -321,7 +321,7 @@ function Install-V2 {
         #        a path is the claim; the file on disk is the evidence) ────────
         $rolesMissing = @()
         $cmdsMissing = @()
-        foreach ($role in @("Team", "architect", "implementer", "reviewer", "tester", "researcher")) {
+        foreach ($role in @("Team", "architect", "implementer", "reviewer", "tester", "researcher", "ComputerUser")) {
             if (Test-Path (Join-Path $cfgDir "agents\$role.md")) {
                 Write-Host "✔  role    $role" -ForegroundColor Green
             } else {
@@ -568,7 +568,7 @@ function Install-V2 {
     $staleFlag = [Environment]::GetEnvironmentVariable($bgFlag, "User")
     Write-Host ""
     Write-Host "── 2.x checklist ─────────────────────────────────────────────────────────────" -ForegroundColor Cyan
-    Write-Host "   roles    : 6/6 files under $(Join-Path $cfgDir 'agents')" -ForegroundColor DarkGray
+    Write-Host "   roles    : 7/7 files under $(Join-Path $cfgDir 'agents')" -ForegroundColor DarkGray
     Write-Host "   commands : $cmdCount/6 found under $(Join-Path $cfgDir 'commands\team-*.md') (a hand-" -ForegroundColor DarkGray
     Write-Host "              written file the generator refused to overwrite shows short here)" -ForegroundColor DarkGray
     Write-Host "   default  : default_agent = Team, read back from $cfgFile" -ForegroundColor DarkGray

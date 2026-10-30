@@ -1394,7 +1394,7 @@ console.log("7e. Team-scope isolation — nothing outside Team may be touched (#
   const f = makeFakeCtx({ directory: ws, agents: [] })
   const { applyV2PermissionGuards, applyV2BackgroundForce } = await import("./dist/host/v2-guard.js")
   const { applyV2NativeOffload } = await import("./dist/host/v2-offload.js")
-  const scope = createTeamScope(["team", "architect", "implementer", "reviewer", "tester", "researcher"])
+  const scope = createTeamScope(["team", "architect", "implementer", "reviewer", "tester", "researcher", "computeruser"])
   const gg = await applyV2PermissionGuards(f.ctx, { envProtectMode: "off", scope })
   const bgg = await applyV2BackgroundForce(f.ctx, { scope })
   const off = applyV2NativeOffload(f.ctx, {
@@ -3359,7 +3359,7 @@ console.log("20. R6's file-path face is back on 2.x — the native read/write/ed
 
   // (b) the hook, on the fake host
   const f = makeFakeCtx({ directory: ws, agents: [] })
-  const scope = createTeamScope(["team", "architect", "implementer", "reviewer", "tester", "researcher"])
+  const scope = createTeamScope(["team", "architect", "implementer", "reviewer", "tester", "researcher", "computeruser"])
   const g = await applyV2PermissionGuards(f.ctx, { envProtectMode: "audit", scope })
   const fire = (ev) => f.hook("permission.evaluate").fire(ev)
 
@@ -3662,7 +3662,7 @@ console.log("26. R6's file-path face on the seam that sees the whole input — g
   const v2src = fs.readFileSync(path.join(repoRoot, "src", "host", "v2.ts"), "utf8")
 
   const f = makeFakeCtx({ directory: ws, agents: [] })
-  const scope = createTeamScope(["team", "architect", "implementer", "reviewer", "tester", "researcher"])
+  const scope = createTeamScope(["team", "architect", "implementer", "reviewer", "tester", "researcher", "computeruser"])
   const g = await applyV2PermissionGuards(f.ctx, { envProtectMode: "audit", scope })
   const eg = await applyV2EnvFileInputGuard(f.ctx, { envProtectMode: "audit", scope, report: g.report })
   const fire = (ev) => f.hook("tool.execute.before").fire(ev)
@@ -3751,7 +3751,7 @@ console.log("27. the Code Mode adoption hint — a run of native calls appends a
 
   // (e) hook level: the 4th native result is annotated, the first three are not
   const f = makeFakeCtx({ directory: ws, agents: [] })
-  const scope = createTeamScope(["team", "architect", "implementer", "reviewer", "tester", "researcher"])
+  const scope = createTeamScope(["team", "architect", "implementer", "reviewer", "tester", "researcher", "computeruser"])
   const advised = []
   const pc = applyV2ProbeChain(f.ctx, { scope, env: {}, onAdvise: (i) => advised.push(i) })
   const fire = (tool, text, agent = "team", sessionID = "ses_chain") =>
@@ -4249,7 +4249,7 @@ console.log("30. 错峰重试 — recognise a provider throttle, inject an exact
   {
     const ws31 = workspace("retry-roles")
     const f3 = makeFakeCtx({ directory: ws31, agents: [] })
-    const scope3 = createTeamScope(["team", "architect", "implementer", "reviewer", "tester", "researcher"])
+    const scope3 = createTeamScope(["team", "architect", "implementer", "reviewer", "tester", "researcher", "computeruser"])
     const g3 = createRetryGovernor({
       baseMs: 5000,
       maxMs: 60000,
@@ -4322,7 +4322,7 @@ console.log("30. 错峰重试 — recognise a provider throttle, inject an exact
   {
     const ws32 = workspace("redrive")
     const f4 = makeFakeCtx({ directory: ws32, agents: [] })
-    const scope4 = createTeamScope(["team", "architect", "implementer", "reviewer", "tester", "researcher"])
+    const scope4 = createTeamScope(["team", "architect", "implementer", "reviewer", "tester", "researcher", "computeruser"])
     const timersFired = []
     const timersCleared = []
     let redriveSink = null
@@ -4385,7 +4385,7 @@ console.log("30. 错峰重试 — recognise a provider throttle, inject an exact
   // (g) the hooks, on the fake host
   const ws30 = workspace("retry")
   const f = makeFakeCtx({ directory: ws30, agents: [] })
-  const scope = createTeamScope(["team", "architect", "implementer", "reviewer", "tester", "researcher"])
+  const scope = createTeamScope(["team", "architect", "implementer", "reviewer", "tester", "researcher", "computeruser"])
   const rows = []
   const gov = createRetryGovernor({ baseMs: 5000, maxMs: 60000, jitter: 0, breakAfter: 5, cooldownMs: 60000, random: () => 0.5, onEvent: (row) => rows.push(row) })
   const layer = await applyV2RetryGovernor(f.ctx, { scope, governor: gov, onEvent: (row) => rows.push(row) })
@@ -4490,7 +4490,7 @@ console.log("31. 拆分任务 — a big brief arms ONE advice line for the lead'
   // (d) the hooks, on the fake host
   const ws31 = workspace("split")
   const f = makeFakeCtx({ directory: ws31, agents: [] })
-  const scope = createTeamScope(["team", "architect", "implementer", "reviewer", "tester", "researcher"])
+  const scope = createTeamScope(["team", "architect", "implementer", "reviewer", "tester", "researcher", "computeruser"])
   const rows = []
   const layer = await applyV2SessionLayer(f.ctx, {
     note: "", noteAgents: [], plan: new Map(), scope,
@@ -4628,7 +4628,7 @@ console.log("32. subagentConcurrency — a BURST is really capped, not just the 
 
   // (f) the hook: through the fake host, three dispatches with a ceiling of 2
   const f = makeFakeCtx({ directory: ws, agents: [] })
-  const scope = createTeamScope(["team", "architect", "implementer", "reviewer", "tester", "researcher"])
+  const scope = createTeamScope(["team", "architect", "implementer", "reviewer", "tester", "researcher", "computeruser"])
   const g = await applyV2PermissionGuards(f.ctx, { envProtectMode: "off", scope, subagentConcurrency: 2 })
   const dispatch = () => ({ sessionID: "ses_lead", agent: "team", action: "subagent", resources: [], effect: "allow" })
   const e1 = dispatch(); await f.hook("permission.evaluate").fire(e1)
@@ -4756,7 +4756,7 @@ console.log("32c. a dispatch that cannot run takes no slot; ids are not reused; 
   const { applyV2PermissionGuards, createSubagentCapGate, normalizeCapLimit, DEFAULT_SUBAGENT_CONCURRENCY } = await import("./dist/host/v2-guard.js")
   const { applyV2SubagentRegistry } = await import("./dist/host/v2-subagent.js")
   const { createTeamScope } = await import("./dist/host/v2-scope.js")
-  const scope = createTeamScope(["team", "architect", "implementer", "reviewer", "tester", "researcher"])
+  const scope = createTeamScope(["team", "architect", "implementer", "reviewer", "tester", "researcher", "computeruser"])
 
   // Minor 1 — `v2-retry`'s cooldown denies exactly at this layer, and a denied call never
   // reaches execute.after: admitting it leaked one slot per attempt for a whole 60s TTL.
@@ -6047,7 +6047,7 @@ console.log("39. 易变上下文尾部注入 dynamicTail — system 逐字节稳
 
   // ⑤ 重试指令：on 进尾部、system 无它；off 回到 system
   const rf = makeFakeCtx({ directory: workspace("dynamic-tail-retry"), agents: [] })
-  const scope5 = createTeamScope(["team", "architect", "implementer", "reviewer", "tester", "researcher"])
+  const scope5 = createTeamScope(["team", "architect", "implementer", "reviewer", "tester", "researcher", "computeruser"])
   const sink5 = createDynamicSink()
   const gov5 = createRetryGovernor({ baseMs: 5000, maxMs: 60000, jitter: 0, breakAfter: 5, cooldownMs: 60000, random: () => 0.5 })
   const retryOn = await applyV2RetryGovernor(rf.ctx, { scope: scope5, governor: gov5, sink: sink5 })
@@ -6149,7 +6149,7 @@ console.log("40. sessionInstructions — 易变上下文写成宿主的 keyed �
       directory: workspace("instr-pure"),
       sessionData: { instructions: { put: "ok", remove: "ok", list: [] } },
     })
-    const scope = createTeamScope(["team", "architect", "implementer", "reviewer", "tester", "researcher"])
+    const scope = createTeamScope(["team", "architect", "implementer", "reviewer", "tester", "researcher", "computeruser"])
     const sink = createDynamicSink()
     const layer = await applyV2SessionInstructions(f.ctx, { scope, sink, enabled: true })
     assert.equal(layer.report.status, "on", "有缝 ⇒ status = on")
@@ -6304,21 +6304,22 @@ console.log("41. computeruse MCP — 按角色删除的哨兵、两种拼写、�
   const S = await import("./dist/host/v2-session.js")
   const PR = await import("./dist/host/v2-probe.js")
 
-  // (a) 三个允许角色 / 三个拒绝角色。判据是 ROLE，不是七个字面工具名——服务器升级
-  //     多一个工具时，字面清单会静默漏掉它，哨兵不会。
-  for (const role of ["Team", "team", "researcher", "tester"]) {
+  // (a) 两个允许角色 / 五个拒绝角色。判据是 ROLE，不是七个字面工具名——服务器升级
+  //     多一个工具时，字面清单会静默漏掉它，哨兵不会。桌面只交给"专门看屏幕的那个"
+  //     角色：researcher 读不可信网页 + 握鼠标是本产品最坏的组合，tester 走浏览器。
+  for (const role of ["Team", "team", "computeruser", "ComputerUser"]) {
     assert.equal(P.computerUseAllowed(role), true, `${role} 允许驱动桌面`)
     assert.ok(!S.toolsToRemove({}, role).includes(P.COMPUTER_USE_CATALOG), `${role}: 整个族不进删除集合`)
   }
-  for (const role of ["architect", "implementer", "reviewer"]) {
+  for (const role of ["architect", "implementer", "reviewer", "researcher", "tester"]) {
     assert.equal(P.computerUseAllowed(role), false, `${role} 不允许驱动桌面`)
     assert.ok(S.toolsToRemove({}, role).includes(P.COMPUTER_USE_CATALOG), `${role}: 整个 computeruse 族进删除集合`)
   }
   const cuPlan = S.removalPlan(agents)
-  for (const role of ["architect", "implementer", "reviewer"]) {
+  for (const role of ["architect", "implementer", "reviewer", "researcher", "tester"]) {
     assert.ok(cuPlan.get(role)?.has(P.COMPUTER_USE_CATALOG), `${role} 的 removalPlan 带哨兵`)
   }
-  for (const role of ["team", "researcher", "tester"]) {
+  for (const role of ["team", "computeruser"]) {
     assert.ok(!cuPlan.get(role)?.has(P.COMPUTER_USE_CATALOG), `${role} 的 removalPlan 不带哨兵`)
   }
 
@@ -6352,10 +6353,10 @@ console.log("41. computeruse MCP — 按角色删除的哨兵、两种拼写、�
     assert.ok(!Object.keys(deniedEv.tools).includes(gone), `architect 的请求里没有 ${gone}`)
   }
   assert.ok(Object.keys(deniedEv.tools).includes("read"), "删的是这一族，不是整个工具面")
-  const allowedEv = cuSurf("researcher")
+  const allowedEv = cuSurf("computeruser")
   await cuFake.hook("session.context").fire(allowedEv)
   for (const kept of ["computeruse_screenshot", "computeruse.click"]) {
-    assert.ok(Object.keys(allowedEv.tools).includes(kept), `researcher 保留 ${kept}（允许角色不该被删）`)
+    assert.ok(Object.keys(allowedEv.tools).includes(kept), `computeruser 保留 ${kept}（允许角色不该被删）`)
   }
 
   // (d) 三个计数器各用一组合成工具名触发一次
@@ -6392,10 +6393,10 @@ console.log("41. computeruse MCP — 按角色删除的哨兵、两种拼写、�
 
   // 允许角色的两个计数：声明了但 0 个工具 ⇒ absent；出现工具 ⇒ 名字 + seen
   PR.resetComputerUseObservation(true)
-  await cuFake.hook("session.context").fire({ agent: "researcher", sessionID: "ses_cu_r1", system: [], messages: [], tools: { read: {} } })
+  await cuFake.hook("session.context").fire({ agent: "computeruser", sessionID: "ses_cu_r1", system: [], messages: [], tools: { read: {} } })
   assert.equal(PR.computerUseFields([]).computeruse_absent, "declared-not-seen", "声明了却一个都没出现 ⇒ absent")
   PR.resetComputerUseObservation(true)
-  await cuFake.hook("session.context").fire({ agent: "researcher", sessionID: "ses_cu_r2", system: [], messages: [], tools: { "computeruse_screenshot": {} } })
+  await cuFake.hook("session.context").fire({ agent: "computeruser", sessionID: "ses_cu_r2", system: [], messages: [], tools: { "computeruse_screenshot": {} } })
   const seenFields = PR.computerUseFields([])
   assert.equal(seenFields.computeruse_absent, "seen", "出现了工具就不是 absent")
   assert.equal(seenFields.computeruse_tools, "computeruse_screenshot", "computeruse_tools 是名字，不是形容词")
@@ -6458,7 +6459,7 @@ console.log("41. computeruse MCP — 按角色删除的哨兵、两种拼写、�
     const CG = await import("./dist/host/v2-computeruse-gate.js")
     const { createTeamScope } = await import("./dist/host/v2-scope.js")
     const { RunStore } = await import("./dist/tm/store.js")
-    const cuScope = createTeamScope(["team", "architect", "implementer", "reviewer", "researcher", "tester"])
+    const cuScope = createTeamScope(["team", "architect", "implementer", "reviewer", "researcher", "tester", "computeruser"])
     const gdir = workspace("cuGate")
     const gateFake = makeFakeCtx({ directory: gdir, agents: sixAgents })
     // A REAL store: the leak row must land on disk, where tm_stats and the user can
@@ -6505,8 +6506,8 @@ console.log("41. computeruse MCP — 按角色删除的哨兵、两种拼写、�
     assert.equal(cg.report.refusedByLayer.permission, 1, "按层计数：权限层拒绝 1 次")
     assert.equal(cg.report.refusedByRole.architect, 1, "按角色计数：哪个角色试的")
 
-    // 允许角色在同一层不被改（tester 有桌面控制权）
-    const permOk = { action: "computeruse_control_status", agent: "tester", sessionID: "ses_cu_perm2", resources: [], effect: "allow" }
+    // 允许角色在同一层不被改（computeruser 是唯一有桌面控制权的专家）
+    const permOk = { action: "computeruse_control_status", agent: "computeruser", sessionID: "ses_cu_perm2", resources: [], effect: "allow" }
     cg.firePermission(permOk)
     assert.equal(permOk.effect, "allow", "允许角色在权限层不被改")
     assert.equal(cg.report.callsAllowed, 1, "允许角色的观测单独计数")
@@ -6543,7 +6544,7 @@ console.log("41. computeruse MCP — 按角色删除的哨兵、两种拼写、�
     assert.match(innerNoInput, /implementer/, "input 完全不存在时同样拒绝（不假设参数在）")
     let innerAllowed = true
     try {
-      cg.fireBefore({ tool: "computeruse_screenshot", agent: "tester", sessionID: "ses_cu_inner3", input: {} })
+      cg.fireBefore({ tool: "computeruse_screenshot", agent: "computeruser", sessionID: "ses_cu_inner3", input: {} })
     } catch {
       innerAllowed = false
     }
@@ -6674,7 +6675,7 @@ console.log("41. computeruse MCP — 按角色删除的哨兵、两种拼写、�
     // 允许角色的调用是 intent，不是泄漏。
     PR.resetComputerUseObservation(true)
     const allowedBefore = cg.report.callsAllowed
-    cg.fireAfter({ tool: "execute", agent: "tester", sessionID: "ses_cg6", result: { metadata: { toolCalls: [{ tool: "computeruse.screenshot" }] } } })
+    cg.fireAfter({ tool: "execute", agent: "computeruser", sessionID: "ses_cg6", result: { metadata: { toolCalls: [{ tool: "computeruse.screenshot" }] } } })
     assert.equal(cg.report.callsAllowed, allowedBefore + 1, "允许角色的 computer-use 调用单独计数")
     assert.equal(PR.computerUseFields([]).computeruse_deny_leak, "", "允许角色不产生泄漏")
 

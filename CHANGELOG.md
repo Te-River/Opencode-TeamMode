@@ -9,6 +9,10 @@ registry saw 1.5.0 as the install-script fix release).
 
 ### Changed
 
+- **新增第七个角色 `ComputerUser`，桌面控制收紧成 `Team` + 它。** 模板常驻生成（`mode: subagent`，选择器里仍然只有 Team），
+  Lead 的提示词写明：**只有真的存在 computer-use MCP（我们的或任何等价的）时才派它**，没有就直说缺这个能力。
+  `researcher` / `tester` 从允许列表里移除——让一个读不可信网页的角色同时握着鼠标，是本产品能凑出的最坏组合；
+  被拒角色走三条已有的拦截层，且每次拦截都计数。
 - **computer-use 的文档从安装手册里分出去。** 新增 `docs/computer-use.md`，承载升级规程
   （**两次重启**：摘条目 → 重启 → 装 → 写回 → 重启，因为 Windows 不让替换运行中的 exe；
   或退出 OpenCode 再装一次）、边界、审计格式与排错。`docs/installation-v2.md` 只保留

@@ -8,7 +8,7 @@
 > there.
 >
 > 如果你的宿主是 OpenCode 2.x，请看本页而不是 `installation.md`：2.x 的插件**不能创建
-> agent**，六个角色和六条 `/team-*` 命令是以**配置文件**的形式由本包生成出去的；v1 的几处
+> agent**，七个角色和六条 `/team-*` 命令是以**配置文件**的形式由本包生成出去的；v1 的几处
 > 机制在 v2 上根本没有对应物。`installation.md` 讲的是 1.18.x，那份仍然是对的。
 
 Find out which one you are on / 先确认你在哪一代：
@@ -46,7 +46,7 @@ implied:
 
 | | OpenCode 1.18.x | OpenCode 2.x |
 |---|---|---|
-| The six roles | injected by the plugin at boot | `~/.config/opencode/agents/*.md`, written by the generator below — a plugin cannot add an agent |
+| The seven roles | injected by the plugin at boot | `~/.config/opencode/agents/*.md`, written by the generator below — a plugin cannot add an agent |
 | The six `/team-*` commands | injected by the plugin | `~/.config/opencode/commands/*.md`, same generator |
 | Default agent | filled only if the user left it alone | **the installer writes `default_agent: "Team"`** — the 2.1.x plugin ctx has no `agent.default` at all (`typeof === "undefined"`), so a plugin cannot promote anything, and the boot row reports which role the installer named (`agents_default: installer:Team` / `installer:other`); `default_agent` in config is the checkable part. Opt out with `{ "package": "@te-river/opencode-team-mode@latest", "options": { "defaultAgent": false } }` in `plugins` — the object form, not the 1.x tuple (measured 2026-10-06: a tuple is rejected with `path=$.plugins.1 kind=invalid`, the object form is delivered) |
 | Non-blocking commands | `tm_pty` — **removed with v1 support** | **not registered at all** — the v2 plugin context has no pty domain, so the tool could only ever report its own missing seam. Run a slow step as its own `shell` call (one per call, each with its own `timeout`) and tee the output to a log you can read back |
@@ -144,7 +144,7 @@ returning cleanly is not evidence the plugin loaded.
    npm or from a local path — the Extensions panel cannot tell them apart (a loader file
    named `team-mode.js` and a directory whose plugin id is `@te-river/opencode-team-mode` print identically).
 
-### Step 2 — Generate the six roles and the six commands
+### Step 2 — Generate the seven roles and the six commands
 
 This is the step 2.x exists for and the v1 installer never needed. Run the generator
 that ships **inside the installed package** — never copy the markdown by hand, or the
@@ -418,7 +418,7 @@ dump) and `TM_CONFIG_AUTOCREATE` (the auto-create off switch).
 
 | | OpenCode 1.18.x | OpenCode 2.x |
 |---|---|---|
-| 六个角色 | 插件启动时注入 | `~/.config/opencode/agents/*.md`，由下面的生成器写出——插件没有"造 agent"的接口 |
+| 七个角色 | 插件启动时注入 | `~/.config/opencode/agents/*.md`，由下面的生成器写出——插件没有"造 agent"的接口 |
 | 六条 `/team-*` 命令 | 插件注入 | 同一个生成器写 `commands/*.md` |
 | 默认 agent | 只在用户没动过时补位 | **由安装器写 `default_agent: "Team"`**——2.1.x 插件 ctx 根本没有 `agent.default`（`typeof === "undefined"`），插件提不了默认；启动行会报安装器写的是谁（`agents_default: installer:Team` / `installer:other`），配置里的 `default_agent` 才是可核对的那一条。退出方式：`plugins` 里写 `{ "package": "@te-river/opencode-team-mode@latest", "options": { "defaultAgent": false } }`——必须是对象形状，不是 1.x 的元组（2026-10-06 实测：元组被拒 `path=$.plugins.1 kind=invalid`，对象形状能送达） |
 | 读文件 / 搜代码 / 跑命令 | `tm_read` / `tm_grep` / `tm_bash`——**已随 v1 支持一起移除** | 宿主的 `read` / `grep` / `glob` / `shell`，**治理照旧**：超大结果照样在 `tool.execute.after` 被卸载成预览 + 句柄，跨出项目的路径走宿主自己的 `external_directory` 权限（v1 是硬拒，v2 是弹窗） |
@@ -502,7 +502,7 @@ Node 20+ 还会额外启用 Playwright 浏览器引擎）。
 6. 明确说清你留下的是哪种写法、包来自 npm 还是本地路径 —— 扩展面板分不出来：一个叫
    `team-mode.js` 的 loader 文件，和一个插件 id 恰好是 `@te-river/opencode-team-mode` 的目录条目，显示出来一模一样。
 
-### 第 2 步 — 生成六个角色和六条命令
+### 第 2 步 — 生成七个角色和六条命令
 
 这一步就是 2.x 存在、而 v1 安装脚本从不需要的那件事。请运行**已安装包里**自带的那个生成器
 ——不要手抄 markdown，否则 v1 注入的提示词和 v2 配置文件里的会悄悄分叉：

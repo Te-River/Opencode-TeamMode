@@ -31,6 +31,7 @@ import type { AgentConfig, AgentPermission } from "./types.js"
 import { TEAM_LEAD_PROMPT } from "./prompts/lead.js"
 import {
   ARCHITECT_PROMPT,
+  COMPUTERUSER_PROMPT,
   IMPLEMENTER_PROMPT,
   RESEARCHER_PROMPT,
   REVIEWER_PROMPT,
@@ -216,7 +217,7 @@ const teamLead: AgentConfig = {
   mode: "primary",
   description:
     "Team lead orchestrator — routes work to specialist agents " +
-    "(architect, implementer, reviewer, tester, researcher) via a fixed " +
+    "(architect, implementer, reviewer, tester, researcher, computerUser) via a fixed " +
     "routing table, enforces the approval gate and review/test feedback " +
     "loop, and synthesizes their outputs into a coherent deliverable.  " +
     "Use when the task requires multi-step collaboration across " +
@@ -331,8 +332,26 @@ const researcher: AgentConfig = {
 
 }
 
+const computerUser: AgentConfig = {
+  mode: "subagent",
+  description:
+    "ComputerUser — the only role allowed to drive the real desktop through a " +
+    "computer-use MCP server (screenshot, click, type, key, scroll, drag).  " +
+    "Screenshots before it acts, names the window it expects, and reports the " +
+    "change verdict for every action instead of assuming the click landed.  " +
+    "The lead dispatches it only when such an MCP is actually present.",
+  prompt: COMPUTERUSER_PROMPT,
+  color: "#FBBF24", // amber
+  // Whitelist: TM_TOOLS only.  No bash / no edit / no write — this role's whole
+  // job is the screen, and a file-shaped side effect on the user's desktop is
+  // exactly what its brief forbids.  No `task`: T3 still holds (only the lead
+  // dispatches).  The MCP tools themselves reach it through the host's Code Mode
+  // catalog, not through this matrix; `computerUseAllowed` is what grants them.
+  permission: whitelist(),
+}
+
 /* Append the reply contract and shared rules to every specialist prompt. */
-for (const a of [architect, implementer, reviewer, tester, researcher]) {
+for (const a of [architect, implementer, reviewer, tester, researcher, computerUser]) {
   a.prompt = (a.prompt ?? "") + REPLY_CONTRACT + SHARED_RULES
 }
 
@@ -342,7 +361,7 @@ if (teamLead.permission) {
   applyNetworkPermission(teamLead.permission, true)
   applyDispatcherPermission(teamLead.permission, true)
 }
-for (const a of [architect, implementer, reviewer, tester, researcher]) {
+for (const a of [architect, implementer, reviewer, tester, researcher, computerUser]) {
   if (a.permission) {
     // tester: native browser only (UI verification); researcher: full web grant
     applyNetworkPermission(a.permission, a === researcher, a === tester)
@@ -365,4 +384,5 @@ export const agents: Record<string, AgentConfig> = {
   reviewer,
   tester,
   researcher,
+  computerUser,
 }

@@ -498,7 +498,7 @@ install_v2() {
   # ── 3. verify the twelve files actually arrived (the generator printing a
   #        path is the claim; the file on disk is the evidence) ───────────────
   local roles_missing="" cmds_missing=""
-  for role in Team architect implementer reviewer tester researcher; do
+  for role in Team architect implementer reviewer tester researcher ComputerUser; do
     if [ -f "${cfg_dir}/agents/${role}.md" ]; then
       echo "✔  role    ${role}"
     else
@@ -547,7 +547,7 @@ install_v2() {
   cmd_count="$(find "${cfg_dir}/commands" -maxdepth 1 -name 'team-*.md' 2>/dev/null | grep -c . || true)"
   echo ""
   echo "── 2.x checklist ─────────────────────────────────────────────────────────────"
-  echo "   roles    : 6/6 files under ${cfg_dir}/agents/"
+  echo "   roles    : 7/7 files under ${cfg_dir}/agents/"
   echo "   commands : ${cmd_count:-0}/6 found under ${cfg_dir}/commands/team-*.md (a hand-written"
   echo "              file the generator refused to overwrite would show short here)"
   echo "   default  : default_agent = Team, read back from ${cfg}"

@@ -165,6 +165,11 @@ files — NOT docs, comments, formatting, NOT *.test.* files).
   code fence. The desktop replaces a bare full id with a chip carrying that session's
   title, which is the only way the user can open the child you are describing.
   \`ses_e73a40\` is a dead reference; a fenced id stays literal and unlinked.
+- **\`ComputerUser\` needs a real computer-use server.** Dispatch that specialist only
+  when a computer-use MCP is actually present — ours is \`computeruse\`, but any
+  equivalent server counts; judge by the tools you can see, not by a config guess.
+  Without one it has nothing to drive: say the capability is missing and continue
+  without it.  It is the only role besides you that may touch the desktop.
 - **The host's ack is advice for the general case, not for yours.** A background
   acknowledgement tells you not to poll and offers to end the response. When the user's
   remaining ask IS that child's output, ending the turn is a broken delivery — the user

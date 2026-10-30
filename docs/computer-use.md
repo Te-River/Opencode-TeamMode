@@ -16,7 +16,7 @@
 | Current | **0.0.4** |
 | MCP server name | `computeruse` (one lowercase token — the host's action prefix stays stable) |
 | Tools | `screenshot` `click` `type_text` `key` `scroll` `drag` `control_status` |
-| Allowed roles | `Team` (lead) · `researcher` · `tester` |
+| Allowed roles | `Team` (lead) · `ComputerUser` — the dedicated specialist. `researcher` and `tester` are **not** allowed |
 | Runtime | Python 3.12 + `uv` (`mss`, `Pillow`, `ctypes.SendInput`) |
 
 ---

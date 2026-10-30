@@ -6,7 +6,7 @@
 [![npm downloads](https://img.shields.io/npm/dm/@te-river/opencode-team-mode.svg)](https://www.npmjs.com/package/@te-river/opencode-team-mode)
 [![license](https://img.shields.io/npm/l/@te-river/opencode-team-mode.svg)](./LICENSE)
 
-> 🤝 **你的 OpenCode 刚刚招了一个团队。** 主脑（Lead）、架构师、实现者、评审、测试、研究员，六个专职 agent，配上受治理的工具、结构化交接和「先出计划、等你批准」的门禁。一个插件，没有文件要拷。
+> 🤝 **你的 OpenCode 刚刚招了一个团队。** 主脑（Lead）、架构师、实现者、评审、测试、研究员，外加一个**只在装了桌面控制 MCP 时才出动**的 ComputerUser——七个角色，配上受治理的工具、结构化交接和「先出计划、等你批准」的门禁。一个插件，没有文件要拷。
 
 > 💡 **建议在中大型项目里用。** 审批门禁、上下文卸载、工具白名单这层治理，在代码库有真实体量时是资产；在两三个文件的小脚本和一次性问答上，它主要是开销。把团队用在该用的地方。
 
@@ -36,7 +36,7 @@
 > ```text
 > 安装 OpenCode 插件 @te-river/opencode-team-mode：本包**只支持 OpenCode 2.x**——1.18.x 人格已在 1.7.0 线里整体移除。
 > 按 https://raw.githubusercontent.com/Te-River/Opencode-TeamMode/main/docs/installation-v2.md 操作
-> （2.x 的插件不能创建 agent，六个角色和六条 `/team-*` 命令要靠那份指南里的生成步骤落到配置目录——
+> （2.x 的插件不能创建 agent，七个角色和六条 `/team-*` 命令要靠那份指南里的生成步骤落到配置目录——
 > 这一步不是可选的）。然后跑一遍该指南里的验证检查。
 > URL 打不开（国内网络常见）就在同一路径前加镜像前缀 https://ghproxy.net/；npm 慢或不通就先
 > `npm config set registry https://registry.npmmirror.com`。
@@ -69,7 +69,7 @@
 **第一步 · 安装。** 用[太长不看](#太长不看)那段话、跑安装脚本，或者照 [docs/installation-v2.md](./docs/installation-v2.md) 手动来。成败只取决于两件事：
 
 - 键名是 **`plugins`（复数）**，2.x 的条目是字符串或 `{ "package": …, "options": { … } }`。多个配置文件里的条目是**由低到高叠加、不是互相替换**，所以 Team 只能有一条——同时写进 `opencode.json` 和 `opencode.jsonc` 就是加载两遍。
-- 2.x 的插件**不能创建 agent**，所以 `node <pkg>/scripts/gen-v2-config.mjs` 负责把六个角色和六条 `/team-*` 命令写进配置目录。安装器替你做这一步；手动装就等于自己做这一步。
+- 2.x 的插件**不能创建 agent**，所以 `node <pkg>/scripts/gen-v2-config.mjs` 负责把七个角色和六条 `/team-*` 命令写进配置目录。安装器替你做这一步；手动装就等于自己做这一步。
 
 然后 `opencode service restart` 重启（桌面版从托盘退出，光关窗口不算）。会话中途重启是安全的：对话还在，只有正在跑的那次工具调用会被中断、需要重发。
 
@@ -85,7 +85,7 @@
 改动全在仓库之外；安装器会打印改了什么，并把值读回来：
 
 - **配置条目** → `~/.config/opencode/opencode.jsonc`（不存在就创建；我们会把 Team 条目从 `opencode.json` 收回——两个文件会合并，所以只保留一个 Team 条目）——直到你删掉那一行。
-- **六个角色 + 六条命令** → `~/.config/opencode/agents/*.md` 和 `~/.config/opencode/commands/*.md`，由已安装的包生成（2.x 插件不能创建 agent，所以这一步不是可选的）。
+- **七个角色 + 六条命令** → `~/.config/opencode/agents/*.md` 和 `~/.config/opencode/commands/*.md`，由已安装的包生成（2.x 插件不能创建 agent，所以这一步不是可选的）。
 - **默认角色** → 在角色文件落盘之后才写 `default_agent: "Team"`，并从磁盘读回。
 - **不会碰：** 宿主的 npm 缓存和 `OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS`——2.x 原生支持后台子代理，不设任何环境变量。
 - **撤销：** 删掉 `plugins` 那一行（可选：删掉生成的 `agents/` / `commands/` 文件）再重启。
@@ -305,7 +305,7 @@
 [Apache License 2.0](./LICENSE)
 
 - [npm 包](https://www.npmjs.com/package/@te-river/opencode-team-mode) — `@te-river/opencode-team-mode`
-- [安装指南（**OpenCode 2.x**）](./docs/installation-v2.md) — 受支持的装法；2.x 插件不能创建 agent，六个角色和六条命令要生成到配置目录
+- [安装指南（**OpenCode 2.x**）](./docs/installation-v2.md) — 受支持的装法；2.x 插件不能创建 agent，七个角色和六条命令要生成到配置目录
 - [安装指南（1.18.x）](./docs/installation.md) — **仅历史**：那个人格已在 1.7.0 线里移除
 - [OpenCode](https://opencode.ai) · [文档](https://opencode.ai/docs) · [插件 API](https://opencode.ai/docs/plugins)
 - 模块地图、每层接缝和所有实测到的宿主事实：[AGENTS.md](./AGENTS.md)；每条 v2 论断背后的带日期证据：[docs/v2-port-notes.md](./docs/v2-port-notes.md)

@@ -123,10 +123,10 @@ export interface ComputerUseGate {
 export function computerUsePermissionRefusal(agent: string, action: string): string {
   return (
     `${agent} 这个角色不允许驱动桌面（computeruse），所以我拒绝了 ${action}。` +
-    `桌面控制会接管用户真实的鼠标键盘并截屏，它是按角色收窄的（Team / researcher / tester 才有）。` +
+    `桌面控制会接管用户真实的鼠标键盘并截屏，它是按角色收窄的（Team / ComputerUser 才有）。` +
     `这条拒绝来自宿主自己的权限层（permission.evaluate），拦的是真正要执行的那次工具调用；` +
     `请求层的 event.tools 删不到它——2.x 把 MCP 工具放在 execute 的 Code Mode 目录里。` +
-    `要看界面请交给 lead / researcher / tester，要读文件用 read / grep。`
+    `要看界面请交给 lead / ComputerUser，要读文件用 read / grep。`
   )
 }
 
@@ -134,9 +134,9 @@ export function computerUsePermissionRefusal(agent: string, action: string): str
 export function computerUseToolRefusal(agent: string, tool: string): string {
   return (
     `${agent} 这个角色不允许驱动桌面（computeruse），所以我没有让 ${tool} 执行。` +
-    `桌面控制会接管用户真实的鼠标键盘并截屏，它是按角色收窄的（Team / researcher / tester 才有）。` +
+    `桌面控制会接管用户真实的鼠标键盘并截屏，它是按角色收窄的（Team / ComputerUser 才有）。` +
     `宿主把这次调用单独报成一条 execute 事件、没有参数可查——所以要判的只有角色。` +
-    `要看界面请交给 lead / researcher / tester，要读文件用 read / grep。`
+    `要看界面请交给 lead / ComputerUser，要读文件用 read / grep。`
   )
 }
 
@@ -149,10 +149,10 @@ export function computerUseToolRefusal(agent: string, tool: string): string {
 export function computerUseRefusal(agent: string): string {
   return (
     `${agent} 这个角色不允许驱动桌面（computeruse），所以我没有让这个程序跑起来。` +
-    `桌面控制会接管用户真实的鼠标键盘并截屏，它是按角色收窄的（Team / researcher / tester 才有）。` +
+    `桌面控制会接管用户真实的鼠标键盘并截屏，它是按角色收窄的（Team / ComputerUser 才有）。` +
     `它是宿主 MCP 服务器开出来的工具——2.x 把它们放在 execute 的 Code Mode 目录里，` +
     `请求层的 event.tools 删不到，所以这一层拦在程序文本上；真正的权限层是 permission.evaluate。` +
-    `要看界面请交给 lead / researcher / tester，要读文件用 read / grep。` +
+    `要看界面请交给 lead / ComputerUser，要读文件用 read / grep。` +
     `诚实边界：这是文本级门禁，不是沙箱——把名字拼起来（"computer"+"use"）能绕过去；` +
     `真绕过去了，被拒角色那次调用会当场写一行 computeruse_bypass 轨迹（角色 + 工具名），` +
     `并进 computeruse_deny_leak，所以「没被拦住」不等于「被允许」。`

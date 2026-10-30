@@ -67,10 +67,13 @@ export const V2_ACTION_NAMES: Readonly<Record<string, string>> = {
  */
 export const COMPUTER_USE_CATALOG = "computeruse_*"
 
-/** The three roles that may drive the desktop: the lead, the web researcher and
- *  the UI tester.  The lead check goes through `isLeadAgent` (identity.ts), so
- *  `team` / `Team` / `TEAM` are one role. */
-const COMPUTER_USE_SPECIALISTS: ReadonlySet<string> = new Set(["researcher", "tester"])
+/** The TWO roles that may drive the desktop: the lead and the dedicated
+ *  `ComputerUser` specialist.  `researcher` and `tester` are deliberately OUT —
+ *  the desktop belongs to one role whose entire brief is "look, act, read the
+ *  verdict", and a role that reads untrusted web pages while holding the mouse is
+ *  the worst combination this product can assemble.  The lead check goes through
+ *  `isLeadAgent` (identity.ts), so `team` / `Team` / `TEAM` are one role. */
+const COMPUTER_USE_SPECIALISTS: ReadonlySet<string> = new Set(["computeruser"])
 
 export function computerUseAllowed(agentName: string | undefined | null): boolean {
   const name = String(agentName ?? "").trim()

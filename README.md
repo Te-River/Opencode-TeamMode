@@ -6,7 +6,7 @@
 [![npm downloads](https://img.shields.io/npm/dm/@te-river/opencode-team-mode.svg)](https://www.npmjs.com/package/@te-river/opencode-team-mode)
 [![license](https://img.shields.io/npm/l/@te-river/opencode-team-mode.svg)](./LICENSE)
 
-> 🤝 **Your OpenCode just hired a team.** Six specialised agents — a Lead, an Architect, an Implementer, a Reviewer, a Tester and a Researcher — with governed tools, structured handoffs and a plan-first approval gate. One plugin, no files to copy.
+> 🤝 **Your OpenCode just hired a team.** Seven roles — a Lead, an Architect, an Implementer, a Reviewer, a Tester, a Researcher and a **ComputerUser** (dispatched only when a desktop-control MCP is present) — with governed tools, structured handoffs and a plan-first approval gate. One plugin, no files to copy.
 
 > 💡 **Best for medium-to-large projects.** The governance layer (approval gate, context offload, tool allowlists) is an asset once a codebase has real surface area — and mostly overhead on tiny scripts and one-off questions. Use it where the work is.
 
