@@ -1,0 +1,8 @@
+# Local build/dev artefacts of the computer-use sub-package.
+.venv/
+dist/
+build/
+*.egg-info/
+__pycache__/
+*.pyc
+.pytest_cache/

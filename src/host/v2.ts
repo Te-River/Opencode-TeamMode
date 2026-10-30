@@ -53,6 +53,7 @@ import { applyV2NativeOffload } from "./v2-offload.js"
 import { applyV2ProbeChain } from "./v2-probe-chain.js"
 import { applyV2SubagentRegistry, applyV2CompletionWatch } from "./v2-subagent.js"
 import { applyV2BrowserGate, browserGateSummary } from "./v2-browser-gate.js"
+import { applyV2ComputerUseGate, computerUseGateSummary } from "./v2-computeruse-gate.js"
 import { seedWebfetchDomains } from "../tm/webfetch.js"
 import { v2CapabilityRows } from "./v2-capabilities.js"
 import { applyV2SessionLayer, removalPlan, resolveSplitConfig } from "./v2-session.js"
@@ -587,6 +588,32 @@ export const v2Personality: V2Plugin = {
       notes.push("原生 browser_* 的门禁没装上（ctx.tool.hook 不可用）：宿主的 45 个浏览器工具在 Team 会话里也不受我们的域名 / 地址规则约束")
     }
     registrations.push(...browserGate.registrations)
+    // The optional desktop-control MCP server: refused per ROLE at three layers.
+    // Primary = `permission.evaluate` (MEASURED firing for MCP tools:
+    // `action=computeruse_control_status`), then the INNER `execute.before` event
+    // whose tool IS the MCP name with an empty input, then the outer program text
+    // (`input.code`, the measured key).  `event.tools` never carries MCP tools on a
+    // 2.2.1 host, so the request-layer delete is a leftover, not the defence.
+    // The `onLeak` sink writes the row AT THE MOMENT a denied role is seen — the
+    // throttled `v2-surface` row is not enough: a one-shot CLI round exits before any
+    // flush, and a bypass with no row on disk is the defect the counter exists for.
+    const computerUseGate = applyV2ComputerUseGate(ctx, {
+      scope,
+      onLeak: (row) => {
+        try {
+          tmRuntime.pipelines.store.appendTrajectory({ tool: "host", step_id: "v2-computeruse", api: 2, ...row })
+        } catch {
+          /* the trajectory is an extra, never a reason to fail a call */
+        }
+      },
+    })
+    if (!computerUseGate.report.permissionSeam) {
+      notes.push("computeruse 的权限层没装上（ctx.permission.hook 不可用）：主防线缺席，只剩 execute 的内层/外层代码路径")
+    }
+    if (!computerUseGate.registrations.length) {
+      notes.push("computeruse 的门禁一条都没装上（ctx.tool.hook / ctx.permission.hook 都不可用）：被拒角色仍能驱动桌面")
+    }
+    registrations.push(...computerUseGate.registrations)
     // ---- late-bound observation readers (A2 / A3) ----
     // Both of these are `let` for one reason each: the layers they read register
     // BELOW this point, and the probe takes its first snapshot at attach — a closure
@@ -1280,6 +1307,13 @@ export const v2Personality: V2Plugin = {
       browser_gate_held: browserGate.report.held,
       browser_gate_serp_nav: browserGate.report.serpNav,
       browser_gate_serp_refused: browserGate.report.serpRefused,
+      computeruse_gate_refused: computerUseGate.report.refused,
+      computeruse_gate_bypass: computerUseGate.report.bypass,
+      computeruse_gate_layers: `permission=${computerUseGate.report.permissionSeen} inner=${computerUseGate.report.innerSeen} outer=${computerUseGate.report.seen}`,
+      computeruse_leak_rows: computerUseGate.report.leakRows,
+      computeruse_leak_rows_failed: computerUseGate.report.leakRowFailed,
+      computeruse_permission: computerUseGate.report.permissionSeam ? "ok" : "missing",
+      computeruse_gate_note: computerUseGateSummary(computerUseGate.report),
       native_seen: offload.report.seen,
       native_ours: offload.report.ours,
       native_unmatched: offload.report.unmatched,
@@ -1507,6 +1541,13 @@ export const v2Personality: V2Plugin = {
           browser_gate_serp_nav: browserGate.report.serpNav,
           browser_gate_serp_refused: browserGate.report.serpRefused,
           browser_gate_note: browserGateSummary(browserGate.report),
+          computeruse_gate_refused: computerUseGate.report.refused,
+          computeruse_gate_bypass: computerUseGate.report.bypass,
+          computeruse_gate_layers: `permission=${computerUseGate.report.permissionSeen} inner=${computerUseGate.report.innerSeen} outer=${computerUseGate.report.seen}`,
+          computeruse_leak_rows: computerUseGate.report.leakRows,
+          computeruse_leak_rows_failed: computerUseGate.report.leakRowFailed,
+          computeruse_permission: computerUseGate.report.permissionSeam ? "ok" : "missing",
+          computeruse_gate_note: computerUseGateSummary(computerUseGate.report),
           // What the model could actually call, read off the assembled requests —
           // the half of the delivery story the sent flag cannot tell.
           tools_in_request: session.report.tmInRequestSurface ? "tm-in-request" : "catalog-only",

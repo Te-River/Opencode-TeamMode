@@ -225,7 +225,13 @@ export function applyV2BrowserGate(
     // The address red line is the part worth defending there: a program is source text,
     // and the hosts it names are judgement-free metadata ranges.
     if (isExecute) {
-      const program = (event?.input as { program?: unknown } | undefined)?.program
+      // MEASURED 2026-10-30 on 2.2.1: the outer `execute` call carries **`code`**, not
+      // `program`.  Reading only the old spelling made this scan fire zero times on a live
+      // host — the exact defect that left the computer-use gate inert while its unit tests
+      // stayed green.  Read both, `code` first, because that is the wire format the host
+      // actually sends.
+      const inp = event?.input as { code?: unknown; program?: unknown } | undefined
+      const program = typeof inp?.code === "string" ? inp.code : inp?.program
       if (typeof program === "string" && /browser[._]|browser_/.test(program)) {
         for (const host of hardUrlHosts(program)) {
           report.classified++

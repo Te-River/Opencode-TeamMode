@@ -2,6 +2,9 @@ import * as fs from "node:fs"
 import * as path from "node:path"
 import type { V2Registration } from "./v2-types.js"
 import { parseHostEnvelope } from "../task-offload.js"
+import { parseJsonc } from "../tm/config-layers.js"
+import { globalConfigDir } from "./v2-default-agent.js"
+import { mentionsComputerUse } from "./v2-permissions.js"
 
 /**
  * The v2 host's real tool surface — observed, not assumed.
@@ -96,6 +99,260 @@ const keysOf = (v: unknown): string[] => {
   return Object.keys(v as Record<string, unknown>).sort()
 }
 
+/* ------------------------------------------------------------------------- *
+ * COMPUTER USE — "our deny matched nothing" and "nobody called it" must stop
+ * printing the same sentence.
+ *
+ * The optional `computeruse` MCP server is denied at the REQUEST layer (the
+ * host gives a plugin no dialog and, unmeasured, may not evaluate MCP tools at
+ * all), which means the deny's failure mode is SILENT: a name we matched that
+ * the host never uses removes nothing, and a request that never carried the
+ * tools removes nothing either.  Both read as "0 tools in the request".
+ *
+ * So the observation is three counters, and they are written FROM THE NAMES the
+ * probe already collects — this is the same data set, not a second surface:
+ *
+ *   computeruse_tools      the names actually seen (the measurement the README
+ *                          would otherwise have to assume)
+ *   computeruse_deny_leak  a DENIED role still holding — or CALLING — one of
+ *                          them after our removal pass ran ⇒ the deny did not
+ *                          reach this family on this role.  TWO routes feed it:
+ *                          the request surface's leftovers
+ *                          (`noteComputerUseRequest`) and, on a host that keeps
+ *                          MCP tools out of `event.tools`, a tool that actually
+ *                          RAN (`noteComputerUseCall`, from the `execute`
+ *                          result's `metadata.toolCalls`).  This is a plugin
+ *                          defect, so it is the one state that also escalates
+ *                          into the lead's own request (see v2-session.ts) — on
+ *                          v2 there is no toast seam to raise.
+ *   computeruse_absent     five states, because "0 tools in the request" means
+ *                          five different things: `declaration-unread` (we could
+ *                          not read the config), `unobserved` (nobody looked),
+ *                          `seen`, `declared-off-surface` (declared AND proof the
+ *                          server is connected — its names arrived on another
+ *                          channel — but they live in the Code Mode catalog, which
+ *                          is NOT "not registered"), and `declared-not-seen` (the
+ *                          server really did not register: fresh install without a
+ *                          restart, or a broken uv/python).  Never a toast: it is
+ *                          usually just a restart away.
+ *
+ * Scope is the PROCESS, not a plugin instance: one host process runs one Team
+ * instance, and a test that boots several fakes resets the ledger explicitly.
+ * ------------------------------------------------------------------------- */
+
+export interface ComputerUseObservation {
+  /** does a config file declare `mcp.computeruse`?  null = nothing readable */
+  declared: boolean | null
+  /** every computeruse-family tool name seen in an assembled request */
+  seen: Set<string>
+  /** family names observed on a channel that is NOT `event.tools` — the inner
+   *  `execute.before` event, `permission.evaluate`, or a result's `toolCalls`.
+   *  A non-empty set is PROOF the server registered and the tools live in the
+   *  Code Mode catalog, which is what keeps `declared-not-seen` ("the server did
+   *  not register") from being printed over a connected server. */
+  offSurface: Set<string>
+  /** DENIED role → family names still present AFTER our pass (non-empty = leak) */
+  leak: Map<string, string[]>
+  /** roles whose request surface we inspected, split by the decision we made */
+  allowedInspected: Set<string>
+  deniedInspected: Set<string>
+}
+
+function emptyObservation(): ComputerUseObservation {
+  return { declared: null, seen: new Set(), offSurface: new Set(), leak: new Map(), allowedInspected: new Set(), deniedInspected: new Set() }
+}
+
+const computerUse: ComputerUseObservation = emptyObservation()
+
+/** Test seam.  Mutates in place so a module-level import stays live. */
+export function resetComputerUseObservation(declared: boolean | null = null): void {
+  computerUse.declared = declared
+  computerUse.seen.clear()
+  computerUse.offSurface.clear()
+  computerUse.leak.clear()
+  computerUse.allowedInspected.clear()
+  computerUse.deniedInspected.clear()
+}
+
+export function noteComputerUseDeclared(declared: boolean | null): void {
+  computerUse.declared = declared
+}
+
+/** One assembled request, as the removal pass saw it: which family names were
+ *  there before our pass, and which survived it.  Both spellings are matched by
+ *  `isComputerUseTool` (the caller does the filtering, so the two layers cannot
+ *  disagree about what counts). */
+export function noteComputerUseRequest(row: {
+  agent: string
+  allowed: boolean
+  seen: readonly string[]
+  remaining: readonly string[]
+}): void {
+  const agent = String(row.agent ?? "?").toLowerCase()
+  if (row.allowed) computerUse.allowedInspected.add(agent)
+  else computerUse.deniedInspected.add(agent)
+  // The LOOSE matcher here on purpose: the evidence set must carry whatever name the
+  // host minted, including a spelling our removal prefix does not know — that name is
+  // exactly what the user needs in order to fix the rule.
+  for (const name of row.seen) if (mentionsComputerUse(name)) computerUse.seen.add(String(name))
+  if (row.allowed) {
+    // An allowed role holding them is the intent, not a leak.
+    computerUse.leak.delete(agent)
+    return
+  }
+  const left = [...new Set(row.remaining.filter((n) => mentionsComputerUse(n)))].sort()
+  if (left.length) computerUse.leak.set(agent, left)
+}
+
+/**
+ * A computer-use CALL observed after the fact, from the host's own
+ * `metadata.toolCalls` on an `execute` result.
+ *
+ * This is the second, independent route into the SAME leak ledger, and it exists
+ * because the first one cannot see the family at all: on a real 2.2.1 host MCP
+ * tools never appear in `event.tools` (they live only in the Code Mode catalog),
+ * so `noteComputerUseRequest` has nothing to report while a denied role is driving
+ * the desktop — measured: `architect → execute → tools.computeruse.control_status`
+ * answered `{"ok":true}` and every counter stayed at zero.  A call that really RAN
+ * is strictly better evidence than a name that survived a deletion pass.
+ *
+ * `names` is unioned into the agent's row rather than replacing it: a request-layer
+ * leak and a call both say the same thing (our deny did not reach this family on
+ * this role), and the reader wants every name, sorted, not the last one.
+ */
+export function noteComputerUseCall(row: { agent: string; allowed: boolean; names: readonly string[] }): void {
+  const agent = String(row.agent ?? "?").toLowerCase()
+  const names = [...new Set(row.names.map(String).filter((n) => n && mentionsComputerUse(n)))].sort()
+  if (!names.length) return
+  for (const name of names) computerUse.seen.add(name)
+  if (row.allowed) return
+  const already = computerUse.leak.get(agent) ?? []
+  computerUse.leak.set(agent, [...new Set([...already, ...names])].sort())
+}
+
+export interface ComputerUseState {
+  tools: string[]
+  /** names seen off the request surface (execute inner events / permission.evaluate /
+   *  result toolCalls) — the server-registered-but-catalog-only evidence */
+  offSurface: string[]
+  leaks: Array<{ agent: string; names: string[] }>
+  declared: boolean | null
+  inspected: number
+  /** declared, we looked, and not one tool appeared ON THE SURFACE */
+  absent: boolean
+}
+
+export function computerUseState(): ComputerUseState {
+  const tools = [...computerUse.seen].sort()
+  const inspected = computerUse.allowedInspected.size + computerUse.deniedInspected.size
+  return {
+    tools,
+    offSurface: [...computerUse.offSurface].sort(),
+    leaks: [...computerUse.leak.entries()]
+      .filter(([, names]) => names.length > 0)
+      .map(([agent, names]) => ({ agent, names: [...names].sort() })),
+    declared: computerUse.declared,
+    inspected,
+    absent: computerUse.declared === true && inspected > 0 && tools.length === 0,
+  }
+}
+
+/**
+ * The family was observed on a channel OTHER than `event.tools`.
+ *
+ * MEASURED on 2.2.1: a `computeruse` MCP server is connected (`mcp connected
+ * server=computeruse tools=7`) and its tools answer, yet the assembled request's
+ * `event.tools` carries none of them — they live in the Code Mode catalog behind
+ * `execute`.  Without this ledger, `computerUseFields` printed `declared-not-seen`,
+ * whose user-facing sentence is "开 MCP 的那个 server 没注册" — a lie about a
+ * working server, and the same invisible-surface root cause wearing a new face.
+ *
+ * Names only, and always the ones the host minted: this is a diagnostic, so the
+ * R6 rule (no values, no command text) binds it too.
+ */
+export function noteComputerUseOffSurface(row: { names: readonly string[] }): void {
+  for (const name of row.names ?? []) {
+    const n = String(name ?? "")
+    if (n && mentionsComputerUse(n)) computerUse.offSurface.add(n)
+  }
+}
+
+/**
+ * The three trajectory fields.  `extraNames` lets the probe fold in the union it
+ * already collected, so the evidence line is complete even when no request was
+ * inspected after our removal pass (a boot-only run).
+ */
+export function computerUseFields(extraNames: readonly string[] = []): Record<string, string> {
+  const state = computerUseState()
+  const tools = [...new Set([...state.tools, ...extraNames.map(String).filter((n) => mentionsComputerUse(n))])].sort()
+  // Order matters and each branch is a DIFFERENT fact:
+  //  - declared:null            we could not read the config (not "absent")
+  //  - unobserved               nobody inspected a request AND nothing was seen off-surface
+  //  - seen                     family names really were on an assembled request
+  //  - declared-off-surface     the server IS connected, its tools just never ride
+  //                             `event.tools` (the Code Mode catalog) — NOT "not registered"
+  //  - declared-not-seen        declared, we looked, and nothing appeared anywhere
+  const absentState = state.declared === null
+    ? "declaration-unread"
+    : state.inspected === 0 && state.offSurface.length === 0
+      ? "unobserved"
+      : tools.length
+        ? "seen"
+        : state.offSurface.length
+          ? "declared-off-surface"
+          : state.absent
+            ? "declared-not-seen"
+            : "not-declared"
+  return {
+    computeruse_tools: tools.join(" "),
+    computeruse_off_surface: state.offSurface.join(" "),
+    computeruse_deny_leak: state.leaks.map((l) => `${l.agent}:${l.names.join("|")}`).join(" "),
+    computeruse_absent: absentState,
+  }
+}
+
+/**
+ * A leading UTF-8 BOM is a FACT of this file family, not a parse error: PowerShell's
+ * `Set-Content -Encoding utf8` writes one by default, and the HOST parses the very
+ * same file fine (`mcp connected server=computeruse tools=7` in the report that
+ * found this).  `JSON.parse` refuses it, so without this strip a perfectly declared
+ * install reported `declaration-unread` — "we could not look" — which is the one
+ * verdict that must be reserved for genuinely unreadable input.
+ */
+function stripBom(text: string): string {
+  return text.charCodeAt(0) === 0xfeff ? text.slice(1) : text
+}
+
+/** The declaration as the HOST config carries it: `mcp.computeruse` or
+ *  `mcp.servers.computeruse` (both spellings are read by the host, so both
+ *  count).  Returns null when no config file could be read or parsed — "we did
+ *  not look" must not be printed as "not declared".  Never throws. */
+export function readComputerUseDeclared(configDir: string = globalConfigDir()): boolean | null {
+  let readable = false
+  for (const file of ["opencode.jsonc", "opencode.json"]) {
+    let raw: string
+    try {
+      raw = fs.readFileSync(path.join(configDir, file), "utf8")
+    } catch {
+      continue
+    }
+    let parsed: unknown
+    try {
+      parsed = parseJsonc(stripBom(raw))
+    } catch {
+      continue
+    }
+    readable = true
+    const mcp = (parsed as { mcp?: unknown } | null)?.mcp
+    if (!mcp || typeof mcp !== "object") continue
+    const rec = mcp as Record<string, unknown>
+    const servers = rec.servers
+    if (Object.prototype.hasOwnProperty.call(rec, "computeruse")) return true
+    if (servers && typeof servers === "object" && Object.prototype.hasOwnProperty.call(servers, "computeruse")) return true
+  }
+  return readable ? false : null
+}
+
 /** Any ctx domain whose `hook` is absent is reported rather than crashing boot. */
 function hookFn(ctx: unknown, domain: string): ((name: string, cb: (e: unknown) => void) => unknown) | null {
   const d = (ctx as Record<string, unknown> | undefined)?.[domain] as Record<string, unknown> | undefined
@@ -175,6 +432,14 @@ export async function applyV2Probe(ctx: unknown, opts: ProbeOptions = {}): Promi
 
   const pending: Array<Promise<V2Registration>> = []
   const registrations: V2Registration[] = []
+  // The config half of the fail-open check: "declared but never appeared" cannot
+  // be derived from a request, so it is read once here.  A read that fails leaves
+  // the ledger's `declared` at null and the row says 没读到 — never "not declared".
+  try {
+    noteComputerUseDeclared(readComputerUseDeclared())
+  } catch {
+    /* best-effort: the counter falls back to declaration-unread */
+  }
   const arm = (domain: string, point: string, cb: (event: unknown) => void) => {
     const hook = hookFn(ctx, domain)
     if (!hook) {
@@ -329,6 +594,10 @@ export function probeSummary(report: V2ProbeReport): Record<string, unknown> {
     probe_agents: report.agentsSeen.join(" "),
     probe_tool_count: report.toolNames.length,
     probe_browser_tools: browserTools.join(" "),
+    // The computer-use state rides the SAME row: its three counters are computed
+    // from `report.toolNames` plus what the removal pass observed, so there is one
+    // place to read and nothing extra to attach.
+    ...computerUseFields(report.toolNames),
     probe_executed: report.executed.join(" "),
     probe_executed_after: report.executedAfter.join(" "),
     probe_actions: report.actions.join(" "),

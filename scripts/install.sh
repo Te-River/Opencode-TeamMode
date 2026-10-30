@@ -32,6 +32,34 @@ set -euo pipefail
 PKG="@te-river/opencode-team-mode@latest"
 PKG_NAME="@te-river/opencode-team-mode"
 
+# --computer-use is OFF by default and is not part of the plugin install: it wires the
+# optional `computeruse` MCP server (step 5 of install_v2). The `curl | bash` path cannot
+# pass arguments, so TEAMMODE_COMPUTER_USE=1 is the equivalent for a piped run — the same
+# shape TEAMMODE_SKIP_BACKGROUND_SUBAGENTS already uses.
+COMPUTER_USE=0
+CU_WHEEL_ARG=""
+CU_SHA_ARG=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --computer-use) COMPUTER_USE=1 ;;
+    --computer-use-wheel) shift; CU_WHEEL_ARG="${1:-}" ;;
+    --computer-use-wheel-sha256) shift; CU_SHA_ARG="${1:-}" ;;
+  esac
+  shift
+done
+case "$(printf '%s' "${TEAMMODE_COMPUTER_USE:-}" | tr 'A-Z' 'a-z')" in
+  1|true|yes|on) COMPUTER_USE=1 ;;
+esac
+
+# ── the optional computer-use server (a GitHub Release ASSET, not an npm artifact) ──
+# Same two constants as install.ps1, and the same rule: the hash below is the released
+# 0.0.1 asset's, and a wheel whose hash does not match is never installed — an unverified
+# binary is exactly what that constant exists to prevent. Publishing a new asset and
+# filling this in belong in the SAME commit; a stale hash fails closed.
+CU_VERSION="0.0.1"
+CU_WHEEL_SHA256="6212f9b7eb814ea558514c1d886b3765036628e28dc72192c03a524b377e0f04"
+CU_RELEASE_URL="https://github.com/Te-River/Opencode-TeamMode/releases/download/computeruse-v${CU_VERSION}/computeruse_mcp-${CU_VERSION}-py3-none-any.whl"
+
 echo ""
 echo "OpenCode TeamMode Installer"
 echo "=========================="
@@ -111,6 +139,171 @@ fi
 #     silently, with nothing on screen explaining why Team stopped. The value is
 #     read back off the file afterwards, because a write is not an arrival;
 #   * OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS is NOT set (v1-only hack).
+# ── the computer-use MCP server (OPT-IN, default off) ───────────────────────
+# Same order as install.ps1, failing closed at every step:
+#   verify sha256 → uv tool install → `--selftest` must exit 0 → mcp-set.
+# No config byte is written until a server that actually runs exists, and any failure
+# after the install rolls it back. A `mcp` entry whose command the host cannot spawn is a
+# server that never starts; the host reports it as a timeout, which reads as our bug.
+# usage: install_computer_use <config file> <surgery helper>
+install_computer_use() {
+  local cfg="$1" surgery="$2"
+  local src want got wheel="" downloaded=0 tool_dir="" candidate="" exe="" tool_name=""
+  local exe_status=0
+  echo ""
+  echo "↻  computer-use MCP server (opt-in) ..."
+  if ! command -v uv >/dev/null 2>&1; then
+    echo "!  uv is not on PATH, so there is no way to install the server."
+    echo "   Nothing was written. Install uv (https://docs.astral.sh/uv/), then re-run:"
+    echo "     bash install.sh --computer-use"
+    return 1
+  fi
+
+  # ── (a) which wheel, and the only hash we will accept ─────────────────────
+  src="${CU_WHEEL_ARG:-$CU_RELEASE_URL}"
+  want="${CU_SHA_ARG:-$CU_WHEEL_SHA256}"
+  if ! printf '%s' "$want" | grep -Eq '^[0-9a-fA-F]{64}$'; then
+    echo "!  wheel 尚未发布，无法安装 — there is no sha256 to verify against, and this installer"
+    echo "   never installs a binary it could not check. Nothing was written."
+    echo "   With a wheel you built yourself (computer-use/scripts/build-wheel.ps1):"
+    echo "     bash install.sh --computer-use \\"
+    echo "       --computer-use-wheel <wheel path or https url> \\"
+    echo "       --computer-use-wheel-sha256 <sha256 of that file>"
+    return 1
+  fi
+
+  # ── (b) materialise it: a path as-is; an https asset downloaded to a temp file ──
+  if printf '%s' "$src" | grep -Eq '^https?://'; then
+    wheel="$(mktemp 2>/dev/null || echo "${TMPDIR:-/tmp}/computeruse-$$.whl")"
+    echo "↓  downloading ${src}"
+    if command -v curl >/dev/null 2>&1; then
+      if ! curl -fsSL -o "$wheel" "$src"; then
+        rm -f "$wheel"
+        echo "!  download failed. Nothing was written and nothing was installed."
+        return 1
+      fi
+    elif command -v wget >/dev/null 2>&1; then
+      if ! wget -q -O "$wheel" "$src"; then
+        rm -f "$wheel"
+        echo "!  download failed. Nothing was written and nothing was installed."
+        return 1
+      fi
+    else
+      echo "!  neither curl nor wget is available to download the wheel."
+      return 1
+    fi
+    downloaded=1
+  else
+    wheel="$src"
+    if [ ! -f "$wheel" ]; then
+      echo "!  No such wheel: ${wheel}"
+      echo "   Nothing was written and nothing was installed."
+      return 1
+    fi
+  fi
+
+  # ── (c) the hash decides. A mismatch deletes the download and stops here. ──
+  if command -v sha256sum >/dev/null 2>&1; then
+    got="$(sha256sum "$wheel" | awk '{print $1}')"
+  elif command -v shasum >/dev/null 2>&1; then
+    got="$(shasum -a 256 "$wheel" | awk '{print $1}')"
+  else
+    got="$(node -e 'const c=require("crypto"),f=require("fs");process.stdout.write(c.createHash("sha256").update(f.readFileSync(process.argv[1])).digest("hex"))' "$wheel")"
+  fi
+  got="$(printf '%s' "$got" | tr 'A-Z' 'a-z')"
+  want="$(printf '%s' "$want" | tr 'A-Z' 'a-z')"
+  if [ "$got" != "$want" ]; then
+    if [ "$downloaded" = "1" ]; then rm -f "$wheel"; fi
+    echo "!  sha256 mismatch — refusing to install:"
+    echo "     expected ${want}"
+    echo "     got      ${got}"
+    echo "   Nothing was written and nothing was installed."
+    return 1
+  fi
+  echo "✔  sha256 verified: ${got}"
+
+  # ── (d) install into the TOOL DIR the caller named ────────────────────────
+  # UV_TOOL_DIR / UV_TOOL_BIN_DIR are HONOURED, so a test run — and the undo — never has
+  # to reach into the user's real uv state: the whole install is one directory. The bin dir
+  # defaults to <toolDir>/bin so no shim lands outside it (the entry spawns the absolute
+  # exe anyway).
+  tool_dir="${UV_TOOL_DIR:-}"
+  if [ -z "$tool_dir" ]; then tool_dir="$(uv tool dir 2>/dev/null | head -n1 || true)"; fi
+  if [ -z "$tool_dir" ]; then
+    if [ "$downloaded" = "1" ]; then rm -f "$wheel"; fi
+    echo "!  Could not resolve uv's tool directory. Nothing was written."
+    return 1
+  fi
+  export UV_TOOL_DIR="$tool_dir"
+  if [ -z "${UV_TOOL_BIN_DIR:-}" ]; then export UV_TOOL_BIN_DIR="${tool_dir}/bin"; fi
+  if ! uv tool install --force "$wheel"; then
+    if [ "$downloaded" = "1" ]; then rm -f "$wheel"; fi
+    echo "!  uv tool install failed — no config byte was written."
+    return 1
+  fi
+  if [ "$downloaded" = "1" ]; then rm -f "$wheel"; fi
+
+  # ── (e) the entry point must EXIST and ANSWER `--selftest` ────────────────
+  # The tool directory is named after the DISTRIBUTION (`computeruse-mcp`, measured), not
+  # after the console script, so scan instead of guessing one spelling.
+  for candidate in "$tool_dir"/*/Scripts/computeruse.exe "$tool_dir"/*/bin/computeruse "$tool_dir"/*/Scripts/computeruse; do
+    if [ -f "$candidate" ]; then exe="$candidate"; break; fi
+  done
+  # Rollback is stated once and used by both failure legs below, so the two cannot drift.
+  cu_rollback() {
+    if [ -n "$tool_name" ]; then
+      uv tool uninstall "$tool_name" >/dev/null 2>&1 || true
+      echo "   rolled back: uv tool uninstall ${tool_name}"
+    fi
+    echo "   Nothing was written to ${cfg}."
+  }
+  if [ -n "$exe" ]; then
+    tool_name="$(basename "$(dirname "$(dirname "$exe")")")"
+  else
+    # No console script appeared: still find the directory uv just created so the rollback
+    # has a name to hand to `uv tool uninstall` instead of leaving a half-tool behind.
+    for candidate in "$tool_dir"/*computeruse*; do
+      if [ -d "$candidate" ]; then tool_name="$(basename "$candidate")"; fi
+    done
+    echo "!  Installed, but no computeruse entry point appeared under ${tool_dir}"
+    cu_rollback
+    return 1
+  fi
+  echo "   entry: ${exe}"
+  "$exe" --selftest || exe_status=$?
+  if [ "$exe_status" -ne 0 ]; then
+    echo "!  ${exe} --selftest exited ${exe_status}, so this server does not work on this machine"
+    echo "   (its own output is above; the usual cause is a session without a real desktop)."
+    echo "   Nothing was written."
+    cu_rollback
+    return 1
+  fi
+  echo "✔  --selftest exited 0: the server runs here"
+  # Built by node, not by string concatenation: an absolute path carrying quotes or
+  # spaces must not be able to break the JSON (or smuggle a second key into it).
+  json="$(node -e 'process.stdout.write(JSON.stringify({type:"local",command:[process.argv[1],"--budget","200"],environment:{},enabled:true,timeout:60000}))' "$exe")" || {
+    echo "!  Could not build the mcp entry JSON — nothing was written."
+    return 1
+  }
+  echo "   entry: ${exe}"
+  # Same channel as install.ps1 (TM_MCP_SPEC) so the two front-ends call the helper in ONE
+  # way. bash could pass the JSON as an argument; PowerShell measurably cannot, and a
+  # second spelling is a second thing to keep right.
+  if ! TM_MCP_SPEC="$json" node "$surgery" "$cfg" mcp-set computeruse; then
+    echo "!  The mcp.computeruse entry is not in ${cfg} — nothing further is claimed."
+    return 1
+  fi
+  # A thing this script wrote must be removable without re-reading its source.
+  echo ""
+  echo "   撤销 computer-use（三步）:"
+  echo "     1. 删掉 ${cfg} 里的 mcp.computeruse 那一项："
+  echo "        node ${surgery} ${cfg} mcp-remove computeruse"
+  echo "     2. uv tool uninstall ${tool_name}     # 卸载 wheel 装出来的工具目录"
+  echo "        （可选，清掉审计轨：rm -rf \"\${LOCALAPPDATA:-\${HOME}/.local/share}/te-river/computeruse\"）"
+  echo "     3. 重启 OpenCode：opencode service restart"
+  return 0
+}
+
 install_v2() {
   # The target directory honours OPENCODE_CONFIG_DIR. Ignoring it was a footgun with
   # teeth: an agent that redirects the config dir (the documented way to test a plugin
@@ -332,7 +525,14 @@ install_v2() {
     exit 1
   fi
 
-  # ── 5. the 2.x checklist ──────────────────────────────────────────────────
+  # ── 5. the computer-use MCP server (OPT-IN, default off) ──────────────────
+  if [ "$COMPUTER_USE" = "1" ]; then
+    if ! install_computer_use "${cfg}" "${node_js}"; then
+      exit 1
+    fi
+  fi
+
+  # ── 6. the 2.x checklist ──────────────────────────────────────────────────
   local cmd_count
   cmd_count="$(find "${cfg_dir}/commands" -maxdepth 1 -name 'team-*.md' 2>/dev/null | grep -c . || true)"
   echo ""
@@ -363,6 +563,13 @@ install_v2() {
 if [ "$OPENCODE_MAJOR" -ge 2 ]; then
   install_v2
   exit 0
+fi
+if [ "$COMPUTER_USE" = "1" ]; then
+  echo ""
+  echo "!  --computer-use is implemented on the OpenCode 2.x path only (this machine takes"
+  echo "   the 1.18.x path). mcp.computeruse is a 2.x config shape with no measured 1.18.x"
+  echo "   equivalent, so NOTHING was written. Re-run with --computer-use once the host is 2.x."
+  exit 1
 fi
 if [ -n "$OPENCODE_WHY" ]; then
   echo "ℹ  ${OPENCODE_WHY} — taking the 1.18.x path (the one this installer always had)."

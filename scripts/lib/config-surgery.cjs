@@ -8,11 +8,20 @@
 //
 // Why the key is `plugins` and not `plugin`, why one entry may not sit in two files,
 // and why a directory target needs a root index.js: docs/research/plugin-loader-contract.md
-// usage: node config-surgery.cjs <file> <plugins|default-agent> <value> [otherFileToScrub]
+//
+// The two `mcp-*` modes write ONE thing: an McpLocalConfig under the container key
+// `mcp.<name>`. The sibling shape `mcp.servers.<name>` was measured NOT to be the key
+// this host loads (2.2.1: `mcp.<name>` connected, `mcp connected server=… tools=2`), and
+// the ENCODED branch that spells the same entry with `disabled` instead of `enabled` is
+// ignored in silence — an install that looks successful and does nothing. So this helper
+// refuses to emit anything but the measured shape.
+// usage: node config-surgery.cjs <file> <plugins|default-agent|mcp-set|mcp-remove> <value> [otherFileToScrub]
+//   mcp-set    <name> '<json>'  — merge {type:"local", command:[…], environment:{}, enabled, timeout}
+//   mcp-remove <name>           — delete that one key, leave every other server alone
 const fs = require("fs");
 const [file, mode, value, other] = process.argv.slice(2);
 if (!file || !mode || !value) {
-  console.error("ERR usage: node this.js <file> <plugins|default-agent> <value> [otherFileToScrub]");
+  console.error("ERR usage: node this.js <file> <plugins|default-agent|mcp-set|mcp-remove> <value> [otherFileToScrub]");
   process.exit(1);
 }
 
@@ -41,13 +50,114 @@ let src = fs.readFileSync(file, "utf8");
 const open = mask(src).indexOf("{");
 if (open < 0) { console.error("ERR no top-level object in " + file); process.exit(1); }
 const nextNonWs = (s, i) => { while (i < s.length && /\s/.test(s[i])) i++; return i; };
-/** insert one member right after the object's opening brace (top level by
+/** insert one member right after an object's opening brace at `at` (top level by
  *  definition: in a JSONC config the first '{' IS the document's own). */
-const insertMember = (s, member) => {
-  const after = nextNonWs(s, open + 1);
+const insertMemberAt = (s, at, member) => {
+  const after = nextNonWs(s, at + 1);
   const comma = s[after] === "}" ? "" : ",";   // an empty object takes none
-  return s.slice(0, open + 1) + "\n  " + member + comma + s.slice(open + 1);
+  return s.slice(0, at + 1) + "\n  " + member + comma + s.slice(at + 1);
 };
+const insertMember = (s, member) => insertMemberAt(s, open, member);
+
+/** index of the bracket that closes the one at `at`, over MASKED text (so a brace
+ *  inside a string or a comment cannot shift the count). -1 when unbalanced. */
+const matchBrace = (mk, at) => {
+  let d = 0;
+  for (let i = at; i < mk.length; i++) {
+    const c = mk[i];
+    if (c === '"') { const j = mk.indexOf('"', i + 1); if (j < 0) return -1; i = j; continue; }
+    if (c === "{" || c === "[") d++;
+    else if (c === "}" || c === "]") { d--; if (!d) return i; }
+  }
+  return -1;
+};
+
+/** DIRECT members of the object whose `{` sits at `at`: key text plus the spans of
+ *  key and value. `null` for anything this helper does not understand — guessing at a
+ *  shape is how a config gets half-rewritten. */
+const objectMembers = (mk, at) => {
+  const end = matchBrace(mk, at);
+  if (end < 0 || mk[at] !== "{") return null;
+  const out = [];
+  let i = at + 1;
+  while (i < end) {
+    if (mk[i] === "," || /\s/.test(mk[i])) { i++; continue; }
+    if (mk[i] !== '"') return null;
+    const keyStart = i, keyEnd = mk.indexOf('"', i + 1);
+    if (keyEnd < 0 || keyEnd >= end) return null;
+    let j = keyEnd + 1;
+    while (j < end && /\s/.test(mk[j])) j++;
+    if (mk[j] !== ":") return null;
+    j++;
+    while (j < end && /\s/.test(mk[j])) j++;
+    const valStart = j;
+    let valEnd;
+    if (mk[j] === '"') { const q = mk.indexOf('"', j + 1); if (q < 0) return null; valEnd = q + 1; }
+    else if (mk[j] === "{" || mk[j] === "[") { const c = matchBrace(mk, j); if (c < 0 || c > end) return null; valEnd = c + 1; }
+    else { let k = j; while (k < end && !/[,}\]\s]/.test(mk[k])) k++; valEnd = k; }
+    out.push({ key: mk.slice(keyStart + 1, keyEnd), keyStart, valStart, valEnd });
+    i = valEnd;
+  }
+  return { head: at + 1, end, members: out };
+};
+
+/** key-order-insensitive form, so an equivalent entry the user hand-wrote (or a second
+ *  run of this helper) reads as "same values" instead of being rewritten for style. */
+const stable = (v) =>
+  Array.isArray(v) ? "[" + v.map(stable).join(",") + "]"
+    : v && typeof v === "object"
+      ? "{" + Object.keys(v).sort().map((k) => JSON.stringify(k) + ":" + stable(v[k])).join(",") + "}"
+      : JSON.stringify(v);
+
+/** The ONLY shape this helper writes. Validated, not trusted: the caller hands JSON in,
+ *  and a `disabled` key would silently select the branch the host ignores. */
+const readLocalSpec = (raw) => {
+  let o;
+  try { o = JSON.parse(raw); } catch (e) {
+    console.error("ERR the value is not JSON: " + e.message);
+    process.exit(1);
+  }
+  if (!o || typeof o !== "object" || Array.isArray(o)) {
+    console.error("ERR the value must be a JSON object (McpLocalConfig)");
+    process.exit(1);
+  }
+  if (Object.prototype.hasOwnProperty.call(o, "disabled")) {
+    console.error("ERR `disabled` belongs to Mcp.LocalConfigEncoded, which this host IGNORES — " +
+      "an entry written that way looks installed and never starts. Use `enabled`.");
+    process.exit(1);
+  }
+  const allowed = ["type", "command", "environment", "enabled", "timeout"];
+  for (const k of Object.keys(o)) {
+    if (!allowed.includes(k)) {
+      console.error("ERR unknown key `" + k + "` — the host reads exactly " + allowed.join(" / "));
+      process.exit(1);
+    }
+  }
+  if (o.type !== "local") {
+    console.error("ERR type must be \"local\" (this helper writes McpLocalConfig only)");
+    process.exit(1);
+  }
+  if (!Array.isArray(o.command) || !o.command.length || o.command.some((c) => typeof c !== "string" || !c)) {
+    console.error("ERR command must be a non-empty array of non-empty strings ([\"<exe>\", \"--flag\"]), " +
+      "not a shebang string — a 60000 ms timeout does not rescue a command the host cannot spawn");
+    process.exit(1);
+  }
+  const env = o.environment === undefined ? {} : o.environment;
+  if (!env || typeof env !== "object" || Array.isArray(env) || Object.values(env).some((v) => typeof v !== "string")) {
+    console.error("ERR environment must be an object of string values");
+    process.exit(1);
+  }
+  const enabled = o.enabled === undefined ? true : o.enabled;
+  if (typeof enabled !== "boolean") { console.error("ERR enabled must be true/false"); process.exit(1); }
+  const timeout = o.timeout === undefined ? 60000 : o.timeout;
+  if (typeof timeout !== "number" || !Number.isFinite(timeout) || timeout < 1000) {
+    console.error("ERR timeout must be a number of milliseconds >= 1000 (the host default is 5000, " +
+      "which a cold Python start exceeds — 60000 is the measured value here)");
+    process.exit(1);
+  }
+  return { type: "local", command: o.command, environment: env, enabled, timeout };
+};
+
 const lineNo = (s, idx) => " (line " + lineOf(s, idx) + " of " + file + ")";
 
 if (mode === "plugins") {
@@ -233,6 +343,163 @@ if (mode === "plugins") {
     process.exit(1);
   }
   console.log("OK  read back: " + lit + lineNo(src, chk.index));
+} else if (mode === "mcp-set" || mode === "mcp-remove") {
+  // The MCP entry. Two facts decide the whole shape here, both measured on 2.2.1:
+  //   * the container key is `mcp.<name>` (the host logged `mcp connected
+  //     server=computeruse tools=2`); `mcp.servers.<name>` was NOT loaded, so this
+  //     helper writes only the working spelling and merely REPORTS the other one;
+  //   * `command` is an ARRAY, and `timeout` defaults to 5000 ms — a cold Python
+  //     start exceeds that, so the caller's 60000 is not a nicety.
+  const name = value;
+  if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(name)) {
+    console.error("ERR the server name must be one token ([A-Za-z0-9._-]) — the host derives the" +
+      "\n    tool names from it (computeruse → computeruse_screenshot)");
+    process.exit(1);
+  }
+  const raw = fs.readFileSync(file, "utf8");
+  const mk = mask(raw);
+  const top = objectMembers(mk, open);
+  if (!top) {
+    console.error("ERR the top level of " + file + " is not an object this helper can read — nothing written");
+    process.exit(1);
+  }
+  /** fresh read of the file from disk; null when mcp.<name> is not really there. */
+  const readBackMcp = (text) => {
+    const bmk = mask(text);
+    try {
+      const j = JSON.parse(bmk);
+      const m = j && typeof j === "object" ? j.mcp : null;
+      const v = m && typeof m === "object" && !Array.isArray(m) ? m[name] : undefined;
+      return { got: v === undefined ? null : v, via: "strict JSON.parse" };
+    } catch {
+      // A JSONC file (comments are masked above, but a trailing comma or a bare key
+      // still fails strict parse): fall back to the span, and parse THE SPAN strictly.
+      const bt = objectMembers(bmk, bmk.indexOf("{"));
+      const bm = bt && bt.members.find((m) => m.key === "mcp");
+      if (!bm || bmk[bm.valStart] !== "{") return { got: null, via: "masked span" };
+      const bo = objectMembers(bmk, bm.valStart);
+      const bc = bo && bo.members.find((m) => m.key === name);
+      if (!bc) return { got: null, via: "masked span" };
+      try { return { got: JSON.parse(text.slice(bc.valStart, bc.valEnd)), via: "masked span (JSONC file)" }; }
+      catch { return { got: null, via: "masked span" }; }
+    }
+  };
+  const mcp = top.members.find((m) => m.key === "mcp");
+  const noteServers = () => {
+    if (!mcp || mk[mcp.valStart] !== "{") return;
+    const o = objectMembers(mk, mcp.valStart);
+    const s = o && o.members.find((m) => m.key === "servers");
+    if (!s || mk[s.valStart] !== "{") return;
+    const so = objectMembers(mk, s.valStart);
+    if (so && so.members.some((m) => m.key === name)) {
+      console.log("NOTE this file also carries mcp.servers." + name + " — measured on 2.2.1, the host" +
+        "\n     loads mcp." + name + " and never that one. Left untouched; delete it if it is dead weight.");
+    }
+  };
+
+  if (mode === "mcp-set") {
+    // The spec arrives either as the 4th argv slot (design §6.1, what install.sh and the
+    // tests use) or — for callers whose shell REWRITES embedded quotes, which Windows
+    // PowerShell 5.1 measurably does to a JSON argv element — as TM_MCP_SPEC. Both are
+    // read through readLocalSpec, so neither can bypass the shape checks.
+    const specRaw = other || process.env.TM_MCP_SPEC || "";
+    if (!specRaw) {
+      console.error("ERR mcp-set needs the config as JSON, either as the 4th argument or in" +
+        "\n    TM_MCP_SPEC: node config-surgery.cjs <file> mcp-set <name> '<json>'");
+      process.exit(1);
+    }
+    const spec = readLocalSpec(specRaw);
+    const lit = JSON.stringify(spec);
+    let out = raw, wrote = false, action = "";
+    if (!mcp) {
+      out = insertMemberAt(raw, open, '"mcp": {\n    "' + name + '": ' + lit + "\n  }");
+      wrote = true; action = "created mcp." + name + " = " + lit;
+    } else {
+      if (mk[mcp.valStart] !== "{") {
+        console.error("ERR mcp is not an object in " + file + " — refusing to guess. Nothing written.");
+        process.exit(1);
+      }
+      const obj = objectMembers(mk, mcp.valStart);
+      if (!obj) {
+        console.error("ERR the mcp object's shape is not one this helper can read — nothing written.");
+        process.exit(1);
+      }
+      const cur = obj.members.find((m) => m.key === name);
+      if (cur) {
+        let same = false;
+        try { same = stable(JSON.parse(raw.slice(cur.valStart, cur.valEnd))) === stable(spec); }
+        catch { same = false; }           // unparseable value → replace it, and say so below
+        if (same) {
+          console.log("OK  mcp." + name + " 已存在，未改动（值相同，没有写文件）");
+        } else {
+          out = raw.slice(0, cur.valStart) + lit + raw.slice(cur.valEnd);
+          wrote = true; action = "replaced mcp." + name + lineNo(raw, cur.keyStart) + " = " + lit;
+        }
+      } else {
+        const last = obj.members[obj.members.length - 1];
+        const at = last ? last.valEnd : obj.head;
+        const pad = last ? ",\n    " : "\n    ";
+        out = raw.slice(0, at) + pad + '"' + name + '": ' + lit + raw.slice(at);
+        wrote = true; action = "added mcp." + name + " = " + lit;
+      }
+    }
+    if (wrote) {
+      fs.writeFileSync(file, out);
+      console.log("OK  " + action);
+    }
+    noteServers();
+    if (wrote) {
+      const rb = readBackMcp(fs.readFileSync(file, "utf8"));
+      if (!rb.got || typeof rb.got !== "object") {
+        console.error("ERR read-back: mcp." + name + " is not in " + file + " (" + rb.via + ") — the write" +
+          "\n    did not land. Add it by hand:  \"mcp\": { \"" + name + "\": " + lit + " }");
+        process.exit(1);
+      }
+      if (Object.prototype.hasOwnProperty.call(rb.got, "disabled")) {
+        console.error("ERR read-back: the entry carries `disabled`, the shape this host ignores. Nothing else done.");
+        process.exit(1);
+      }
+      if (stable(rb.got) !== stable(spec)) {
+        console.error("ERR read-back: mcp." + name + " reads back with different values (" + rb.via + ")");
+        process.exit(1);
+      }
+      console.log("OK  read back (" + rb.via + "): mcp." + name + " = " + JSON.stringify(rb.got));
+    }
+  } else {
+    // mcp-remove: exactly our key, and nothing else. An absent key is a success, not an
+    // error — a second run of an uninstall must not look like a failure.
+    const gone = () => { console.log("OK  mcp." + name + " 不存在，未改动"); process.exit(0); };
+    if (!mcp || mk[mcp.valStart] !== "{") gone();
+    const obj = objectMembers(mk, mcp.valStart);
+    if (!obj) {
+      console.error("ERR the mcp object's shape is not one this helper can read — nothing written.");
+      process.exit(1);
+    }
+    const cur = obj.members.find((m) => m.key === name);
+    if (!cur) gone();
+    let out = raw;
+    const a = cur.keyStart, b = cur.valEnd;
+    // Same comma rule as the plugins reclaim: take the separator with the member, and
+    // pick the right side so a last-element delete cannot leave a dangling comma.
+    let prev = a - 1;
+    while (prev >= 0 && /\s/.test(out[prev])) prev--;
+    if (prev >= 0 && out[prev] === ",") {
+      out = out.slice(0, prev) + out.slice(b);
+    } else {
+      let next = b;
+      while (next < out.length && /\s/.test(out[next])) next++;
+      out = out.slice(0, a) + out.slice(out[next] === "," ? next + 1 : b);
+    }
+    fs.writeFileSync(file, out);
+    console.log("OK  removed mcp." + name);
+    noteServers();
+    const rb = readBackMcp(fs.readFileSync(file, "utf8"));
+    if (rb.got) {
+      console.error("ERR read-back: mcp." + name + " is still in " + file + " (" + rb.via + ")");
+      process.exit(1);
+    }
+    console.log("OK  read back (" + rb.via + "): mcp." + name + " is gone; every other key untouched");
+  }
 } else {
   console.error("ERR unknown mode '" + mode + "'");
   process.exit(1);

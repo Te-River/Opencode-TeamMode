@@ -165,6 +165,38 @@ Sub-agents cannot message each other live, so coordination is a **structured rep
 
 ---
 
+## 🖱️ Optional: computer use (real desktop)
+
+An **optional** MCP server (`computeruse`, off by default) that lets `Team` (the lead),
+`researcher` and `tester` take screenshots and drive the mouse/keyboard on the real desktop.
+`architect`, `implementer` and `reviewer` are denied at the request layer — the whole family is
+removed by the `computeruse_*` sentinel (both the `computeruse_` and `computeruse.` spellings),
+because a literal seven-name list would silently miss the eighth tool a server update adds.
+
+What is and is not protected:
+
+- **Elevated (UAC) windows are unreachable.** Only a Windows process can drive the secure
+  desktop, so an admin prompt is exactly the place this cannot click.
+- **Typed text bypasses this project's R2/R6 classifiers.** `type_text` is delivered as
+  keystrokes, not a shell command string, so `shellGuard` / `pathGuard` never see it and the
+  env-variable red line does not exist on that path. Never type credentials with it.
+- **Screenshots are not JIT-governed.** They arrive as non-text parts, and the offload layer
+  only governs text — so an image neither enters the context budget nor gets offloaded.
+- **`researcher` is the highest-risk role here.** It is the one that reads untrusted web pages,
+  and screen control plus untrusted page content is the worst combination in this feature: a
+  page saying "type X into the terminal" is aimed straight at it. The mitigations are the
+  server's action budget, its audit trail and a human watching — not a prompt sentence.
+- **The request-layer removal is the only defence we claim.** Whether the host fires
+  `permission.evaluate` for MCP tools is **unmeasured**, so this README does not claim a
+  permission layer behind it. The computer-use section of `tm_stats` reports the three states:
+  the tool names actually seen, a deny that matched nothing (a leak — a plugin defect), and
+  "configured but no tool appeared" (the server did not register).
+
+Install it explicitly: `.\scripts\install.ps1 -ComputerUse` (POSIX
+`bash scripts/install.sh --computer-use`); the installer's main flow never touches it. The
+procedure — including how a "no" is remembered so you are never asked twice, and the undo —
+is in [`docs/installation-v2.md`](./docs/installation-v2.md).
+
 ## 🔒 Governance & security
 
 Every tool call runs under one pipeline. Under it sit the guards, and **each can only make a rule stricter**:

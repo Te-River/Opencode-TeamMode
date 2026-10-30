@@ -396,6 +396,69 @@ function countersSourceLine(line: Record<string, unknown>): string {
   return `观察计数器来源=${at}（${gloss}）`
 }
 
+/**
+ * The optional `computeruse` MCP server, as three states rather than adjectives.
+ *
+ * This row exists because the failure it reports is SILENT by construction: the
+ * deny lives at the request layer, so "our prefix matched nothing" and "the tools
+ * were never there" both render as "0 tools".  `computeruse_tools` names what was
+ * actually seen (MEASURED 2026-10-30: `computeruse_control_status` on
+ * `permission.evaluate`, `computeruse.control_status` inside Code Mode),
+ * `computeruse_deny_leak` names the survivors on a role we deny, and
+ * `computeruse_absent` separates the four states a "0 tools" request can mean —
+ * including the one that used to be a lie: declared AND connected, but delivered
+ * through the Code Mode catalog (`declared-off-surface`) is NOT "the server did not
+ * register".  Names, never adjectives.
+ */
+export function computerUseLines(line: Record<string, unknown>): string[] {
+  const tools = String(line.computeruse_tools ?? "").trim()
+  const offSurface = String(line.computeruse_off_surface ?? "").trim()
+  const leak = String(line.computeruse_deny_leak ?? "").trim()
+  const absent = String(line.computeruse_absent ?? "").trim()
+  if (!tools && !offSurface && !leak && !absent) return []
+  const out: string[] = []
+  if (leak) {
+    out.push(
+      `⚠ deny 没匹配上：${leak} —— 被拒角色仍然到达了 MCP 工具（或被拒角色真的跑了起来）。` +
+        `插件缺陷，不是用户操作问题：把这串名字连同这一行报上来。`,
+    )
+  }
+  if (tools) {
+    out.push(
+      `观测到的工具名：${tools.split(" ").filter(Boolean).map((n) => `\`${n}\``).join(" ")}` +
+        `（运行时量的，不是假设的）`,
+    )
+  }
+  if (offSurface) {
+    out.push(
+      `请求表面之外见到的工具名：${offSurface.split(" ").filter(Boolean).map((n) => `\`${n}\``).join(" ")}` +
+        `（宿主把 MCP 工具放进 execute 的 Code Mode 目录，所以 \`event.tools\` 里没有它们）`,
+    )
+  }
+  const state =
+    absent === "declared-off-surface"
+      ? "配置里声明了 `mcp.computeruse`，而且这个进程里确实见到了它的工具名——但 `event.tools` 里一个都没有：这不是「server 没注册」，是宿主把这些工具放在 Code Mode 目录里。所以「请求表面 0 个」永远不能当成 server 没起来。"
+      : absent === "declared-not-seen"
+        ? "配置里声明了 `mcp.computeruse`，但请求表面 0 个工具、别的通道也一个都没见到 —— server 没注册：多半是装完没重启宿主，或 uv / Python 环境坏了（重跑 `-ComputerUse` 会回滚重装）。"
+        : absent === "not-declared"
+          ? "配置里没有 `mcp.computeruse`：这台机器没装，或用户拒绝了（安装指导书会把拒绝记下来，所以不会再问第二次）。"
+          : absent === "declaration-unread"
+            ? "读不到宿主配置，所以「声明了没声明」没有判定 —— 这一格是「没看到」，不是「没有」。"
+            : absent === "unobserved"
+              ? "还没看到一个装配好的请求表面：这一格是「没观测」，不是「没有工具」。"
+              : ""
+  if (state) out.push(state)
+  if (tools || offSurface) {
+    out.push(
+      "防线顺序（按能否真正拦住排）：① `permission.evaluate` 按角色拒绝——宿主对 MCP 动作实测会触发；" +
+        "② execute 的内层事件（`tool` 就是 MCP 工具名、input 为空）当场拒绝；" +
+        "③ execute 外层程序文本扫描——它是文本，拼名字可绕过，绕过时被拒角色那次调用会当场写 `computeruse_bypass` 轨迹行。" +
+        "截图是非文本部件，JIT 不过它（`v2-offload` 只治理文本）。",
+    )
+  }
+  return out
+}
+
 /** The sub-agent cap's EXCLUDED running rows, appended to its own line.
  *
  *  Why this exists: the running side of the cap used to count forever, so a row the
@@ -686,6 +749,14 @@ export function renderStats(
       if (line.probe_browser_tools && line.probe_browser_tools !== "") out.push(`  - 原生浏览器工具名：${String(line.probe_browser_tools).split(" ").filter(Boolean).map((n) => `\`${n}\``).join(" ")}`)
       if (line.note) out.push(`  - ${line.note}`)
     }
+    // The computer-use section reads the newest row that carries the three
+    // counters.  It is one section, not one per boot row: the same fact repeated
+    // four times is noise, and the newest row is the one that describes now.
+    const cuRow = bootSnapshots(b).find(
+      (l) => l && (l.computeruse_tools !== undefined || l.computeruse_deny_leak !== undefined || l.computeruse_absent !== undefined),
+    )
+    const cuLines = cuRow ? computerUseLines(cuRow) : []
+    if (cuLines.length) out.push("", "### 计算机使用（可选 MCP · server 名 computeruse）", "", ...cuLines.map((t) => `- ${t}`))
   }
 
   const g = stats.governance

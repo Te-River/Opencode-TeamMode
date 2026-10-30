@@ -51,6 +51,106 @@ export const V2_ACTION_NAMES: Readonly<Record<string, string>> = {
 }
 
 /**
+ * COMPUTER USE — the optional `computeruse` MCP server (screenshot + mouse and
+ * keyboard on the real desktop).  It is NOT our tool: the host spawns it from
+ * `mcp.computeruse` and every one of its tools arrives as `<server>_<tool>`.
+ *
+ * A SENTINEL, not seven literal names, for the same reason `BROWSER_CATALOG`
+ * exists: the server owns its tool list, so a literal list silently misses the
+ * eighth tool a later release adds — and the miss has no symptom.  What turns
+ * that silence into a number is `computeruse_deny_leak` in v2-probe.ts.
+ *
+ * The deny is derived from the ROLE (`computerUseAllowed`) rather than from a
+ * key in `src/agents.ts`, because this file is the translation layer every
+ * caller already goes through, and one source for "who may drive the desktop"
+ * cannot drift from the removal plan it feeds.
+ */
+export const COMPUTER_USE_CATALOG = "computeruse_*"
+
+/** The three roles that may drive the desktop: the lead, the web researcher and
+ *  the UI tester.  The lead check goes through `isLeadAgent` (identity.ts), so
+ *  `team` / `Team` / `TEAM` are one role. */
+const COMPUTER_USE_SPECIALISTS: ReadonlySet<string> = new Set(["researcher", "tester"])
+
+export function computerUseAllowed(agentName: string | undefined | null): boolean {
+  const name = String(agentName ?? "").trim()
+  if (!name) return false
+  if (isLeadAgent(name)) return true
+  return COMPUTER_USE_SPECIALISTS.has(name.toLowerCase())
+}
+
+/**
+ * Both spellings, always: `browser_*` was matched only in its underscore form
+ * once and the Code Mode catalog's dotted `browser.snapshot` slipped past the
+ * gate entirely (v2-browser-gate.ts:103-108).  The real name of a server tool is
+ * measured at runtime, never assumed — `computeruse_tools` records what arrived.
+ */
+export function isComputerUseTool(name: string): boolean {
+  const n = String(name ?? "").toLowerCase()
+  return n.startsWith("computeruse_") || n.startsWith("computeruse.")
+}
+
+/**
+ * The family as a PERMISSION ACTION name.  MEASURED on a real 2.2.1 host: MCP
+ * tools DO reach `permission.evaluate`, with the underscore-joined action
+ * `computeruse_control_status` and `resources:["computeruse_control_status"]` —
+ * the seam the docs above called unmeasured.  That makes the permission layer the
+ * primary defence, and this is the matcher it needs.
+ *
+ * Anchored at the START, unlike the loose mention probe below: a permission
+ * ACTION is a name the host minted for a server tool, so `mcp__computeruse__x` /
+ * `computeruse_x` / `computeruse.x` / `computer_use` are the family while a user's
+ * own `my_computeruse_notes` is not.  Guessing at a substring is how a deny turns
+ * into a data-loss bug.
+ */
+const COMPUTER_USE_ACTION = /^(?:mcp__)?computer[\s._-]?use(?:[._-]|$)/i
+
+export function isComputerUseAction(name: string): boolean {
+  return COMPUTER_USE_ACTION.test(String(name ?? "").trim())
+}
+
+/**
+ * The family's name in every spelling a tool name or a program's source text can
+ * carry it: `computeruse` (the MEASURED one — `computeruse.control_status` in a
+ * real 2.2.1 Code Mode catalog), `computer_use`, `computer-use`, and therefore
+ * also `mcp__computeruse__<tool>`.  ONE pattern for both readers below, because
+ * two spelling lists is exactly how `browser_*` ended up governing nothing
+ * (v2-browser-gate.ts:103-108): the request layer reads tool NAMES and the
+ * `execute` gate reads program TEXT, and a spelling one of them forgets is a
+ * silent hole.
+ */
+const COMPUTER_USE_MENTION = /computer[\s._-]?use/i
+
+/**
+ * The LOOSE probe: does this tool name mention the declared server at all, in any
+ * spelling?  Deliberately NOT used to delete — a loose rule would also delete a
+ * user tool called `my_computeruse_notes`, and guessing is how a deny becomes a
+ * data-loss bug.  It is used for the two DIAGNOSTIC questions only: "what names did
+ * the host actually mint?" and "is a denied role still holding — or CALLING — one
+ * of them after our prefix removed nothing?"
+ */
+export function mentionsComputerUse(name: string): boolean {
+  return COMPUTER_USE_MENTION.test(String(name ?? ""))
+}
+
+/**
+ * Does a Code Mode `program` name the server?  This is the seam that matters on a
+ * 2.x host: MCP tools are NOT in `event.tools` (measured — `architect`'s surface
+ * carried five tools and no `computeruse*` name while
+ * `tools.computeruse.control_status()` answered `{"ok":true}`), so the
+ * request-layer prefix cannot delete what is not there.  `v2-computeruse-gate.ts`
+ * refuses on a match.
+ *
+ * A text match is a REFUSAL in the safe direction and a MISS in the unsafe one: a
+ * program that builds the name at runtime (`"computer" + "use"`) matches nothing
+ * here.  That is why the gate also reads what actually RAN
+ * (`metadata.toolCalls`) instead of treating this function as complete.
+ */
+export function programMentionsComputerUse(program: string): boolean {
+  return COMPUTER_USE_MENTION.test(String(program ?? ""))
+}
+
+/**
  * RETIRED TOOLS — names the v1 personality used to register and this package
  * no longer ships.  v1 support was removed in 1.7.0, so these are historical
  * names; the set survives because it still has three live jobs:
@@ -148,6 +248,14 @@ export function triplesFromAgentPermission(
   if (!permission || typeof permission !== "object") return { triples, unmapped }
   for (const [matrixAction, value] of Object.entries(permission)) {
     if (!matrixAction) continue
+    // A trailing `*` is a PATTERN, not an action.  Declaring it as a triple would
+    // claim the host has an action by that name (the same phantom-rule mistake
+    // V2_ONLY_ACTIONS exists to avoid), so the rule is reported as unmapped and the
+    // request layer — which deletes by prefix — is where it is actually enforced.
+    if (matrixAction.endsWith("*")) {
+      unmapped.push(matrixAction)
+      continue
+    }
     if (V2_ONLY_ACTIONS.has(matrixAction)) {
       unmapped.push(matrixAction)
       continue

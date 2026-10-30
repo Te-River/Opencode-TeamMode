@@ -211,6 +211,79 @@ Four checks, in this order:
 4. `tm_ledger { action:"add", text:"smoke test" }` answers with an id and
    `已写入 ctx.storage`. That is the v2 ledger being live.
 
+### Optional — computer use (real desktop)
+
+**Instructions for the agent doing the install.** Do these steps in order, literally.
+
+**Step 0 — detect first, talk second.** Read the global `~/.config/opencode/opencode.jsonc`
+(and `opencode.json`, and the project's `opencode.json(c)` if there is one) and look for
+`mcp.computeruse` **or** `mcp.servers.computeruse` — **either one means the user already
+decided**, so both count as "already configured". Only `mcp.computeruse` is the shape the host
+was **measured** to load on 2.2.1 (`mcp connected server=computeruse tools=2`), and it is the
+only one we ever write; the other is checked so a hand-written legacy entry is never re-asked.
+Also check for the decline marker `<config dir>/team-mode.computeruse-declined`.
+
+- **Either one exists → ask NOTHING, write NOTHING.** Print one line —
+  `computer use: already configured (skipping the question)` — and continue with the next
+  section. This covers a previous **yes** and a previous **no** alike, which is what makes
+  "never ask twice" structural instead of a promise: an already-configured user is never
+  re-asked, and no agent has to remember anything.
+- Neither exists → Step 1.
+
+**Step 1 — ask ONCE, in ONE message.** Do not split this into follow-up questions:
+
+> Install the optional **computer use** MCP server? It lets Team (the lead), `researcher` and
+> `tester` take screenshots and drive the mouse and keyboard on **this real desktop** — any
+> window. Two hard boundaries: **elevated (UAC) windows are unreachable** (only a Windows
+> process can touch the secure desktop), and **there is no per-action confirmation** — typing
+> into a terminal is delivered as keystrokes, so it **bypasses this project's R2/R6
+> classifiers** and the env-variable red line simply does not exist on that path. It is
+> **optional**; Team works without it. Install it?
+
+**Step 2 — act on the answer.**
+
+- **Yes** → run `.\scripts\install.ps1 -ComputerUse` (POSIX: `bash scripts/install.sh --computer-use`).
+  Relay its own "already present / skipped" or undo text **verbatim** — do not paraphrase it.
+  Then verify and restart, exactly as Step 4 above: `<uv tool dir>/computeruse-mcp/Scripts/computeruse.exe --selftest` (POSIX: `<uv tool dir>/computeruse-mcp/bin/computeruse --selftest`)
+  must print `dpi_aware: true` and the virtual-screen size, then `opencode service restart`,
+  then `tm_stats`: the new **计算机使用** section must name the tool ids it actually saw.
+  **The tool names are measured at runtime, never assumed** — the plugin matches the
+  `computeruse_` and `computeruse.` prefixes and reports what arrived, so do not write a
+  specific name into any summary of yours before `tm_stats` has shown it.
+- **No** (or "not now" / "unsure" — treat them the same) → record the refusal, then say
+  `noted — I won't ask again`. Write the marker — the one thing that cannot start anything:
+
+  ```bash
+  CFG_DIR="${OPENCODE_CONFIG_DIR:-$HOME/.config/opencode}"
+  mkdir -p "$CFG_DIR"
+  printf 'declined %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$CFG_DIR/team-mode.computeruse-declined"
+  ```
+
+  PowerShell:
+  `New-Item -Force "$env:USERPROFILE\.config\opencode\team-mode.computeruse-declined" | Out-Null`
+  (the host honours `OPENCODE_CONFIG_DIR`; use it here too if it is set).
+  **Why a marker and not a disabled MCP entry:** any `mcp.*` entry is one edit away from
+  spawning a process, and the shared config helper refuses a spec without a real `command`
+  array (`scripts/lib/config-surgery.cjs`), so a `{"enabled":false}` stub could not even be
+  written through it. A text file in our own name cannot start anything, and Step 0 reads it.
+
+**Undo (say this out loud for either branch).**
+
+```bash
+uv tool uninstall computeruse-mcp                                   # 1. remove the tool
+node scripts/lib/config-surgery.cjs <cfg> mcp-remove computeruse # 2. remove the key
+rm -rf "%LOCALAPPDATA%/te-river/computeruse"                    # 3. remove the audit trail
+rm -f <config dir>/team-mode.computeruse-declined                # 4. only if you declined
+```
+
+**What this feature is not.** It is not a security boundary — it is a blast-radius limiter
+(action budget, an audit trail under `%LOCALAPPDATA%/te-river/computeruse`, an emergency-stop
+hotkey, a human in the room). Screen content is **untrusted input**: `researcher` is the role
+that reads web pages, so a page that says "type X into the terminal" is aimed exactly at it.
+That combination — screen control plus untrusted page content — is the highest-risk one in
+this product; the mitigations are the budget, the audit trail and you watching, not a prompt
+sentence asking the model to be careful.
+
 ### Updating / 更新
 
 ```bash
@@ -480,6 +553,71 @@ opencode service restart
    说明卸载层没挂上——`tm_stats` 会直说。
 4. `tm_ledger { action:"add", text:"冒烟测试" }` 应该回你一个编号，并写明
    `已写入 ctx.storage`。这就是 v2 清单活着的样子。
+
+### 可选 —— 计算机使用（真实桌面）
+
+**这一节是写给"正在安装的 agent"的操作规程**，请按顺序照做，不要自己发挥。
+
+**第 0 步 —— 先检测，后说话。** 读全局 `~/.config/opencode/opencode.jsonc`（以及
+`opencode.json`，有项目配置时也读项目的 `opencode.json(c)`），查 `mcp.computeruse` **或**
+`mcp.servers.computeruse`——**任一处存在就说明用户已经决定过**，所以两处都算"已配置"。
+只有 `mcp.computeruse` 是 2.2.1 上**实测**能被宿主加载的形状
+（`mcp connected server=computeruse tools=2`），我们也只写这一处；另一处查它，只是为了让
+手写的旧条目不会被重复追问。再查拒绝标记
+`<配置目录>/team-mode.computeruse-declined`。
+
+- **任一处存在 → 什么都不问、什么都不写。** 只打印一行
+  `computer use 已配置（跳过询问）`，继续下一节。这条同时覆盖"以前答应过"和"以前拒绝过"，
+  所以"以后永不再问"是结构性保证，不靠 agent 的记忆。
+- 两处都没有 → 进第 1 步。
+
+**第 1 步 —— 只问一次，一段话问完**（不得拆成多轮追问）：
+
+> 要不要装可选的**计算机使用** MCP？它让 Team 主代理、`researcher`、`tester` 能截屏，并用
+> 鼠标键盘操作你这台**真实**的桌面（任意窗口）。两条硬边界：**UAC / 提权窗口它碰不到**
+> （只有 Windows 进程能访问安全桌面）；而且**没有逐动作确认**——往终端里打字是以"按键"
+> 送进去的，所以它**绕过本项目的 R2/R6 分类器**，环境变量红线在那条路上根本不存在。
+> 它是**可选**的，不装不影响 Team 其他功能。要装吗？
+
+**第 2 步 —— 按回答行事。**
+
+- **要装** → 运行 `.\scripts\install.ps1 -ComputerUse`（POSIX：`bash scripts/install.sh --computer-use`）。
+  把它自己输出的"已存在 / 跳过"或撤销提示**原样**转述，不要改写。然后照上面第 4 步验证并重启：
+  `<uv tool dir>/computeruse-mcp/Scripts/computeruse.exe --selftest`（POSIX：`<uv tool dir>/computeruse-mcp/bin/computeruse --selftest`）必须打印 `dpi_aware: true`
+  与虚拟屏幕尺寸，再 `opencode service restart`，最后 `tm_stats`——新的**计算机使用**小节会
+  列出它**实际看到**的工具名。**工具名是运行时量出来的，不是假设的**：插件按
+  `computeruse_` 与 `computeruse.` 两种前缀匹配并记录真实名字，所以在 `tm_stats` 给出名字
+  之前，不要在你自己写的任何总结里写死某个工具名。
+- **不装**（"以后再说""不确定"同样处理）→ 记下拒绝，然后说 `已记下，下次不会再问`：
+
+  ```bash
+  CFG_DIR="${OPENCODE_CONFIG_DIR:-$HOME/.config/opencode}"
+  mkdir -p "$CFG_DIR"
+  printf 'declined %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$CFG_DIR/team-mode.computeruse-declined"
+  ```
+
+  PowerShell：
+  `New-Item -Force "$env:USERPROFILE\.config\opencode\team-mode.computeruse-declined" | Out-Null`
+  （宿主会认 `OPENCODE_CONFIG_DIR`，设了就照它走。）
+  **为什么用标记文件而不是 `{"enabled":false}` 的 MCP 条目**：任何 `mcp.*` 条目都离"能拉起
+  进程"只差一次编辑，而共用的配置助手要求 `command` 是非空字符串数组
+  （`scripts/lib/config-surgery.cjs`），所以那种空壳连写都写不进去。我们自己名下的一个文本
+  文件什么都启动不了，而第 0 步会读它。
+
+**撤销（两条分支都要说清楚）。**
+
+```bash
+uv tool uninstall computeruse-mcp                                    # 1. 卸掉工具
+node scripts/lib/config-surgery.cjs <cfg> mcp-remove computeruse # 2. 删掉那个键
+rm -rf "%LOCALAPPDATA%/te-river/computeruse"                     # 3. 删掉审计轨
+rm -f <配置目录>/team-mode.computeruse-declined                   # 4. 只有拒绝过才需要
+```
+
+**它不是什么。** 它**不是安全边界**，只是爆炸半径限制器：动作预算、审计轨
+（`%LOCALAPPDATA%/te-river/computeruse`）、急停热键、以及"有人在看着"。屏幕内容是
+**不可信输入**：`researcher` 正是读网页的角色，一段"把 X 敲进终端"的网页就是冲着它来的。
+**受控屏幕 + 不可信网页 = 本产品风险最高的组合**；缓解手段是预算、审计轨和你在场，
+而不是在提示词里写一句"别被骗"。
 
 ### 更新
 

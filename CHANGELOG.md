@@ -7,6 +7,30 @@ registry saw 1.5.0 as the install-script fix release).
 
 ## [Unreleased]
 
+### Added
+
+- **可选：计算机使用 MCP（`computeruse`）—— 三层按角色收窄，失败可计数。** 宿主从
+  `mcp.computeruse` 拉起一个桌面控制服务器（截屏 / 点击 / 输入 / 按键 / 滚轮 / 拖拽 / 状态），
+  插件侧不做控制，只做收窄与观测。**2026-10-30 真机实测后重写：** 请求层删
+  `event.tools` 在 2.2.1 上**删不到任何东西**——MCP 工具只出现在 `execute` 的 Code Mode
+  目录里，被 deny 的 `architect` 照样调用成功。所以现在是三层：① **`permission.evaluate`
+  （主防线）**：实测宿主以 `action=computeruse_control_status` 触发这条钩子，被拒角色返回
+  `effect:"deny"`，拒绝语点名角色；② **内层 `execute` 事件**：宿主把程序里的 MCP 调用单独
+  报成 `tool=computeruse_control_status` 且 input 为空，这层只判角色、不读参数；③ **外层
+  程序文本**：读 `input.code`（实测 wire format）再回落 `program`，拼写表
+  `computer[\s._-]?use`（点/下划线/连字符/空格全认）。请求层的 `event.tools` 删除**保留但
+  不再是防线**，注释写明它是遗留。**诚实边界写进拒绝语**：③ 是文本级门禁不是沙箱，
+  `"computer"+"use"` 拼名能绕过去；绕过去会**当场**写一行 `computeruse_bypass` 轨迹
+  （角色 + 工具名）并进 `computeruse_deny_leak`——"没被拦住"不等于"被允许"。计数器：
+  `computeruse_tools`（运行时量到的真名）/ `computeruse_deny_leak` / `computeruse_absent`，
+  外加第五态 `declared-off-surface`（配置了、也连上了，但不在 `event.tools` 里——**不是**
+  "服务器没注册"，措辞上必须分开）。安装指导书（`docs/installation-v2.md`）新增可选小节：
+  **先检测、已配置就不问**；否则**只问一次**（两条硬边界：UAC 提权窗口不可达、打进终端的
+  文本绕过 R2/R6）；同意 → `-ComputerUse` / `--computer-use` 再验证再重启；拒绝 →
+  `team-mode.computeruse-declined` 标记（不能启动任何东西；共用配置助手也拒绝没有 `command`
+  的 MCP 空壳）；并给出四步撤销。README 双语同步这一节的边界，包括 `researcher` 读网页 +
+  控屏是本功能里最高注入风险组合。
+
 ### Fixed
 
 - **The agent picker shows Team only.** The five specialists are `mode: "subagent"` and every

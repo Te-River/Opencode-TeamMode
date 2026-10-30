@@ -1,0 +1,27 @@
+[build-system]
+requires = ["uv_build>=0.9.0,<0.10.0"]
+build-backend = "uv_build"
+
+[project]
+name = "computeruse-mcp"
+version = "0.0.1"
+description = "Minimal, auditable computer-use MCP server for OpenCode Team Mode (screenshot + mouse/keyboard, with before/after change verdicts)"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = ["mss>=9", "Pillow>=10"]
+
+[project.scripts]
+computeruse = "computeruse.cli:main"
+
+[tool.uv.build-backend]
+module-name = "computeruse"
+module-root = "src"
+
+[dependency-groups]
+dev = ["pytest>=8"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# So bare `pytest -q` imports the package under test without `PYTHONPATH=src`:
+# the documented command has to be the one that works, not a special case.
+pythonpath = ["src"]

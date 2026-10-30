@@ -36,9 +36,15 @@
  *      the other layers answering; envOnly drops it too
  *  22. SYSTEM DIR RESOLUTION: `%ProgramData%\opencode` / `/etc/opencode`, no
  *      crash when ProgramData is unset, injected systemDir wins
+ *  23. config-surgery `mcp-set` / `mcp-remove`: the McpLocalConfig shape under
+ *      `mcp.<name>` (never the `disabled` encoding), idempotent, comments and
+ *      foreign entries preserved, read back off the disk
+ *  24. the computer-use wheel contract: one version/sha256 constant in both
+ *      installers, placeholder-or-64hex, the refusal sentence, UV_TOOL_DIR
  */
 
 import assert from "node:assert"
+import { spawnSync } from "node:child_process"
 import * as fs from "node:fs"
 import * as os from "node:os"
 import * as path from "node:path"
@@ -689,4 +695,128 @@ const eq = (a, b, msg) => assert.strictEqual(a, b, msg)
   console.log("22. system dir resolution: OK (ProgramData/platform/injected, no crash)")
 }
 
-console.log(`\ntest-config-layers.mjs: ALL PASS (22 groups)`)
+// ---------------------------------------------------------------------------
+// 23. config-surgery `mcp-set` / `mcp-remove` — the ONE MCP shape this host loads
+//     (`McpLocalConfig` under `mcp.<name>`; never the `disabled` encoding), idempotent,
+//     comment- and foreign-entry-preserving, and READ BACK off the disk.
+// ---------------------------------------------------------------------------
+{
+  const surgery = path.resolve("scripts", "lib", "config-surgery.cjs")
+  assert.ok(fs.existsSync(surgery), "the shared surgery helper is where both installers expect it")
+  const run = (...args) => spawnSync(process.execPath, [surgery, ...args], { encoding: "utf8" })
+  const EXE = process.platform === "win32" ? "C:\\tools\\computeruse.exe" : "/opt/uv/computeruse"
+  // `command` is an ARRAY and `timeout` is 60000, not the host default of 5000: a cold
+  // Python start exceeds it, and the timeout is what the host kills the server on.
+  const spec = { type: "local", command: [EXE, "--budget", "200"], environment: {}, enabled: true, timeout: 60000 }
+  const specJson = JSON.stringify(spec)
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "tm-mcp-surgery-"))
+
+  // (a)(b)(c) a plain-JSON config round-trips through JSON.parse; the second run writes
+  //          nothing; `disabled` appears nowhere.
+  const jsonPath = path.join(tmp, "opencode.json")
+  const seed = `{\n  "$schema": "https://opencode.ai/config.json",\n  "plugins": ["@te-river/opencode-team-mode@latest"],\n  "mcp": {\n    "other": {"type":"local","command":["other.exe"],"enabled":true}\n  }\n}\n`
+  fs.writeFileSync(jsonPath, seed)
+  let r = run(jsonPath, "mcp-set", "computeruse", specJson)
+  eq(r.status, 0, "mcp-set exits 0: " + r.stderr)
+  const added = JSON.parse(fs.readFileSync(jsonPath, "utf8"))
+  assert.deepStrictEqual(added.mcp.computeruse, spec, "(a) mcp.computeruse is exactly the McpLocalConfig shape")
+  assert.deepStrictEqual(added.mcp.other, { type: "local", command: ["other.exe"], enabled: true }, "the foreign server is untouched")
+  eq(added.plugins.length, 1, "the plugins array is untouched")
+  eq(added.mcp.servers, undefined, "the `mcp.servers` spelling is not written")
+  assert.ok(!/"disabled"/.test(fs.readFileSync(jsonPath, "utf8")), "(c) the ignored `disabled` encoding is never emitted")
+  assert.ok(!/"disabled"/.test(r.stdout + r.stderr), "(c) …not in the helper's output either")
+
+  const bytes1 = fs.readFileSync(jsonPath, "utf8")
+  r = run(jsonPath, "mcp-set", "computeruse", specJson)
+  eq(r.status, 0, "a second mcp-set exits 0")
+  assert.ok(/已存在，未改动/.test(r.stdout), "(b) the second run says 已存在，未改动: " + r.stdout)
+  eq(fs.readFileSync(jsonPath, "utf8"), bytes1, "(b) …and changed no bytes")
+
+  // (d) mcp-remove takes our key out and puts the file back byte-for-byte, leaving the
+  //     other server alone; a second remove is a no-op, not a failure.
+  r = run(jsonPath, "mcp-remove", "computeruse")
+  eq(r.status, 0, "mcp-remove exits 0: " + r.stderr)
+  eq(fs.readFileSync(jsonPath, "utf8"), seed, "(d) the file is restored byte-exactly")
+  const removed = JSON.parse(fs.readFileSync(jsonPath, "utf8"))
+  eq(removed.mcp.computeruse, undefined, "(d) our key is gone")
+  assert.deepStrictEqual(removed.mcp.other, { type: "local", command: ["other.exe"], enabled: true }, "(d) the foreign server survives")
+  r = run(jsonPath, "mcp-remove", "computeruse")
+  eq(r.status, 0, "a second mcp-remove is a no-op, not a failure")
+  assert.ok(/不存在，未改动/.test(r.stdout), "…and says so: " + r.stdout)
+
+  // (e) JSONC: a comment above and inside `mcp`, a trailing comma that makes a whole-file
+  //     JSON.parse impossible, and a foreign plugin entry — all survive; the read-back
+  //     names the check it could actually run instead of claiming a strict parse.
+  const jsoncPath = path.join(tmp, "opencode.jsonc")
+  const jsoncSeed = `{\n  // 宿主配置：注释必须原样留下\n  "$schema": "https://opencode.ai/config.json",\n  "plugins": ["./vendor/team-mode",],\n  "mcp": {\n    // 别人的服务器，不能动\n    "other": {"type":"local","command":["other.exe"],"enabled":true}\n  }\n}\n`
+  fs.writeFileSync(jsoncPath, jsoncSeed)
+  r = run(jsoncPath, "mcp-set", "computeruse", specJson)
+  eq(r.status, 0, "mcp-set on a JSONC file exits 0: " + r.stderr)
+  const jsoncAfter = fs.readFileSync(jsoncPath, "utf8")
+  eq(jsoncAfter.replace(",\n    \"computeruse\": " + specJson, ""), jsoncSeed,
+    "(e) only the new member was added — every other byte of the file survived")
+  assert.ok(jsoncAfter.includes("// 宿主配置：注释必须原样留下"), "(e) the top-level comment survives")
+  assert.ok(jsoncAfter.includes("// 别人的服务器，不能动"), "(e) the comment inside `mcp` survives")
+  assert.ok(jsoncAfter.includes('"plugins": ["./vendor/team-mode",]'), "(e) the foreign plugin entry survives")
+  assert.ok(/masked span \(JSONC file\)/.test(r.stdout),
+    "(e) the read-back names the check it could run (a JSONC file cannot be strict-parsed whole): " + r.stdout)
+
+  // (f) the shapes that must NEVER be written, each refusing before the file is touched.
+  const guardPath = path.join(tmp, "guarded.json")
+  fs.writeFileSync(guardPath, `{\n  "mcp": {}\n}\n`)
+  const guardSeed = fs.readFileSync(guardPath, "utf8")
+  const badDisabled = run(guardPath, "mcp-set", "computeruse", JSON.stringify({ type: "local", command: [EXE], disabled: false }))
+  eq(badDisabled.status, 1, "the `disabled` spelling is refused")
+  assert.ok(/disabled/.test(badDisabled.stderr), "…with a reason that names it: " + badDisabled.stderr)
+  eq(fs.readFileSync(guardPath, "utf8"), guardSeed, "…and nothing was written")
+  const badCmd = run(guardPath, "mcp-set", "computeruse", JSON.stringify({ type: "local", command: EXE, timeout: 60000 }))
+  eq(badCmd.status, 1, "a string `command` is refused (the host spawns an argv, not a shell line)")
+  eq(fs.readFileSync(guardPath, "utf8"), guardSeed, "…and nothing was written")
+  const notJson = run(guardPath, "mcp-set", "computeruse", "{not json}")
+  eq(notJson.status, 1, "a non-JSON value is refused")
+  eq(fs.readFileSync(guardPath, "utf8"), guardSeed, "…and nothing was written")
+
+  // (g) the channel the installers actually use: `TM_MCP_SPEC` instead of an argv element
+  //     (Windows PowerShell strips the quotes out of a JSON argument). Same validated path.
+  const envPath = path.join(tmp, "via-env.json")
+  fs.writeFileSync(envPath, `{\n  "mcp": {}\n}\n`)
+  const viaEnv = spawnSync(process.execPath, [surgery, envPath, "mcp-set", "computeruse"],
+    { encoding: "utf8", env: { ...process.env, TM_MCP_SPEC: specJson } })
+  eq(viaEnv.status, 0, "mcp-set works over TM_MCP_SPEC: " + viaEnv.stderr)
+  assert.deepStrictEqual(JSON.parse(fs.readFileSync(envPath, "utf8")).mcp.computeruse, spec,
+    "(g) the env channel writes the same McpLocalConfig (and the empty `mcp` object got no dangling comma)")
+  const noSpec = spawnSync(process.execPath, [surgery, envPath, "mcp-set", "computeruse"],
+    { encoding: "utf8", env: { ...process.env, TM_MCP_SPEC: "" } })
+  eq(noSpec.status, 1, "with neither a value nor TM_MCP_SPEC it refuses instead of writing an empty entry")
+
+  fs.rmSync(tmp, { recursive: true, force: true })
+  console.log("23. config-surgery mcp-set/mcp-remove: OK (McpLocalConfig only, idempotent, comments kept, read back)")
+}
+
+// ---------------------------------------------------------------------------
+// 24. the computer-use WHEEL contract — the fail-closed edges a refactor can drop in
+//     silence: one version line, ONE sha256 constant, and the refusal that stops an
+//     unverified install. (The install itself needs uv plus a wheel, so it is exercised
+//     by hand in a redirected sandbox; these are the parts a static check can hold.)
+// ---------------------------------------------------------------------------
+{
+  const ps1 = fs.readFileSync(path.resolve("scripts", "install.ps1"), "utf8")
+  const sh = fs.readFileSync(path.resolve("scripts", "install.sh"), "utf8")
+  const versionOf = (t) => (/CU_VERSION\s*=\s*"([^"]+)"/.exec(t) || [])[1]
+  const shaOf = (t) => (/CU_WHEEL_SHA256\s*=\s*"([^"]+)"/.exec(t) || [])[1]
+  eq(versionOf(ps1), versionOf(sh), "both installers pin the SAME computeruse version line")
+  eq(shaOf(ps1), shaOf(sh), "…and the same sha256 constant: one trust decision, not two")
+  const sha = shaOf(ps1)
+  assert.ok(sha === "__NOT_RELEASED__" || /^[0-9a-f]{64}$/.test(sha),
+    "the constant is EITHER the documented placeholder OR a real 64-hex digest — never a shape that looks verified")
+  for (const [name, text] of [["install.ps1", ps1], ["install.sh", sh]]) {
+    assert.ok(text.includes("wheel 尚未发布，无法安装"), `${name} refuses with the documented sentence`)
+    assert.ok(text.includes("UV_TOOL_DIR"), `${name} honours UV_TOOL_DIR (the sandboxable tool dir)`)
+    assert.ok(text.includes("uv tool uninstall"), `${name} rolls back through uv tool uninstall`)
+    assert.ok(text.includes("--selftest"), `${name} requires --selftest before writing the entry`)
+  }
+  assert.ok(/CU_RELEASE_URL/.test(ps1) && /CU_RELEASE_URL/.test(sh), "the default release asset URL is named in both")
+  console.log("24. computer-use wheel contract: OK (one version/sha constant, placeholder-or-64hex, refusal present)")
+}
+
+console.log(`\ntest-config-layers.mjs: ALL PASS (24 groups)`)

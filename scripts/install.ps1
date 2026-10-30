@@ -1,4 +1,4 @@
-# ─────────────────────────────────────────────────────────────────────────────
+﻿# ─────────────────────────────────────────────────────────────────────────────
 # OpenCode TeamMode — one-click installer for Windows (idempotent: re-run to UPDATE)
 #
 # Usage:
@@ -31,14 +31,34 @@
 
 # Piped install (irm ... | iex) cannot pass switches; run the file directly to
 # use them, or set TEAMMODE_SKIP_BACKGROUND_SUBAGENTS=1 in the environment.
+# -ComputerUse is OFF by default and is not part of the plugin install: it wires the
+# optional `computeruse` MCP server (see step 5 of Install-V2).
 param(
-    [switch]$NoBackgroundSubagents
+    [switch]$NoBackgroundSubagents,
+    # The optional computer-use MCP server. -ComputerUse is the on/off switch; the two
+    # other parameters exist because the wheel has to be VERIFIED before it is installed,
+    # and before the release exists the only wheel in the world is one the caller built.
+    [switch]$ComputerUse,
+    [string]$ComputerUseWheel,
+    [string]$ComputerUseWheelSha256
 )
 
 $ErrorActionPreference = "Stop"
 
 $PKG = "@te-river/opencode-team-mode@latest"
 $PKG_NAME = "@te-river/opencode-team-mode"
+
+# ── the optional computer-use server (a GitHub Release ASSET, not an npm artifact) ──
+# It has its own version line: tag `computeruse-v<version>`, asset
+# `computeruse_mcp-<version>-py3-none-any.whl`, released from computer-use/.
+# THE SHA256 BELOW IS THE ONE PLACE THE TRUST DECISION LIVES. It is the released 0.0.1
+# asset's hash; a wheel whose hash does not match is never installed (Install-V2 step 5a),
+# because an unverified binary is exactly what this constant exists to prevent. Publishing
+# a new asset and overwriting this value belong in the SAME commit — a stale hash fails
+# closed, which is the correct failure.
+$CU_VERSION = "0.0.1"
+$CU_WHEEL_SHA256 = "6212f9b7eb814ea558514c1d886b3765036628e28dc72192c03a524b377e0f04"
+$CU_RELEASE_URL = "https://github.com/Te-River/Opencode-TeamMode/releases/download/computeruse-v$($CU_VERSION)/computeruse_mcp-$($CU_VERSION)-py3-none-any.whl"
 
 Write-Host ""
 Write-Host "OpenCode TeamMode Installer" -ForegroundColor Cyan
@@ -337,11 +357,188 @@ function Install-V2 {
             Write-Host '     "default_agent": "Team"' -ForegroundColor Yellow
             exit 1
         }
+
+    # ── 5. the computer-use MCP server (OPT-IN, default off) ────────────────
+    # The ORDER is the safety story, and it fails closed at every step:
+    #   verify sha256 → uv tool install → `--selftest` must exit 0 → mcp-set.
+    # No config byte is written until a server that actually runs exists, and any failure
+    # after the install rolls it back. A `mcp` entry whose command the host cannot spawn
+    # is a server that never starts, and the host reports it as a timeout — which reads
+    # as our bug.
+    if ($wantCU) {
+        Write-Host ""
+        Write-Host "↻  computer-use MCP server (opt-in) ..." -ForegroundColor Yellow
+        if (-not (Get-Command uv -ErrorAction SilentlyContinue)) {
+            Write-Host "!  uv is not on PATH, so there is no way to install the server." -ForegroundColor Yellow
+            Write-Host "   Nothing was written. Install uv (https://docs.astral.sh/uv/), then re-run:" -ForegroundColor Yellow
+            Write-Host "     .\install.ps1 -ComputerUse" -ForegroundColor Yellow
+            exit 1
+        }
+
+        # ── 5a. which wheel, and the only hash we will accept ───────────────
+        $wheelSrc = $ComputerUseWheel
+        if (-not $wheelSrc) { $wheelSrc = $CU_RELEASE_URL }
+        $wantSha = $ComputerUseWheelSha256
+        if (-not $wantSha) { $wantSha = $CU_WHEEL_SHA256 }
+        if ($wantSha -notmatch '^[0-9a-fA-F]{64}$') {
+            Write-Host "!  wheel 尚未发布，无法安装 — there is no sha256 to verify against, and this" -ForegroundColor Yellow
+            Write-Host "   installer never installs a binary it could not check. Nothing was written." -ForegroundColor Yellow
+            Write-Host "   With a wheel you built yourself (computer-use\scripts\build-wheel.ps1):" -ForegroundColor Yellow
+            Write-Host "     `$h = (Get-FileHash -Algorithm SHA256 computeruse_mcp-<ver>-py3-none-any.whl).Hash.ToLower()" -ForegroundColor Yellow
+            Write-Host "     .\install.ps1 -ComputerUse -ComputerUseWheel <wheel path or https url> -ComputerUseWheelSha256 `$h" -ForegroundColor Yellow
+            exit 1
+        }
+
+        # ── 5b. materialise it: a path is used as-is; an https asset is downloaded into
+        #        the temp dir (never into the repo) and deleted once it is installed ──
+        $wheelPath = $wheelSrc
+        $downloaded = $false
+        if ($wheelSrc -match '^https?://') {
+            $wheelPath = Join-Path ([IO.Path]::GetTempPath()) ("computeruse-" + [guid]::NewGuid().ToString("N") + ".whl")
+            Write-Host "↓  downloading $wheelSrc" -ForegroundColor DarkGray
+            $prevEap = $ErrorActionPreference
+            $ErrorActionPreference = "Continue"
+            $okDl = $false
+            try { Invoke-WebRequest -Uri $wheelSrc -OutFile $wheelPath -UseBasicParsing; $okDl = $true }
+            catch { Write-Host ("!  download failed: " + $_.Exception.Message) -ForegroundColor Yellow }
+            finally { $ErrorActionPreference = $prevEap }
+            if (-not $okDl) {
+                Remove-Item -LiteralPath $wheelPath -Force -ErrorAction SilentlyContinue
+                Write-Host "   Nothing was written and nothing was installed." -ForegroundColor Yellow
+                exit 1
+            }
+            $downloaded = $true
+        } elseif (-not (Test-Path -LiteralPath $wheelPath)) {
+            Write-Host "!  No such wheel: $wheelPath" -ForegroundColor Yellow
+            Write-Host "   Nothing was written and nothing was installed." -ForegroundColor Yellow
+            exit 1
+        }
+
+        # ── 5c. the hash decides. A mismatch deletes the download and stops here. ──
+        $gotSha = (Get-FileHash -LiteralPath $wheelPath -Algorithm SHA256).Hash.ToLower()
+        if ($gotSha -ne $wantSha.ToLower()) {
+            if ($downloaded) { Remove-Item -LiteralPath $wheelPath -Force -ErrorAction SilentlyContinue }
+            Write-Host "!  sha256 mismatch — refusing to install:" -ForegroundColor Yellow
+            Write-Host "     expected $($wantSha.ToLower())" -ForegroundColor Yellow
+            Write-Host "     got      $gotSha" -ForegroundColor Yellow
+            Write-Host "   Nothing was written and nothing was installed." -ForegroundColor Yellow
+            exit 1
+        }
+        Write-Host "✔  sha256 verified: $gotSha" -ForegroundColor Green
+
+        # ── 5d. install into the TOOL DIR the caller named ──────────────────
+        # UV_TOOL_DIR / UV_TOOL_BIN_DIR are HONOURED, which is what makes a test run and a
+        # rollback "delete one directory" instead of "reach into the user's real uv state".
+        # The bin dir is defaulted to <toolDir>\bin when unset so no shim lands outside it;
+        # the mcp entry spawns the absolute exe anyway.
+        $prevEap = $ErrorActionPreference
+        $ErrorActionPreference = "Continue"
+        $toolDirEff = $env:UV_TOOL_DIR
+        if (-not $toolDirEff) { $toolDirEff = (& uv tool dir 2>$null | Select-Object -First 1) }
+        if (-not $toolDirEff) {
+            $ErrorActionPreference = $prevEap
+            if ($downloaded) { Remove-Item -LiteralPath $wheelPath -Force -ErrorAction SilentlyContinue }
+            Write-Host "!  Could not resolve uv's tool directory. Nothing was written." -ForegroundColor Yellow
+            exit 1
+        }
+        $env:UV_TOOL_DIR = $toolDirEff
+        if (-not $env:UV_TOOL_BIN_DIR) { $env:UV_TOOL_BIN_DIR = Join-Path $toolDirEff "bin" }
+        & uv tool install --force $wheelPath | Out-Host
+        $inst = $LASTEXITCODE
+        $ErrorActionPreference = $prevEap
+        if ($downloaded) { Remove-Item -LiteralPath $wheelPath -Force -ErrorAction SilentlyContinue }
+        if ($inst -ne 0) {
+            Write-Host "!  uv tool install failed (exit $inst) — no config byte was written." -ForegroundColor Yellow
+            exit 1
+        }
+
+        # ── 5e. the entry point must EXIST and ANSWER `--selftest` ───────────
+        # The tool directory is named after the DISTRIBUTION (`computeruse-mcp`, measured),
+        # not after the console script, so scan instead of guessing one spelling.
+        $exe = $null
+        $toolName = $null
+        foreach ($d in @(Get-ChildItem -LiteralPath $toolDirEff -Directory -ErrorAction SilentlyContinue)) {
+            foreach ($rel in @("Scripts\computeruse.exe", "bin\computeruse", "Scripts\computeruse")) {
+                $cand = Join-Path $d.FullName $rel
+                if (Test-Path -LiteralPath $cand) { $exe = $cand; $toolName = $d.Name; break }
+            }
+            if ($exe) { break }
+        }
+        # Rollback is stated once and used by both failure legs, so the two cannot drift.
+        if (-not $exe) {
+            # No console script appeared: still find the directory uv just created, so the
+            # rollback has a name to hand to `uv tool uninstall` instead of leaving a
+            # half-tool behind.
+            $d = @(Get-ChildItem -LiteralPath $toolDirEff -Directory -ErrorAction SilentlyContinue |
+                Where-Object { $_.Name -like "*computeruse*" }) | Select-Object -Last 1
+            if ($d) { $toolName = $d.Name }
+        }
+        $cuRollback = {
+            if ($toolName) {
+                $p = $ErrorActionPreference
+                $ErrorActionPreference = "Continue"
+                try { & uv tool uninstall $toolName | Out-Host } finally { $ErrorActionPreference = $p }
+                Write-Host "   rolled back: uv tool uninstall $toolName" -ForegroundColor Yellow
+            }
+            Write-Host "   Nothing was written to $cfgFile." -ForegroundColor Yellow
+        }
+        if (-not $exe) {
+            Write-Host "!  Installed, but no computeruse entry point appeared under $toolDirEff" -ForegroundColor Yellow
+            & $cuRollback
+            exit 1
+        }
+        Write-Host "   entry: $exe" -ForegroundColor DarkGray
+        $prevEap = $ErrorActionPreference
+        $ErrorActionPreference = "Continue"
+        & $exe --selftest | Out-Host
+        $st = $LASTEXITCODE
+        $ErrorActionPreference = $prevEap
+        if ($st -ne 0) {
+            Write-Host "!  `"$exe`" --selftest exited $st, so this server does not work on this machine" -ForegroundColor Yellow
+            Write-Host "   (its own output is above; the usual cause is a session without a real desktop:" -ForegroundColor Yellow
+            Write-Host "    the selftest reports dpi_aware=false there). Nothing was written." -ForegroundColor Yellow
+            & $cuRollback
+            exit 1
+        }
+        Write-Host "✔  --selftest exited 0: the server runs here" -ForegroundColor Green
+
+        # An ABSOLUTE path, never the bare name: the host spawns this argv itself and we do
+        # not control its working directory or PATH. timeout 60000 because the host default
+        # (5000 ms) is shorter than a cold Python start.
+        $mcpJson = ([ordered]@{
+            type        = "local"
+            command     = @($exe, "--budget", "200")
+            environment = @{}
+            enabled     = $true
+            timeout     = 60000
+        } | ConvertTo-Json -Compress -Depth 4)
+        # The JSON cannot ride as an argv element here: Windows PowerShell 5.1 strips the
+        # embedded double quotes when it re-quotes a native command's arguments, and the
+        # helper then reads `{type:local,...}` and refuses (measured, not assumed). The
+        # env var carries the same string byte-exactly.
+        $env:TM_MCP_SPEC = $mcpJson
+        try { Invoke-NodeHelper @($surgery, $cfgFile, "mcp-set", "computeruse") }
+        finally { Remove-Item Env:\TM_MCP_SPEC -ErrorAction SilentlyContinue }
+        if ($LASTEXITCODE -ne 0) {
+            Write-Host "!  The mcp.computeruse entry is not in $cfgFile - nothing further is claimed." -ForegroundColor Yellow
+            Write-Host "   Add it by hand under `"mcp`": { `"computeruse`": { `"type`": `"local`", `"command`": [`"$exe`", `"--budget`", `"200`"], `"enabled`": true, `"timeout`": 60000 } }" -ForegroundColor Yellow
+            exit 1
+        }
+        # A thing this script wrote must be removable without re-reading its source, so the
+        # undo is printed as three steps, in the order they have to be done.
+        Write-Host ""
+        Write-Host "   撤销 computer-use（三步）:" -ForegroundColor DarkGray
+        Write-Host "     1. 删掉 $cfgFile 里的 mcp.computeruse 那一项：" -ForegroundColor DarkGray
+        Write-Host "        node `"$surgery`" `"$cfgFile`" mcp-remove computeruse" -ForegroundColor DarkGray
+        Write-Host "     2. uv tool uninstall $toolName     # 卸载 wheel 装出来的工具目录" -ForegroundColor DarkGray
+        Write-Host "        （可选，清掉审计轨：Remove-Item -Recurse -Force `"`$env:LOCALAPPDATA\te-river\computeruse`"）" -ForegroundColor DarkGray
+        Write-Host "     3. 重启 OpenCode：opencode service restart" -ForegroundColor DarkGray
+    }
     # No scratch file to clean: the surgery is the shipped scripts\lib\config-surgery.cjs,
     # shared with install.sh. Deleting a temp copy of it used to be the point of a finally
     # block; deleting the shipped helper would not be.
 
-    # ── 5. the 2.x checklist ────────────────────────────────────────────────
+    # ── 6. the 2.x checklist ────────────────────────────────────────────────
     $cmdCount = @(Get-ChildItem (Join-Path $cfgDir "commands") -Filter "team-*.md" -ErrorAction SilentlyContinue).Count
     $staleFlag = [Environment]::GetEnvironmentVariable($bgFlag, "User")
     Write-Host ""
@@ -369,12 +566,24 @@ function Install-V2 {
     Write-Host ""
 }
 
+# Opt-in twice over: the switch, or TEAMMODE_COMPUTER_USE=1 for the `irm … | iex` path
+# that cannot pass a switch at all. Default OFF. Resolved HERE, before the dispatch,
+# because Install-V2 reads it and the 1.18.x path has to REFUSE it before writing anything.
+$wantCU = [bool]$ComputerUse -or (@("1", "true", "yes", "on") -contains ("$env:TEAMMODE_COMPUTER_USE").ToLower())
+
 if ($OpenCodeMajor -ge 2) {
     Install-V2
     # `return`, not `exit`: the documented entry point is `irm … | iex`, and an
     # exit inside a pasted install would close the window the user is reading
     # the result in. The 1.18.x body below is still never reached from here.
     return
+}
+if ($wantCU) {
+    Write-Host ""
+    Write-Host "!  -ComputerUse is implemented on the OpenCode 2.x path only (this machine takes the" -ForegroundColor Yellow
+    Write-Host "   1.18.x path). mcp.computeruse is a 2.x config shape with no measured 1.18.x" -ForegroundColor Yellow
+    Write-Host "   equivalent, so NOTHING was written. Re-run with -ComputerUse once the host is 2.x." -ForegroundColor Yellow
+    exit 1
 }
 if ($OpenCodeWhy) {
     Write-Host "ℹ  $OpenCodeWhy — taking the 1.18.x path (the one this installer always had)." -ForegroundColor Yellow

@@ -936,4 +936,40 @@ console.log("\n8. board-write call shape (A5) + write-capable wording (A8)")
   console.log("   OK (catalog shape + guard in all six roles and the board note, v1 call shape intact, no tool-less overstatement left)")
 }
 
+/* The computer-use install contract lives in docs/installation-v2.md, and that page
+   is an INSTRUCTION SHEET handed to the installing agent — so its load-bearing
+   sentences are pinned like a prompt is.  Nothing here adds Chinese to an injected
+   prompt: the page is documentation, and the Han-char scan above scans cfg2.agent /
+   cfg2.command only, which is why the whitelist did not move for this feature. */
+{
+  const guide = fs.readFileSync(new URL("./docs/installation-v2.md", import.meta.url), "utf8")
+  const must = [
+    ["both language halves exist", "### Optional — computer use (real desktop)"],
+    ["…and the Chinese half", "### 可选 —— 计算机使用（真实桌面）"],
+    ["detect BOTH container spellings the host reads", "mcp.servers.computeruse"],
+    ["…the second spelling too", "mcp.computeruse"],
+    ["an already-configured user is never re-asked (EN)", "already configured (skipping the question)"],
+    ["…and the same rule in Chinese", "跳过询问"],
+    ["the two hard boundaries are named", "UAC"],
+    ["…typed text bypasses this project's classifiers", "R2/R6"],
+    ["yes runs the Windows installer flag", "install.ps1 -ComputerUse"],
+    ["…and the POSIX one", "install.sh --computer-use"],
+    ["no persists a refusal that cannot start anything", "team-mode.computeruse-declined"],
+    ["undo: remove the tool", "uv tool uninstall computeruse"],
+    ["undo: remove the config key", "mcp-remove computeruse"],
+    ["the researcher risk is stated, not implied", "researcher"],
+    ["the real tool name is measured at runtime, never assumed", "measured at runtime"],
+  ]
+  for (const [why, needle] of must) assert.ok(guide.includes(needle), `installation guide: ${why} (${needle})`)
+  assert.ok(
+    !/mcp-set computeruse/.test(guide),
+    "the guide never asks the agent to write a disabled MCP entry through the shared helper — that shape cannot start nothing AND the helper refuses a spec without a command array",
+  )
+  assert.ok(
+    /ask NOTHING|什么都不问/.test(guide),
+    "the detect-first rule is stated as an instruction, not a suggestion",
+  )
+  console.log("   OK (computer-use install contract: detect-first, ask once, boundaries, installer flags, decline marker, undo)")
+}
+
 console.log("\nALL BLACKBOARD TESTS PASSED ✅")

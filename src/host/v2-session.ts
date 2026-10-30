@@ -17,9 +17,10 @@
  * registration, and nothing is claimed that the host did not hand us.
  */
 
-import { V2_LADDER_ACTIONS } from "./v2-permissions.js"
-import { normalizeAgentName } from "../identity.js"
+import { COMPUTER_USE_CATALOG, V2_LADDER_ACTIONS, computerUseAllowed, isComputerUseTool, mentionsComputerUse } from "./v2-permissions.js"
+import { isLeadAgent, normalizeAgentName } from "../identity.js"
 import { estimateTokens, resolveConfig } from "../tm/config.js"
+import { computerUseState, noteComputerUseDeclared, noteComputerUseRequest } from "./v2-probe.js"
 import type { DynamicSink } from "./v2-tail.js"
 import type { V2Registration, V2SessionContext, V2Context } from "./v2-types.js"
 
@@ -143,8 +144,19 @@ export function splitAdviceText(briefTokens: number, briefTokensLimit: number, m
  * was observed live answering `effect:"ask"` with a real `permission.asked`
  * behind it, i.e. a dialog instead of a hard throw.
  */
-export function toolsToRemove(permission: Record<string, unknown> | undefined | null): string[] {
+export function toolsToRemove(
+  permission: Record<string, unknown> | undefined | null,
+  agentName?: string,
+): string[] {
   const names: string[] = []
+  // The optional `computeruse` MCP server is denied by ROLE, not by a literal tool
+  // list: the server owns its tool names, so a seven-name deny silently misses the
+  // eighth.  MEASURED on 2.2.1, this delete removes NOTHING — MCP tools never reach
+  // `event.tools` (they live in the Code Mode catalog) — and the real enforcement is
+  // `v2-computeruse-gate.ts` (primary: `permission.evaluate`, which DOES fire for
+  // these actions).  The sentinel stays because a host that delivers MCP tools
+  // directly must still be covered, and deleting a name nobody emits costs nothing.
+  if (agentName && !computerUseAllowed(agentName)) names.push(COMPUTER_USE_CATALOG)
   for (const [key, value] of Object.entries(permission ?? {})) {
     if (!isDeny(value)) continue
     if (key === "browser") {
@@ -153,6 +165,9 @@ export function toolsToRemove(permission: Record<string, unknown> | undefined | 
       // from the request, which is the exact surface the whitelist withholds.
       names.push(BROWSER_CATALOG)
     }
+    // The sentinel is also honoured when the MATRIX carries it (it is a pattern, so
+    // v2-permissions drops it from the triples — this is where it is enforced).
+    if (key === COMPUTER_USE_CATALOG) names.push(COMPUTER_USE_CATALOG)
     // A `tm_*` key IS a tool name, so a DENY on one has to remove it too —
     // leaving the denied doors in the request would keep charging the model for
     // tools this role may not touch, which is the whole tax this layer exists
@@ -177,12 +192,33 @@ export function removalPlan(
   agents: Record<string, { permission?: Record<string, unknown> }>,
 ): Map<string, Set<string>> {
   const plan = new Map<string, Set<string>>()
-  for (const [id, cfg] of Object.entries(agents)) plan.set(normalizeAgentName(id), new Set(toolsToRemove(cfg?.permission)))
+  // The id goes in: the computer-use deny is derived from the ROLE (see
+  // `toolsToRemove`), so a plan built without it would silently keep the MCP
+  // tools on a specialist's surface.
+  for (const [id, cfg] of Object.entries(agents)) plan.set(normalizeAgentName(id), new Set(toolsToRemove(cfg?.permission, id)))
   return plan
 }
 
 const removable = (name: string, denied: Set<string>): boolean =>
-  denied.has(name) || (denied.has(BROWSER_CATALOG) && name.startsWith("browser_"))
+  denied.has(name) ||
+  (denied.has(BROWSER_CATALOG) && name.startsWith("browser_")) ||
+  // BOTH spellings: `computeruse_screenshot` on the direct surface,
+  // `computeruse.screenshot` if the host routes MCP tools through the Code Mode
+  // catalog.  Matching only one is exactly how the browser gate governed nothing
+  // (v2-browser-gate.ts:103-108) — and here the failure would be a deny that
+  // removes nothing while reporting success.
+  //
+  // KEEP THIS LAYER, even though on a 2.2.1 host it deletes nothing: MCP tools
+  // never reach `event.tools` (measured — `architect`'s surface carried five tools,
+  // no `computeruse*` among them, while `execute → tools.computeruse.control_status`
+  // answered `{"ok":true}`).  The defence that DOES hold is `v2-computeruse-gate.ts`:
+  // `permission.evaluate` (measured firing, `action=computeruse_control_status`),
+  // the inner `execute.before` event, and the outer program text.  This one stays
+  // because a host that delivers MCP tools directly must still be covered, and
+  // because deleting a name a host never emits costs nothing — while dropping the
+  // rule would leave the request surface unguarded on any future host that puts
+  // them back.
+  (denied.has(COMPUTER_USE_CATALOG) && isComputerUseTool(name))
 
 export interface SessionLayerInput {
   /** The resolved blackboard addendum, or "" when there is nothing to say. */
@@ -199,6 +235,14 @@ export interface SessionLayerInput {
   /** #49 feature 4: the split-advice knobs.  Absent = the defaults (on). */
   split?: SplitConfig
   /**
+   * Does the host config declare `mcp.computeruse`?  The probe reads it at attach,
+   * so production leaves this undefined and keeps that one measurement; a test
+   * (and any future caller that already knows) can set it explicitly, which is
+   * the only way to exercise "declared but never appeared" without writing a
+   * config file.
+   */
+  computerUseDeclared?: boolean | null
+  /**
    * 易变注入的尾部通道 (`dynamicTail: "on"`).  When handed in, the split advice
    * goes to the request TAIL instead of `event.system` — the board note and the
    * compaction survival list stay in `system`, because those are STABLE content
@@ -212,6 +256,13 @@ export interface SessionLayerInput {
 
 export interface SessionLayerReport {
   removed: Record<string, number>
+  /**
+   * Denied roles whose request STILL carried a `computeruse` family tool after the
+   * removal pass — role → survivors.  A non-empty map here is a plugin defect (the
+   * prefix does not match the host's spelling), and it is the only number that
+   * separates that defect from "nobody called the tools".
+   */
+  computerUseLeak: Record<string, number>
   notePushed: boolean
   compactionLines: number
   /** Did a `tm_*` name ever appear in an assembled request's own tool surface?
@@ -229,6 +280,41 @@ export interface SessionLayerReport {
   splitThrew: number
 }
 
+/** The marker that makes the lead-side warning idempotent — the host replays the
+ *  same `context` object in-process, and a second push would crowd the request. */
+export const COMPUTER_USE_WARNING_MARKER = "## Team Computer Use"
+
+/**
+ * The escalation for a deny that matched nothing.  On v2 a plugin cannot raise the
+ * host's dialog, and `toast` is not on the plugin ctx at all (probed: the surface
+ * this build talks to exposes no notification seam), so the loud channel we DO
+ * have is the lead's own request: one system line, once, naming the survivors.
+ * The lead is the only role that can tell the user.
+ */
+function appendComputerUseWarning(event: V2SessionContext, agentKey: string): void {
+  try {
+    if (!isLeadAgent(agentKey)) return
+    if (!Array.isArray(event?.system)) return
+    const leaks = computerUseState().leaks
+    if (!leaks.length) return
+    const already = event.system.some(
+      (p) => typeof (p as { text?: unknown })?.text === "string" && (p as { text: string }).text.includes(COMPUTER_USE_WARNING_MARKER),
+    )
+    if (already) return
+    const who = leaks.map((l) => `${l.agent}: ${l.names.join(", ")}`).join("; ")
+    event.system.push({
+      type: "text",
+      text:
+        `${COMPUTER_USE_WARNING_MARKER}\n` +
+        `⚠ The computer-use MCP tools are still offered to a role the whitelist denies (${who}) ` +
+        `even after the request-layer removal pass ran. Our prefix rule does not match this host's ` +
+        `tool spelling — that is a plugin defect, not a user error. Tell the user and attach these names.`,
+    })
+  } catch {
+    /* the warning is an extra; a broken one must never fail a request */
+  }
+}
+
 /**
  * Register the request-layer hooks.  Returns the registrations (so the caller
  * can dispose them) and a live report object — the counts are read off what the
@@ -242,6 +328,7 @@ export async function applyV2SessionLayer(
   const registrations: V2Registration[] = []
   const report: SessionLayerReport = {
     removed: {},
+    computerUseLeak: {},
     notePushed: false,
     compactionLines: 0,
     tmInRequestSurface: false,
@@ -253,6 +340,10 @@ export async function applyV2SessionLayer(
   if (!session || typeof session.hook !== "function") {
     return { registrations, report }
   }
+  // Only an EXPLICIT value overrides: production leaves the key out so the probe's
+  // own read (the one measurement of the declaration) is not overwritten by a
+  // second, later read of the same file.
+  if (input.computerUseDeclared !== undefined) noteComputerUseDeclared(input.computerUseDeclared ?? null)
 
   // #49 feature 4: the pending split advice, armed by a `subagent` brief on
   // `execute.before` and consumed by the lead's next `context` request.  Held in
@@ -276,6 +367,11 @@ export async function applyV2SessionLayer(
       if (input.scope && input.scope.count(input.scope.decide(event)) !== "ours") return
       input.scope?.learn(agent, (event as { sessionID?: unknown }).sessionID)
       const denied = input.plan.get(agentKey)
+      // Fail-open observation (#computeruse): count the family BEFORE the pass, so
+      // the same set can be compared with what survived it.  "Our deny matched
+      // nothing" and "nobody called it" are otherwise the same sentence.
+      const cuBefore =
+        event.tools && typeof event.tools === "object" ? Object.keys(event.tools).filter(mentionsComputerUse) : []
       if (denied?.size && event.tools && typeof event.tools === "object") {
         let cut = 0
         for (const name of Object.keys(event.tools)) {
@@ -296,7 +392,34 @@ export async function applyV2SessionLayer(
             break
           }
         }
+        // What the family looks like AFTER our pass.  For a denied role a non-empty
+        // remainder IS the leak — the prefix does not match this host's spelling,
+        // and no other layer would notice.  (MEASURED 2026-10-30: MCP tools DO reach
+        // `permission.evaluate`, so the gate's primary layer denies the real call;
+        // this branch is what catches a host that delivers them on the surface.)
+        // The LOOSE matcher: a name that mentions the server but survived the
+        // prefix is a leak precisely because we did not recognise it.
+        // SECOND ROUTE INTO THE SAME LEDGER: `noteComputerUseCall` (called from
+        // v2-computeruse-gate.ts on an `execute` result's `metadata.toolCalls`)
+        // reports a tool that actually RAN.  On a host that keeps MCP tools out of
+        // `event.tools` this branch is silent by construction, and the call route
+        // is what turns the bypass into a role + name instead of a zero.
+        const cuAfter = Object.keys(event.tools).filter(mentionsComputerUse)
+        try {
+          noteComputerUseRequest({
+            agent: agentKey,
+            allowed: computerUseAllowed(agentKey),
+            seen: cuBefore,
+            remaining: cuAfter,
+          })
+        } catch {
+          /* an observation is an extra, never a reason to fail a request */
+        }
+        if (cuAfter.length && !computerUseAllowed(agentKey)) {
+          report.computerUseLeak[agentKey] = cuAfter.length
+        }
       }
+      appendComputerUseWarning(event, agentKey)
 
       if (input.note && input.noteAgents.some((n) => normalizeAgentName(n) === agentKey) && Array.isArray(event.system)) {
         // The hook runs before EVERY model call; if the host reuses the array,
