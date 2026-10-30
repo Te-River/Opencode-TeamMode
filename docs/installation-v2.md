@@ -247,9 +247,12 @@ Also check for the decline marker `<config dir>/team-mode.computeruse-declined`.
   Then verify and restart, exactly as Step 4 above: `<uv tool dir>/computeruse-mcp/Scripts/computeruse.exe --selftest` (POSIX: `<uv tool dir>/computeruse-mcp/bin/computeruse --selftest`)
   must print `dpi_aware: true` and the virtual-screen size, then `opencode service restart`,
   then `tm_stats`: the new **计算机使用** section must name the tool ids it actually saw.
-  **The tool names are measured at runtime, never assumed** — the plugin matches the
-  `computeruse_` and `computeruse.` prefixes and reports what arrived, so do not write a
-  specific name into any summary of yours before `tm_stats` has shown it.
+  **The tool names are measured at runtime, never assumed** — the plugin records what actually
+  arrived (the measured spelling is `computeruse.control_status`), so do not write a specific
+  name into any summary of yours before `tm_stats` has shown it. The role split is enforced at
+  three layers and only the first two are hard: `permission.evaluate` (the host fires it for MCP
+  actions), the inner `execute` event, and a program-text scan that a dynamically assembled name
+  can slip past — and a bypass is recorded as `computeruse_bypass`, never silently allowed.
 - **No** (or "not now" / "unsure" — treat them the same) → record the refusal, then say
   `noted — I won't ask again`. Write the marker — the one thing that cannot start anything:
 
@@ -585,9 +588,11 @@ opencode service restart
   把它自己输出的"已存在 / 跳过"或撤销提示**原样**转述，不要改写。然后照上面第 4 步验证并重启：
   `<uv tool dir>/computeruse-mcp/Scripts/computeruse.exe --selftest`（POSIX：`<uv tool dir>/computeruse-mcp/bin/computeruse --selftest`）必须打印 `dpi_aware: true`
   与虚拟屏幕尺寸，再 `opencode service restart`，最后 `tm_stats`——新的**计算机使用**小节会
-  列出它**实际看到**的工具名。**工具名是运行时量出来的，不是假设的**：插件按
-  `computeruse_` 与 `computeruse.` 两种前缀匹配并记录真实名字，所以在 `tm_stats` 给出名字
-  之前，不要在你自己写的任何总结里写死某个工具名。
+  列出它**实际看到**的工具名。**工具名是运行时量出来的，不是假设的**：插件记录真实到达的名字
+  （实测拼写是 `computeruse.control_status`），所以在 `tm_stats` 给出名字之前，不要在你自己写的
+  任何总结里写死某个工具名。角色划分由**三层**执行，只有前两层是硬的：`permission.evaluate`
+  （宿主会对 MCP 动作触发）、内层 `execute` 事件、以及一层程序文本扫描——拼名能绕过最后一层，
+  而绕过会被记成 `computeruse_bypass`，不会静默放行。
 - **不装**（"以后再说""不确定"同样处理）→ 记下拒绝，然后说 `已记下，下次不会再问`：
 
   ```bash

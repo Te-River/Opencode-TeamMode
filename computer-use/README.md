@@ -99,7 +99,7 @@ computer-use/
 5. **不做物理输入抢占**（Windows 上区分物理与注入输入需要低级钩子，代价与误判都过高）；**不做进程白名单**（任何窗口都可被点）。
 6. **DPI 只修本进程**；混合缩放下以 `screenshot` 返回的值和图像为准。
 
-**它不是安全边界，是爆炸半径限制器。** 允许角色：`Team` / `researcher` / `tester`（`architect` / `implementer` / `reviewer` 无权——权限侧由插件按 `computeruse_*` 前缀删除，不在本包内）。
+**它不是安全边界，是爆炸半径限制器。** 允许角色：`Team` / `researcher` / `tester`（`architect` / `implementer` / `reviewer` 无权）。**角色限制不在本包内**——服务端不知道调用它的 agent 是谁，所以由插件在 `permission.evaluate`、内层 `execute` 事件、外层程序文本**三层**挡住；第三层是文本门禁，把名字拼起来能绕过去，绕过会被插件当场记一行 `computeruse_bypass`（角色 + 工具名）。
 
 ## 实测数字（本机：Windows 11 / 1920×1080 / 125% 缩放 / Python 3.12.10 / mss 10.2.0 / Pillow 13.0.0）
 

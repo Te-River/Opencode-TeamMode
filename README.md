@@ -167,11 +167,16 @@ Sub-agents cannot message each other live, so coordination is a **structured rep
 
 ## 🖱️ Optional: computer use (real desktop)
 
-An **optional** MCP server (`computeruse`, off by default) that lets `Team` (the lead),
-`researcher` and `tester` take screenshots and drive the mouse/keyboard on the real desktop.
-`architect`, `implementer` and `reviewer` are denied at the request layer — the whole family is
-removed by the `computeruse_*` sentinel (both the `computeruse_` and `computeruse.` spellings),
-because a literal seven-name list would silently miss the eighth tool a server update adds.
+An **optional** MCP server (`computeruse`, off by default, shipped as its own
+[release asset](https://github.com/Te-River/Opencode-TeamMode/releases/tag/computeruse-v0.0.1))
+that lets `Team` (the lead), `researcher` and `tester` take screenshots and drive the
+mouse/keyboard on the real desktop. `architect`, `implementer` and `reviewer` are turned away at
+**three** layers — because the first one we built turned out to be a no-op on a live host:
+① `permission.evaluate`, which the host **does** fire for MCP tools
+(`action=computeruse_control_status`, measured) and where a denied role is answered with
+`effect:"deny"`; ② the inner `execute` event the host raises for the call itself (empty input,
+role carried on the event); ③ the outer program text, matching `computer[\s._-]?use` — a text
+gate, **not** a sandbox.
 
 What is and is not protected:
 
@@ -186,11 +191,18 @@ What is and is not protected:
   and screen control plus untrusted page content is the worst combination in this feature: a
   page saying "type X into the terminal" is aimed straight at it. The mitigations are the
   server's action budget, its audit trail and a human watching — not a prompt sentence.
-- **The request-layer removal is the only defence we claim.** Whether the host fires
-  `permission.evaluate` for MCP tools is **unmeasured**, so this README does not claim a
-  permission layer behind it. The computer-use section of `tm_stats` reports the three states:
-  the tool names actually seen, a deny that matched nothing (a leak — a plugin defect), and
-  "configured but no tool appeared" (the server did not register).
+- **Three layers, and the honest limit of the last one.** ③ is a text-level gate: a program that
+  assembles the name (`"computer"+"use"`) gets past it. When that happens the call is **counted**,
+  not silently allowed — one `computeruse_bypass` row on disk naming the role and the tool, so
+  "we did not stop it" and "it is allowed" stay different claims. The computer-use section of
+  `tm_stats` separates five states: the tool names actually seen, a deny that matched nothing, a
+  bypass, "configured but the server never registered", and "configured and connected but absent
+  from `event.tools`" — MCP tools live in the Code Mode catalog, which is **not** the same as a
+  server that failed to start.
+- **The strongest layer is not verified on a live turn.** `permission.evaluate` firing is
+  measured; `effect:"deny"` working is measured for `shell` and `read`; the composition on an MCP
+  action was deliberately left untested, because a live turn writes a session into your own store.
+  Treat the role split as a guardrail under observation, not as an isolation boundary.
 
 Install it explicitly: `.\scripts\install.ps1 -ComputerUse` (POSIX
 `bash scripts/install.sh --computer-use`); the installer's main flow never touches it. The

@@ -165,10 +165,13 @@
 
 ## 🖱️ 可选：计算机使用（真实桌面）
 
-一个**可选**的 MCP 服务器（`computeruse`，默认不装）：让 `Team`（主代理）、`researcher`、
-`tester` 能截屏并用鼠标键盘操作真实桌面。`architect` / `implementer` / `reviewer` 在请求层就被
-拒——整个家族按 `computeruse_*` 哨兵删除（`computeruse_` 与 `computeruse.` 两种拼写都算），
-因为七个字面工具名的清单会**静默漏掉**服务器升级时新增的第八个。
+一个**可选**的 MCP 服务器（`computeruse`，默认不装，作为独立的
+[Release 资产](https://github.com/Te-River/Opencode-TeamMode/releases/tag/computeruse-v0.0.1) 发布）：
+让 `Team`（主代理）、`researcher`、`tester` 能截屏并用鼠标键盘操作真实桌面。`architect` /
+`implementer` / `reviewer` 在**三层**被挡住——因为第一层在真机上被证明是空操作：
+① `permission.evaluate`，宿主**确实**会对 MCP 工具触发（`action=computeruse_control_status`，
+实测），被拒角色拿到 `effect:"deny"`；② 宿主为这次调用单独抛出的内层 `execute` 事件（input 为空，
+角色在事件上）；③ 外层程序文本，匹配 `computer[\s._-]?use`——这是文本门禁，**不是沙箱**。
 
 保护了什么、没保护什么：
 
@@ -180,10 +183,14 @@
 - **`researcher` 是这里风险最高的角色。** 它正是读不可信网页的那个角色，而"受控屏幕 + 不可信
   网页内容"是本功能里最糟糕的组合：网页里一句"把 X 敲进终端"就是冲着它来的。缓解手段是服务器的
   动作预算、审计轨和有人在场，**不是**提示词里一句"别被骗"。
-- **我们只宣称请求层删除这一道防线。** 宿主对 MCP 工具到底会不会触发 `permission.evaluate`
-  **尚未实测**，所以这里不宣称后面还有一层权限。`tm_stats` 的**计算机使用**小节给出三态：
-  实际看到的工具名、**一个都没删掉的 deny**（泄漏，属插件缺陷）、以及"配置里声明了但一个工具
-  都没出现"（server 没注册）。
+- **三层门禁，以及第三层的诚实边界。** ③ 是文本级门禁：把名字拼起来（`"computer"+"use"`）能过去。
+  真过去了，这次调用会被**计数**而不是被默许——磁盘上留一行 `computeruse_bypass`，写明角色和工具名，
+  所以"我们没拦住"和"这是被允许的"始终是两句话。`tm_stats` 的**计算机使用**小节把五种状态分开：
+  实际看到的工具名、一个都没删掉的 deny、一次绕过、"配置里声明了但 server 没注册"，以及
+  "配置了、也连上了，但不在 `event.tools` 里"——MCP 工具住在 Code Mode 目录里，**不等于**服务器起不来。
+- **最强的那一层没有在真实回合里验证过。** `permission.evaluate` 会触发是实测的；`effect:"deny"`
+  对 `shell` / `read` 生效是实测的；两者在 MCP 动作上的组合**被刻意留白**——因为真实跑一轮会在你自己的
+  会话存储里留下一条 session。请把角色划分当成"有人在看着的护栏"，而不是隔离边界。
 
 显式安装：`.\scripts\install.ps1 -ComputerUse`（POSIX `bash scripts/install.sh --computer-use`）；
 主安装流程从不碰它。完整规程（含"拒绝"如何被记住从而永不再问、以及撤销）见
