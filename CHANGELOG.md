@@ -7,6 +7,35 @@ registry saw 1.5.0 as the install-script fix release).
 
 ## [Unreleased]
 
+### Added
+
+- **Bounded divergence in the Lead's Step 0.** When the ask has more than one plausible
+  reading and none is blocking, the Lead now names up to three readings with a one-line
+  consequence each, picks one and records the discarded ones — then never re-opens the
+  choice once the plan is approved. Deliberately **not** a brainstorm: quantity is not a
+  goal and rounds are the unit of cost.
+- **The Architect lists two or three candidate designs** (or says why only one exists)
+  with a one-line trade-off each, before the recommended one. Convergence is one-way.
+- **Child session ids are printed whole.** A bare full `ses_…` in a reply is rendered by
+  the desktop as a chip carrying that session's title, which is the only way the user can
+  open the child being described; an abbreviated id is a dead reference and a fenced one
+  stays literal.
+
+### Fixed
+
+- **The installer keeps the wheel's filename when downloading it.** `uv tool install`
+  derives the distribution name, version and Python tag from the FILENAME, so the
+  guid-named temp file failed with "Must have a Python tag" even though the sha256
+  verified. The download now keeps the asset's own name.
+- **The installer names the locked-exe cause instead of retrying a rename.** Upgrading
+  while the host runs the MCP server fails with `os error 5/32`, and renaming the running
+  image is not reliable either (measured: sharing violation). It now prints the exact next
+  move — quit OpenCode, re-run, reopen — while still writing zero config bytes.
+- **`computeruse` 0.0.3**: the server reported `0.1.0` from a hardcoded string while the
+  wheel was 0.0.2 (it now reads `importlib.metadata`), and its panic hotkey never armed
+  because `Ctrl+Alt+Shift+F12` was already registered (`err=1409`) — it now tries a short
+  ladder and reports the combination that actually armed.
+
 ## [1.9.3] - 2026-10-30
 
 ### Added

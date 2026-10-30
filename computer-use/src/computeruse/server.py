@@ -73,7 +73,10 @@ TOOL_SPECS: list[dict] = [
             "virtual-screen rect, active window and cursor. Coordinates for click/scroll/drag are "
             "CAPTURE PIXELS of this same space. include_image is false by default: read the returned "
             "path if you need to look at it. include_image=true additionally attaches a downscaled JPEG "
-            "(<=400KB) which stays in the conversation and is re-sent on every later turn."
+            "(<=400KB) which stays in the conversation and is re-sent on every later turn. If your "
+            "model accepts image input, prefer include_image=true when you must SEE the layout to "
+            "decide what to click; for confirming that an action landed, the returned sha1 and "
+            "changed_pixels_pct are cheaper and just as honest."
         ),
         "inputSchema": {
             "type": _OBJECT,
@@ -795,7 +798,10 @@ class ComputerUseServer:
                         "instructions": (
                             "Screenshot before you act, pass expect_title to type_text/key, and read the "
                             "verdict on every mutating call: no-observable-change means the screen did not "
-                            "move, not that the call failed."
+                            "move, not that the call failed. If your model can read images, prefer "
+                            "include_image=true for the OBSERVATION step — you need to see the window to "
+                            "decide what to click — and use the sha1/changed_pixels_pct when you only "
+                            "need to know whether the screen moved."
                         ),
                     },
                 )
