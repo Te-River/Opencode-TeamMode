@@ -7,6 +7,8 @@ registry saw 1.5.0 as the install-script fix release).
 
 ## [Unreleased]
 
+## [1.9.3] - 2026-10-30
+
 ### Added
 
 - **可选：计算机使用 MCP（`computeruse`）—— 三层按角色收窄，失败可计数。** 宿主从
