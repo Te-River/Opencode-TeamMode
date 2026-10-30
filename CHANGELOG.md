@@ -7,6 +7,14 @@ registry saw 1.5.0 as the install-script fix release).
 
 ## [Unreleased]
 
+### Changed
+
+- **computer-use 的文档从安装手册里分出去。** 新增 `docs/computer-use.md`，承载升级规程
+  （**两次重启**：摘条目 → 重启 → 装 → 写回 → 重启，因为 Windows 不让替换运行中的 exe；
+  或退出 OpenCode 再装一次）、边界、审计格式与排错。`docs/installation-v2.md` 只保留
+  "问一次 + 指针"，并明写**装插件时不要顺手去读那一页**——没选择加入这个功能的用户，
+  不该在例行安装里读到桌面控制的操作规程。
+
 ## [1.9.4] - 2026-10-30
 
 ### Added

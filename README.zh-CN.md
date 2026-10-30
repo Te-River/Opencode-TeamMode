@@ -193,8 +193,9 @@
   会话存储里留下一条 session。请把角色划分当成"有人在看着的护栏"，而不是隔离边界。
 
 显式安装：`.\scripts\install.ps1 -ComputerUse`（POSIX `bash scripts/install.sh --computer-use`）；
-主安装流程从不碰它。完整规程（含"拒绝"如何被记住从而永不再问、以及撤销）见
-[`docs/installation-v2.md`](./docs/installation-v2.md)。
+主安装流程从不碰它。其余一切——升级规程（**两次重启**，因为 Windows 不让替换运行中的 exe）、
+"拒绝"如何被记住从而永不再问、审计格式与撤销——都放在一个**刻意与安装手册分开**的页面里：
+[`docs/computer-use.md`](./docs/computer-use.md)。
 
 ## 🔒 治理与安全
 

@@ -213,6 +213,12 @@ Four checks, in this order:
 
 ### Optional — computer use (real desktop)
 
+**This is the only part of this guide about desktop control, and it is a POINTER.** Read
+further only if Step 0 says the user already configured it, or if the user asks for the
+feature. **Do not read [`computer-use.md`](./computer-use.md) in passing** — that page
+carries the upgrade procedure, the boundaries and the audit format, and a Team agent
+installing the plugin has no business picking desktop-control instructions up on the side.
+
 **Instructions for the agent doing the install.** Do these steps in order, literally.
 
 **Step 0 — detect first, talk second.** Read the global `~/.config/opencode/opencode.jsonc`
@@ -558,6 +564,11 @@ opencode service restart
    `已写入 ctx.storage`。这就是 v2 清单活着的样子。
 
 ### 可选 —— 计算机使用（真实桌面）
+
+**这是本手册唯一涉及桌面控制的地方，而且它只是一个指针。** 只有第 0 步发现用户已经配置过、
+或者用户主动要求这个功能时，才继续往下读。**不要顺手去读 [`computer-use.md`](./computer-use.md)**
+——那一页承载升级规程、边界与审计格式，一个正在装插件的 Team agent 没理由顺带把桌面控制的
+操作规程捡走。
 
 **这一节是写给"正在安装的 agent"的操作规程**，请按顺序照做，不要自己发挥。
 

@@ -205,9 +205,11 @@ What is and is not protected:
   Treat the role split as a guardrail under observation, not as an isolation boundary.
 
 Install it explicitly: `.\scripts\install.ps1 -ComputerUse` (POSIX
-`bash scripts/install.sh --computer-use`); the installer's main flow never touches it. The
-procedure — including how a "no" is remembered so you are never asked twice, and the undo —
-is in [`docs/installation-v2.md`](./docs/installation-v2.md).
+`bash scripts/install.sh --computer-use`); the installer's main flow never touches it.
+Everything else — the upgrade procedure (**two restarts**, because Windows will not replace a
+running exe), how a "no" is remembered so you are never asked twice, the audit format and the
+undo — lives in a page kept deliberately apart from the install guide:
+[`docs/computer-use.md`](./docs/computer-use.md).
 
 ## 🔒 Governance & security
 
