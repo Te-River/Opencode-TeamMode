@@ -163,7 +163,11 @@ def test_control_status_is_read_only_and_names_the_budget(tmp_path):
     payload = json.loads(result["content"][0]["text"])
     assert result["isError"] is False
     assert payload["state"] in ("ai", "user")
-    assert payload["panic_hotkey"] == "Ctrl+Alt+Shift+F12"
+    # The reported hotkey is the one that ACTUALLY armed, not the first candidate: the
+    # primary is often taken by another process (measured err=1409), so the ladder is
+    # allowed to land on F11/F10 — and when nothing arms, panic_error says so.
+    assert payload["panic_hotkey"] in ("Ctrl+Alt+Shift+F12", "Ctrl+Alt+Shift+F11", "Ctrl+Alt+Shift+F10")
+    assert payload["panic_armed"] is True or payload["panic_error"], "either it armed, or it says why it did not"
     assert payload["budget"]["limit"] == 5
     assert payload["verdict"] in ("ready", "budget-exhausted", "user-took-control")
     assert payload["runtime"]["dpi_aware"] is True

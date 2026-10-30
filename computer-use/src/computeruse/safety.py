@@ -119,6 +119,16 @@ class ActionBudget:
 # Panic hotkey
 # =========================================================================
 
+# A panic key that never armed is the one safety feature that must not fail silently, and
+# the first choice is often already registered by another program (measured on this
+# machine, 2026-10-30: err=1409 for Ctrl+Alt+Shift+F12).  The ladder is tried in order and
+# the ARMED one is what gets reported.  0x7A / 0x79 are VK_F11 / VK_F10.
+PANIC_CANDIDATES = [
+    (MOD_CONTROL | MOD_ALT | MOD_SHIFT, VK_F12, "Ctrl+Alt+Shift+F12"),
+    (MOD_CONTROL | MOD_ALT | MOD_SHIFT, 0x7A, "Ctrl+Alt+Shift+F11"),
+    (MOD_CONTROL | MOD_ALT | MOD_SHIFT, 0x79, "Ctrl+Alt+Shift+F10"),
+]
+
 class PanicHotkey:
     """Global toggle between model control ("ai") and human control ("user")."""
 
@@ -126,6 +136,7 @@ class PanicHotkey:
         self.state = "ai"
         self.count = 0
         self.armed = False
+        self.combo: str | None = None
         self.error: str | None = None
         self._lock = threading.Lock()
         self._thread: threading.Thread | None = None
@@ -157,8 +168,14 @@ class PanicHotkey:
             # posts to it, or a stop() racing the start would vanish.
             user32.PeekMessageW(ctypes.byref(msg), None, 0, 0, PM_NOREMOVE)
             self._thread_id = int(kernel32.GetCurrentThreadId())
-            if not user32.RegisterHotKey(None, HOTKEY_ID, MOD_CONTROL | MOD_ALT | MOD_SHIFT, VK_F12):
-                self.error = f"RegisterHotKey failed err={ctypes.get_last_error()}"
+            tried: list[str] = []
+            for mods, vk, name in PANIC_CANDIDATES:
+                if user32.RegisterHotKey(None, HOTKEY_ID, mods, vk):
+                    self.combo = name
+                    break
+                tried.append(f"{name} err={ctypes.get_last_error()}")
+            if self.combo is None:
+                self.error = "RegisterHotKey failed for every candidate: " + "; ".join(tried)
                 self._ready.set()
                 return
             self.armed = True
@@ -194,7 +211,7 @@ class PanicHotkey:
             state, count = self.state, self.count
         return {
             "state": state,
-            "hotkey": HOTKEY_NAME,
+            "hotkey": self.combo or HOTKEY_NAME,
             "armed": self.armed,
             "panic_count": count,
             "error": self.error,
