@@ -604,14 +604,54 @@ export function prunePlan(messages: unknown, opts: PrunePlanOptions = {}): Prune
   return plan
 }
 
+/**
+ * Write text into a slot WITHOUT changing the shape the host's lowering expects.
+ *
+ * A `tool-result` part's body is not a string: upstream reads `part.result.type`
+ * and then encodes `part.result.value`.  Assigning a bare string there leaves
+ * `type` undefined and the encoder throws
+ * `SchemaError: Expected a JSON-serializable value` — an Effect defect that
+ * escapes `LLM.compile` and kills the whole session (measured: a real fork died
+ * in 4.8s on five such parts).  So a slot whose current value is a
+ * ToolResultValue keeps that envelope and only its `value` moves; `text` /
+ * `reasoning` slots are genuinely strings and stay strings.
+ */
+function writeSlot(slot: TextSlot, text: string): void {
+  const current = slot.container[slot.key]
+  // Only a tool-result's `result` is a ToolResultValue.  A tool call's `input`
+  // can carry a look-alike argument bag (`{type:"error", value:5000}`); treating
+  // that as an envelope leaves `{type:"error", value:"<stub>"}` behind — a
+  // legal-but-nonsensical call, more misleading to the model than a stub.
+  if (slot.key === "result" && current !== null && typeof current === "object" && !Array.isArray(current)) {
+    const envelope = current as Record<string, unknown>
+    // A ToolResultValue is recognised by its `type` discriminator plus `value`.
+    if (typeof envelope.type === "string" && "value" in envelope) {
+      // `content` carries an ARRAY of parts; swapping in a string would break
+      // the same read one level down.
+      const value = envelope.type === "content" ? (text ? [{ type: "text", text }] : []) : text
+      slot.container[slot.key] = { ...envelope, value }
+      return
+    }
+  }
+  // A tool call's `input` is an OBJECT on the wire: Anthropic ships it as
+  // `tool_use.input` (a string there 400s the whole request every round) and
+  // OpenAI `encodeJson`s it into a quoted string literal, not arguments.  So this
+  // slot is ALWAYS a record: `{}` when cleared, one honest marker otherwise.
+  if (slot.key === "input") {
+    slot.container[slot.key] = text === "" ? {} : { pruned: text }
+    return
+  }
+  slot.container[slot.key] = text
+}
+
 /** Apply a plan in place: the first text slot becomes the stub, the rest blank. */
 export function applyPrunePlan(messages: unknown, plan: PrunePlan): void {
   if (!Array.isArray(messages)) return
   for (const entry of plan.prune) {
     const slots = textSlots(messages[entry.index])
     if (!slots.length) continue
-    slots[0].container[slots[0].key] = entry.stub
-    for (let i = 1; i < slots.length; i++) slots[i].container[slots[i].key] = ""
+    writeSlot(slots[0], entry.stub)
+    for (let i = 1; i < slots.length; i++) writeSlot(slots[i], "")
   }
 }
 
