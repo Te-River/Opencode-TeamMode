@@ -7,6 +7,20 @@ registry saw 1.5.0 as the install-script fix release).
 
 ## [Unreleased]
 
+## [1.9.5] - 2026-10-31
+
+### Added
+
+- **`window:` —— 一次调用只关于一个窗口，不是整个桌面。** 七个计算机使用工具都接受
+  `window: "<标题子串>"`，只在 `call_tool` 一处实现：`screenshot` 裁剪到该窗口且**不改焦点**，
+  五个变更类工具先聚焦、执行、再把用户原来的前台窗口还原。零匹配不是崩溃
+  （`window-not-found` 点名子串并让你先截图看 `active_window`）；多个匹配取面积最大者。
+  钉了 6 条测试，其中两条是"工具本体永远看不到这个 key"和"截图不许抢焦点"。
+- **工具描述改成第一句就是契约。** 宿主在 Code Mode 目录里只显示描述的第一行（约 120 字符），
+  我们原来把 `expect_title 必填` / `include_image 默认 false` / `no-observable-change 不是失败`
+  都写在第二句以后——模型一个字都没看到，这才是每个 agent 都得先摸索一遍的原因。现在 7 个
+  工具的首行窗口里装的就是用法，`initialize.instructions` 收成一张速查卡。
+
 ### Changed
 
 - **新增第七个角色 `ComputerUser`，桌面控制收紧成 `Team` + 它。** 模板常驻生成（`mode: subagent`，选择器里仍然只有 Team），
