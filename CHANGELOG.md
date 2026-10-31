@@ -7,6 +7,18 @@ registry saw 1.5.0 as the install-script fix release).
 
 ## [Unreleased]
 
+## [1.9.6] - 2026-10-31
+
+### Fixed
+
+- **修剪把 `tool-result.result` 换成了裸字符串——那会让整轮请求失败并杀掉会话。** 宿主读的是
+  `part.result.type` / `.value`；裸字符串让 `type` 变成 `undefined`，`encodeJson(undefined)` 抛
+  `SchemaError: Expected a JSON-serializable value`，而它是 Effect defect，直接掀翻整轮
+  （实测：4 秒后 `Failed to drain Session`，会话不再恢复）。现在只把 stub 写进原信封
+  （`{type:"text", value:stub}`，`content` 类型的数组槽单独处理），`tool-call.input` 一律保持
+  对象（`{}` 或 `{pruned: …}`）——字符串形状在 Anthropic 上会 400，在 OpenAI 上会被当成带引号
+  的字面量而不是参数。修复来自 **@HX-Wrdzgzs**（PR #3），合入前已在本地跑过它的分支与反例对照。
+
 ## [1.9.5] - 2026-10-31
 
 ### Added
