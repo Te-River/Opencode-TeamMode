@@ -535,6 +535,42 @@ def describe_window(hwnd: int) -> dict | None:
     }
 
 
+def find_windows(pattern: str, limit: int = 8) -> list[dict]:
+    """Visible top-level windows whose title contains `pattern` (case-insensitive).
+
+    Biggest first: a dialog's owner is usually the whole app window, and the
+    dialog is what the caller means.  Bounded at 64 candidates because an
+    unbounded EnumWindows on a busy desktop is a lot of GetWindowText calls.
+    """
+    user32, _ = _libs()
+    needle = (pattern or "").strip().lower()
+    if not needle:
+        return []
+    found: list[dict] = []
+
+    @ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+    def _visit(hwnd, _lparam):
+        if len(found) >= 64:
+            return False
+        try:
+            if user32.IsWindowVisible(hwnd):
+                info = describe_window(int(hwnd))
+                if info and needle in (info.get("title") or "").lower() and info.get("rect"):
+                    found.append(info)
+        except Exception:
+            pass  # one odd window must not abort the enumeration
+        return True
+
+    user32.EnumWindows(_visit, 0)
+
+    def _area(w: dict) -> int:
+        r = w.get("rect") or [0, 0, 0, 0]
+        return max(0, int(r[2]) - int(r[0])) * max(0, int(r[3]) - int(r[1]))
+
+    found.sort(key=_area, reverse=True)
+    return found[:limit]
+
+
 def foreground_window() -> dict | None:
     user32, _ = _libs()
     return describe_window(int(user32.GetForegroundWindow() or 0))

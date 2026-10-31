@@ -192,6 +192,19 @@ TOOL_SPECS: list[dict] = [
     },
 ]
 
+# `window:` is accepted by EVERY tool and honoured in exactly ONE place
+# (`call_tool`), so adding it here keeps six hand-written schemas from drifting.
+# The description is short on purpose: the Code Mode catalog only shows the first
+# ~120 characters of a TOOL description, but a property's description is shown in
+# the schema, so this text does reach the model.
+for _spec in TOOL_SPECS:
+    _spec["inputSchema"]["properties"]["window"] = {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 200,
+        "description": "substring of a window title; scopes this call to that window (screenshot crops to it, mutating tools focus it and restore the previous foreground window afterwards)",
+    }
+
 MUTATING = {"click", "type_text", "key", "scroll", "drag"}
 
 
@@ -299,6 +312,23 @@ def encode_jpeg(image, max_width: int, quality: int = IMAGE_QUALITY, limit: int 
 
 def _one_line(obj) -> str:
     return json.dumps(obj, ensure_ascii=False, separators=(",", ":"))
+
+
+def _resolve_window(name: str) -> dict:
+    """One window for a `window:` argument.  Zero matches is an ANSWER, not a
+    crash (the caller gets the title it should re-read); the LARGEST match wins,
+    because a dialog's owner is the whole app and the dialog is usually the
+    child the caller means."""
+    target = (name or "").strip()
+    if not target:
+        raise ToolFailure("window-empty: pass a substring of the window title")
+    hits = input_mod.find_windows(target)
+    if not hits:
+        raise ToolFailure(
+            f"window-not-found: no visible window title contains {target!r}. "
+            "Screenshot first and read active_window, or pass a shorter substring."
+        )
+    return hits[0]
 
 
 def _active_window() -> dict | None:
@@ -673,6 +703,34 @@ class ComputerUseServer:
         return {"content": [{"type": "text", "text": _one_line(text)}], "isError": False}
 
     def call_tool(self, name: str, args: dict) -> dict:
+        """WINDOW SCOPE — the one place `window:` is honoured.
+
+        Resolve it once, focus that window, run the tool, then put the previous
+        foreground window back.  Doing it here (instead of inside each tool)
+        keeps the six tool bodies unaware of it and makes the behaviour uniform:
+        a `window:` argument means "this call is about that window", never "the
+        desktop at large".  `screenshot` is the one exception: it CROPS to the
+        window instead of focusing, so reading a window never disturbs the user.
+        """
+        if not isinstance(args, dict) or not args.get("window"):
+            return self._dispatch_tool(name, args)
+        target = _resolve_window(str(args["window"]))
+        rest = {k: v for k, v in args.items() if k != "window"}
+        if name == "screenshot":
+            rest["region"] = target["rect"]
+            rest.pop("display", None)
+            return self._dispatch_tool(name, rest)
+        previous = input_mod.foreground_window()
+        input_mod.focus_window(int(target["hwnd"]))
+        try:
+            return self._dispatch_tool(name, rest)
+        finally:
+            # Best effort, and deliberately not an error path: if the user
+            # grabbed the mouse mid-call we do not fight them for the focus.
+            if previous and previous.get("hwnd"):
+                input_mod.focus_window(int(previous["hwnd"]))
+
+    def _dispatch_tool(self, name: str, args: dict) -> dict:
         spec = next((t for t in TOOL_SPECS if t["name"] == name), None)
         if spec is None:
             raise ToolFailure(f"unknown tool: {name}")

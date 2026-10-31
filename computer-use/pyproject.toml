@@ -4,7 +4,7 @@ build-backend = "uv_build"
 
 [project]
 name = "computeruse-mcp"
-version = "0.0.5"
+version = "0.0.6"
 description = "Minimal, auditable computer-use MCP server for OpenCode Team Mode (screenshot + mouse/keyboard, with before/after change verdicts)"
 readme = "README.md"
 requires-python = ">=3.10"

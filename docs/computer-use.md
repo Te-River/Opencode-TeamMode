@@ -46,6 +46,24 @@ A hash that does not match installs nothing and writes zero config bytes.
 
 ---
 
+## Window scope — `window:` on every tool / 窗口作用域
+
+Pass `window: "<substring of the title>"` and the call is about **that window**:
+
+| tool | behaviour with `window:` |
+|---|---|
+| `screenshot` | crops to the window's rect and **never changes focus**; the returned `rect` is absolute, so a local coordinate is `absolute − rect origin` |
+| `click` `scroll` `drag` `type_text` `key` | focuses the window, runs the action, then **restores the previous foreground window** |
+
+Zero matches is an answer, not a crash: `window-not-found` names the pattern and
+tells the caller to screenshot and read `active_window` first. Ambiguity resolves
+to the largest title match — an app window beats its own dialog.
+
+不传 `window:` 就还是在「最上面那个窗口」上动手，这正是这个角色不打扰用户的关键。
+没有匹配不是崩溃：`window-not-found` 会点名你给的那个子串，并让你先截图看 `active_window`。
+
+---
+
 ## Upgrade / 升级 —— 默认走这条路
 
 **Windows cannot replace an executable that is running**, and the host keeps this server
