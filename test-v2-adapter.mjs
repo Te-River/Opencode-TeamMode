@@ -4095,7 +4095,8 @@ console.log("33. Context Pruning reads the tool-call shape, and a textless part 
   ]
   await f.hook("session.context").fire({ agent: "team", sessionID: "ses_t", system: [], messages, tools: {} })
   assert.ok(layer.report.prunedMessages >= 1, "the tool-call shape is actually pruned")
-  assert.ok(messages[0].content[0].input.includes("已裁剪"), "the tool-call input becomes a stub")
+  assert.equal(typeof messages[0].content[0].input, "object", "the tool-call input stays an OBJECT (upstream ships it as tool_use.input)")
+  assert.ok(messages[0].content[0].input.pruned.includes("已裁剪"), "the stub rides under `pruned`")
   assert.equal(messages[1].content[0].text, "recent tail", "the newest message is byte-exact")
   assert.equal(layer.report.unknownParts, 0, "no unknown parts on the report")
   assert.ok(events.some((e) => e.kind === "prune"), "the decision is on the trajectory")
@@ -4103,6 +4104,100 @@ console.log("33. Context Pruning reads the tool-call shape, and a textless part 
   for (const r of layer.registrations) await r.dispose()
 }
 console.log("   OK (tool-call read by shape; a media part is known-but-textless; an unobserved shape stays counted)")
+
+console.log("33b. applyPrunePlan keeps the slot's SHAPE — a bare string in `result` kills the session")
+{
+  const { applyPrunePlan } = await import("./dist/host/v2-prune.js")
+
+  // The host's lowering reads `part.result.type` and then re-encodes
+  // `part.result.value`.  Write a bare string into `result` and `type` is
+  // undefined, the encoder throws `SchemaError: Expected a JSON-serializable
+  // value`, and the Effect defect takes the whole session down (measured on a
+  // real 112-message session: fork died in 4.8s).  This reader stands in for
+  // that upstream read — it must see the stub, never `undefined`.
+  const upstreamRead = (part) =>
+    part.result.type === "content"
+      ? part.result.value.map((c) => c.text).join("")
+      : String(part.result.value)
+
+  const longBody = "y".repeat(4000)
+  const stub = '[已裁剪 · 原 238 token] 本条消息已卸载：tm_fetch { ref:"tm://runs/r-1/steps/s1/result" }'
+
+  // index 0: a ToolResultValue of type `text` (the shape the live log caught)
+  const textMsg = { role: "tool", content: [{ type: "tool-result", id: "call_1", name: "read", result: { type: "text", value: longBody }, providerExecuted: false }] }
+  // index 1: a ToolResultValue of type `content` — `value` MUST stay an array
+  const contentMsg = { role: "tool", content: [{ type: "tool-result", id: "call_2", name: "grep", result: { type: "content", value: [{ type: "text", text: longBody }] }, providerExecuted: true }] }
+  // index 2: a text slot plus a tool-call — the SECOND slot is cleared, and a
+  // tool call's `input` is an OBJECT, so clearing it must not hand the host `""`
+  const callMsg = { role: "assistant", content: [{ type: "text", text: longBody }, { type: "tool-call", id: "call_3", name: "read", input: { filePath: "a.ts", offset: 1 } }] }
+  // index 3: the clearing path for a `content`-typed result → `value` becomes []
+  const clearContentMsg = { role: "tool", content: [{ type: "text", text: longBody }, { type: "tool-result", id: "call_4", name: "read", result: { type: "content", value: [{ type: "text", text: "old" }] } }] }
+
+  const messages = [textMsg, contentMsg, callMsg, clearContentMsg]
+  const plan = {
+    prune: [
+      { index: 0, originalTokens: 238, stub, kind: "handle" },
+      { index: 1, originalTokens: 900, stub, kind: "handle" },
+      { index: 2, originalTokens: 1000, stub, kind: "handle" },
+      { index: 3, originalTokens: 1000, stub, kind: "handle" },
+    ],
+    protectedCount: 0, protectMatched: 0, keptCount: 0, savedTokens: 0,
+  }
+  applyPrunePlan(messages, plan)
+
+  // (a) `text` result: the envelope survives, only `value` moves
+  const r0 = textMsg.content[0].result
+  assert.equal(typeof r0, "object", "a text result stays an OBJECT — a bare string makes the host's encoder throw")
+  assert.equal(r0.type, "text", "…its `type` is unchanged")
+  assert.equal(r0.value, stub, "…and only `value` carries the stub")
+  assert.equal(textMsg.content[0].providerExecuted, false, "the rest of the part survives")
+  assert.equal(upstreamRead(textMsg.content[0]), stub, "the upstream read sees the stub, not undefined")
+
+  // (b) `content` result: `value` is still an ARRAY, never a string
+  const r1 = contentMsg.content[0].result
+  assert.equal(r1.type, "content", "a content result keeps its type")
+  assert.ok(Array.isArray(r1.value), "…and `value` stays an array")
+  assert.deepEqual(r1.value, [{ type: "text", text: stub }], "…holding one text part with the stub")
+  assert.equal(contentMsg.content[0].providerExecuted, true, "the rest of the part survives")
+  assert.ok(upstreamRead(contentMsg.content[0]).includes("已裁剪"), "the upstream read sees the stub, not undefined")
+
+  // (c) a text slot is still a string — the stub itself, not an envelope
+  assert.equal(callMsg.content[0].text, stub, "a `text` slot is still written as a plain string")
+  // (d) a cleared tool-call `input` is `{}`, not `""`
+  assert.equal(typeof callMsg.content[1].input, "object", "a cleared tool-call input stays an OBJECT")
+  assert.deepEqual(callMsg.content[1].input, {}, "…and is empty")
+
+  // (e) clearing a `content` result yields [], not "" (the schema wants an array)
+  assert.ok(Array.isArray(clearContentMsg.content[1].result.value), "a cleared content result keeps an array")
+  assert.deepEqual(clearContentMsg.content[1].result.value, [], "…and it is empty")
+
+  // (f) a NON-EMPTY stub landing in a tool-call `input` must still be an OBJECT.
+  // Upstream ships `input` as Anthropic `tool_use.input` (an object, or the whole
+  // request 400s every round) and as `encodeJson(part.input)` on OpenAI (a bare
+  // string becomes a quoted string literal, not call arguments).
+  const onlyCall = { role: "assistant", content: [{ type: "tool-call", id: "call_5", name: "write", input: { filePath: "a.ts", content: longBody } }] }
+  applyPrunePlan([onlyCall], { prune: [{ index: 0, originalTokens: 1000, stub, kind: "handle" }], protectedCount: 0, protectMatched: 0, keptCount: 0, savedTokens: 0 })
+  const p5 = onlyCall.content[0].input
+  assert.equal(typeof p5, "object", "a stubbed tool-call input is an OBJECT — tool_use.input and encodeJson both require one")
+  assert.ok(p5 !== null && !Array.isArray(p5), "…a record, not null and not an array")
+  assert.equal(p5.pruned, stub, "…the stub rides under `pruned`")
+  const wire = JSON.stringify(p5)
+  assert.ok(wire.includes("已裁剪"), "the stub survives the wire form")
+  assert.ok(!wire.startsWith('"'), "…and the wire form is an object literal, not a quoted string")
+
+  // (g) a tool ARGUMENT that merely LOOKS like a ToolResultValue is not one:
+  // `{type:"error", value:5000}` is an ordinary parameter bag.  Splitting it into
+  // `{"type":"error","value":"<stub>"}` yields a legal-but-nonsensical call —
+  // more misleading to the model than an honest "this was pruned" marker.
+  const errArgCall = { role: "assistant", content: [{ type: "tool-call", id: "call_6", name: "mcp_thing", input: { type: "error", value: 5000 } }] }
+  applyPrunePlan([errArgCall], { prune: [{ index: 0, originalTokens: 1000, stub, kind: "handle" }], protectedCount: 0, protectMatched: 0, keptCount: 0, savedTokens: 0 })
+  const p6 = errArgCall.content[0].input
+  assert.equal(typeof p6, "object", "an argument bag stays an object")
+  assert.equal(p6.type, undefined, "a tool `input` is never treated as a ToolResultValue envelope")
+  assert.equal(p6.value, undefined, "…so no half-rewritten `{type, value}` survives")
+  assert.equal(p6.pruned, stub, "…the call is replaced by one honest pruned marker")
+}
+console.log("   OK (text/json/error results keep their envelope and move only `value`; content results stay arrays; a tool-call input is ALWAYS an object — {} when cleared, {pruned} otherwise, never a half-rewritten envelope; text slots stay strings)")
 
 // 30. 错峰重试 — recognise a provider throttle, inject an EXACT wait, cool down (#49 feature 3)
 console.log("30. 错峰重试 — recognise a provider throttle, inject an exact wait, cool down (#49 feature 3)")
