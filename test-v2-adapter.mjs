@@ -919,6 +919,40 @@ console.log("4b2. the host's goal `changed` event becomes ONE deferred note per 
   console.log("   OK (dedupe by state, both directions announced, missing seam is a no-op)")
 }
 
+console.log("4b3. `clear`/`pause` refuse while the LEDGER still has open items")
+{
+  const { buildGoalTool } = await import("./dist/tm/goal.js")
+  const GOAL = { objective: "ship it", status: "active", rounds: 1 }
+  const fired = []
+  const mk = (items) =>
+    buildGoalTool({
+      rpc: () => ({ get: async () => GOAL }),
+      command: (input) => { fired.push(input.text); return Promise.resolve() },
+      loadLedger: async () => ({ items }),
+    })
+  const textOf = (r) => (typeof r === "string" ? r : String(r?.output ?? ""))
+
+  const open = mk([{ id: 12, state: "open" }, { id: 15, state: "doing" }, { id: 16, state: "done" }])
+  const refused = textOf(await open.execute({ action: "clear" }, { sessionID: "ses_gate", agent: "team" }))
+  assert.match(refused, /账本还有 2 项未完成/, "the refusal counts OPEN items, not all of them")
+  assert.match(refused, /#12/, "…and names them")
+  assert.ok(!/#16/.test(refused), "a finished item is not named")
+  assert.equal(fired.length, 0, "and NOTHING was submitted to the host")
+
+  const empty = mk([{ id: 12, state: "done" }])
+  const allowed = textOf(await empty.execute({ action: "clear" }, { sessionID: "ses_gate2", agent: "team" }))
+  assert.match(allowed, /已把 clear 请求提交/, "with a clear ledger the command goes through")
+  assert.equal(fired.length, 1, "exactly one command fired")
+
+  const blind = buildGoalTool({
+    rpc: () => ({ get: async () => GOAL }),
+    command: () => { fired.push("blind"); return Promise.resolve() },
+  })
+  const blindText = textOf(await blind.execute({ action: "pause" }, { sessionID: "ses_gate3", agent: "team" }))
+  assert.match(blindText, /读不到账本/, "no ledger reader is SAID out loud — never passed off as an empty ledger")
+  console.log("   OK (open items block clear, finished ones do not, and an unreadable ledger is announced)")
+}
+
 console.log("4c. a REJECTED /goal command leaves exactly ONE trajectory row — the seam and the host's error, never the objective (R6)")
 {
   // `session.command` runs a whole host turn AFTER tm_goal has answered, so a

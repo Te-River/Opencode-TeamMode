@@ -917,6 +917,10 @@ export const v2Personality: V2Plugin = {
     // `LedgerStore` instance `tm_ledger` writes through, and it registers after the
     // session layer (board note already on the request) and BEFORE the retry/prune
     // layers, so the tail layer — registered last — sees every producer's section.
+    // The ledger gate: `clear`/`pause` refuse while our own ledger still has open
+    // items.  Wired here because this is where the store is in scope — the tool
+    // holds this same deps object, so assigning after construction is enough.
+    goalDeps.loadLedger = (sid) => ledgerStore.load(sid)
     // Turn the host's goal `changed` events into ONE deferred note for the lead,
     // plus a trajectory row so "how did this goal die" is answerable later.
     watchGoalChanges(goalDeps, (change) => {

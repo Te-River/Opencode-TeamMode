@@ -198,6 +198,11 @@ export function renderGoalState(state: GoalState, opts: { prefix?: string } = {}
   return opts.prefix ? `${opts.prefix}\n${body}` : body
 }
 
+/** The one thing `tm_goal` needs from the ledger: which items are still open. */
+export interface GoalLedgerView {
+  items?: Array<{ id?: number | string; state?: string }>
+}
+
 export interface GoalToolDeps {
   /** `ctx.rpc` on the v2 plugin ctx (a client factory).  Absent on a host
    *  without the goal plugin — which is a MISSING SEAM, never "no goal". */
@@ -216,6 +221,10 @@ export interface GoalToolDeps {
   /** The host's `events.changed` subscription (`client.events.on`).  Absent on a host
    *  without it — then `tm_goal` stays pull-only, exactly as it was. */
   subscribe?: (cb: (payload: unknown) => void) => unknown
+  /** The lead's ledger, read to refuse `clear`/`pause` while work is still open.
+   *  Absent, throwing, or answering nothing usable = the gate CANNOT run, and the
+   *  reply says so — an unreadable ledger is never "nothing is open". */
+  loadLedger?: (sessionID: string) => Promise<GoalLedgerView | null> | GoalLedgerView | null
   now?: () => number
 }
 
@@ -319,6 +328,25 @@ export function watchGoalChanges(
     })
   } catch {
     return undefined
+  }
+}
+
+/** Read the ledger ONCE, answering two different questions: could we look, and
+ *  what is still open.  A reader that throws is "we could not look", never "empty". */
+async function readGoalLedger(
+  deps: GoalToolDeps,
+  sessionID: string,
+): Promise<{ known: boolean; open: Array<{ id?: number | string; state?: string }> }> {
+  const load = deps.loadLedger
+  if (typeof load !== "function") return { known: false, open: [] }
+  try {
+    const view = await load(sessionID)
+    if (!view || typeof view !== "object") return { known: true, open: [] }
+    const items = Array.isArray(view.items) ? view.items : []
+    const open = items.filter((it) => it && typeof it === "object" && it.state !== "done")
+    return { known: true, open }
+  } catch {
+    return { known: false, open: [] }
   }
 }
 
@@ -623,6 +651,30 @@ export function buildGoalTool(deps: GoalToolDeps): ToolDefinition {
       if (readable && !state) {
         return toToolResult(`没有可${label}的宿主目标（opencode.goal 返回 null）—— 没有发出任何命令。`)
       }
+      // ── the ledger gate ──────────────────────────────────────────────────
+      // A goal is the USER's contract, so ending it because we believe the work
+      // is done is grading our own homework.  The one completion signal we own is
+      // the ledger, so `clear`/`pause` refuse while it still has open items.
+      // `resume` is never gated — it only re-opens work.
+      const gate =
+        action === "clear" || action === "pause"
+          ? await readGoalLedger(deps, sessionID)
+          : { known: true, open: [] as Array<{ id?: number | string; state?: string }> }
+      if (gate.known && gate.open.length > 0) {
+        const ids = gate.open
+          .slice(0, 6)
+          .map((it) => (it.id !== undefined ? `#${it.id}` : "(无编号)"))
+          .join(" ")
+        return toToolResult(
+          tmError(
+            tool,
+            "args",
+            `账本还有 ${gate.open.length} 项未完成（${ids}${gate.open.length > 6 ? " …" : ""}），所以没有发出 ${action}。` +
+              `目标只在两种情况下结束：用户说停，或者宿主的 reviewer 判完 —— 不是你觉得做完了。` +
+              `先把它们标记 done / blocked（tm_ledger），或者让用户明确说停。`,
+          ),
+        )
+      }
       const fired = fire(action)
       if (!fired.ok) {
         return toToolResult(
@@ -641,7 +693,8 @@ export function buildGoalTool(deps: GoalToolDeps): ToolDefinition {
             : `宿主报 null（目标已不存在）`
       const endsGoal =
         action === "clear" || action === "pause"
-          ? `\n⚠ ${action} 会${action === "clear" ? "结束" : "暂停"}用户的目标。如果你只是"觉得做完了"，它不是替代品——给出证据让用户决定；目标也可能已经被宿主的 reviewer 按你最后一条消息判成 complete。`
+          ? `\n⚠ ${action} 会${action === "clear" ? "结束" : "暂停"}用户的目标。如果你只是"觉得做完了"，它不是替代品——给出证据让用户决定；目标也可能已经被宿主的 reviewer 按你最后一条消息判成 complete。` +
+            (gate.known ? "" : `\n（注意：这次读不到账本，所以「账本还有未完成项就不许收尾」这道闸门没有生效。）`)
           : ""
       return toToolResult(
         `已把 ${action} 请求提交给宿主的 /goal 命令（opencode.goal 没有写 RPC，写只能走这条命令）。` +
