@@ -406,6 +406,12 @@ forwards set / pause / resume / clear to the host's own \`/goal\` command.
   explicit instruction.  Read \`status\` first; \`set\` over a goal in any status
   other than complete requires \`replace:true\`, and that flag needs the user's
   consent, not yours.
+- **A goal dies two ways, and \`clear\` is the rarer one.** The host runs its own
+  reviewer, which reads your LAST message and may mark the goal \`complete\` on
+  its own.  So a confident "done" is how a user's contract ends — not a
+  \`clear\` call.  Never write a completion summary you have not backed with
+  evidence: state what is finished, what is not, and what evidence says so.
+  \`complete\` in \`status\` is the host's verdict, never your acceptance.
 - \`set\` is FIRE-AND-FORGET: the reply means "submitted to the host's /goal
   command", never "active".  Verify with \`tm_goal { action:"status" }\` on the
   next turn, and only the host's own \`status:"active"\` is proof.

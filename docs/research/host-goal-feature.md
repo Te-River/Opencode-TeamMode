@@ -149,3 +149,37 @@ anybody "fixes" it by resuming in a loop.
 
 Implementation: `src/tm/goal.ts`; wiring from the live ctx: `buildGoalDeps` in
 `src/host/v2.ts`; tests: `test-v2-adapter.mjs` group `4b`.
+
+## 2026-11-01 · re-verification on host 2.2.5 (binary + zero-token probe)
+
+Read out of the shipped binary (`opencode-cli.exe`, ~259 MB), and confirmed with a
+throwaway plugin booted under `--model nope/nope` (no session, no request):
+
+```js
+Goal.State = { id, objective, status: ["active","paused","complete"], reason,
+               rounds, maxRounds, stalls, boot, updatedAt }
+rpc = { id:"opencode.goal", methods:{ get }, events:{ changed } }
+rpc.register(Wse, { get })
+write: storage.set/remove → events.emit("changed", { sessionID, goal })
+Usage: "/goal <objective> | pause | resume | clear"   ·   objective cap 4000 · maxRounds 50
+reviewer verdict = ["done","continue","blocked","paused","wait"] + reason + next_step
+```
+
+| claim | status on 2.2.5 |
+|---|---|
+| exactly one RPC method, `get` | **still true** — and still no write RPC |
+| the only write path is `/goal` | **still true**; the usage string names the three subcommands we already refuse to send as text |
+| `status` ∈ active/paused/complete | **still true** (unknown values are passed through verbatim) |
+| `stalls` / `boot` fields | **still true** — `parseGoalState` already keeps both; `stalls` is printed, `boot` is parsed but not rendered |
+| `ctx.rpc({id})` with only an id | **REFUSED** — `Object.entries requires that input parameter not be null or undefined`; the full `{id, methods, events}` definition is required |
+| `ctx.session.get` shape | flat `{sessionID}` works; `{path:{id}}` fails `Missing key at ["sessionID"]` |
+| **`events.changed`** | **NEW to us** — the host emits it on every write, and `client.events.on("changed", cb)` is a real subscription (`for await` loop, returns an abort function). `tm_goal` still pulls only. |
+| docs coverage | `https://opencode.ai/v2/docs/goal` and `/v2/docs/commands/goal` both **404** — the feature remains binary-only |
+
+Consequence taken: a goal ends **two** ways — the user, or the host's reviewer reading
+the model's last message. The lead prompt now says so ("a goal dies two ways"), and
+`status` renders `complete` as "宿主不再推进 … 这不等于验收". The `clear`/`pause` reply
+carries the same warning.
+
+Still open (not built): subscribing to `changed` so a rewrite reaches the lead without a
+poll; rendering `boot`.

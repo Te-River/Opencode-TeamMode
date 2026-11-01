@@ -305,6 +305,14 @@ assert.ok(
   cfg.agent.architect.prompt.includes("two or three candidate designs"),
   "architect: candidates before the recommendation, and convergence is one-way",
 )
+assert.ok(
+  leadPrompt.includes("A goal dies two ways"),
+  "lead: the host's reviewer can end a goal from the last message — a confident 'done' is how a user's contract dies",
+)
+assert.ok(
+  leadPrompt.includes("complete") && leadPrompt.includes("never your acceptance"),
+  "lead: the host's complete is a verdict, not an acceptance",
+)
 assert.ok(leadPrompt.includes("Question ≠ work order"), "lead: question-not-workorder rule")
 assert.ok(leadPrompt.includes("USER-STATED BOUNDARIES ARE SUPREME"), "lead: user boundary supremacy")
 

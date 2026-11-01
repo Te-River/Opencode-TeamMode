@@ -182,7 +182,7 @@ export function renderGoalState(state: GoalState, opts: { prefix?: string } = {}
       : state.status === "paused"
         ? "paused —— 已暂停：宿主不会推进这个目标，直到恢复"
         : state.status === "complete"
-          ? "complete —— 已完成：宿主不再推进这个目标"
+          ? "complete —— 宿主不再推进这个目标。**这不等于验收**：宿主是按你最后一条消息判的；要确认就以自己的 ACCEPTANCE 逐条对证据"
           : `${state.status} —— 宿主自报的状态，本工具不认识这个值（照原样转述，不替你解释）`
   const lines = [`宿主目标（opencode.goal）`, `状态：${label}`, `目标：${state.objective}`]
   if (state.rounds !== undefined || state.maxRounds !== undefined) {
@@ -575,10 +575,15 @@ export function buildGoalTool(deps: GoalToolDeps): ToolDefinition {
           : action === "resume"
             ? `宿主报 status:"active"`
             : `宿主报 null（目标已不存在）`
+      const endsGoal =
+        action === "clear" || action === "pause"
+          ? `\n⚠ ${action} 会${action === "clear" ? "结束" : "暂停"}用户的目标。如果你只是"觉得做完了"，它不是替代品——给出证据让用户决定；目标也可能已经被宿主的 reviewer 按你最后一条消息判成 complete。`
+          : ""
       return toToolResult(
         `已把 ${action} 请求提交给宿主的 /goal 命令（opencode.goal 没有写 RPC，写只能走这条命令）。` +
           (state ? `\n提交前的状态：${state.status}` : "") +
           `\n这是"已提交"，不是"已生效"：下一轮用 ${tool} { action:"status" } 复核，${expected} 才算数。` +
+          endsGoal +
           unverifiable,
       )
     },
