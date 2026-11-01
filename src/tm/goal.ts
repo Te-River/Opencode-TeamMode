@@ -192,6 +192,7 @@ export function renderGoalState(state: GoalState, opts: { prefix?: string } = {}
   }
   if (state.stalls !== undefined) lines.push(`停滞计数：${state.stalls}`)
   if (state.reason) lines.push(`原因：${state.reason}`)
+  if (state.boot) lines.push(`所属启动：${state.boot}（这条目标是在哪次插件启动时设的）`)
   if (state.updatedAt !== undefined) lines.push(`更新：${stamp(state.updatedAt)}`)
   const body = lines.join("\n")
   return opts.prefix ? `${opts.prefix}\n${body}` : body
@@ -212,6 +213,9 @@ export interface GoalToolDeps {
    *  trace so a silent rejection is not a silent nothing.  Runs inside its own
    *  try/catch, because a trace must never turn a submitted request into a throw. */
   onCommandRejected?: (input: { sessionID: string; name: string; text: string }, err: unknown) => void
+  /** The host's `events.changed` subscription (`client.events.on`).  Absent on a host
+   *  without it — then `tm_goal` stays pull-only, exactly as it was. */
+  subscribe?: (cb: (payload: unknown) => void) => unknown
   now?: () => number
 }
 
@@ -256,6 +260,66 @@ function isTrue(v: unknown): boolean {
 
 function shorten(text: string, max: number): string {
   return text.length > max ? `${text.slice(0, max)}…` : text
+}
+
+export interface GoalChange {
+  sessionID: string
+  /** The status we last saw (`none` before the first event), and the new one. */
+  from: string
+  to: string
+  rounds?: number
+  note: string
+}
+
+/**
+ * Turn the host's `events.changed` into ONE note per REAL transition.
+ *
+ * The host emits on every write — **including the writes we ourselves trigger** —
+ * so a handler that acted on every event would tell the lead about its own `set`.
+ * The signature (status + rounds + objective length) is what decides: an echo of
+ * a state we already recorded is not a change.
+ *
+ * Measured 2026-11-01 on 2.2.5: the RPC definition carries `events.changed`, the
+ * host emits it from its write path, and `client.events.on(name, cb)` is a real
+ * subscription returning an abort function.
+ */
+export function watchGoalChanges(
+  deps: GoalToolDeps,
+  onChange: (change: GoalChange) => void,
+): unknown {
+  if (typeof deps.subscribe !== "function") return undefined
+  const seen = new Map<string, string>()
+  const sigOf = (state: GoalState | null): string =>
+    state ? `${state.status}|${state.rounds ?? ""}|${state.objective.length}` : "null"
+  try {
+    return deps.subscribe((payload) => {
+      try {
+        const p = (payload ?? {}) as { sessionID?: unknown; goal?: unknown }
+        const sid = typeof p.sessionID === "string" ? p.sessionID.trim() : ""
+        if (!sid) return
+        const state = parseGoalState(p.goal)
+        const next = sigOf(state)
+        const previous = seen.get(sid)
+        seen.set(sid, next)
+        if (previous === next) return
+        // The first sighting of "this session has no goal" is not a change.
+        if (previous === undefined && next === "null") return
+        const to = state ? state.status : "null"
+        const from = previous ? previous.split("|")[0] : "none"
+        const note = state
+          ? `宿主刚刚把目标改成 ${to}` +
+            (state.rounds !== undefined ? `（第 ${state.rounds} 轮）` : "") +
+            (state.reason ? `，原因：${shorten(state.reason, 160)}` : "") +
+            `。这是宿主的判断，不是你的验收。`
+          : `宿主刚刚删除了本会话的目标（上一状态 ${from}）。`
+        onChange({ sessionID: sid, from, to, rounds: state?.rounds, note })
+      } catch {
+        // A watcher must never break the host's own emit loop.
+      }
+    })
+  } catch {
+    return undefined
+  }
 }
 
 export function buildGoalTool(deps: GoalToolDeps): ToolDefinition {

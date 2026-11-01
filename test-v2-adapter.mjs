@@ -895,6 +895,30 @@ console.log("4b. tm_goal — the HOST's own goal feature: read through its RPC, 
 }
 console.log("   OK (RPC read + parent walk, throw ≠ empty, replace needs consent, /goal fire-and-forget, submitted ≠ active)")
 
+console.log("4b2. the host's goal `changed` event becomes ONE deferred note per REAL transition")
+{
+  const G = await import("./dist/tm/goal.js")
+  const notes = []
+  let emit = null
+  const abort = G.watchGoalChanges(
+    { subscribe: (cb) => { emit = cb; return () => "aborted" } },
+    (c) => notes.push(c),
+  )
+  assert.equal(typeof abort, "function", "watchGoalChanges hands back the host's abort")
+  emit({ sessionID: "ses_gw", goal: null })
+  assert.equal(notes.length, 0, "the first sighting of 'no goal' is not a transition")
+  emit({ sessionID: "ses_gw", goal: { objective: "ship it", status: "active", rounds: 1 } })
+  emit({ sessionID: "ses_gw", goal: { objective: "ship it", status: "active", rounds: 1 } })
+  assert.equal(notes.length, 1, "our own write echoes the same state back — deduped, not announced twice")
+  assert.equal(notes[0].to, "active", "the note names the new status")
+  emit({ sessionID: "ses_gw", goal: { objective: "ship it", status: "complete", rounds: 2, reason: "looks done" } })
+  assert.equal(notes.length, 2, "a real transition is announced once")
+  assert.match(notes[1].note, /complete/, "…and names the status")
+  assert.match(notes[1].note, /不是你的验收/, "…and says the host's verdict is not acceptance")
+  assert.equal(G.watchGoalChanges({}, () => {}), undefined, "no seam → no watcher (and no throw)")
+  console.log("   OK (dedupe by state, both directions announced, missing seam is a no-op)")
+}
+
 console.log("4c. a REJECTED /goal command leaves exactly ONE trajectory row — the seam and the host's error, never the objective (R6)")
 {
   // `session.command` runs a whole host turn AFTER tm_goal has answered, so a

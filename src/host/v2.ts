@@ -65,7 +65,7 @@ import { applyV2DynamicTail, createDynamicSink, resolveDynamicTailConfig } from 
 import { applyV2SessionInstructions, resolveSessionInstructionsConfig, sessionInstructionsSeamOf } from "./v2-session-instructions.js"
 import { checkDefaultAgentRole, globalConfigDir, type DefaultAgentCheck } from "./v2-default-agent.js"
 import { createStorageLedgerStore } from "../tm/ledger.js"
-import type { GoalToolDeps } from "../tm/goal.js"
+import { HOST_GOAL_RPC_DEFINITION, watchGoalChanges, type GoalToolDeps } from "../tm/goal.js"
 import { createTeamScope } from "./v2-scope.js"
 import { bindV2Tool, type V2ToolBinding } from "./v2-tool.js"
 import { mergeTriples, triplesFromAgentPermission, V1_ONLY_TOOLS } from "./v2-permissions.js"
@@ -114,6 +114,21 @@ function buildGoalDeps(ctx: V2Context): GoalToolDeps {
   const host = ctx as unknown as HostGoalSeams
   if (typeof host.rpc === "function") {
     deps.rpc = (definition) => (ctx as unknown as HostGoalSeams).rpc?.(definition)
+    // The goal plugin also declares an `events.changed` surface.  MEASURED 2026-11-01 on
+    // 2.2.5: `client.events.on(name, cb)` is a real subscription (`for await` internally)
+    // and returns an abort function.  Absent → `tm_goal` stays pull-only.
+    deps.subscribe = (cb) => {
+      try {
+        const client = (ctx as unknown as HostGoalSeams).rpc?.(HOST_GOAL_RPC_DEFINITION) as
+          | { events?: { on?: (name: string, handler: (payload: unknown) => void) => unknown } }
+          | undefined
+        const on = client?.events?.on
+        if (!client || !client.events || typeof on !== "function") return undefined
+        return on.call(client.events, "changed", cb)
+      } catch {
+        return undefined
+      }
+    }
   }
   if (host.session && typeof host.session.command === "function") {
     deps.command = (input) => (ctx as unknown as HostGoalSeams).session?.command?.(input)
@@ -227,6 +242,11 @@ export const v2Personality: V2Plugin = {
     // it and the request-side state card reads through the SAME object, so the
     // card can never report a list the tool would not.
     const ledgerStore = createStorageLedgerStore((ctx as { storage?: unknown }).storage)
+    // The host's goal `changed` events arrive here and wait for the LEAD's next
+    // request.  One line, consumed once — a note that lingered would be a claim
+    // about a state that has since moved on again.
+    const goalNotes = new Map<string, string>()
+    const goalDeps = buildGoalDeps(ctx)
     const tmRuntime = await createTmTools(
       { directory, project: "", client: sessionReader.client, $: undefined } as unknown as PluginInput,
       {
@@ -254,7 +274,7 @@ export const v2Personality: V2Plugin = {
         // storage namespace, which `ctx.storage` cannot see), WRITE through the
         // user-facing `/goal` command (the RPC has no setter).  The write is
         // fire-and-forget, so the tool's reply says submitted, never active.
-        goalDeps: buildGoalDeps(ctx),
+        goalDeps,
         sessionReaderReport: () => sessionReader.report,
       },
     )
@@ -897,8 +917,34 @@ export const v2Personality: V2Plugin = {
     // `LedgerStore` instance `tm_ledger` writes through, and it registers after the
     // session layer (board note already on the request) and BEFORE the retry/prune
     // layers, so the tail layer — registered last — sees every producer's section.
+    // Turn the host's goal `changed` events into ONE deferred note for the lead,
+    // plus a trajectory row so "how did this goal die" is answerable later.
+    watchGoalChanges(goalDeps, (change) => {
+      goalNotes.set(change.sessionID, change.note)
+      try {
+        // The transition, never the objective text (R6 binds our own diagnostics).
+        tmRuntime.pipelines.store.appendTrajectory({
+          tool: "tm_goal",
+          event: "goal_changed",
+          session: change.sessionID,
+          from: change.from,
+          to: change.to,
+          rounds: change.rounds,
+        })
+      } catch {
+        // A trace must never break the host's own emit loop.
+      }
+    })
     const stateCard = await applyV2StateCard(ctx, {
       enabled: cfg.stateCard !== "off",
+      // Read-and-consume: a note describes ONE transition, so it is dropped as soon
+      // as it has been rendered — otherwise the card would keep claiming a state the
+      // host has already moved past.
+      goalNote: (sid) => {
+        const note = goalNotes.get(sid)
+        if (note !== undefined) goalNotes.delete(sid)
+        return note
+      },
       boardRoot,
       scope,
       // 状态卡与窗口条目进易变上下文通道（keyed 指令或尾部滞留区，同一实例）——不走 system。

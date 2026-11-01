@@ -90,6 +90,11 @@ export interface StateCardRenderInput {
    * 绝不退化成「列全部」——那是别人的会话。
    */
   sessionID?: string
+  /**
+   * 一条「宿主刚刚改写了目标」的提示（消费一次即丢）。  缺省时整段省略——一张卡片
+   * 不能说一件已经过去的事。
+   */
+  goalNote?: string
 }
 
 export interface StateCardInput {
@@ -100,6 +105,8 @@ export interface StateCardInput {
   children: () => StateCardChild[]
   /** 累计离载条数（读 prune 报告的 `offloaded`）。  只取差量，所以「上轮」是可信的。 */
   pruneCount?: () => number
+  /** 读一次并消费掉「目标变更」提示；缺省 = 没有这条通道。 */
+  goalNote?: (sessionID: string) => string | undefined
   /**
    * 窗口占用的读取器；缺省时由 `createUsagePercent(ctx)` 从 `ctx.model.list()` +
    * 消息自带的 usage 读。注入点只为单测准备，生产路径没有第二个分母来源。
@@ -262,6 +269,8 @@ function renderBody(
   for (const it of rendered) lines.push(itemLine(it))
   const childText = childrenLine(runningChildren(input), childrenShown)
   if (childText) lines.push(childText)
+  // 目标被宿主改写时的一次性提示。  放在看板行之前：它是这一轮最该先看到的一条。
+  if (input.goalNote) lines.push(`🎯 ${input.goalNote}`)
   lines.push(`看板：${shorten(input.boardRoot, STATE_CARD_BOARD_CHARS)}`)
   const pruneDelta = Math.max(0, Math.floor(Number(input.pruneDelta ?? 0)) || 0)
   if (withPrune && pruneDelta > 0) lines.push(`上轮修剪：${pruneDelta} 条消息已卸载（tm_fetch 可取回）`)
@@ -502,6 +511,7 @@ export async function applyV2StateCard(ctx: V2Context, input: StateCardInput): P
           boardRoot: input.boardRoot,
           pruneDelta,
           sessionID,
+          goalNote: input.goalNote?.(sessionID),
         })
         if (onTail) {
           if (!card) {
