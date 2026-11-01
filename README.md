@@ -18,7 +18,7 @@
 - [Why TeamMode?](#-why-teammode)
 - [Quick start](#-quick-start)
 - [The team](#-the-team)
-- [What's new in 1.9.2](#-whats-new-in-192)
+- [What's new in 1.9.7](#-whats-new-in-197)
 - [How the team works](#-how-the-team-works)
 - [Tools](#-tools)
 - [Governance & security](#-governance--security)
@@ -106,25 +106,30 @@ All of it is outside this repo; the installer prints what it changed and reads t
 | 🔍 **Reviewer** | Dimension-focused auditor | One dimension by default; 3 in parallel only for high-risk changes |
 | 🧪 **Tester** | Test engineer | Real edge-case tests, static verification, UI verification through the host's `browser_*` tools |
 | 🔎 **Researcher** | Knowledge finder | Local repo first, then the web — one of the two network roles |
+| 🖱️ **ComputerUser** | Desktop operator | Only when a computer-use MCP is installed: drives **one named window**, screenshots before acting, reports the verdict instead of assuming the click landed |
 
 Grants follow the job, not seniority: Lead `task / edit / write / shell / question`, Implementer and Tester `edit / write / shell`, Reviewer `shell` only, Architect and Researcher **nothing** beyond the governed tools. Only the Lead dispatches — no specialist can spawn a specialist.
 
-Slash commands map onto the same six roles: `/team-plan` (Architect), `/team-implement` (Implementer), `/team-review` (Reviewer), `/team-test` (Tester), `/team-research` (Researcher), `/team-run` (Team Lead).
+Slash commands map onto the same specialists: `/team-plan` (Architect), `/team-implement` (Implementer), `/team-review` (Reviewer), `/team-test` (Tester), `/team-research` (Researcher), `/team-run` (Team Lead).
 
 ---
 
-## ✨ What's new in 1.9.2
+## ✨ What's new in 1.9.7
 
-*1.9.2 is the current release.*
+*1.9.7 is the current release.*
 
-**`tm_goal` — a bridge to the host's own goal feature.** Host 2.2.x ships an `opencode.goal` plugin that registers exactly one RPC (`get`) and keeps its state in its own storage namespace, which `ctx.storage` cannot read. So the RPC is the only read seam, and there is no write RPC at all. TeamMode does not re-implement any of it:
+**1.9.7 — the goal feature, both halves.** Host 2.2.x ships an `opencode.goal` plugin whose RPC exposes exactly one method (`get`); a write RPC does not exist (verified by declaring `set`/`clear`/`pause` in a client and calling them — the host answers `Unknown RPC method: opencode.goal.set`). Its state lives in its own storage namespace, which `ctx.storage` cannot read. So:
 
-- `status` reads the host goal (objective, status, rounds, reason). In a child session it walks up to the parent's goal (≤5 hops, cycle-guarded) — the contract that line of work inherits.
-- `set` / `pause` / `resume` / `clear` are **forwarded to the host's `/goal` command** and never awaited: that command runs a whole host turn, so awaiting it would park the caller. The reply therefore says **已提交, never 已生效** — only the host's own `status:"active"` on the next turn is proof.
-- Writes are **Lead-only**; reads are open to all six roles. `set` refuses an empty objective, the host's measured 4000-character cap, an objective spelled exactly `pause`/`resume`/`clear` (the host would run it as a subcommand), and it requires `replace:true` over a goal in any status other than `complete`.
-- What the host does with a goal stays the host's: **it** runs the goal reviewer and continuation turns, **it** pauses an active goal on restart (with its own reason line), and an active goal costs model turns you did not ask for — which is why the Lead sets one only when you explicitly ask for a persistent objective.
+- `status` reads the host goal (objective, status, rounds, stalls, reason, boot). In a child session it walks up to the parent's goal (≤5 hops, cycle-guarded) — the contract that line of work inherits.
+- `set` / `pause` / `resume` / `clear` are **forwarded to the host's `/goal` command** and never awaited: that command runs a whole host turn, so awaiting it would park the caller. The reply therefore says **submitted, never active** — only the host's own `status:"active"` on the next turn is proof.
+- **A goal ends two ways, and `clear` is the rarer one.** The host's own reviewer reads your *last message* and may mark the goal `complete` by itself — so a confident "done" is how a user's contract ends. `status` reports that verdict as the host's, never as acceptance.
+- **Ending is gated**: `clear`/`pause` refuse while the ledger still has open items and name their ids; `resume` is never gated; an unreadable ledger is announced instead of being treated as empty.
+- **The Lead hears the change.** The host emits `events.changed` on every write; `tm_goal` subscribes, dedupes by state (our own `set` echoes back through the same event), writes one trajectory row per transition without the objective text, and leaves one line in the Lead's next state card: *"the host just marked this goal complete (round N) — that is the host's verdict, not your acceptance."*
+- Writes are **Lead-only**; reads are open to all roles. `set` refuses an empty objective, the host's measured 4000-character cap, an objective spelled exactly `pause`/`resume`/`clear` (the host would run it as a subcommand), and requires `replace:true` over a goal in any status other than `complete`.
 
-**v2 now registers nine governed tools:** `tm_fetch`, `tm_webfetch`, `tm_search`, `tm_memory`, `tm_join`, `tm_stats`, `tm_board_write`, `tm_ledger`, `tm_goal`.
+**computer-use 0.0.6 ships alongside**: every tool now accepts `window: "<title substring>"` — `screenshot` crops to that window and **never steals focus**, while `click` / `scroll` / `drag` / `type_text` / `key` focus it, act, and **restore your previous foreground window** afterwards. The tools' first 120 characters now carry the contract, because that is all the Code Mode catalog shows.
+
+**v2 registers nine governed tools:** `tm_fetch`, `tm_webfetch`, `tm_search`, `tm_memory`, `tm_join`, `tm_stats`, `tm_board_write`, `tm_ledger`, `tm_goal`.
 
 ---
 
@@ -168,15 +173,20 @@ Sub-agents cannot message each other live, so coordination is a **structured rep
 ## 🖱️ Optional: computer use (real desktop)
 
 An **optional** MCP server (`computeruse`, off by default, shipped as its own
-[release asset](https://github.com/Te-River/Opencode-TeamMode/releases/tag/computeruse-v0.0.1))
-that lets `Team` (the lead), `researcher` and `tester` take screenshots and drive the
-mouse/keyboard on the real desktop. `architect`, `implementer` and `reviewer` are turned away at
-**three** layers — because the first one we built turned out to be a no-op on a live host:
+[release asset](https://github.com/Te-River/Opencode-TeamMode/releases/tag/computeruse-v0.0.6))
+that lets `Team` (the lead) and the **ComputerUser** specialist take screenshots and drive the
+mouse/keyboard. `researcher`, `tester`, `architect`, `implementer` and `reviewer` are turned away
+at **three** layers — because the first one we built turned out to be a no-op on a live host:
 ① `permission.evaluate`, which the host **does** fire for MCP tools
 (`action=computeruse_control_status`, measured) and where a denied role is answered with
 `effect:"deny"`; ② the inner `execute` event the host raises for the call itself (empty input,
 role carried on the event); ③ the outer program text, matching `computer[\s._-]?use` — a text
 gate, **not** a sandbox.
+
+**Window scope is the point.** Every tool takes `window: "<title substring>"`: `screenshot`
+crops to that window and never steals focus, while the five mutating tools focus it, act, and put
+*your* previous foreground window back afterwards. Without it a call means "whatever happens to
+be on top" — which is how a feature like this loses a user's trust in one click.
 
 What is and is not protected:
 

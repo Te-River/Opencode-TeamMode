@@ -18,7 +18,7 @@
 - [为什么是 TeamMode？](#-为什么是-teammode)
 - [快速开始](#-快速开始)
 - [团队阵容](#-团队阵容)
-- [1.9.2 新增](#-192-新增)
+- [1.9.7 新增](#-197-新增)
 - [团队怎么运作](#-团队怎么运作)
 - [工具](#-工具)
 - [治理与安全](#-治理与安全)
@@ -104,25 +104,30 @@
 | 🔍 **Reviewer** 评审 | 单维度审计 | 默认一个维度；高风险变更才三维度并行 |
 | 🧪 **Tester** 测试 | 测试工程 | 真实边界用例、静态验证，以及用宿主的 `browser_*` 做 UI 验证 |
 | 🔎 **Researcher** 研究员 | 找知识 | 先本地仓库、后联网——两个联网角色之一 |
+| 🖱️ **ComputerUser** 桌面操作 | 驱动真实桌面 | 只在装了 computer-use MCP 时出场：**只操作一个指定窗口**，先截图再动手，读 verdict 而不是假设点击生效 |
 
 授权按职责走，不按资历：Lead `task / edit / write / shell / question`；Implementer 和 Tester `edit / write / shell`；Reviewer 只有 `shell`；Architect 和 Researcher 除了受治理工具**什么都没有**。只有 Lead 能派工——专家不可能再生专家。
 
-六条斜杠命令对应同样这六个角色：`/team-plan`（架构师）、`/team-implement`（实现者）、`/team-review`（评审）、`/team-test`（测试）、`/team-research`（研究员）、`/team-run`（Team Lead）。
+六条斜杠命令对应同样这些专家：`/team-plan`（架构师）、`/team-implement`（实现者）、`/team-review`（评审）、`/team-test`（测试）、`/team-research`（研究员）、`/team-run`（Team Lead）。
 
 ---
 
-## ✨ 1.9.2 新增
+## ✨ 1.9.7 新增
 
-*1.9.2 是当前发布版本。*
+*1.9.7 是当前发布版本。*
 
-**`tm_goal` —— 宿主自带 goal 功能的桥。** 宿主 2.2.x 自带一个 `opencode.goal` 插件，只注册一个 RPC（`get`），目标状态存在**它自己的** storage 命名空间里，`ctx.storage` 读不到。所以那个 RPC 是唯一的读缝，而且**根本没有写 RPC**。这些 TeamMode 一条都不重写：
+**1.9.7 —— goal 功能的两半。** 宿主 2.2.x 自带 `opencode.goal` 插件，RPC **只暴露一个方法**（`get`）；写 RPC 根本不存在（验证方式是：在客户端定义里声明 `set`/`clear`/`pause` 再真的调用，宿主原话 `Unknown RPC method: opencode.goal.set`）。它的状态存在自己的 storage 命名空间里，`ctx.storage` 读不到。所以：
 
-- `status` 读宿主目标（objective、status、rounds、reason）。在子会话里会向上找父会话的目标（最多 5 层、带环保护）——那是这条工作线继承下来的契约。
-- `set` / `pause` / `resume` / `clear` **转投给宿主自己的 `/goal` 命令**，并且不 await：那条命令会跑完一整轮宿主流程，await 它等于把调用方挂在那儿。所以答复写的是**「已提交」，不是「已生效」**——只有下一轮宿主自己报的 `status:"active"` 才算凭证。
-- 写只有 **Lead 能发**；读对六个角色开放。`set` 会拒绝空目标、拒绝宿主**实测**的 4000 字符上限、拒绝恰好是 `pause`/`resume`/`clear` 三个词之一的目标（宿主会把它当子命令执行），并且在已有目标且状态不是 `complete` 时要求 `replace:true`。
-- 目标跑起来之后的事归宿主：**它**跑 goal reviewer 和续跑轮次，**它**在重启时暂停活跃目标（带自己的原因行）。一个活跃目标会花掉你没要求的模型轮次——所以 Lead 只在你明确要一个持久目标时才设。
+- `status` 读宿主目标（objective、status、rounds、stalls、reason、boot）。在子会话里向上找父会话的目标（最多 5 层、带环保护）——那是这条工作线继承下来的契约。
+- `set` / `pause` / `resume` / `clear` **转投给宿主自己的 `/goal` 命令**，且不 await：那条命令会跑完一整轮宿主流程，await 它等于把调用方挂在那儿。所以答复写的是**「已提交」，不是「已生效」**——只有下一轮宿主自己报的 `status:"active"` 才算凭证。
+- **目标结束只有两条路，`clear` 不是常走的那条。** 宿主自己的 reviewer 读你**最后一条消息**就可能判 `complete`——一句自信的"做完了"才是用户契约真正的死因。`status` 把它报成**宿主的判断**，从不写成验收通过。
+- **收尾有闸门**：账本还有未完成项时 `clear`/`pause` 直接拒绝并点名 id；`resume` 从不拦；读不到账本时**明说**，不把"没看见"当成"没有"。
+- **领队听得见变化。** 宿主每次写入都 emit `events.changed`；`tm_goal` 订阅它，按状态去重（我们自己的 `set` 也会经由同一条事件回来），每次真实变更落一条不含 objective 正文的轨迹，并往领队下一张状态卡里放一行：*「宿主刚刚把目标改成 complete（第 N 轮）——这是宿主的判断，不是你的验收。」*
+- 写只有 **Lead 能发**；读对所有角色开放。`set` 拒绝空目标、拒绝宿主**实测**的 4000 字符上限、拒绝恰好是 `pause`/`resume`/`clear` 三个词之一的目标（宿主会把它当子命令执行），并在已有目标且状态不是 `complete` 时要求 `replace:true`。
 
-**v2 现在注册九个受治理工具：** `tm_fetch`、`tm_webfetch`、`tm_search`、`tm_memory`、`tm_join`、`tm_stats`、`tm_board_write`、`tm_ledger`、`tm_goal`。
+**随行的 computer-use 0.0.6**：每个工具都接受 `window: "<标题子串>"`——`screenshot` 裁剪到该窗口且**完全不抢焦点**，`click` / `scroll` / `drag` / `type_text` / `key` 先把该窗口提到前台、执行、再**把你原来的前台窗口还原**。工具描述的前 120 字符现在装的就是契约，因为 Code Mode 目录只显示这么多。
+
+**v2 注册九个受治理工具：** `tm_fetch`、`tm_webfetch`、`tm_search`、`tm_memory`、`tm_join`、`tm_stats`、`tm_board_write`、`tm_ledger`、`tm_goal`。
 
 ---
 
@@ -166,12 +171,16 @@
 ## 🖱️ 可选：计算机使用（真实桌面）
 
 一个**可选**的 MCP 服务器（`computeruse`，默认不装，作为独立的
-[Release 资产](https://github.com/Te-River/Opencode-TeamMode/releases/tag/computeruse-v0.0.1) 发布）：
-让 `Team`（主代理）、`researcher`、`tester` 能截屏并用鼠标键盘操作真实桌面。`architect` /
-`implementer` / `reviewer` 在**三层**被挡住——因为第一层在真机上被证明是空操作：
+[Release 资产](https://github.com/Te-River/Opencode-TeamMode/releases/tag/computeruse-v0.0.6) 发布）：
+让 `Team`（主代理）和 **ComputerUser** 专家能截屏并用鼠标键盘操作。`researcher`、`tester`、
+`architect`、`implementer`、`reviewer` 在**三层**被挡住——因为第一层在真机上被证明是空操作：
 ① `permission.evaluate`，宿主**确实**会对 MCP 工具触发（`action=computeruse_control_status`，
 实测），被拒角色拿到 `effect:"deny"`；② 宿主为这次调用单独抛出的内层 `execute` 事件（input 为空，
 角色在事件上）；③ 外层程序文本，匹配 `computer[\s._-]?use`——这是文本门禁，**不是沙箱**。
+
+**窗口作用域才是关键。** 每个工具都接受 `window: "<标题子串>"`：`screenshot` 裁剪到该窗口且
+**完全不抢焦点**，五个变更类工具先把该窗口提到前台、执行、再**把你原来的前台窗口还原**。不传它，
+一次调用就是在"最上面那个窗口"上动手——这个功能就是这样在一次点击里失去用户信任的。
 
 保护了什么、没保护什么：
 

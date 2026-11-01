@@ -7,6 +7,32 @@ registry saw 1.5.0 as the install-script fix release).
 
 ## [Unreleased]
 
+## [1.9.7] - 2026-11-01
+
+### Added
+
+- **`tm_goal` 听得见宿主的 `changed` 事件了。** 宿主的 goal RPC 声明了 `events.changed` 并在每次写入时
+  emit（2.2.5 实测：`client.events.on` 是一条真的订阅，返回 abort）。`tm_goal` 订阅它，按
+  `status|rounds|objective 长度` 去重——我们自己的 `set`/`pause` 也会经由同一条事件回来，不去重就是
+  "自己通知自己"；每次真实变更落一条 `goal_changed` 轨迹（**不含 objective 正文**，R6），并把**一行一次性
+  提示**放进领队的下一张状态卡（渲染即消费）：`🎯 宿主刚刚把目标改成 complete（第 N 轮）… 这是宿主的判断，
+  不是你的验收。`
+- **`status` 打印 `boot`**：这条目标是在哪次插件启动时设的。
+
+### Changed
+
+- **目标结束只有两条路，`clear` 不是常走的那条。** 宿主的 reviewer 读你最后一条消息就能判 `complete`，
+  所以一句自信的"做完了"才是目标真正的死因。领队提示词现在把这件事说出来；`status` 不再把宿主的
+  `complete` 渲染成"已完成/验收通过"，`clear`/`pause` 的回复也带同一句提醒。
+- **账本闸门：`clear` / `pause` 在账本还有未完成项时直接拒绝**，并点名是哪些 id；`resume` 从不拦。
+  读不到账本时回复**明说"这道闸门没有生效"**，绝不把"没看见"当成"没有"；拒绝发生在任何宿主调用之前。
+
+### Verified
+
+- **写接口确认（行为测试，不是读代码）**：在客户端定义里声明 `set`/`clear`/`pause` 再真的调用，宿主原话
+  是 `Unknown RPC method: opencode.goal.set`（`.clear` / `.pause` 同），而 `get` 正常。目标状态存在它自己的
+  kv 命名空间里，`ctx.storage` 读回 `undefined`。**`/goal <objective> | pause | resume | clear` 仍是唯一写路径。**
+
 ## [1.9.6] - 2026-10-31
 
 ### Fixed
