@@ -13,7 +13,7 @@
 |---|---|
 | Package | `computeruse-mcp` (Python), released as a **GitHub Release asset**, never on npm |
 | Tag / asset | `computeruse-v<ver>` / `computeruse_mcp-<ver>-py3-none-any.whl` |
-| Current | **0.0.6** —— 这是已发布的最新版。下面 **Runtime knobs** 那一节的两个环境变量已在 `main` 合入、**尚未发版**（随 0.0.7 走）：装在 0.0.6 上的进程读不到它们 |
+| Current | **0.0.6** —— 这是已发布的最新版。下面 **Budgets / 预算与回收旋钮** 那节的两个环境变量已在 `main` 合入、**尚未发版**（随 0.0.7 走）：装在 0.0.6 上的进程读不到它们 |
 | MCP server name | `computeruse` (one lowercase token — the host's action prefix stays stable) |
 | Tools | `screenshot` `click` `type_text` `key` `scroll` `drag` `control_status` |
 | Allowed roles | `Team` (lead) · `ComputerUser` — the dedicated specialist. `researcher` and `tester` are **not** allowed |
