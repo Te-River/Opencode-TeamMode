@@ -267,7 +267,7 @@ command；完全零重启做不到——宿主只在启动时读 MCP 连接，�
 |---|---|---|
 | `defaultAgent` | `true` | 检查并报告安装器写的 `default_agent` 指向谁。2.x 插件 ctx 没有 `agent.default`，插件没法替你设默认角色；`false` 只是跳过这项检查。 |
 | `autoCreate` | `true` | 全局文件缺失时，启动写一份惰性模板。 |
-| `envProtect` | `true` | 全插件总开关；`false` 把 R6 模式解析成 `off`。 |
+| `envProtect` | `true` | `false`/`"off"` 的管辖面：R6 **细粒度 ask 面 + extra-deny**。它**不**抬 env 文件路径红线与地址红线——红线没有同意路径（`65f738f`）。 |
 
 2.x 的条目是字符串**或**带 `package`、`options` 的对象；1.x 的元组写法会被直接拒绝。选项确实送得到——boot 行读的就是对象形式。保留期属于配置而不是插件选项：`blackboardTtlDays`（默认 7）同时决定黑板和句柄的 TTL。
 

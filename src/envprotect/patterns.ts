@@ -138,13 +138,22 @@ export const R2_DANGER_BASH_ASK_PATTERNS: readonly string[] = Object.freeze(
  * The bash permission object injected into the four execution-role agents
  * (team / implementer / reviewer / tester).  Default stays `allow`
  * (`"*": "allow"`, preserving the T2.1 matrix semantics — bash is granted,
- * not removed); only the listed shapes escalate to the host dialog.  The R6
- * env face is dropped when `mode === "off"` (the R6 kill switch) AND when
- * `envFace` is false — index.ts passes false while the approval gate cannot
- * arm: the R6 hook then hard-throws every env read BEFORE its dialog could
- * ever satisfy it, so injecting the env asks would only create dead popups
- * a human can answer yet never make runnable.  The R2 face is always
- * present (its dialog is the whole gate — no code-level throw is involved).
+ * not removed); only the listed shapes escalate.  The R6 env face is dropped
+ * when `mode === "off"` (the fine-ask face switch — never a red-line exit)
+ * AND when `envFace` is false.
+ *
+ * WHY `envFace` EXISTS ON v2, grounded in the live path (v1's index.ts/v2.ts
+ * approval-gate that used to pass `false` is gone — do NOT re-cite it):
+ * on 2.x a plugin cannot raise the host dialog, so a fine env `ask` that no
+ * code-level throw satisfies would arm nothing.  The v2 guards do the work
+ * directly: `v2.ts` escalates `shell` to `ask` only when R6 is armed
+ * (the coarse face), and `v2-guard.ts` shellGuard short-circuits under
+ * `mode === "off"`.  This builder's only consumers on the current tree are
+ * the facade re-export (`envprotect.ts`) and `test-envprotect.mjs` — no
+ * production caller — and it is pinned there on purpose: the 8b ask-glob
+ * entailment tests read the mode semantics through it, so the mapping the
+ * live guards implement stays directly assertable.  The R2 face is always
+ * present (its pattern set is the danger face, independent of R6's env mode).
  */
 export function bashAskPatterns(mode: EnvProtectMode, envFace = true): Record<string, string> {
   const out: Record<string, string> = { "*": "allow" }

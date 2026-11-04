@@ -424,6 +424,16 @@ survivors were written. Each is recorded here so the next reader does not re-der
   R6 env-file path face (`pathGuard`, #44) can deny `read` / `write` / `edit` / `glob` /
   `grep` on an env-file path, and the earlier assumption that only the shell command line
   reached this hook was wrong. `[L]`
+- **`envProtect: "off"` does NOT lift the env-file PATH red line — and until 2026-11-04 it did**
+  (dated finding behind the `65f738f` fix). The `off` short-circuit existed on `pathGuard` /
+  `applyV2EnvFileInputGuard` / `classifyPathFields` since `c75c26f5`/`d6138370`/`392bdf5f`
+  (2026-10-06 / 09-13), while `webGuard` (arity 1, no mode parameter) and the browser gate kept
+  denying — the same red line answered four ways, so AGENTS.md's "stay refused under every setting"
+  was false at the symptom layer. `2469ab4` aligned the exported facade to that same wrong behavior
+  (blame, not origin). `65f738f` closed it with resolution (a): `off` now governs ONLY the
+  fine-grained ask face + extra-deny. Pinned by `test-envprotect` group 8 (246 assertions; fixing
+  3 of the 4 faces fails the GROUP — the assertions grade consistency, not one site) and by the
+  flipped pins in `test-v2-adapter` (off→deny family + `pathGuard` off shape, `_mode` arity). `[L]`
 - **Context usage lives ONLY in the `session.usage.updated` event.** `session.hook("context")`
   hands over the assembled messages, and those messages carry no token counts: a second turn
   that DID contain an assistant message still logged `source=no_usage messages=3`. The

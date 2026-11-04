@@ -284,7 +284,7 @@ That walk and precedence are the host's own config-layering rule, copied rather 
 |---|---|---|
 | `defaultAgent` | `true` | Check and report which agent the installer's `default_agent` names. The 2.x plugin ctx has no `agent.default`, so the plugin cannot promote anything; `false` skips the check. |
 | `autoCreate` | `true` | Write the inert global `team-mode.jsonc` at boot when absent. |
-| `envProtect` | `true` | Plugin-wide kill switch; `false` resolves the R6 mode to `off`. |
+| `envProtect` | `true` | Scope of `false`/`"off"`: the R6 **fine-grained ask face + extra-deny**. It does NOT lift the env-file path red line or the address red lines — a red line has no consent path (`65f738f`). |
 
 On 2.x an entry is a string **or** an object with `package` and `options`; the 1.x tuple form is rejected outright. Options do arrive — the object form is what the boot row reads back. Retention is configuration rather than an option: `blackboardTtlDays` (default 7) sets the blackboard and handle TTL.
 
