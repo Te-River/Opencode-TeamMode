@@ -690,6 +690,82 @@ assert.ok(reviewerP.includes("EXACTLY ONE dimension"), "reviewer: single-dimensi
 assert.ok(reviewerP.includes("completeness") && reviewerP.includes("correctness") && reviewerP.includes("impact"), "reviewer: three dimensions named")
 assert.ok(reviewerP.includes("review correctness and say so"), "reviewer: default-dimension fallback")
 assert.ok(reviewerP.includes("## Dimension checklists"), "reviewer: per-dimension checklists")
+
+/* 1.9.8 anti-rot: a rule with no failing test behind it is a hope (the repo's own
+   rule), so each clause below is pinned by the exact wording a deletion would have
+   to remove — not by the section heading alone.  Matching is whitespace-flattened:
+   prompts wrap, and a test that pins a wrapped line breaks on a re-flow while a
+   real removal passes.  The group counts its own assertions and prints the number,
+   because a passing block nobody can size is indistinguishable from a block that
+   never ran (the unclosed-catch failure this file already documents). */
+console.log("8b. anti-rot rules — implementer ladder · reviewer rot signals · lead standing criteria")
+let ROT_PINNED = 0
+{
+  const flat = (s) => String(s).replace(/\s+/g, " ")
+  const A = (cond, msg) => {
+    ROT_PINNED++
+    assert.ok(cond, msg)
+  }
+  const implP = flat(cfg2.agent["implementer"].prompt)
+  A(implP.includes("## Before you write anything — the ladder, in this order"), "implementer: the pre-work ladder is a named section")
+  A(
+    implP.indexOf("the ladder, in this order") < implP.indexOf("## Standard mode"),
+    "implementer: the ladder runs BEFORE any implementation rule, so it is not a footnote",
+  )
+  const ladder = ["**YAGNI**", "Standard library", "This repo already", "An installed dependency", "**Only then** new code"]
+  for (let i = 0; i < ladder.length; i++) {
+    A(implP.includes(ladder[i]), `implementer: ladder step ${i + 1} (${ladder[i]}) present`)
+    if (i > 0) {
+      A(
+        implP.indexOf(ladder[i - 1]) < implP.indexOf(ladder[i]),
+        `implementer: ${ladder[i - 1]} is consulted before ${ladder[i]} — the ORDER is the rule`,
+      )
+    }
+  }
+  A(implP.includes("grep for an existing helper"), "implementer: reuse-the-repo step names the check, not just the virtue")
+  A(implP.includes("**Rule of three**"), "implementer: rule of three present")
+  A(implP.includes("One caller = write it inline"), "implementer: the rule of three states its consequence")
+  A(implP.includes("No speculative generality"), "implementer: speculative generality banned by name")
+  A(implP.includes("## Delivery self-check"), "implementer: a delivery self-check is mandated")
+  A(implP.includes("Delete what YOUR change made unused"), "implementer: must delete its OWN dead code")
+  A(implP.includes("No `TODO` / `FIXME` / commented-out code"), "implementer: no markers handed over")
+  A(implP.includes("which acceptance criterion needs this"), "implementer: every added line answers to an acceptance criterion")
+
+  const rotP = flat(reviewerP)
+  A(rotP.includes("## Structural rot"), "reviewer: structural rot is a named section")
+  A(
+    rotP.includes("every dimension's duty"),
+    "reviewer: rot is exempted from the single-dimension rule — the exemption itself is asserted",
+  )
+  for (const signal of [
+    "Reimplemented what the repo already has",
+    "A new abstraction with exactly one caller",
+    "Dead code in the diff",
+    "Responsibility drift",
+    "A new dependency for what stdlib",
+  ]) {
+    A(rotP.includes(signal), `reviewer: rot signal present — ${signal}`)
+  }
+  A(rotP.includes("Report only what this diff introduced"), "reviewer: rot findings are scoped to the diff, not the repo's history")
+  A(rotP.includes("drift apart silently; that is 🟠 Major"), "reviewer: a duplicate implementation is graded Major, so it becomes a fix task")
+
+  const leadP = flat(leadPrompt)
+  A(leadP.includes("Product code carries standing criteria"), "lead: the anti-rot criteria are standing, not per-dispatch")
+  A(
+    leadP.indexOf("Product code carries standing criteria") < leadP.indexOf("## Triage"),
+    "lead: the standing criteria sit in Step 0 BEFORE triage, so they cannot be re-litigated per dispatch",
+  )
+  for (const crit of [
+    "exported without an importer, no parameter nothing reads",
+    "no new dependency for what stdlib or the repo's existing set already covers",
+    "no `TODO` / `FIXME` left behind",
+    "no second implementation of an operation the repo already performs",
+  ]) {
+    A(leadP.includes(crit), `lead: acceptance criterion present — ${crit}`)
+  }
+  A(leadP.includes("Each one is greppable"), "lead: the criteria are justified as checkable, which is what makes them criteria")
+}
+console.log(`   OK (${ROT_PINNED} anti-rot assertions pinned — every one goes red if its clause is deleted)`)
 const testerP = cfg2.agent["tester"].prompt
 assert.ok(testerP.includes("## Verification stack"), "tester: static verification stack")
 assert.ok(testerP.includes("typecheck"), "tester: typecheck layer")

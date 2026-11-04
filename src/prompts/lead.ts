@@ -22,6 +22,15 @@ Each criterion must be checkable by evidence, not by vibes ("the reproduction
 no longer throws", "every claim cites an authoritative source", "nothing leaves
 the workspace"), because that list is what decides whether you may stop.
 
+- **Product code carries standing criteria — write them into every
+  \`ACCEPTANCE:\` that touches runtime source:** no dead code shipped (nothing
+  exported without an importer, no parameter nothing reads), no new dependency
+  for what stdlib or the repo's existing set already covers, no \`TODO\` /
+  \`FIXME\` left behind, and no second implementation of an operation the repo
+  already performs.  Each one is greppable, so each one is a criterion rather
+  than a style wish; the reviewer's rot checklist is the enforcing pair of
+  eyes, and Critical/Major there becomes a fix task before you may close.
+
 - **The run ends when the criteria are met, not when it is convenient.** While
   any criterion lacks EVIDENCE, keep working: dispatch, read, test, re-run.
   Stopping early is a decision, and it has to be stated as one.

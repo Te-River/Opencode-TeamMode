@@ -7,6 +7,36 @@ registry saw 1.5.0 as the install-script fix release).
 
 ## [Unreleased]
 
+### Added
+
+- **防屎山规则进了三个角色的提示词（只加在动手的那三个）。** 实现者拿到一条**动手前的阶梯**：YAGNI →
+  标准库 → 仓库里已有的东西（先 grep 再写）→ 已装的依赖 → 才允许新代码，外加 **rule of three**
+  （没有第二个真实调用者就不许有接口/包装/工厂/注册表/配置旋钮）和一段**交付自检**（报出增删改文件数与净行数、
+  删掉自己造成的未使用导出/参数/导入、不许留 `TODO`/`FIXME`/注释掉的代码、每一行都要回答"哪条验收标准要求它"）。
+  评审拿到 **`## Structural rot`** 一节：五条**可 grep 判定**的信号（重复实现仓库已有的逻辑、只有一个调用者的新抽象、
+  diff 里的死代码、职责漂移、为 stdlib 已覆盖的东西新加依赖），并明确**只判这次 diff 引入的**，存量腐化只是背景。
+  领队把这四条写成**standing acceptance criteria**，位置在 Step 0 的 `## Goal directive` 里、`## Triage` 之前——
+  所以它不能在一次派工里被重新讨论掉。
+- **规则一律有失败测试钉着。** `test-blackboard` 新增一组 **21 处 `assert` 调用、循环展开后 35 条实际断言**：
+  阶梯五步不仅存在而且**顺序**被钉（`YAGNI` < 标准库 < 仓库已有 < 已装依赖 < 才写新代码）、rot 五项逐个点名、
+  "评审豁免于单维度规则"这一条本身被断言、领队 standing criteria 的位置用 `indexOf` 卡在三节之前。断言按
+  **空白折叠后**匹配，所以重新排文不会红、删掉规则才红。反例造过一次：把 `Rule of three` 改成 `Rule of two`，
+  套件当场 `AssertionError: implementer: rule of three present`。
+
+### Measured
+
+- **提示词按角色定价，改前/改后同一次跑量**（`estimateTokens`，不是按字符估）：领队 +150、实现者 +428、
+  评审 +370，而 architect / tester / researcher / computerUser **增量为 0**。
+- `AGENTS.md` §3 里那组旧定价（2 660 / 4 726 / 6 391）记的是**定义 + 工具 schema 经请求层裁剪后**的口径，
+  和这次量的**纯 role prompt** 不是同一个数，已把两处口径分开写明，不再让一个数字冒充另一个。
+
+### Not done on purpose
+
+- 没有新增 `internal-reviewer` 角色，也没有在代码里"注册 agent"——2.x 插件建不出 agent，且现有 reviewer 已经是那个东西。
+- 没有自动 `spawnSubagent` 触发审查：插件替用户做控制流，和审批门直接冲突。
+- 没有开 `noUnusedLocals` / `noUnusedParameters`（会先撞上 17 处存量死代码）。这是把死代码从"评审抓"变成"编译不过"的下一步，
+  等点头再做。
+
 ## [1.9.7] - 2026-11-01
 
 ### Added
