@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import atexit
 import hashlib
+import os
 import threading
 from dataclasses import dataclass
 
@@ -19,6 +20,41 @@ from . import dpi
 
 _lock = threading.Lock()
 _sct = None
+
+# --- attached-image governance (defaults live at module top so they are readable
+# --- from an installed wheel, where nobody opens a .py with a pager) -----------
+#
+# An attached JPEG is not a one-call cost: it rides the conversation and is
+# re-sent on EVERY later turn. One exported session paid 2.67M cache-read tokens
+# for exactly that. So attachments get their own per-process byte budget, and a
+# frame identical to the one just attached is not attached a second time.
+#
+# `CU_IMAGE_BUDGET_BYTES`: total bytes of JPEG allowed to ride replies in this
+# process. `0` or negative = no cap. 4 MiB ≈ 10 full-screen frames at the
+# 400 KB/attachment ceiling, or ~35 typical small ones.
+IMAGE_BUDGET_ENV = "CU_IMAGE_BUDGET_BYTES"
+DEFAULT_IMAGE_BUDGET_BYTES = 4 * 1024 * 1024
+# How many capture targets remember their last attached frame. Small on purpose:
+# this is a dedupe memo, not a history of the user's screen.
+DEDUPE_TARGET_CAP = 64
+
+
+def image_budget_bytes(env=None) -> int:
+    """The attached-image budget for THIS process, read from `CU_IMAGE_BUDGET_BYTES`.
+
+    An unparseable value falls back to the DEFAULT rather than to no cap: a typo in
+    an env var must not silently switch the governor off — that is the failure shape
+    this package calls a lie.
+    """
+    source = os.environ if env is None else env
+    raw = source.get(IMAGE_BUDGET_ENV)
+    if raw is None or not str(raw).strip():
+        return DEFAULT_IMAGE_BUDGET_BYTES
+    try:
+        value = int(str(raw).strip())
+    except ValueError:
+        return DEFAULT_IMAGE_BUDGET_BYTES
+    return value if value > 0 else 0
 
 
 def _session():
@@ -127,3 +163,102 @@ def probe() -> dict:
         "capture": {"width": frame.width, "height": frame.height, "sha1": frame.sha1, "bytes": len(frame.raw)},
         "monitors": monitors(),
     }
+
+
+class ImageLedger:
+    """Per-process budget + repeat-frame memory for ATTACHED screenshot images.
+
+    What it can and cannot do: it decides whether a COPY of the frame rides the
+    reply.  The PNG on disk, its path and the frame `sha1` are the forensic face
+    and are never touched from here — so "no image this time" is always a statement
+    about the reply, never about what the screen looked like.
+
+    State is in-process ONLY, like `ActionBudget` and the panic state.  Persisting
+    it would open a second record of what the user's screen showed, which is the
+    privacy face this package refuses to widen.
+
+    The dedupe memory is keyed by capture target (the server builds the key from the
+    frame rect + display + max_width), because "the same pixels in a different
+    window" is not the same fact: one window must never silence another's image.
+    """
+
+    def __init__(self, budget_bytes: int | None = None):
+        self.limit = image_budget_bytes() if budget_bytes is None else max(0, int(budget_bytes))
+        self.attached = 0
+        self.bytes_sent = 0
+        self.deduped = 0
+        self.skipped_budget = 0
+        self._last_sha1: dict = {}
+
+    # -- budget ------------------------------------------------------------
+    @property
+    def unlimited(self) -> bool:
+        return self.limit <= 0
+
+    @property
+    def exhausted(self) -> bool:
+        return not self.unlimited and self.bytes_sent >= self.limit
+
+    def remaining_bytes(self) -> int:
+        """-1 means no cap (`unlimited`), so a caller never reads it as a number."""
+        return -1 if self.unlimited else self.limit - self.bytes_sent
+
+    def affordable(self, nbytes: int) -> bool:
+        """Would attaching `nbytes` stay inside the budget?  Charges nothing."""
+        return self.unlimited or self.bytes_sent + int(nbytes) <= self.limit
+
+    # -- dedupe ------------------------------------------------------------
+    def is_repeat(self, key: str, sha1: str) -> bool:
+        """Is this the frame we last ATTACHED for this exact target?"""
+        return bool(sha1) and self._last_sha1.get(key) == sha1
+
+    def last_sha1(self, key: str):
+        return self._last_sha1.get(key)
+
+    # -- bookkeeping -------------------------------------------------------
+    def note_attached(self, key: str, sha1: str, nbytes: int) -> None:
+        """Charge an attachment and remember its frame.
+
+        Only an image that actually reached the reply may move these counters: a
+        skipped frame costs nothing, and crediting it would make the budget lie
+        about what the model was really sent.
+        """
+        self.attached += 1
+        self.bytes_sent += int(nbytes)
+        self._last_sha1[key] = sha1
+        while len(self._last_sha1) > DEDUPE_TARGET_CAP:  # dicts keep insertion order
+            self._last_sha1.pop(next(iter(self._last_sha1)))
+
+    def note_deduped(self) -> None:
+        self.deduped += 1
+
+    def note_budget_skip(self) -> None:
+        self.skipped_budget += 1
+
+    def snapshot(self) -> dict:
+        """The authoritative reading `control_status` reports."""
+        return {
+            "attached": self.attached,
+            "bytes_sent": self.bytes_sent,
+            "limit": self.limit,
+            "unlimited": self.unlimited,
+            "remaining": self.remaining_bytes(),
+            "exhausted": self.exhausted,
+            "deduped": self.deduped,
+            "skipped_budget": self.skipped_budget,
+            "tracked_targets": len(self._last_sha1),
+        }
+
+
+_image_ledger: ImageLedger | None = None
+
+
+def image_ledger() -> ImageLedger:
+    """THE ledger for this process — one MCP server per process, and the attachment
+    budget is a per-process fact.  Tests (and a caller wanting a fresh budget) pass
+    their own instance to `ComputerUseServer(image_ledger=...)`."""
+    global _image_ledger
+    with _lock:
+        if _image_ledger is None:
+            _image_ledger = ImageLedger()
+        return _image_ledger

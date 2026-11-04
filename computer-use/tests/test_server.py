@@ -159,7 +159,8 @@ def test_serve_survives_a_malformed_line(tmp_path):
 
 
 def test_control_status_is_read_only_and_names_the_budget(tmp_path):
-    result = server(tmp_path).call_tool("control_status", {})
+    srv = server(tmp_path)
+    result = srv.call_tool("control_status", {})
     payload = json.loads(result["content"][0]["text"])
     assert result["isError"] is False
     assert payload["state"] in ("ai", "user")
@@ -171,3 +172,10 @@ def test_control_status_is_read_only_and_names_the_budget(tmp_path):
     assert payload["budget"]["limit"] == 5
     assert payload["verdict"] in ("ready", "budget-exhausted", "user-took-control")
     assert payload["runtime"]["dpi_aware"] is True
+    # 附图治理与审计用量都在这一行里；control_status 是唯一权威的预算读数，
+    # 所以 audit.py 的 usage() 有没有、抛不抛，都不能让它失败。
+    assert payload["image_attachments"] == srv.images.snapshot()
+    assert {"attached", "bytes_sent", "limit", "deduped", "skipped_budget"} <= set(payload["image_attachments"])
+    assert payload["audit_usage"]["available"] in (True, False)
+    if not payload["audit_usage"]["available"]:
+        assert "audit usage: unavailable" in payload["audit_usage"]["note"]

@@ -54,6 +54,40 @@ HINT_USER_CONTROL = (
     "本工具没有解除参数。"
 )
 
+# An attachment was withheld: what the reply says, and what it must never be read
+# as.  Frame 0 is missing from these lines on purpose — the frame WAS captured and
+# IS on disk; only its copy in the reply is gone.  Attributing that to the screen
+# (「画面是空白」/「没有变化」) is the misattribution this package counts as a defect.
+_BUDGET_TAIL = (
+    "屏幕内容照常抓取并落盘：用 read 打开 path，或直接比较 sha1 确认画面。"
+    "未附图既不表示画面空白，也不表示屏幕没有变化。"
+    "要恢复附图：让人把 CU_IMAGE_BUDGET_BYTES 调大（0 = 不设上限）后重启本 MCP 服务器，本进程内不会重置。"
+)
+
+
+def note_repeat_frame(sha1: str) -> str:
+    """A frame identical to the one just attached for THIS target is not attached twice."""
+    return (
+        f"与上一帧相同，未重复附图（sha1={sha1}）。"
+        "要看到别的画面：换 window/region 再截，或让屏幕真的变化；"
+        "要看清细节：直接 read 上面的 PNG 路径。" + _BUDGET_TAIL
+    )
+
+
+def note_image_budget(ledger, wanted_bytes: int) -> str:
+    """The budget line, with its own numbers: attached count, bytes sent, the cap."""
+    if ledger.exhausted:
+        head = (
+            f"未附图：本进程附图预算已用完（已发 {ledger.attached} 张 / {ledger.bytes_sent} 字节，"
+            f"上限 {ledger.limit} 字节；这一帧的 JPEG 需要 {wanted_bytes} 字节）。"
+        )
+    else:
+        head = (
+            f"未附图：本进程附图预算放不下这一帧（已发 {ledger.attached} 张 / {ledger.bytes_sent} 字节，"
+            f"剩余 {ledger.remaining_bytes()} 字节 < 需要的 {wanted_bytes} 字节，上限 {ledger.limit} 字节）。"
+        )
+    return head + _BUDGET_TAIL
+
 
 class ToolFailure(Exception):
     """A real failure (bad args, capture unavailable) — reported as isError."""
@@ -72,7 +106,9 @@ TOOL_SPECS: list[dict] = [
             "Capture the desktop → PNG path + sha1 + active window; click/scroll/drag use THESE pixels. "
             "include_image:false by default — an attached JPEG is re-sent on every later turn, so pass "
             "true only if your model reads images AND you must SEE the layout. Path + sha1 are enough "
-            "to confirm an action landed."
+            "to confirm an action landed. A frame identical to the one just attached is not attached "
+            "twice, and attachments share a per-process byte budget (CU_IMAGE_BUDGET_BYTES); an omitted "
+            "attachment names which rule stopped it — never that the screen was blank."
         ),
         "inputSchema": {
             "type": _OBJECT,
@@ -357,10 +393,15 @@ class ComputerUseServer:
         ttl_days: int = DEFAULT_TTL_DAYS,
         audit_root: str | None = None,
         log=_stderr_log,
+        image_ledger: capture.ImageLedger | None = None,
     ):
         self.budget = safety.ActionBudget(budget)
         self.panic = safety.PanicHotkey()
         self.audit = audit_mod.AuditTrail(root=audit_root, ttl_days=ttl_days)
+        # Attached images are the only output that costs the CALLER's context again
+        # on every later turn, so they carry their own per-process budget. Defaults
+        # to the process singleton; a caller (or a test) may hand in a fresh one.
+        self.images = image_ledger if image_ledger is not None else capture.image_ledger()
         self._log = log
         self._started = False
 
@@ -382,7 +423,12 @@ class ComputerUseServer:
     def shutdown(self) -> None:
         self.panic.stop()
         sweep = self.audit.sweep()
-        self._log(f"shutdown budget={self.budget.used}/{self.budget.limit} sweep_removed={sweep['removed']}")
+        snap = self.images.snapshot()
+        self._log(
+            f"shutdown budget={self.budget.used}/{self.budget.limit} sweep_removed={sweep['removed']} "
+            f"images={snap['attached']}/{snap['bytes_sent']}B limit={snap['limit']} "
+            f"deduped={snap['deduped']} skipped_budget={snap['skipped_budget']}"
+        )
         capture.close()
 
     # -- capture -----------------------------------------------------------
@@ -577,6 +623,18 @@ class ComputerUseServer:
         return envelope
 
     # -- tools -------------------------------------------------------------
+    def _attach_key(self, frame, display, max_width: int) -> str:
+        """What "the same frame" means: this exact crop, at this exact scale.
+
+        The key deliberately carries the rect rather than just the sha1, because
+        two windows showing the same pixels are not the same fact — a global
+        last-frame cache would let one window silence another's image.
+        """
+        return (
+            f"{frame.left},{frame.top},{frame.width},{frame.height}"
+            f"|display={int(display or 0)}|max_width={int(max_width)}"
+        )
+
     def _screenshot(self, args: dict) -> dict:
         region = args.get("region")
         display = args.get("display")
@@ -651,15 +709,55 @@ class ComputerUseServer:
 
         content = [{"type": "text", "text": _one_line(text)}]
         if include_image:
-            data, detail = encode_jpeg(image, max_width)
-            if data is None:
-                text["image_omitted"] = f"超过 {IMAGE_MAX_BYTES} 字节，用 read 打开 thumb 路径"
-                content[0]["text"] = _one_line(text)
+            key = self._attach_key(frame, display, max_width)
+            if self.images.is_repeat(key, frame.sha1):
+                # Nothing was encoded and nothing rides the reply, so NOTHING is
+                # charged: the budget counts bytes the model actually received.
+                self.images.note_deduped()
+                text["image_omitted"] = note_repeat_frame(frame.sha1)
+                text["image_omitted_reason"] = "repeat-frame"
             else:
-                text["image"] = detail
-                content[0]["text"] = _one_line(text)
-                content.append({"type": "image", "data": base64.b64encode(data).decode("ascii"), "mimeType": "image/jpeg"})
+                data, detail = encode_jpeg(image, max_width)
+                if data is None:
+                    text["image_omitted"] = f"超过 {IMAGE_MAX_BYTES} 字节，用 read 打开 thumb 路径"
+                    text["image_omitted_reason"] = "too-large"
+                elif not self.images.affordable(len(data)):
+                    self.images.note_budget_skip()
+                    text["image_omitted"] = note_image_budget(self.images, len(data))
+                    text["image_omitted_reason"] = "budget"
+                else:
+                    self.images.note_attached(key, frame.sha1, len(data))
+                    text["image"] = detail
+                    content.append({"type": "image", "data": base64.b64encode(data).decode("ascii"), "mimeType": "image/jpeg"})
+            content[0]["text"] = _one_line(text)
         return {"content": content, "isError": False}
+
+    def _audit_usage(self) -> dict:
+        """`AuditTrail.usage()` — consumed defensively, because this reply is the only
+        authoritative budget reading and it must not fail over another module's API.
+
+        `usage()` is owned by audit.py (keys: bytes / cap_bytes / ttl_days /
+        evicted_runs / evicted_bytes).  Where it is missing, throws, or answers with
+        something that is not an object, the line says `audit usage: unavailable`
+        and carries the reason: control_status never raises, and an absent number is
+        never printed as a zero.
+        """
+        keys = ("bytes", "cap_bytes", "ttl_days", "evicted_runs", "evicted_bytes")
+        try:
+            fn = getattr(self.audit, "usage", None)
+            if not callable(fn):
+                return {"available": False, "note": "audit usage: unavailable（AuditTrail 没有 usage()）"}
+            raw = fn()
+        except Exception as exc:  # a throwing sibling cannot take the read-only tool down
+            return {"available": False, "note": f"audit usage: unavailable（usage() 抛出 {type(exc).__name__}）"}
+        if not isinstance(raw, dict):
+            return {"available": False, "note": "audit usage: unavailable（usage() 没有返回对象）"}
+        out: dict = {"available": True}
+        for key in keys:
+            value = raw.get(key)
+            ok_number = isinstance(value, (int, float)) and not isinstance(value, bool)
+            out[key] = int(value) if ok_number else None
+        return out
 
     def _control_status(self, _args: dict) -> dict:
         report = dpi.dpi_report()
@@ -684,8 +782,11 @@ class ComputerUseServer:
             "panic_count": panic["panic_count"],
             "panic_error": panic["error"],
             "budget": budget,
+            # 附图治理的权威读数：发过几张 / 多少字节 / 上限 / 被去重几次 / 被预算挡下几次。
+            "image_attachments": self.images.snapshot(),
             "audit_dir": str(self.audit.action_dir),
             "audit_bytes": self.audit.total_bytes(),
+            "audit_usage": self._audit_usage(),
             "last_sweep": self.audit.last_sweep,
             "secure_desktop": probe["active"],
             "runtime": {
@@ -854,8 +955,11 @@ class ComputerUseServer:
                             "'no-observable-change'; the latter means the screen did not move (not a "
                             "failure), so change the target instead of repeating it. include_image:true "
                             "attaches a JPEG that is re-sent on every later turn — use it only when you must "
-                            "SEE the layout. control_status() reports the budget (200 mutating actions per "
-                            "process), the panic state and the audit path."
+                            "SEE the layout; a frame identical to the one just attached is not attached twice, "
+                            "and attachments share a per-process byte budget (CU_IMAGE_BUDGET_BYTES). When the "
+                            "reply carries no image it names which rule stopped it — read path + sha1 instead of "
+                            "assuming a blank screen. control_status() reports the action budget (200 mutating "
+                            "actions per process), the attached-image counters, the panic state and the audit path."
                         ),
                     },
                 )
