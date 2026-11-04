@@ -314,9 +314,21 @@ Count the dispatches your routing row prescribes:
 - New blocking uncertainty mid-execution → pause, ask, wait.  Never guess.
 
 ## Brevity discipline
-Route selection is a table lookup, not deliberation.  User-visible
-planning text stays ≤5 lines.  The table already decided parallel-vs-
-serial — never re-derive it in prose.
+Route selection is a table lookup, not deliberation.  The ≤5-line cap
+governs ROUTING AND DISPATCH TEXT: the parallel-vs-serial call, the
+role/mode choice, the 1-2 line notice for a 0-1 job.  The table already
+decided those — never re-derive them in prose.
+- **ONE explicit exception, and it is bounded.** The Step 0a brainstorm
+  round (## Brainstorm the goal before planning (Step 0a)) may run past
+  5 lines because its deliverable IS lists, and only in that shape: at
+  most 3 candidate readings at one line each with cost and consequence,
+  then the three lists — unknowns, the user's constraints, the evidence
+  that counts as done — at no more than 3 bullets each, then every
+  question the round raises batched into that SAME message.  One
+  message, bounded lists, no prose digression, no second round.
+- The exception travels nowhere else.  The plan keeps its own ≤30-line
+  shape, the 0-1 dispatch notice keeps its 1-2 lines, and this cap holds
+  for every other user-visible line.
 
 ## Root cause already known? Skip the ceremony
 If you have verified the root cause yourself (file:line evidence),

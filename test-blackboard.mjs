@@ -838,6 +838,114 @@ let BRAINSTORM_PINNED = 0
 console.log(
   `   OK (${BRAINSTORM_PINNED} Step 0a assertions pinned — position, scope, order, gate-untouched, pre-auth exemption)`,
 )
+
+/* The ≤5-line cap and Step 0a contradicted each other by construction: a cap that read
+   as covering EVERY planning line forces the model to answer the goal round in fewer
+   lines than the three lists need, so Step 0a gets pressed out of existence; a cap with
+   no scope left standing after an unbounded exemption is no cap at all. The fix scopes
+   the cap to routing/dispatch text, names Step 0a as the ONE exception INSIDE the brevity
+   section, bounds that exception (3 readings, 3 bullets per list, one message, one round),
+   and declares it non-contagious. Every clause below is pinned by the wording a deletion
+   would have to remove. Matching runs on the SECTION SLICE, not the whole prompt: the
+   Step 0a heading lives earlier in the same prompt, so a full-prompt includes() would pass
+   even if the brevity section named nothing. Whitespace-flattened like 8b/8c — prompts
+   wrap, and a test that pins a wrapped line breaks on a re-flow while a real removal passes. */
+console.log(
+  "8d. lead brevity cap — scoped to routing text · Step 0a the one named exception · the exception does not travel",
+)
+let BREVITY_PINNED = 0
+{
+  const flat = (s) => String(s).replace(/\s+/g, " ")
+  const A = (cond, msg) => {
+    BREVITY_PINNED++
+    assert.ok(cond, msg)
+  }
+  const leadP = flat(leadPrompt)
+  const SEC = "## Brevity discipline"
+  const STEP0A = "## Brainstorm the goal before planning (Step 0a)"
+  const NEXT = "## Root cause already known?"
+  A(leadP.includes(SEC), "lead: the brevity section exists by its own name")
+  const iSec = leadP.indexOf(SEC)
+  const iNext = leadP.indexOf(NEXT)
+  const bsec = iSec > -1 && iNext > iSec ? leadP.slice(iSec, iNext) : ""
+  A(iNext > -1, `lead: the section has a real end — '${NEXT}' follows it`)
+  A(bsec.length > 300, "lead: the brevity section is non-trivial — the slice actually carried its body")
+  A(
+    leadP.indexOf(STEP0A) > -1 && leadP.indexOf(STEP0A) < iSec,
+    "lead: the Step 0a heading sits EARLIER in the prompt than the brevity section — which is why the naming check below runs on the slice, not on leadP",
+  )
+  // ① the cap still exists — the fix scoped it, it did not delete it
+  A(bsec.includes("≤5-line"), "lead: the ≤5-line cap is still stated in the brevity section")
+  A(
+    !bsec.includes("planning text stays ≤5 lines"),
+    "lead: the unscoped form ('planning text stays ≤5 lines') is gone — that exact wording is what contradicted Step 0a",
+  )
+  // ② the cap's scope is named
+  A(
+    bsec.includes("ROUTING AND DISPATCH TEXT"),
+    "lead: the cap names the text it governs — ROUTING AND DISPATCH TEXT, not every line",
+  )
+  A(
+    bsec.includes("table lookup, not deliberation") && bsec.includes("never re-derive them in prose"),
+    "lead: the section keeps its original purpose — routing is a lookup, and the decided shape is not re-argued in prose",
+  )
+  // ③ the exception is exactly one, and it names Step 0a verbatim INSIDE this section
+  A(bsec.includes("ONE explicit exception"), "lead: exactly one exception is declared, and says so")
+  A(
+    bsec.includes(STEP0A),
+    "lead: the exception names Step 0a's section title VERBATIM inside the brevity section itself",
+  )
+  A(bsec.includes("may run past 5 lines"), "lead: the exception says out loud what it permits — running past the cap")
+  A(bsec.includes("its deliverable IS lists"), "lead: the exception states WHY the round is exempt: its deliverable is lists")
+  // ④ the exception is bounded, and the bounds match Step 0a's own numbers
+  A(
+    bsec.includes("at most 3 candidate readings") && bsec.includes("one line each"),
+    "lead: the exempt round is bounded at 3 candidate readings, one line each",
+  )
+  A(bsec.includes("no more than 3 bullets each"), "lead: the three lists are bounded at 3 bullets each — no open cheque")
+  A(
+    bsec.includes("three lists") &&
+      bsec.includes("unknowns") &&
+      bsec.includes("the user's constraints") &&
+      bsec.includes("the evidence that counts as done"),
+    "lead: the bounded lists are Step 0a's own three — unknowns, the user's constraints, the evidence that counts as done",
+  )
+  A(
+    bsec.includes("SAME message") && bsec.includes("One message"),
+    "lead: the round's questions batch into that same one message — the no-drip-feed rule, reused not re-stated",
+  )
+  A(bsec.includes("bounded lists"), "lead: the bound is restated as a shape, not left to inference")
+  A(bsec.includes("no second round"), "lead: the exception is ONE round — it cannot become a recurring meeting")
+  // ⑤ non-contagion: the caps it quotes are the prompt's real ones
+  A(bsec.includes("travels nowhere else"), "lead: the exception declares itself non-transferable")
+  A(
+    bsec.includes("≤30-line") && bsec.includes("1-2 line"),
+    "lead: the plan's ≤30-line shape and the 0-1 notice's 1-2 lines are named as still capped inside the exemption",
+  )
+  A(
+    bsec.includes("every other user-visible line"),
+    "lead: the cap still holds for every other user-visible line — the exemption did not void the section",
+  )
+  A(leadP.includes("Plan (≤30 lines)"), "lead: the ≤30-line plan the exemption defers to is the prompt's real plan shape")
+  A(leadP.includes("1-2 line notice"), "lead: the 1-2 line notice the exemption defers to is the prompt's real 0-1 notice")
+  // ⑥ cross-check Step 0a itself, so the two sections cannot drift apart
+  const s0a = leadP.slice(leadP.indexOf(STEP0A), leadP.indexOf("## Triage"))
+  A(
+    s0a.includes("at most 3 readings or paths"),
+    "lead: Step 0a still bounds readings at 3 — the same number the exemption quotes",
+  )
+  A(
+    s0a.includes("the existing ≤30-line shape"),
+    "lead: Step 0a still hands off to the ≤30-line plan the exemption says keeps its cap",
+  )
+  A(
+    s0a.includes("Alignment is ONE message"),
+    "lead: Step 0a still asks for one aligned message — the exemption's 'SAME message' is not a new rule",
+  )
+}
+console.log(
+  `   OK (${BREVITY_PINNED} brevity-cap assertions pinned — cap present, scoped to routing text, Step 0a named in-section, bounded, non-contagious)`,
+)
 const testerP = cfg2.agent["tester"].prompt
 assert.ok(testerP.includes("## Verification stack"), "tester: static verification stack")
 assert.ok(testerP.includes("typecheck"), "tester: typecheck layer")

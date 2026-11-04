@@ -100,7 +100,7 @@ difference between "the host has it" and "we left it in the request" is visible.
 
 Every design choice is evaluated in LLM round-trips and in tokens-per-request, both
 measured rather than adjectived: the role prompt is priced through our own
-`estimateTokens` on `agents[role].prompt` alone — **measured 2026-11-04: lead 9 253,
+`estimateTokens` on `agents[role].prompt` alone — **measured 2026-11-04: lead 9 457,
 researcher 7 033, tester 6 391, reviewer 6 258, implementer 6 096, computerUser 5 838,
 architect 5 789** — while the older figures recorded in `docs/v2-port-notes.md`
 (2 660 / 4 726 / 6 391) were **definitions + tool schemas after the request-layer trim**,
@@ -114,7 +114,8 @@ When a prompt rule lands, it lands on the roles that act on it and nowhere else,
 cost is measured per role before it is committed: the anti-rot rules (1.9.8) went to
 implementer (+428), reviewer (+370) and the lead (+150), the Step 0a brainstorm gate went
 to the lead only (+272, 8 981 → 9 253, measured by pricing the same tree with and without
-the section), and both changes left architect / tester / researcher / computerUser at
+the section), the brevity-exception that bounds that same round went to the lead again
+(+204, 9 253 → 9 457), and both changes left architect / tester / researcher / computerUser at
 **exactly zero** — the delta is computed by pricing the HEAD build and the working build
 in one pass, never by estimating from characters.
 
