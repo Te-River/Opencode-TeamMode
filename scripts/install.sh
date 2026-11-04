@@ -39,11 +39,16 @@ PKG_NAME="@te-river/opencode-team-mode"
 COMPUTER_USE=0
 CU_WHEEL_ARG=""
 CU_SHA_ARG=""
+# Reclaims the per-version release directories without installing anything. The Windows
+# front-end has the same switch (-ComputerUseReclaim); both do ONLY the cleanup, so a
+# cleanup run writes zero config bytes.
+CU_RECLAIM=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --computer-use) COMPUTER_USE=1 ;;
     --computer-use-wheel) shift; CU_WHEEL_ARG="${1:-}" ;;
     --computer-use-wheel-sha256) shift; CU_SHA_ARG="${1:-}" ;;
+    --computer-use-reclaim) CU_RECLAIM=1 ;;
   esac
   shift
 done
@@ -139,17 +144,233 @@ fi
 #     silently, with nothing on screen explaining why Team stopped. The value is
 #     read back off the file afterwards, because a write is not an arrival;
 #   * OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS is NOT set (v1-only hack).
+# ── the release layout that made the upgrade ONE restart instead of two ─────────────
+# Same skeleton as install.ps1's CU-* helpers, same files on disk:
+#
+#   <releases>/current.json                    which version the mcp entry points at
+#   <releases>/<version>/receipt.json          that dir passed --selftest, with the wheel hash
+#   <releases>/<version>/computeruse-mcp/…     the venv `uv tool install` wrote (dist name, fixed)
+#   <releases>/<version>/bin/                  uv's shim dir, kept INSIDE the version dir
+#
+# `uv tool install` writes into `<UV_TOOL_DIR>/<dist name>/` and replaces the console script
+# in place, so upgrading a server the host is still running asks the OS to overwrite a
+# loaded image — on Windows `os error 32`, which is why the old procedure was TWO restarts.
+# The dist-name directory is not ours to rename (it comes from the wheel's metadata, and uv
+# reads name/version/tag out of the FILENAME too), so what carries the version is its
+# PARENT: UV_TOOL_DIR becomes <releases>/<version>, the new version lands where nothing is
+# looking, and the upgrade is the single edit that repoints `mcp.computeruse.command`.
+#
+# On POSIX a running executable is not locked, so this layout is not strictly needed there —
+# it is used anyway, because the two front-ends must not disagree about where a version
+# lives, what the entry points at, or how the old directories are reclaimed.
+cu_releases_root() {
+  if [ -n "${TEAMMODE_CU_RELEASE_DIR:-}" ]; then printf '%s' "$TEAMMODE_CU_RELEASE_DIR"; return; fi
+  local base="${XDG_DATA_HOME:-${HOME}/.local/share}"
+  printf '%s' "${base}/te-river/computeruse/releases"
+}
+
+# Reads one flat string key out of the installer's own runtime JSON. node is already a hard
+# requirement of the 2.x path (config-surgery.cjs), so this adds no dependency. A missing
+# file or an unparseable one returns 1 — the CALLERS decide what an unreadable record means,
+# and for the reclaim pass "unreadable" always means "keep".
+cu_json_get() {
+  [ -f "$1" ] || return 1
+  node -e 'try{const j=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"));const v=j[process.argv[2]];if(v==null)process.exit(1);process.stdout.write(String(v))}catch(e){process.exit(1)}' "$1" "$2" 2>/dev/null
+}
+
+cu_json_write() {
+  local file="$1"; shift
+  node -e 'const fs=require("fs");const file=process.argv[1];const o={};for(let i=2;i<process.argv.length;i+=2)o[process.argv[i]]=String(process.argv[i+1]);fs.writeFileSync(file,JSON.stringify(o,null,2)+"\n")' "$file" "$@"
+}
+
+# The console script inside one version directory. The venv is a CHILD of the version dir
+# (uv names it after the distribution — measured `computeruse-mcp`, not `computeruse`), so
+# children are scanned before the version dir itself, which only ever holds uv's shim.
+cu_find_exe() {
+  local vd="$1" c
+  [ -d "$vd" ] || return 1
+  for c in "$vd"/*/Scripts/computeruse.exe "$vd"/*/bin/computeruse "$vd"/*/Scripts/computeruse \
+           "$vd/Scripts/computeruse.exe" "$vd/bin/computeruse" "$vd/Scripts/computeruse"; do
+    if [ -f "$c" ]; then printf '%s' "$c"; return 0; fi
+  done
+  return 1
+}
+
+# THREE-way verdict, because "a process was hit", "nothing matched" and "we could not look"
+# are three different sentences, and the third one may not borrow the first one's words:
+#   0 = HIT — a running process names this directory (CU_INUSE_PID + CU_INUSE_REASON set)
+#   1 = PROVABLY IDLE — `ps` answered with lines and none of them names the directory
+#   2 = NO EVIDENCE — no `ps` on PATH, a `ps` that FAILED, or a `ps` that answered with
+#       nothing at all. CU_INUSE_REASON names which one it was.
+# Every caller keeps on 0 AND 2 and moves only on 1: the conservative direction is UNCHANGED
+# (this is install.ps1's InUse=true with a reason that says "no hit evidence"), and what got
+# fixed is the wording — a keep that came from not being able to look used to be printed as
+# "有进程从这个目录跑着", which is a claim about a process nobody ever hit. The old shape also
+# leaked `set -o pipefail`: a `ps` that failed fell through to "not in use" and the directory
+# was MOVED — the fail-open this function's header always said it did not do.
+# The needle travels through the ENVIRONMENT because a grep/awk command line carrying the
+# path would match ITSELF in `ps` output and every directory would look busy forever.
+cu_dir_in_use() {
+  local dir="$1" out="" rc=0 hit=""
+  CU_INUSE_REASON=""
+  CU_INUSE_PID=""
+  [ -d "$dir" ] || return 1
+  if ! command -v ps >/dev/null 2>&1; then
+    CU_INUSE_REASON="本机没有 ps 可用：未获得命中证据，保守保留"
+    return 2
+  fi
+  rc=0
+  out="$(ps -A -o pid=,args= 2>/dev/null)" || rc=$?
+  if [ "$rc" -ne 0 ]; then
+    CU_INUSE_REASON="ps 查询失败（exit ${rc}）：未获得命中证据，保守保留"
+    return 2
+  fi
+  if [ -z "$out" ]; then
+    CU_INUSE_REASON="ps 返回空输出（列不到任何进程）：未获得命中证据，保守保留"
+    return 2
+  fi
+  hit="$(printf '%s\n' "$out" | CU_NEEDLE="$dir" awk '
+    BEGIN { d = tolower(ENVIRON["CU_NEEDLE"]) }
+    { if (h == "" && index(tolower($0), d) > 0) h = $1 }
+    END { if (h != "") print h }')"
+  if [ -n "$hit" ]; then
+    CU_INUSE_PID="$hit"
+    CU_INUSE_REASON="有进程从这个目录跑着：命令行命中 pid ${hit}"
+    return 0
+  fi
+  return 1
+}
+
+# Does either global config file still name this directory? Raw text, case-insensitive,
+# because the stored spelling is JSON-escaped. An unreadable file answers "mentioned":
+# not being able to rule it out is not evidence that deleting it is safe.
+cu_config_mentions() {
+  local dir="$1"; shift
+  local f
+  for f in "$@"; do
+    [ -n "$f" ] || continue
+    [ -e "$f" ] || continue
+    if CU_NEEDLE="$dir" awk '
+      BEGIN { d = tolower(ENVIRON["CU_NEEDLE"]) }
+      { if (index(tolower($0), d) > 0) found = 1 }
+      END { exit found ? 0 : 1 }' "$f" 2>/dev/null; then
+      return 0
+    fi
+  done
+  return 1
+}
+
+# Keeps what the entry points at, what either config still names, and what anything is
+# running from; the rest is MOVED ASIDE into <root>/.pending-delete and only then deleted.
+# The move is not ceremony: `rm -rf` on a tree something has open deletes what it can reach
+# and fails on the rest, leaving a HALF-DELETED release behind. Here `mv` renames INSIDE the
+# same parent (the pending dir lives in the releases root), so it is a same-directory
+# rename — all-or-nothing. install.ps1 has to reach for [IO.Directory]::Move for the same
+# guarantee, because PowerShell's Move-Item falls back to copy-then-delete when the rename is
+# refused, and that fallback measured its way into this design. Every skip prints
+# its reason. Nothing here kills a process, and nothing here touches uv's own tool dir.
+# usage: cu_reclaim_releases <root> <current-version> <cfg file> [more cfg files…]
+# An EMPTY <current-version> (no current.json to read, or one that does not answer) keeps
+# EVERYTHING, the already-moved-aside entries included: not being able to prove which
+# version the entry points at is not evidence that deleting anything is safe — so this is
+# the rule, and the console line says exactly this.
+cu_reclaim_releases() {
+  local root="$1" cur="$2"; shift 2
+  [ -d "$root" ] || return 0
+  if [ -z "$cur" ]; then
+    echo "   没有 current.json：证明不了条目指向哪一版，本次一个目录都不动（全部保留，.pending-delete 也不清）"
+    return 0
+  fi
+  local pending="${root}/.pending-delete"
+  # Every tree MOVED ASIDE by this pass, as an ARRAY compared by whole-element membership.
+  # The old string form ("|a|b" against a case pattern) did not do that job: the unquoted |
+  # between the two quoted groups parsed as ALTERNATION, so the guard matched only the LAST
+  # moved entry and a release this pass had just moved aside was deleted by this pass — the
+  # one outcome the two-phase design forbids (install.ps1 compares $movedNow with
+  # -contains, and this now says the same thing in bash).
+  local moved_now=()
+  local d name stamped name_ok moved_hit m rc_use
+  for d in "$root"/*/; do
+    [ -d "$d" ] || continue
+    d="${d%/}"; name="${d##*/}"
+    if [ "$name" = ".pending-delete" ]; then continue; fi
+    # The SAME ANCHORED filter as install.ps1 ('^[0-9][A-Za-z0-9._+-]*$'): the whole name
+    # must be version-shaped. A bare [0-9]* made "0.0.5 (old)" a reclaim candidate here
+    # while the Windows front-end refused to touch it — two installers disagreeing about
+    # the same directory is the drift this pair of scripts exists to prevent.
+    name_ok=0
+    case "$name" in
+      [0-9]*) case "$name" in *[!A-Za-z0-9._+-]*) ;; *) name_ok=1 ;; esac ;;
+    esac
+    if [ "$name_ok" != "1" ]; then
+      echo "   keep    ${name} — 不是版本号目录，不是这套机制装的"; continue
+    fi
+    if [ -n "$cur" ] && [ "$name" = "$cur" ]; then
+      echo "   keep    $d — current.json：MCP 条目就指向它"; continue
+    fi
+    if cu_config_mentions "$d" "$@"; then
+      echo "   keep    $d — 全局配置里仍然出现这个路径，不能断定条目不在用它"; continue
+    fi
+    # 0 (a process was hit) and 2 (no evidence to look at) both KEEP; only 1 (provably idle)
+    # moves. The reason clause comes from the verdict itself, so a keep without hit evidence
+    # can never be printed as "有进程从这个目录跑着".
+    rc_use=0; cu_dir_in_use "$d" || rc_use=$?
+    if [ "$rc_use" -ne 1 ]; then
+      echo "   keep    $d — ${CU_INUSE_REASON}（不杀进程，下次安装再来回收）"; continue
+    fi
+    if [ ! -d "$pending" ]; then mkdir -p "$pending" 2>/dev/null || true; fi
+    stamped="${pending}/${name}.$(date -u +%Y%m%d-%H%M%S)"
+    # `mv` here is a same-filesystem rename (the pending dir lives inside the releases root),
+    # so it is all-or-nothing: install.ps1 uses [IO.Directory]::Move for exactly this reason,
+    # because Move-Item falls back to copy-then-delete and leaves a held release half-moved.
+    if mv "$d" "$stamped" 2>/dev/null; then
+      moved_now+=("$stamped")
+      echo "   move    $d → ${stamped}"
+    else
+      echo "   keep    $d — 挪不动：里面有文件被打开了"
+    fi
+  done
+  [ -d "$pending" ] || return 0
+  # A tree this pass moved aside is NOT deleted by this pass: the rename proves nothing about
+  # the files inside it, and half-deleting a live release is the one outcome the two-phase
+  # design exists to prevent. The NEXT pass deletes it — by then either the process is gone,
+  # or its path still shows up in `ps` and it is kept again.
+  for d in "$pending"/*/; do
+    [ -d "$d" ] || continue
+    d="${d%/}"
+    moved_hit=0
+    if [ "${#moved_now[@]}" -gt 0 ]; then
+      for m in "${moved_now[@]}"; do
+        if [ "$m" = "$d" ]; then moved_hit=1; break; fi
+      done
+    fi
+    if [ "$moved_hit" = "1" ]; then
+      echo "   keep    $d — 本次刚挪进来，删除留给下一趟（下次安装或下一次 --computer-use-reclaim）"; continue
+    fi
+    rc_use=0; cu_dir_in_use "$d" || rc_use=$?
+    if [ "$rc_use" -ne 1 ]; then
+      echo "   keep    $d — ${CU_INUSE_REASON}（不杀进程）"; continue
+    fi
+    if rm -rf "$d" 2>/dev/null; then
+      echo "  ✔ reclaim $d — 已不再被指向、无人运行"
+    else
+      echo "!  reclaim failed: $d（留着，不强删）"
+    fi
+  done
+}
+
 # ── the computer-use MCP server (OPT-IN, default off) ───────────────────────
 # Same order as install.ps1, failing closed at every step:
 #   verify sha256 → uv tool install → `--selftest` must exit 0 → mcp-set.
 # No config byte is written until a server that actually runs exists, and any failure
 # after the install rolls it back. A `mcp` entry whose command the host cannot spawn is a
 # server that never starts; the host reports it as a timeout, which reads as our bug.
-# usage: install_computer_use <config file> <surgery helper>
+# usage: install_computer_use <config file> <surgery helper> [legacy config file]
 install_computer_use() {
-  local cfg="$1" surgery="$2"
-  local src want got wheel="" downloaded=0 tool_dir="" candidate="" exe="" tool_name=""
-  local exe_status=0
+  local cfg="$1" surgery="$2" legacy_cfg="${3:-}"
+  local src want got wheel="" downloaded=0 candidate="" exe="" tool_name="" exe_status=0
+  local leaf base rest fields cu_ver="" cu_root cu_ver_dir cu_cur_ver cu_exe_prev cu_still=""
+  local cu_exe_now="" cu_rec_ver="" cu_rec_sha="" already=0 created_dir=0 inst=0 cu_now=""
   echo ""
   echo "↻  computer-use MCP server (opt-in) ..."
   if ! command -v uv >/dev/null 2>&1; then
@@ -232,50 +453,124 @@ install_computer_use() {
   fi
   echo "✔  sha256 verified: ${got}"
 
-  # ── (d) install into the TOOL DIR the caller named ────────────────────────
-  # UV_TOOL_DIR / UV_TOOL_BIN_DIR are HONOURED, so a test run — and the undo — never has
-  # to reach into the user's real uv state: the whole install is one directory. The bin dir
-  # defaults to <toolDir>/bin so no shim lands outside it (the entry spawns the absolute
-  # exe anyway).
-  tool_dir="${UV_TOOL_DIR:-}"
-  if [ -z "$tool_dir" ]; then tool_dir="$(uv tool dir 2>/dev/null | head -n1 || true)"; fi
-  if [ -z "$tool_dir" ]; then
+  # ── (d) which version is this wheel? The FILENAME says, and uv agrees ──────
+  # uv reads name / version / python tag out of the wheel FILENAME and refuses anything
+  # else, so that filename is the honest source for the version that names the directory —
+  # and a filename uv would reject is rejected HERE first, before a single directory is
+  # created. A wheel's distribution name carries no dash (PEP 427 normalises it), so the
+  # version is the field after the first dash: five dash-separated fields before `.whl`.
+  leaf="$(basename "$wheel")"
+  cu_ver=""
+  base="${leaf%.whl}"
+  if [ "$base" != "$leaf" ]; then
+  fields=$(printf '%s\n' "$base" | awk -F'-' '{print NF}')
+  if [ "${fields:-0}" -ge 5 ]; then rest="${base#*-}"; cu_ver="${rest%%-*}"; fi
+  fi
+  case "$cu_ver" in
+    [0-9]*) ;;
+    *) cu_ver="" ;;
+  esac
+  if [ -z "$cu_ver" ]; then
     if [ "$downloaded" = "1" ]; then rm -f "$wheel"; fi
-    echo "!  Could not resolve uv's tool directory. Nothing was written."
+    echo "!  读不出 wheel 的版本号：${leaf}"
+    echo "   「一个版本一个目录」是这套升级机制的骨架，而版本只能取自文件名（uv 自己也是这么读的）。"
+    echo "   保持发行资产的文件名：computeruse_mcp-<版本>-py3-none-any.whl"
+    echo "   Nothing was written and nothing was installed."
     return 1
   fi
-  export UV_TOOL_DIR="$tool_dir"
-  if [ -z "${UV_TOOL_BIN_DIR:-}" ]; then export UV_TOOL_BIN_DIR="${tool_dir}/bin"; fi
-  if ! uv tool install --force "$wheel"; then
-    if [ "$downloaded" = "1" ]; then rm -f "$wheel"; fi
-    echo "!  uv tool install failed — no config byte was written."
-    return 1
-  fi
-  if [ "$downloaded" = "1" ]; then rm -f "$wheel"; fi
 
-  # ── (e) the entry point must EXIST and ANSWER `--selftest` ────────────────
-  # The tool directory is named after the DISTRIBUTION (`computeruse-mcp`, measured), not
-  # after the console script, so scan instead of guessing one spelling.
-  for candidate in "$tool_dir"/*/Scripts/computeruse.exe "$tool_dir"/*/bin/computeruse "$tool_dir"/*/Scripts/computeruse; do
-    if [ -f "$candidate" ]; then exe="$candidate"; break; fi
-  done
-  # Rollback is stated once and used by both failure legs below, so the two cannot drift.
-  cu_rollback() {
-    if [ -n "$tool_name" ]; then
-      uv tool uninstall "$tool_name" >/dev/null 2>&1 || true
-      echo "   rolled back: uv tool uninstall ${tool_name}"
-    fi
-    echo "   Nothing was written to ${cfg}."
-  }
-  if [ -n "$exe" ]; then
-    tool_name="$(basename "$(dirname "$(dirname "$exe")")")"
+  cu_root="$(cu_releases_root)"
+  cu_ver_dir="${cu_root}/${cu_ver}"
+  cu_cur_ver="$(cu_json_get "${cu_root}/current.json" version || true)"
+  cu_still="（配置里还没有 mcp.computeruse 条目）"
+  if [ -n "$cu_cur_ver" ]; then
+    cu_exe_prev="$(cu_json_get "${cu_root}/current.json" exe || true)"
+    cu_still="${cu_cur_ver} → ${cu_exe_prev:-（current.json 没有 exe 字段）}"
+  fi
+  echo "   releases: ${cu_root}"
+  echo "   本次目标: ${cu_ver_dir}"
+
+  # ── (e) install into <releases>/<version>, a directory NOTHING is holding ───
+  # UV_TOOL_DIR IS the version directory now, so this path no longer honours a caller's
+  # UV_TOOL_DIR: nesting a non-tool directory inside uv's own tool dir is how `uv tool list`
+  # learned to print "Ignoring malformed tool `bin`". The override it does honour is
+  # TEAMMODE_CU_RELEASE_DIR, and everything it writes — venv, shim, receipt — stays under
+  # that one root, so the undo and the reclaim are both "delete a directory", never "reach
+  # into the user's real uv state".
+  cu_exe_now="$(cu_find_exe "$cu_ver_dir" || true)"
+  cu_rec_ver="$(cu_json_get "${cu_ver_dir}/receipt.json" version || true)"
+  cu_rec_sha="$(cu_json_get "${cu_ver_dir}/receipt.json" wheel_sha256 || true)"
+  already=0
+  if [ -n "$cu_exe_now" ] && [ "$cu_rec_ver" = "$cu_ver" ] && \
+     [ "$(printf '%s' "${cu_rec_sha:-}" | tr 'A-Z' 'a-z')" = "$got" ]; then
+    already=1
+  fi
+  created_dir=0
+  inst=0
+  if [ "$already" = "1" ]; then
+    # Idempotence, and it is a real skip: no uv run, no new files. The config still goes
+    # through mcp-set below, because the helper itself writes NOTHING when the entry already
+    # carries these exact bytes and says 已存在，未改动 when it did.
+    echo "OK  already at ${cu_ver} — 该版本目录已有通过 --selftest 的 receipt、wheel 哈希一致：不重跑 uv tool install"
+    if [ "$downloaded" = "1" ]; then rm -f "$wheel"; downloaded=0; fi
   else
-    # No console script appeared: still find the directory uv just created so the rollback
-    # has a name to hand to `uv tool uninstall` instead of leaving a half-tool behind.
-    for candidate in "$tool_dir"/*computeruse*; do
-      if [ -d "$candidate" ]; then tool_name="$(basename "$candidate")"; fi
-    done
-    echo "!  Installed, but no computeruse entry point appeared under ${tool_dir}"
+    if [ ! -d "$cu_ver_dir" ]; then mkdir -p "$cu_ver_dir"; created_dir=1; fi
+    export UV_TOOL_DIR="$cu_ver_dir"
+    # ALWAYS set together with UV_TOOL_DIR: uv's own default shim dir is where the user's
+    # other tools' launchers live, and a computeruse shim landing there is the pollution
+    # this layout exists to avoid. Inside the version dir it costs nothing.
+    export UV_TOOL_BIN_DIR="${cu_ver_dir}/bin"
+    uv tool install --force "$wheel" || inst=$?
+    if [ "$downloaded" = "1" ]; then rm -f "$wheel"; downloaded=0; fi
+    if [ "$inst" -ne 0 ]; then
+      echo "!  uv tool install failed (exit ${inst}) — no config byte was written."
+      echo "   新机制只在「同一个版本号被重复构建、而旧进程正是从这个目录跑起来的」时才可能撞上占用；"
+      echo "   那一种情况先 opencode service restart 释放它，或按新版本号重新构建，再重跑本条命令。"
+      echo "   mcp.computeruse 没有改动，仍在跑的是：${cu_still}"
+      return 1
+    fi
+  fi
+
+  # ── (f) the entry point must EXIST and ANSWER `--selftest`, and only then does
+  #        the config move ──────────────────────────────────────────────────────
+  # The tool directory inside the version dir is named after the DISTRIBUTION
+  # (`computeruse-mcp`, measured), not after the console script, so scan instead of
+  # guessing one spelling.
+  exe="$(cu_find_exe "$cu_ver_dir" || true)"
+  tool_name=""
+  if [ -n "$exe" ]; then tool_name="$(basename "$(dirname "$(dirname "$exe")")")"; fi
+  # Rollback is stated once and used by both failure legs. It is a DIRECTORY delete scoped
+  # to the version directory THIS run created — deliberately NOT `uv tool uninstall`: that
+  # resolves UV_TOOL_DIR itself, and in the `already at` leg we never set it, so it would
+  # reach the user's REAL tool dir and remove the server that currently works. Nothing here
+  # kills a process; a directory something is running from is left exactly as it is.
+  cu_rollback() {
+    local rc_use
+    if [ "$created_dir" = "1" ] && [ -d "$cu_ver_dir" ]; then
+      # Same three-way contract: a `ps` we could not run is NO evidence, so the directory is
+      # left alone — and the line says which face it was instead of claiming a process runs here.
+      rc_use=0; cu_dir_in_use "$cu_ver_dir" || rc_use=$?
+      if [ "$rc_use" -ne 1 ]; then
+        echo "   版本目录留着不动（${CU_INUSE_REASON}）：${cu_ver_dir}"
+      elif rm -rf "${cu_ver_dir}" 2>/dev/null; then
+        echo "   本次新建的版本目录已删除：${cu_ver_dir}"
+      else
+        echo "!  版本目录删不掉，留着不动：${cu_ver_dir}"
+      fi
+    elif [ "$already" = "1" ]; then
+      # The receipt claimed "this directory passes --selftest", and it just did not.
+      # Dropping the claim is what makes the NEXT run reinstall and re-verify instead of
+      # trusting a record this machine contradicted.
+      if [ -f "${cu_ver_dir}/receipt.json" ]; then
+        rm -f "${cu_ver_dir}/receipt.json"
+        echo "   receipt 已删除（${cu_ver} 的 --selftest 这次没通过）：下一次安装会重装并重新验证"
+      fi
+      echo "   版本目录本身保持原样：${cu_ver_dir}（${tool_name:-无工具名}）"
+    fi
+    echo "   Nothing was written to ${cfg} — 仍在跑的仍是：${cu_still}"
+  }
+  if [ -z "$exe" ]; then
+    echo "!  Installed, but no computeruse entry point appeared under ${cu_ver_dir}"
     cu_rollback
     return 1
   fi
@@ -285,6 +580,7 @@ install_computer_use() {
     echo "!  ${exe} --selftest exited ${exe_status}, so this server does not work on this machine"
     echo "   (its own output is above; the usual cause is a session without a real desktop)."
     echo "   Nothing was written."
+    echo "   配置条目未改动 —— 仍是旧版本在跑：${cu_still}"
     cu_rollback
     return 1
   fi
@@ -301,16 +597,36 @@ install_computer_use() {
   # second spelling is a second thing to keep right.
   if ! TM_MCP_SPEC="$json" node "$surgery" "$cfg" mcp-set computeruse; then
     echo "!  The mcp.computeruse entry is not in ${cfg} — nothing further is claimed."
+    echo "   条目没落地，所以 current.json / receipt.json 都不写：下一次安装会把这目录当作未验证的重装。"
     return 1
   fi
+  # The two runtime records, written only after the helper's own read-back passed:
+  # receipt.json = "this directory is a verified install of these wheel bytes" (the
+  # idempotence key), current.json = "the config entry points here" (the reclaim's
+  # do-not-touch marker). Neither one reads or rewrites the host config.
+  cu_now="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  cu_json_write "${cu_ver_dir}/receipt.json" version "$cu_ver" exe "$exe" wheel "$leaf" \
+    wheel_sha256 "$got" selftest "exit 0" installed_at "$cu_now"
+  cu_json_write "${cu_root}/current.json" version "$cu_ver" exe "$exe" wheel_sha256 "$got" \
+    config "$cfg" updated_at "$cu_now"
+  # An upgrade cleans up after itself. The previous version is now unreferenced and usually
+  # STILL LOADED by the running host, which the pass reports as a keep with a reason — the
+  # next install, after the restart, is what takes it.
+  echo "↻  回收旧版本目录 …"
+  cu_reclaim_releases "$cu_root" "$cu_ver" "$cfg" "$legacy_cfg"
+  echo ""
+  echo "✔  computer-use ${cu_ver} 已就位 —— 只差一次重启（不是两次）"
+  echo "   opencode service restart   # 旧进程随宿主退出，新条目指向上面那个 exe"
   # A thing this script wrote must be removable without re-reading its source.
   echo ""
-  echo "   撤销 computer-use（三步）:"
+  echo "   撤销 computer-use:"
   echo "     1. 删掉 ${cfg} 里的 mcp.computeruse 那一项："
   echo "        node ${surgery} ${cfg} mcp-remove computeruse"
-  echo "     2. uv tool uninstall ${tool_name}     # 卸载 wheel 装出来的工具目录"
-  echo "        （可选，清掉审计轨：rm -rf \"\${LOCALAPPDATA:-\${HOME}/.local/share}/te-river/computeruse\"）"
+  echo "     2. 删掉这套机制装的全部版本：rm -rf \"${cu_root}\""
+  echo "        （只回收旧版本： bash install.sh --computer-use-reclaim —— 逐条报理由，运行中的目录绝不删）"
+  echo "        （旧布局的安装在 uv 自己的工具目录里： uv tool uninstall computeruse-mcp）"
   echo "     3. 重启 OpenCode：opencode service restart"
+  echo "        （可选，清掉审计轨：rm -rf \"\${XDG_DATA_HOME:-\${HOME}/.local/share}/te-river/computeruse\"）"
   return 0
 }
 
@@ -325,6 +641,38 @@ install_v2() {
   local cfg_dir="${OPENCODE_CONFIG_DIR:-${HOME}/.config/opencode}"
   local cfg="${cfg_dir}/opencode.jsonc"
   local legacy="${cfg_dir}/opencode.json"
+
+  # ── --computer-use-reclaim alone does ONLY the cleanup ──────────────────────
+  # It returns BEFORE the plugin install so a cleanup run writes zero config bytes and
+  # never touches a wheel: no uv run, no mcp-set, nothing. It deletes nothing that
+  # current.json says the entry points at, nothing a process is running from, and nothing
+  # whose path still appears in either global config file. With no readable current.json it
+  # deletes NOTHING at all (the .pending-delete queue included). With --computer-use as well,
+  # the install path runs the same pass at its end, so this only says so instead of doing it
+  # twice. Same shape as install.ps1's block of the same name.
+  if [ "${CU_RECLAIM:-0}" = "1" ]; then
+    cu_root_r="$(cu_releases_root)"
+    if [ "$COMPUTER_USE" = "1" ]; then
+      echo "   （--computer-use-reclaim：安装成功后自动跑同一趟回收，这里不再单独跑一遍）"
+    else
+      echo ""
+      echo "↻  computer-use 版本目录回收（只回收，不安装）..."
+      if [ ! -d "$cu_root_r" ]; then
+        echo "   没有回收对象：${cu_root_r} 不存在"
+        echo "   （旧布局装在 uv 自己的工具目录里，那条路用：uv tool uninstall computeruse-mcp）"
+        return 0
+      fi
+      cur_ver="$(cu_json_get "${cu_root_r}/current.json" version || true)"
+      if [ -n "$cur_ver" ]; then
+        echo "   releases: ${cu_root_r} · current: ${cur_ver}"
+      else
+        echo "   releases: ${cu_root_r} · current: （没有 current.json：确认不了条目指向哪一版，本次一个目录都不动 — 全部保留）"
+      fi
+      echo "   配置参照: ${cfg}"
+      cu_reclaim_releases "$cu_root_r" "$cur_ver" "$cfg" "$legacy"
+      return 0
+    fi
+  fi
   local node_js role cmd PLUGIN_ENTRY="" pkg_dir=""
   echo "→  2.x config target: ${cfg_dir}"
   if [ "$cfg_dir" = "${HOME}/.config/opencode" ]; then
@@ -537,7 +885,7 @@ install_v2() {
 
   # ── 5. the computer-use MCP server (OPT-IN, default off) ──────────────────
   if [ "$COMPUTER_USE" = "1" ]; then
-    if ! install_computer_use "${cfg}" "${node_js}"; then
+    if ! install_computer_use "${cfg}" "${node_js}" "${legacy}"; then
       exit 1
     fi
   fi
@@ -579,6 +927,13 @@ if [ "$COMPUTER_USE" = "1" ]; then
   echo "!  --computer-use is implemented on the OpenCode 2.x path only (this machine takes"
   echo "   the 1.18.x path). mcp.computeruse is a 2.x config shape with no measured 1.18.x"
   echo "   equivalent, so NOTHING was written. Re-run with --computer-use once the host is 2.x."
+  exit 1
+fi
+if [ "${CU_RECLAIM:-0}" = "1" ]; then
+  echo ""
+  echo "!  --computer-use-reclaim 同样是 2.x 路径的功能：它回收的是本安装器写的"
+  echo "   <releases>/<版本>/ 目录，而 1.18.x 路径从不装它们。这台机器走 1.18.x，所以一个"
+  echo "   文件都没有读、没有删。宿主升到 2.x 后再跑一次即可。"
   exit 1
 fi
 if [ -n "$OPENCODE_WHY" ]; then

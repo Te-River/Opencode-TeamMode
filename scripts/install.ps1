@@ -40,7 +40,11 @@ param(
     # and before the release exists the only wheel in the world is one the caller built.
     [switch]$ComputerUse,
     [string]$ComputerUseWheel,
-    [string]$ComputerUseWheelSha256
+    [string]$ComputerUseWheelSha256,
+    # Reclaims the per-version release directories without installing anything (see
+    # CU-ReclaimReleases below). Combined with -ComputerUse it is a no-op switch: that
+    # path already runs the same pass at the end of a successful install.
+    [switch]$ComputerUseReclaim
 )
 
 $ErrorActionPreference = "Stop"
@@ -59,6 +63,213 @@ $PKG_NAME = "@te-river/opencode-team-mode"
 $CU_VERSION = "0.0.6"
 $CU_WHEEL_SHA256 = "fdde2e2df3726c33cdc1fb57adbc5d85b3ab067bb7871df9290eb7f75e21eb91"
 $CU_RELEASE_URL = "https://github.com/Te-River/Opencode-TeamMode/releases/download/computeruse-v$($CU_VERSION)/computeruse_mcp-$($CU_VERSION)-py3-none-any.whl"
+
+# ── the release layout that made the upgrade ONE restart instead of two ────────────────
+# Every version of the server gets its OWN uv tool directory:
+#
+#   <releases>/current.json                    which version the mcp entry points at
+#   <releases>/<version>/receipt.json          that dir passed --selftest, with the wheel hash
+#   <releases>/<version>/computeruse-mcp/…     the venv `uv tool install` wrote (dist name, fixed)
+#   <releases>/<version>/bin/                  uv's shim dir, kept INSIDE the version dir
+#
+# The reason is one sentence long: `uv tool install` writes into `<UV_TOOL_DIR>/<dist name>/`
+# and replaces the console script in place, so an upgrade of a server the host is still
+# running asks Windows to overwrite a loaded image — `os error 32`. The dist-name directory
+# is not ours to rename (it comes from the wheel's metadata, and uv itself reads
+# name/version/tag out of the FILENAME), so what carries the version is its PARENT: we set
+# UV_TOOL_DIR to <releases>/<version> and the new version lands in a directory nothing is
+# holding. The upgrade then IS the single edit that repoints `mcp.computeruse.command`,
+# which is why the old directory is left alone afterwards instead of being deleted while
+# its process is alive.
+#
+# The root follows the audit trail's own tree (%LOCALAPPDATA%\te-river\computeruse) so one
+# undo removes the whole feature; TEAMMODE_CU_RELEASE_DIR overrides it, which is what makes
+# a sandboxed test of this code path possible without touching uv's real tool dir.
+function script:CU-ReleasesRoot {
+    if ($env:TEAMMODE_CU_RELEASE_DIR) { return $env:TEAMMODE_CU_RELEASE_DIR }
+    $local = $env:LOCALAPPDATA
+    if (-not $local) { $local = Join-Path $env:USERPROFILE "AppData\Local" }
+    return (Join-Path $local "te-river\computeruse\releases")
+}
+
+# Runtime DATA written by the installer about its own install (never documentation, never
+# the host config): those two stay a single edit through scripts\lib\config-surgery.cjs.
+function script:CU-ReadJson([string]$Path) {
+    if (-not (Test-Path -LiteralPath $Path)) { return $null }
+    try { return (Get-Content -LiteralPath $Path -Raw | ConvertFrom-Json) } catch { return $null }
+}
+function script:CU-WriteJson([string]$Path, $Object) {
+    $json = $Object | ConvertTo-Json -Depth 5
+    [IO.File]::WriteAllText($Path, $json + "`n", (New-Object System.Text.UTF8Encoding($false)))
+}
+
+# The console script, inside one version directory. The venv is a CHILD of the version dir
+# (uv names it after the distribution — measured `computeruse-mcp`, not `computeruse`), so
+# children are scanned before the version dir itself, which only ever holds uv's shim.
+function script:CU-FindExe([string]$VerDir) {
+    if (-not $VerDir -or -not (Test-Path -LiteralPath $VerDir)) { return $null }
+    $tops = @((Get-ChildItem -LiteralPath $VerDir -Directory -ErrorAction SilentlyContinue | ForEach-Object { $_.FullName }))
+    $tops += $VerDir
+    foreach ($t in $tops) {
+        foreach ($rel in @("Scripts\computeruse.exe", "bin\computeruse", "Scripts\computeruse")) {
+            $cand = Join-Path $t $rel
+            if (Test-Path -LiteralPath $cand) { return $cand }
+        }
+    }
+    return $null
+}
+
+# True when we CANNOT prove the directory is idle. It fails closed on purpose: a throwing
+# process list, or a process whose image path we are not allowed to read, keeps the
+# directory. TWO things are matched, because an image path alone was measured to be too
+# weak — a copied console script can exit and leave its interpreter (whose image lives
+# outside the version dir) running from inside it:
+#   * the executable path of every process we can see, and
+#   * the command line of every process (Win32_Process), which is where the host's own
+#     `mcp.computeruse.command` path shows up even for a re-spawned interpreter.
+# Deleting a release the host is still running would be the R2 face this installer never
+# takes — and there is no kill anywhere in this code path.
+# RETURNS A VERDICT, not a bare boolean, because "a process hit this directory" and "nothing
+# hit it, but we could not look at everything" are two different sentences, and the second
+# may not borrow the first one's words. The directory is kept EITHER WAY (fail closed), but
+# the printed reason names the evidence there actually is. Before this, ONE unreadable
+# process image — routine for a non-elevated session — made EVERY directory report
+# "有进程从这个目录跑着" with no pid behind it: an overstated claim about what happened.
+#   @{ InUse = $true/$false; Reason = "<the hit, or the conservative sentence>" }
+function script:CU-DirInUse([string]$Dir) {
+    if (-not (Test-Path -LiteralPath $Dir)) { return @{ InUse = $false; Reason = "" } }
+    $prefix = $Dir.TrimEnd('\', '/') + [IO.Path]::DirectorySeparatorChar
+    $unreadable = 0
+    $listFailed = $null
+    try {
+        foreach ($p in @(Get-Process -ErrorAction SilentlyContinue)) {
+            $img = $null
+            try { $img = $p.Path } catch { $unreadable++; continue }   # no evidence — counted, never a hit
+            if ($img -and $img.StartsWith($prefix, [StringComparison]::OrdinalIgnoreCase)) {
+                return @{ InUse = $true; Reason = "有进程从这个目录跑着：映像路径命中 pid $($p.Id)" }
+            }
+        }
+    } catch { $listFailed = $_.Exception.Message }
+    try {
+        foreach ($pr in @(Get-CimInstance -ClassName Win32_Process -ErrorAction Stop)) {
+            $cl = $pr.CommandLine
+            if (-not $cl) { continue }
+            if ($cl.IndexOf($Dir, [StringComparison]::OrdinalIgnoreCase) -ge 0) {
+                return @{ InUse = $true; Reason = "有进程从这个目录跑着：命令行命中 pid $($pr.ProcessId)" }
+            }
+            if ($cl.IndexOf($Dir.Replace('\', '/'), [StringComparison]::OrdinalIgnoreCase) -ge 0) {
+                return @{ InUse = $true; Reason = "有进程从这个目录跑着：命令行命中 pid $($pr.ProcessId)" }
+            }
+        }
+    } catch {
+        # No CIM view (service, old box, denied): the image scan above already ran, and a
+        # second source of evidence being unavailable is reported, not silently accepted.
+        Write-Host "   （进程命令行查不了：$($_.Exception.Message) —— 只能凭映像路径判断）" -ForegroundColor DarkGray
+    }
+    # Nothing matched. The directory is STILL kept when the scan was incomplete — that is
+    # the conservative direction, unchanged — but the sentence says "no hit evidence", not
+    # "a process is running from here", because no process was ever hit.
+    if ($listFailed) { return @{ InUse = $true; Reason = "进程列表查询失败（$listFailed），未获得命中证据，保守保留" } }
+    if ($unreadable -gt 0) { return @{ InUse = $true; Reason = "$unreadable 个进程映像读不到（访问拒绝），未获得命中证据，保守保留" } }
+    return @{ InUse = $false; Reason = "" }
+}
+
+# Does the config still name this directory? Checked against the RAW file text, because the
+# stored spelling is JSON-escaped (`C:\\Users\\…`) and a Windows path comparison is
+# case-insensitive. A file we cannot read answers "mentioned": not being able to rule it
+# out is not evidence that it is safe to delete.
+function script:CU-ConfigMentions([string]$CfgFile, [string]$Dir) {
+    if (-not (Test-Path -LiteralPath $CfgFile)) { return $false }
+    $text = $null
+    try { $text = Get-Content -LiteralPath $CfgFile -Raw -ErrorAction Stop } catch { return $true }
+    $norm = $Dir.TrimEnd('\', '/')
+    $needles = @($norm, $norm.Replace('\', '\\'), $norm.Replace('\', '/'))
+    foreach ($n in $needles) {
+        if ($n -and $text.IndexOf($n, [StringComparison]::OrdinalIgnoreCase) -ge 0) { return $true }
+    }
+    return $false
+}
+
+# Keeps what the entry points at, what either config still names, and what anything is
+# running from; the rest is MOVED ASIDE into <root>/.pending-delete and only then deleted.
+# The move is not ceremony: `Remove-Item -Recurse` on a tree something has open deletes the
+# files it can reach and fails on the one it cannot, leaving a HALF-DELETED release behind.
+# A directory rename either succeeds atomically or fails with nothing moved — so a locked
+# release stays intact for the next pass, and an unlocked one is gone. Every skip prints its
+# reason: a reclaim pass that quietly kept a directory is the overstated "done" this product
+# exists to refuse. Nothing here kills a process, and nothing here touches uv's own tool dir.
+function script:CU-ReclaimReleases {
+    param([string]$Root, [string]$CurrentVersion, [string[]]$CfgFiles)
+    if (-not (Test-Path -LiteralPath $Root)) { return }
+    # No current.json = no proof of which version the MCP entry points at, and "cannot
+    # prove" is not evidence that deleting something is safe: this pass moves NOTHING and
+    # deletes NOTHING, the .pending-delete queue included. install.sh's cu_reclaim_releases
+    # has the same early return, and the console lines in both front-ends say exactly this.
+    if (-not $CurrentVersion) {
+        Write-Host "   没有 current.json：证明不了条目指向哪一版，本次一个目录都不动（全部保留，.pending-delete 也不清）" -ForegroundColor DarkGray
+        return
+    }
+    $pending = Join-Path $Root ".pending-delete"
+    $movedNow = @()
+    foreach ($d in @(Get-ChildItem -LiteralPath $Root -Directory -ErrorAction SilentlyContinue)) {
+        if ($d.Name -eq ".pending-delete") { continue }
+        if ($d.Name -notmatch '^[0-9][A-Za-z0-9._+-]*$') {
+            Write-Host "   keep    $($d.Name) — 不是版本号目录，不是这套机制装的" -ForegroundColor DarkGray
+            continue
+        }
+        if ($CurrentVersion -and $d.Name -eq $CurrentVersion) {
+            Write-Host "   keep    $($d.FullName) — current.json：MCP 条目就指向它" -ForegroundColor DarkGray
+            continue
+        }
+        $mentioned = $false
+        foreach ($cf in @($CfgFiles)) { if ($cf -and (CU-ConfigMentions $cf $d.FullName)) { $mentioned = $true; break } }
+        if ($mentioned) {
+            Write-Host "   keep    $($d.FullName) — 全局配置里仍然出现这个路径，不能断定条目不在用它" -ForegroundColor DarkGray
+            continue
+        }
+        $use = CU-DirInUse $d.FullName
+        if ($use.InUse) {
+            Write-Host "   keep    $($d.FullName) — $($use.Reason)（不杀进程，下次安装再来回收）" -ForegroundColor DarkGray
+            continue
+        }
+        try {
+            if (-not (Test-Path -LiteralPath $pending)) { New-Item -ItemType Directory -Path $pending -Force | Out-Null }
+            $stamped = Join-Path $pending ($d.Name + "." + (Get-Date).ToString("yyyyMMdd-HHmmss"))
+            # [IO.Directory]::Move is a bare Win32 MoveFile. `Move-Item` is NOT usable here:
+            # when the rename fails it falls back to copy-then-delete, which is precisely the
+            # partial destruction moving aside exists to avoid — measured in the sandbox run,
+            # where a held release got copied into .pending-delete anyway.
+            [IO.Directory]::Move($d.FullName, $stamped) | Out-Null
+            $movedNow += $stamped
+            Write-Host "   move    $($d.FullName) → $stamped" -ForegroundColor DarkGray
+        } catch {
+            Write-Host "   keep    $($d.FullName) — 挪不动（$($_.Exception.Message)）：里面有文件被打开了" -ForegroundColor DarkGray
+        }
+    }
+    if (-not (Test-Path -LiteralPath $pending)) { return }
+    # A tree this pass moved aside is NOT deleted by this pass. The move proves nothing about
+    # the files inside it, and deleting a release a process is still reading would half-delete
+    # it — the one outcome the whole two-phase design exists to prevent. The NEXT pass (the
+    # next install, or the next -ComputerUseReclaim) deletes it, by which time either the
+    # process is gone or its path still shows up and it is kept again.
+    foreach ($p in @(Get-ChildItem -LiteralPath $pending -Directory -ErrorAction SilentlyContinue)) {
+        if ($movedNow -contains $p.FullName -or ($movedNow | Where-Object { $_ -ieq $p.FullName })) {
+            Write-Host "   keep    $($p.FullName) — 本次刚挪进来，删除留给下一趟（下次安装或下一次 -ComputerUseReclaim）" -ForegroundColor DarkGray
+            continue
+        }
+        $puse = CU-DirInUse $p.FullName
+        if ($puse.InUse) {
+            Write-Host "   keep    $($p.FullName) — $($puse.Reason)（不杀进程）" -ForegroundColor DarkGray
+            continue
+        }
+        try {
+            Remove-Item -LiteralPath $p.FullName -Recurse -Force
+            Write-Host "  ✔ reclaim $($p.FullName) — 已不再被指向、无人运行" -ForegroundColor Green
+        } catch {
+            Write-Host "!  reclaim failed: $($p.FullName) — $($_.Exception.Message)（留着，不强删）" -ForegroundColor Yellow
+        }
+    }
+}
 
 Write-Host ""
 Write-Host "OpenCode TeamMode Installer" -ForegroundColor Cyan
@@ -166,6 +377,38 @@ function Install-V2 {
     $cfgFile = Join-Path $cfgDir "opencode.jsonc"
     $legacy = Join-Path $cfgDir "opencode.json"
     $bgFlag = "OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS"
+
+    # ── -ComputerUseReclaim alone does ONLY the cleanup ─────────────────────────
+    # It returns BEFORE the plugin install so a cleanup run writes zero config bytes and
+    # never touches a wheel: no uv run, no mcp-set, nothing. It deletes nothing that
+    # current.json says the entry points at, nothing a process is running from, and nothing
+    # whose path still appears in either global config file. With no readable current.json it
+    # deletes NOTHING at all (the .pending-delete queue included). With -ComputerUse as well,
+    # the install path runs the same pass at its end, so this only says so instead of doing it
+    # twice.
+    if ($ComputerUseReclaim) {
+        $cuRootEarly = CU-ReleasesRoot
+        if ($wantCU) {
+            Write-Host "   （-ComputerUseReclaim：安装成功后自动跑同一趟回收，这里不再单独跑一遍）" -ForegroundColor DarkGray
+        } else {
+            Write-Host ""
+            Write-Host "↻  computer-use 版本目录回收（只回收，不安装）..." -ForegroundColor Yellow
+            if (-not (Test-Path -LiteralPath $cuRootEarly)) {
+                Write-Host "   没有回收对象：$cuRootEarly 不存在" -ForegroundColor DarkGray
+                Write-Host "   （旧布局装在 uv 自己的工具目录里，那条路用：uv tool uninstall computeruse-mcp）" -ForegroundColor DarkGray
+                return
+            }
+            $cuCurrentEarly = CU-ReadJson (Join-Path $cuRootEarly "current.json")
+            $curVer = ""
+            if ($cuCurrentEarly -and $cuCurrentEarly.version) { $curVer = "$($cuCurrentEarly.version)" }
+            $curNote = "（没有 current.json：确认不了条目指向哪一版，本次一个目录都不动 — 全部保留）"
+            if ($curVer) { $curNote = $curVer }
+            Write-Host "   releases: $cuRootEarly · current: $curNote" -ForegroundColor DarkGray
+            Write-Host "   配置参照: $cfgFile" -ForegroundColor DarkGray
+            CU-ReclaimReleases -Root $cuRootEarly -CurrentVersion $curVer -CfgFiles @($cfgFile, $legacy)
+            return
+        }
+    }
 
     Write-Host ""
     Write-Host "── OpenCode $($OpenCodeVersion) detected: the 2.x path ─────────────────────────" -ForegroundColor Cyan
@@ -434,81 +677,122 @@ function Install-V2 {
         }
         Write-Host "✔  sha256 verified: $gotSha" -ForegroundColor Green
 
-        # ── 5d. install into the TOOL DIR the caller named ──────────────────
-        # UV_TOOL_DIR / UV_TOOL_BIN_DIR are HONOURED, which is what makes a test run and a
-        # rollback "delete one directory" instead of "reach into the user's real uv state".
-        # The bin dir is defaulted to <toolDir>\bin when unset so no shim lands outside it;
-        # the mcp entry spawns the absolute exe anyway.
-        $prevEap = $ErrorActionPreference
-        $ErrorActionPreference = "Continue"
-        $callerSetToolDir = [bool]$env:UV_TOOL_DIR
-        $toolDirEff = $env:UV_TOOL_DIR
-        if (-not $toolDirEff) { $toolDirEff = (& uv tool dir 2>$null | Select-Object -First 1) }
-        if (-not $toolDirEff) {
-            $ErrorActionPreference = $prevEap
+        # ── 5d. which version is this wheel? The FILENAME says, and uv agrees ──
+        # uv reads name / version / python tag out of the wheel FILENAME and refuses anything
+        # else, so that filename is the honest source for the version that names the
+        # directory — and a filename uv would reject is rejected HERE first, before a single
+        # directory is created.
+        $cuVer = $null
+        $wheelLeaf = Split-Path -Leaf $wheelPath
+        $mWheel = [regex]::Match($wheelLeaf, '^(?<name>[A-Za-z0-9](?:[A-Za-z0-9._+-]*[A-Za-z0-9])?)-(?<ver>[0-9][A-Za-z0-9._!+~]*?)-(?<py>[A-Za-z0-9_]+)-(?<abi>[A-Za-z0-9_]+)-(?<plat>[A-Za-z0-9_]+)\.whl$')
+        if ($mWheel.Success) { $cuVer = $mWheel.Groups['ver'].Value }
+        if (-not $cuVer) {
             if ($downloaded) { Remove-Item -LiteralPath $wheelPath -Force -ErrorAction SilentlyContinue }
-            Write-Host "!  Could not resolve uv's tool directory. Nothing was written." -ForegroundColor Yellow
-            exit 1
-        }
-        $env:UV_TOOL_DIR = $toolDirEff
-        # Only redirect the shim dir when the CALLER redirected the tool dir: a sandbox wants
-        # "rollback = delete one directory", but defaulting it to <toolDir>\bin pollutes uv's
-        # own tools dir with a directory uv then reports as a malformed tool on every
-        # `uv tool list` (measured: "Ignoring malformed tool `bin`").
-        if ($callerSetToolDir -and -not $env:UV_TOOL_BIN_DIR) { $env:UV_TOOL_BIN_DIR = Join-Path $toolDirEff "bin" }
-        # An UPGRADE cannot replace an executable the host is running: Windows answers
-        # "os error 32 / 拒绝访问" and uv aborts. Renaming the running image is NOT reliable
-        # either (measured 2026-10-30: the rename was refused with a sharing violation), so
-        # this does not pretend to work around it — it names the cause and the exact next
-        # move. Zero config bytes are written either way, which is why the version already
-        # installed keeps working.
-        $cuOut = & uv tool install --force $wheelPath 2>&1
-        $inst = $LASTEXITCODE
-        $cuOut | Out-Host
-        $ErrorActionPreference = $prevEap
-        if ($downloaded) { Remove-Item -LiteralPath $wheelPath -Force -ErrorAction SilentlyContinue }
-        if ($inst -ne 0) {
-            if (($cuOut -join "`n") -match 'os error 32|os error 5|另一个程序正在使用|拒绝访问') {
-                Write-Host "!  The MCP server is running, so Windows will not let uv replace its exe." -ForegroundColor Yellow
-                Write-Host "   Quit OpenCode (the server is its child process), re-run this command, then reopen." -ForegroundColor Yellow
-                Write-Host "   Nothing was changed — the version already installed keeps working." -ForegroundColor Yellow
-            }
-            Write-Host "!  uv tool install failed (exit $inst) — no config byte was written." -ForegroundColor Yellow
+            Write-Host "!  读不出 wheel 的版本号：$wheelLeaf" -ForegroundColor Yellow
+            Write-Host "   「一个版本一个目录」是这套升级机制的骨架，而版本只能取自文件名（uv 自己也是这么读的）。" -ForegroundColor Yellow
+            Write-Host "   保持发行资产的文件名：computeruse_mcp-<版本>-py3-none-any.whl" -ForegroundColor Yellow
+            Write-Host "   Nothing was written and nothing was installed." -ForegroundColor Yellow
             exit 1
         }
 
-        # ── 5e. the entry point must EXIST and ANSWER `--selftest` ───────────
-        # The tool directory is named after the DISTRIBUTION (`computeruse-mcp`, measured),
-        # not after the console script, so scan instead of guessing one spelling.
-        $exe = $null
+        $cuRoot = CU-ReleasesRoot
+        $cuVerDir = Join-Path $cuRoot $cuVer
+        $cuCurrent = CU-ReadJson (Join-Path $cuRoot "current.json")
+        $cuStillRunning = "（配置里还没有 mcp.computeruse 条目）"
+        if ($cuCurrent -and $cuCurrent.exe) { $cuStillRunning = "$($cuCurrent.version) → $($cuCurrent.exe)" }
+        Write-Host "   releases: $cuRoot" -ForegroundColor DarkGray
+        Write-Host "   本次目标: $cuVerDir" -ForegroundColor DarkGray
+
+        # ── 5e. install into <releases>/<version>, a directory NOTHING is holding ──
+        # UV_TOOL_DIR IS the version directory now, so this path no longer honours a
+        # caller's UV_TOOL_DIR: nesting a non-tool directory inside uv's own tool dir is how
+        # `uv tool list` learned to print "Ignoring malformed tool `bin`". The override it
+        # does honour is TEAMMODE_CU_RELEASE_DIR, and everything it writes — venv, shim,
+        # receipt — stays under that one root, so the undo and the reclaim are both "delete a
+        # directory", never "reach into the user's real uv state".
+        $cuReceipt = CU-ReadJson (Join-Path $cuVerDir "receipt.json")
+        $alreadyAt = [bool]((CU-FindExe $cuVerDir) -and $cuReceipt -and
+            ("$($cuReceipt.version)" -eq $cuVer) -and
+            (("$($cuReceipt.wheel_sha256)").ToLower() -eq $gotSha))
+        $cuCreatedDir = $false
+        $inst = 0
+        if ($alreadyAt) {
+            # Idempotence, and it is a real skip: no uv run, no new files. The config still
+            # goes through mcp-set below, because the helper itself writes NOTHING when the
+            # entry already has these exact bytes and says 已存在，未改动 when it did.
+            Write-Host "OK  already at $cuVer — 该版本目录已有通过 --selftest 的 receipt、wheel 哈希一致：不重跑 uv tool install" -ForegroundColor Green
+            if ($downloaded) { Remove-Item -LiteralPath $wheelPath -Force -ErrorAction SilentlyContinue; $downloaded = $false }
+        } else {
+            $prevEap = $ErrorActionPreference
+            $ErrorActionPreference = "Continue"
+            if (-not (Test-Path -LiteralPath $cuVerDir)) {
+                New-Item -ItemType Directory -Path $cuVerDir -Force | Out-Null
+                $cuCreatedDir = $true
+            }
+            $env:UV_TOOL_DIR = $cuVerDir
+            # ALWAYS set together with UV_TOOL_DIR: uv's own default shim dir on Windows is
+            # `%USERPROFILE%\.local\bin` (measured: `uv tool dir --bin`), and a shim landing
+            # there is a second place to clean and the exact pollution this layout avoids.
+            $env:UV_TOOL_BIN_DIR = Join-Path $cuVerDir "bin"
+            $cuOut = & uv tool install --force $wheelPath 2>&1
+            $inst = $LASTEXITCODE
+            $ErrorActionPreference = $prevEap
+            $cuOut | Out-Host
+            if ($downloaded) { Remove-Item -LiteralPath $wheelPath -Force -ErrorAction SilentlyContinue; $downloaded = $false }
+            if ($inst -ne 0) {
+                if (($cuOut -join "`n") -match 'os error 32|os error 5|另一个程序正在使用|拒绝访问') {
+                    Write-Host "!  占用发生在本次的目标目录本身：$cuVerDir" -ForegroundColor Yellow
+                    Write-Host "   新机制不会走到这里，除非同一个版本号被重复构建、而旧进程正是从这个目录跑起来的。" -ForegroundColor Yellow
+                    Write-Host "   处理：先 opencode service restart 释放它，或按新版本号重新构建，再重跑本条命令。" -ForegroundColor Yellow
+                }
+                Write-Host "!  uv tool install failed (exit $inst) — no config byte was written." -ForegroundColor Yellow
+                Write-Host "   mcp.computeruse 没有改动，仍在跑的是：$cuStillRunning" -ForegroundColor Yellow
+                exit 1
+            }
+        }
+
+        # ── 5f. the entry point must EXIST and ANSWER `--selftest`, and only then
+        #        does the config move ─────────────────────────────────────────────
+        # The tool directory inside the version dir is named after the DISTRIBUTION
+        # (`computeruse-mcp`, measured), not after the console script, so scan instead of
+        # guessing one spelling.
+        $exe = CU-FindExe $cuVerDir
         $toolName = $null
-        foreach ($d in @(Get-ChildItem -LiteralPath $toolDirEff -Directory -ErrorAction SilentlyContinue)) {
-            foreach ($rel in @("Scripts\computeruse.exe", "bin\computeruse", "Scripts\computeruse")) {
-                $cand = Join-Path $d.FullName $rel
-                if (Test-Path -LiteralPath $cand) { $exe = $cand; $toolName = $d.Name; break }
-            }
-            if ($exe) { break }
-        }
-        # Rollback is stated once and used by both failure legs, so the two cannot drift.
-        if (-not $exe) {
-            # No console script appeared: still find the directory uv just created, so the
-            # rollback has a name to hand to `uv tool uninstall` instead of leaving a
-            # half-tool behind.
-            $d = @(Get-ChildItem -LiteralPath $toolDirEff -Directory -ErrorAction SilentlyContinue |
-                Where-Object { $_.Name -like "*computeruse*" }) | Select-Object -Last 1
-            if ($d) { $toolName = $d.Name }
-        }
+        if ($exe) { $toolName = Split-Path -Leaf (Split-Path -Parent (Split-Path -Parent $exe)) }
+        # Rollback is stated once and used by both failure legs. It is a DIRECTORY delete
+        # scoped to the version directory THIS run created — deliberately not
+        # `uv tool uninstall`: that command resolves UV_TOOL_DIR itself, and in the
+        # `already at` leg we never set it, so it would reach the user's REAL tool dir and
+        # remove the server that is currently working. Nothing here kills a process; a
+        # directory something is running from is left exactly as it is.
         $cuRollback = {
-            if ($toolName) {
-                $p = $ErrorActionPreference
-                $ErrorActionPreference = "Continue"
-                try { & uv tool uninstall $toolName | Out-Host } finally { $ErrorActionPreference = $p }
-                Write-Host "   rolled back: uv tool uninstall $toolName" -ForegroundColor Yellow
+            if ($cuCreatedDir -and (Test-Path -LiteralPath $cuVerDir)) {
+                # CU-DirInUse answers a VERDICT, so the test is on .InUse (a hashtable is
+                # always truthy — an if on the raw object would keep every directory and say
+                # a process is running when none was hit), and the sentence carries the
+                # verdict's own reason: hit-with-pid, or no-hit-evidence-but-conservative.
+                $rbUse = CU-DirInUse $cuVerDir
+                if ($rbUse.InUse) {
+                    Write-Host "   版本目录留着不动（$($rbUse.Reason)）：$cuVerDir" -ForegroundColor Yellow
+                } else {
+                    try { Remove-Item -LiteralPath $cuVerDir -Recurse -Force; Write-Host "   本次新建的版本目录已删除：$cuVerDir" -ForegroundColor Yellow }
+                    catch { Write-Host "!  版本目录删不掉，留着不动：$cuVerDir — $($_.Exception.Message)" -ForegroundColor Yellow }
+                }
+            } elseif ($alreadyAt) {
+                # The receipt claimed "this directory passes --selftest", and it just did
+                # not. Dropping the claim is what makes the NEXT run reinstall and
+                # re-verify instead of trusting a record this machine contradicted.
+                $rc = Join-Path $cuVerDir "receipt.json"
+                if (Test-Path -LiteralPath $rc) {
+                    Remove-Item -LiteralPath $rc -Force -ErrorAction SilentlyContinue
+                    Write-Host "   receipt 已删除（$cuVer 的 --selftest 这次没通过）：下一次安装会重装并重新验证" -ForegroundColor Yellow
+                }
+                Write-Host "   版本目录本身保持原样：$cuVerDir（$toolName）" -ForegroundColor Yellow
             }
-            Write-Host "   Nothing was written to $cfgFile." -ForegroundColor Yellow
+            Write-Host "   Nothing was written to $cfgFile — 仍在跑的仍是：$cuStillRunning" -ForegroundColor Yellow
         }
         if (-not $exe) {
-            Write-Host "!  Installed, but no computeruse entry point appeared under $toolDirEff" -ForegroundColor Yellow
+            Write-Host "!  Installed, but no computeruse entry point appeared under $cuVerDir" -ForegroundColor Yellow
             & $cuRollback
             exit 1
         }
@@ -522,6 +806,7 @@ function Install-V2 {
             Write-Host "!  `"$exe`" --selftest exited $st, so this server does not work on this machine" -ForegroundColor Yellow
             Write-Host "   (its own output is above; the usual cause is a session without a real desktop:" -ForegroundColor Yellow
             Write-Host "    the selftest reports dpi_aware=false there). Nothing was written." -ForegroundColor Yellow
+            Write-Host "   配置条目未改动 —— 仍是旧版本在跑：$cuStillRunning" -ForegroundColor Yellow
             & $cuRollback
             exit 1
         }
@@ -530,6 +815,9 @@ function Install-V2 {
         # An ABSOLUTE path, never the bare name: the host spawns this argv itself and we do
         # not control its working directory or PATH. timeout 60000 because the host default
         # (5000 ms) is shorter than a cold Python start.
+        # THE PATH IS VERSIONED, AND THAT IS THE POINT: this one edit is the upgrade. It is
+        # the only thing that has to move, because the new bytes never touch the old
+        # directory; after ONE host restart the entry resolves to the new server.
         $mcpJson = ([ordered]@{
             type        = "local"
             command     = @($exe, "--budget", "200")
@@ -547,18 +835,50 @@ function Install-V2 {
         if ($LASTEXITCODE -ne 0) {
             Write-Host "!  The mcp.computeruse entry is not in $cfgFile - nothing further is claimed." -ForegroundColor Yellow
             Write-Host "   Add it by hand under `"mcp`": { `"computeruse`": { `"type`": `"local`", `"command`": [`"$exe`", `"--budget`", `"200`"], `"enabled`": true, `"timeout`": 60000 } }" -ForegroundColor Yellow
+            Write-Host "   条目没落地，所以 current.json / receipt.json 都不写：下一次安装会把这目录当作未验证的重装。" -ForegroundColor Yellow
             exit 1
         }
-        # A thing this script wrote must be removable without re-reading its source, so the
-        # undo is printed as three steps, in the order they have to be done.
+        # The two runtime records, written only after the helper's own read-back passed:
+        # receipt.json = "this directory is a verified install of these wheel bytes" (the
+        # idempotence key), current.json = "the config entry points here" (the reclaim's
+        # do-not-touch marker). Neither one reads or rewrites the host config.
+        $cuNow = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
+        CU-WriteJson (Join-Path $cuVerDir "receipt.json") ([ordered]@{
+            version      = $cuVer
+            exe          = $exe
+            wheel        = $wheelLeaf
+            wheel_sha256 = $gotSha
+            selftest     = "exit 0"
+            installed_at = $cuNow
+        })
+        CU-WriteJson (Join-Path $cuRoot "current.json") ([ordered]@{
+            version      = $cuVer
+            exe          = $exe
+            wheel_sha256 = $gotSha
+            config       = $cfgFile
+            updated_at   = $cuNow
+        })
+        # An upgrade cleans up after itself. The previous version is now unreferenced and
+        # usually STILL LOADED by the running host, which the pass reports as a keep with a
+        # reason — the next install, after the restart, is what takes it.
+        Write-Host "↻  回收旧版本目录 …" -ForegroundColor DarkGray
+        CU-ReclaimReleases -Root $cuRoot -CurrentVersion $cuVer -CfgFiles @($cfgFile, $legacy)
         Write-Host ""
-        Write-Host "   撤销 computer-use（三步）:" -ForegroundColor DarkGray
+        Write-Host "✔  computer-use $cuVer 已就位 —— 只差一次重启（不是两次）" -ForegroundColor Green
+        Write-Host "   opencode service restart   # 旧进程随宿主退出，新条目指向上面那个 exe" -ForegroundColor DarkGray
+        # A thing this script wrote must be removable without re-reading its source, so the
+        # undo is printed as steps, in the order they have to be done.
+        Write-Host ""
+        Write-Host "   撤销 computer-use:" -ForegroundColor DarkGray
         Write-Host "     1. 删掉 $cfgFile 里的 mcp.computeruse 那一项：" -ForegroundColor DarkGray
         Write-Host "        node `"$surgery`" `"$cfgFile`" mcp-remove computeruse" -ForegroundColor DarkGray
-        Write-Host "     2. uv tool uninstall $toolName     # 卸载 wheel 装出来的工具目录" -ForegroundColor DarkGray
-        Write-Host "        （可选，清掉审计轨：Remove-Item -Recurse -Force `"`$env:LOCALAPPDATA\te-river\computeruse`"）" -ForegroundColor DarkGray
+        Write-Host "     2. 删掉这套机制装的全部版本：Remove-Item -Recurse -Force `"$cuRoot`"" -ForegroundColor DarkGray
+        Write-Host "        （只回收旧版本： .\install.ps1 -ComputerUseReclaim —— 逐条报理由，运行中的目录绝不删）" -ForegroundColor DarkGray
+        Write-Host "        （旧布局的安装在 uv 自己的工具目录里： uv tool uninstall computeruse-mcp）" -ForegroundColor DarkGray
         Write-Host "     3. 重启 OpenCode：opencode service restart" -ForegroundColor DarkGray
+        Write-Host "        （可选，清掉审计轨：Remove-Item -Recurse -Force `"$env:LOCALAPPDATA\te-river\computeruse`"）" -ForegroundColor DarkGray
     }
+
     # No scratch file to clean: the surgery is the shipped scripts\lib\config-surgery.cjs,
     # shared with install.sh. Deleting a temp copy of it used to be the point of a finally
     # block; deleting the shipped helper would not be.
@@ -608,6 +928,13 @@ if ($wantCU) {
     Write-Host "!  -ComputerUse is implemented on the OpenCode 2.x path only (this machine takes the" -ForegroundColor Yellow
     Write-Host "   1.18.x path). mcp.computeruse is a 2.x config shape with no measured 1.18.x" -ForegroundColor Yellow
     Write-Host "   equivalent, so NOTHING was written. Re-run with -ComputerUse once the host is 2.x." -ForegroundColor Yellow
+    exit 1
+}
+if ($ComputerUseReclaim) {
+    Write-Host ""
+    Write-Host "!  -ComputerUseReclaim 也是 2.x 路径的功能：它回收的是本安装器写的" -ForegroundColor Yellow
+    Write-Host "   <releases>/<版本>/ 目录，而 1.18.x 路径从不装它们。这条机器走 1.18.x，所以" -ForegroundColor Yellow
+    Write-Host "   一个文件都没有读、没有删。宿主升到 2.x 后再跑一次即可。" -ForegroundColor Yellow
     exit 1
 }
 if ($OpenCodeWhy) {

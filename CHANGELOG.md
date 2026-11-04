@@ -7,6 +7,18 @@ registry saw 1.5.0 as the install-script fix release).
 
 ## [Unreleased]
 
+### Added
+
+- **computer-use 零重启升级（一次重启是下限）。** 新版本装进 `<releases>/<version>/` 带版本的独立目录——Windows
+  不换运行中的 exe（`os error 32` 的根因），但**新版本从来不去覆盖旧文件**，安装可在 OpenCode 运行时完成；宿主只在
+  启动时读 MCP 的 `command`，所以**剩下一次重启**，文档明写零次做不到。MCP `command` 改指走
+  `config-surgery.cjs`（原子写 + 严格读回见 `b8df98d`）；旧 release 目录**绝不当场强删**——挪进
+  `.pending-delete/` 由下一趟回收（`-ComputerUseReclaim` / `CU-ReclaimReleases` 单独入口，两趟语义实测）。
+  selftest 不绿则配置条目一字不改、回执丢弃、明说「仍是旧版本在跑」。独立验收判 7 条（0 critical / 3 major：
+  sh 守卫漏最后一项、helper 非原子写、README 停在两次重启——三条全部修掉，见下 Fixed）。
+  **端到端未跑的腿如实记录**：真实 wheel 的 `uv tool install` 两腿（成功/失败）属代码顺序级静态判定；
+  宿主重启一次后新 `command` 才生效是宿主的 MCP 连接边界，不是本机制能省的。
+
 ### Fixed
 
 - **R6 路径红线不再认 `envProtect: "off"`（PRODUCT_BUG，方向 (a) 修复）。** 既有实现里 `off` 在**四个面**把 env 文件
@@ -18,10 +30,12 @@ registry saw 1.5.0 as the install-script fix release).
   反证是成组的：只修 3/4 面时 `tsc` 先响（TS2367 类型收窄暴露死分支）、套件红在
   `off does NOT lift the env-file path red line (resolution (a))`——证明断言盯的是"四个面一致"而非单点。
   遗留期望同批翻转：`test-v2-adapter` 三条（off→deny 一族 + `pathGuard` 形状），断言消息改写为自述新契约，不留化石。
+- **本批唯一的下划线形参（自述，免得读成逃生口）**：`pathGuard` 第三形参改 `_mode`——保留 arity（位置调用点与三条断言仍传 3 实参）、
+  值刻意不读，代码注释与断言消息钉死。这不是 2469ab4 那条「无 `_` 改名」被打破：那是那一轮的清点；TS 官方豁免带文档在此适用。
 - **口径精度一批**：`config-layers.ts` 的 `envProtect` 键文档不再宣称"off 即关掉环境防护"；`gate-predicates.ts` 的
   false 语义钉为"没有注入的 ask glob 管辖它"（放行短路在 `inspectToolCall`/`shellGuard`，不在本函数），活依据补
   `v2-guard.ts:150`/`v2.ts:748`（`bashAskPatterns` 本 revision 无生产调用方，旧注释把依据押在它身上）；
-  `test-hosthooks.mjs` 删掉冒充契约的多余第 4 实参；组 42 说明加"闸门仅覆盖 `src/**/*`"限定。**明确不做**：
+  `test-hosthooks.mjs` 删掉冒充契约的多余第 4 实参；组 42 说明加"闸门仅覆盖 `src/**/*`"限定。**明确不做（领队裁定，非作者自留）**：
   `v2-tail`/`v2-session-instructions` 两份 `isOff` 的写法统一——为风格改动正在执法的 v2 层，纯风险无验收。
 
 ### Added
@@ -58,7 +72,7 @@ registry saw 1.5.0 as the install-script fix release).
   三份 `v2-tail.ts` 的 `isOff` 复制残留——键是 `enum:["on","off"]`，求值顺序是**先归一后读**：字符串 `0/false/no` 由
   `coerceValue` 归成 off，**非字符串类型（JSON 布尔 `false`、数字 `0`）则在 `typeOk` 处整层丢弃、回落默认**（方向是
   fail-toward-on——用户写布尔假值关不掉该功能），故读到的值域只剩 `"on"|"off"`，`!== "off"` 本就完整）；
-  **4 处是"值本来该被用而忘了用"**，见下条。禁止的糊法一条没用：全仓 `@ts-ignore` 零命中、无 `_` 改名、无 `void x`。
+  **4 处是"值本来该被用而忘了用"**，见下条。**`2469ab4` 一轮内**禁止的糊法一条没用：全仓 `@ts-ignore` 零命中、无 `_` 改名、无 `void x`（下一轮 `65f738f` 有一个经评审批准的下划线形参，见 Fixed 段 `_mode` 行）。
   `test-v2-adapter` 新组 **42** 把闸门钉成断言（两 flag 必须为 true + `tsc --noEmit -p` 必须零 TS6133/TS6196），造红方式是真的
   加一个未使用局部变量 ⇒ `src/envprotect/hook.ts(30,7): error TS6133`，删除后回绿。
 - **两条 R6 面的 (b) 类接线，声明是"零运行时变化"，交给评审复核而不是自证**：`envprotect/gate-predicates.ts` 的

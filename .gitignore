@@ -16,3 +16,8 @@ Thumbs.db
 .opencode/
 .mcp.json
 .qoder-credits/
+
+# PowerShell writes ModuleAnalysisCache relative to cwd when a shell run sits in
+# the repo root (observed twice as an untracked Microsoft/ here — see CHANGELOG
+# 1.9.8-era note); ignore the artifact, the runs themselves should use a temp cwd.
+/Microsoft/
