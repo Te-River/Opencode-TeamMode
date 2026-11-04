@@ -108,9 +108,6 @@ export function parseProtectPatterns(raw: unknown): RegExp[] {
   return out
 }
 
-const isOff = (v: string | undefined): boolean =>
-  typeof v === "string" && ["off", "false", "0", "no"].includes(v.trim().toLowerCase())
-
 export function resolvePruneConfig(
   config: {
     prune: string

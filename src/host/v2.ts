@@ -38,7 +38,7 @@ import { isExpired } from "../tm/refs.js"
 import { agents } from "../agents.js"
 import { normalizeAgentName } from "../identity.js"
 import { DEFAULT_TTL_DAYS, resolveTtlMs, startBlackboardMaintenance } from "../blackboard.js"
-import { parseExtraDeny, resolveEnvProtectMode } from "../envprotect.js"
+import { resolveEnvProtectMode } from "../envprotect.js"
 import { createTmTools } from "../tm/index.js"
 import { agentVisibilityLine } from "../tm/stats.js"
 import { setAskUnavailableNote } from "../tm/perm-ask.js"
@@ -284,7 +284,13 @@ export const v2Personality: V2Plugin = {
     // (no more `process.env` reads scattered across the modules).
     const cfg = tmRuntime.config
     const envProtectMode = envProtectOff ? "off" : resolveEnvProtectMode(cfg.envProtect)
-    const envProtectExtra = parseExtraDeny(cfg.envProtectExtraDeny)
+    // Deliberately no `envProtectExtra = parseExtraDeny(cfg.envProtectExtraDeny)`
+    // here (it was computed and read by nothing): the v2 guard face — `shellGuard`
+    // and `pathGuard` in src/host/v2-guard.ts — takes NO extra-deny list, and the
+    // only consumer of that list is `createTmTools`' own `extra` (src/tm/index.ts),
+    // which the retired v1 tm_bash/tm_read/tm_grep layer used to feed. REPORTED
+    // GAP, not wired: handing the list to the guard would mint new denies, which
+    // is a behaviour change for a fix round that must not make one.
     const privateSpace = setPrivateSpacePolicy(cfg.privateSpace || "deny")
     const v2CodeModeDirect = /^(1|true|yes|on|direct)$/i.test(cfg.v2CodeMode.trim())
 

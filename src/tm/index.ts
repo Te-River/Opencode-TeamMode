@@ -26,7 +26,9 @@ import {
   resolveEnvProtectMode,
   type EnvProtectMode,
 } from "../envprotect.js"
-import { resolveConfig, resolveOnOff, type TmConfig } from "./config.js"
+// (resolveConfig is NOT imported here: the stable re-export block below pulls it
+// straight from ./config.js, so a local binding would ride no code path.)
+import { resolveOnOff, type TmConfig } from "./config.js"
 import { resolveLayeredTmConfig, renderConfigSection, resolveGlobalDir, type ConfigFileRoots } from "./config-files.js"
 import { ensureGlobalConfig } from "./config-template.js"
 import { hmacToken, loadOrCreateHandleKey, newRunId } from "./refs.js"
@@ -41,7 +43,9 @@ import { buildGoalTool } from "./goal.js"
 import { createWebCache } from "./cache.js"
 import type { CapabilityRow } from "../capabilities.js"
 import { buildTmWebfetchTool, setHitBlacklist, setPrivateSpacePolicy } from "./webfetch.js"
-import { buildTmSearchTool, SEARCH_ENGINES, SEARCH_ENGINE_NAMES } from "./search.js"
+// (SEARCH_ENGINES / SEARCH_ENGINE_NAMES stay on the public surface through the
+// re-export block at the bottom of this file, not through a local binding.)
+import { buildTmSearchTool } from "./search.js"
 import { rmForceSafe } from "../fs-safe.js"
 export { rmForceSafe }
 export {
@@ -487,9 +491,6 @@ export async function createTmTools(
     expireAt,
     mode,
     extra,
-    // fix batch T3: the ctxDir fallback — the host process cwd is the user
-    // HOME on the desktop sidecar, never a valid workspace root.
-    workspaceDir: directory,
   }
   // ONE main pipeline instance shared by the four tools AND tm_webfetch —
   // a shared step counter keeps their refs unambiguous (a second instance

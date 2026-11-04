@@ -67,7 +67,8 @@ interface Inputs {
   stop?: { tried: number; confirmed: number; refused: number; unknown: number; error?: string }
 }
 
-const has = (list: readonly string[], want: (x: string) => boolean) => list.some(want)
+/** The row shape this file renders is `CapabilityRow` (see src/capabilities.ts);
+ *  the seam checks below are inline `domains.includes(...)` / `saw(...)`. */
 
 export function v2CapabilityRows(i: Inputs): CapabilityRow[] {
   const domains = i.probe.report.ctxDomains

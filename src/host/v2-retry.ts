@@ -143,8 +143,6 @@ export const RETRY_DEFAULTS: RetryConfig = {
   chainGapMs: 600_000,
 }
 
-const isOff = (raw: unknown): boolean => /^(off|false|0|no)$/i.test(String(raw ?? "").trim())
-
 /**
  * Resolve the knobs.  An ILLEGAL value falls back to its default — it never
  * silently disables the feature ("非法值回退默认，不静默关闸").  Only an explicit

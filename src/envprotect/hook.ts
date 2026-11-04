@@ -37,6 +37,12 @@ export function classifyPathFields(
   extra: RegExp[] = [],
 ): string | null {
   if (!args || typeof args !== "object") return null
+  // The `off` gate is decided HERE as well as in `inspectToolCall` (which returns
+  // null before routing): this matcher is exported on the `envprotect` facade, and
+  // a direct caller must not reach the env-file path face while R6 is off. The v2
+  // sibling leaf does exactly this (`pathGuard`, src/host/v2-guard.ts). The one
+  // in-tree caller already gates on `off`, so behaviour is unchanged.
+  if (mode === "off") return null
   for (const [key, value] of Object.entries(args)) {
     if (typeof value !== "string" || !value) continue
     if (!PATH_LIKE_KEYS.test(key)) continue

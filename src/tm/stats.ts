@@ -911,7 +911,9 @@ export function buildStatsTool(deps: StatsDeps): ToolDefinition {
       capabilities: { descriptor: "capabilities: false to omit the host-capability matrix" },
       recent: { descriptor: "recent: number (optional, 1..50 — append a newest-first recap of governed calls with their handle refs and payload paths)" },
     },
-    execute: async (rawArgs, ctx): Promise<ToolResult> => {
+    // tm_stats reads the plugin's OWN trajectory files and nothing per-session,
+    // so it takes no execute ctx (the other tools' `ctx` is for ask/scope/lead-lock).
+    execute: async (rawArgs): Promise<ToolResult> => {
       try {
         const args = (rawArgs ?? {}) as Record<string, unknown>
         const limit = Math.max(1, Math.min(50, Math.round(num(args.runs)) || 10))

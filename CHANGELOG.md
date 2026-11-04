@@ -28,13 +28,49 @@ registry saw 1.5.0 as the install-script fix release).
   diff 里的死代码、职责漂移、为 stdlib 已覆盖的东西新加依赖），并明确**只判这次 diff 引入的**，存量腐化只是背景。
   领队把这四条写成**standing acceptance criteria**，位置在 Step 0 的 `## Goal directive` 里、`## Triage` 之前——
   所以它不能在一次派工里被重新讨论掉。
+- **死代码从"评审抓"变成"编译不过"：`tsconfig.json` 打开了 `noUnusedLocals` + `noUnusedParameters`，并清掉全部 17 处存量。**
+  清理**逐处分类**，不是删行了事：13 处是真死代码（未用导入、退役 `tm_read`/`tm_grep` 留下的 `ctxDir`/`workspaceDir`、
+  三份 `v2-tail.ts` 的 `isOff` 复制残留——键是 `enum:["on","off"]` 且 `coerceValue` 已把 `false/0/no` 归一，故 resolver 里
+  `!== "off"` 本就完整）；**4 处是"值本来该被用而忘了用"**，见下条。禁止的糊法一条没用：全仓 `@ts-ignore` 零命中、无 `_` 改名、无 `void x`。
+  `test-v2-adapter` 新组 **42** 把闸门钉成断言（两 flag 必须为 true + `tsc --noEmit -p` 必须零 TS6133/TS6196），造红方式是真的
+  加一个未使用局部变量 ⇒ `src/envprotect/hook.ts(30,7): error TS6133`，删除后回绿。
+- **两条 R6 面的 (b) 类接线，声明是"零运行时变化"，交给评审复核而不是自证**：`envprotect/gate-predicates.ts` 的
+  `isAskGatedEnvCommand(mode)` 加了 `mode === "off" → false`，`hook.ts` 的 `classifyPathFields(mode)` 加了
+  `mode === "off" → null`。依据是 R6 的 ask 面只在 `mode !== "off"` 时注入（`patterns.ts:149-152`），off 下返回 true 会
+  把判定 defer 给一个**永不出场**的对话框；两个函数都无生产调用方（v1 hook 已删），测试全传 `"strict"`。
+- **两个真实缺口被挖出来，记在这里，不在本轮偷修**（修它们=改行为，要用户点头）：
+  ① `envProtectExtraDeny` 在 **v2 没有任何生效面**——`shellGuard`/`pathGuard` 的签名里没有 extra，`src/host` 内
+  `git grep "\bextra\b"` 零命中，解析结果只进 `TmDeps.extra` 而 pipelines 除类型声明无人读取；②
+  `ResolveLayeredConfigInput.exempt` 是**空旋钮**——被接受、从不查询，红线实际只由 `spec.redLine × RED_LINE_LAYERS` 决定；
+  让它生效等于"调用方可解除红线"，那是设计决定，不是清理。两处都已在源码注释点名。
 - **规则一律有失败测试钉着。** `test-blackboard` 新增一组 **21 处 `assert` 调用、循环展开后 35 条实际断言**：
   阶梯五步不仅存在而且**顺序**被钉（`YAGNI` < 标准库 < 仓库已有 < 已装依赖 < 才写新代码）、rot 五项逐个点名、
   "评审豁免于单维度规则"这一条本身被断言、领队 standing criteria 的位置用 `indexOf` 卡在三节之前。断言按
   **空白折叠后**匹配，所以重新排文不会红、删掉规则才红。反例造过一次：把 `Rule of three` 改成 `Rule of two`，
   套件当场 `AssertionError: implementer: rule of three present`。
 
+- **computer-use 审计轨有了总量闸门：`CU_AUDIT_MAX_BYTES`（默认 64 MiB，`0` = 不设上限）。** TTL 只回答"多旧"，
+  从不回答"多少"——本机实测一个 run 目录就 **27,106,663 B**，而 7 天的时钟远未到点。驱逐单位是**整个 run 目录**
+  （半删的 JSONL 比不删更糟），按 `(day, mtime, path)` 最旧优先；**活跃 run 按身份豁免而不是按位置**，有用例把它
+  放到最旧那天仍断言存活。**拼错的 env 值回落默认而不是 0**——一次笔误不许关掉唯一的尺寸约束。`usage()` /
+  `last_sweep` 把 `over_cap` / `cap_reason` / `evicted[]` / `evict_failed_runs` 全部报出来，删不掉的目录记成
+  **失败**而不是"已回收"。TTL 先跑、两趟共用**一次**扫描，写路径节流（每 20 行且 ≥60 s，3 行突发不碰盘）。
+- **computer-use 附图有预算、重复帧不再重发：`CU_IMAGE_BUDGET_BYTES`（默认 4 MiB，`0`/负 = 不设上限）。**
+  截图是非文本部件，JIT 卸载管不到它，只能生成侧省。去重键 `left,top,w,h|display|max_width`，**只在同一 target
+  上比**——跨窗口像素相同照样各自附图。取证面一字不动并有断言：PNG 路径、sha1、审计行、verdict 都不读 ledger。
+  措辞硬写"未附图既不表示画面空白、也不表示屏幕没有变化"并给出下一步（读路径 / sha1 / 调大预算），因为**归因错误
+  在这个包里是缺陷，不是措辞偏好**。`control_status` 报 `image_attachments` 的 9 个计数，并防御式消费
+  `AuditTrail.usage()`：没有方法 / 抛异常 / 返回非对象都成 `audit usage: unavailable`——唯一权威的预算读数
+  不能因为兄弟模块改了就先失败。
+- **已知边界，写在这里而不是藏进实现**：一个**活跃 run 自己**超限时无可驱逐对象，本进程内收不了口（本机就是
+  `27 MB / runs 1` 这一种形状），只能等下个进程回收；`over_cap=1` 挨着 `evicted_runs=0` 就是这个事实的读数。
+
 ### Measured
+
+- computer-use 合并后的全量：**113 passed, 1 skipped**（改动前基线 87 passed；新增 12 + 15 条用例）。两次造红：
+  驱逐顺序改成最新优先 ⇒ `test_audit.py` 两条当场红；`is_repeat` 改成恒 False ⇒ `test_image_budget.py` 四条当场红。
+  本机只读读数：`{"bytes": 27106663, "cap_bytes": 67108864, "ttl_days": 7, "evicted_runs": 0, "runs": 1, "over_cap": 0}`。
+- **这批全部只在 `main`，没有发版**：npm 仍是 1.9.7，computer-use 仍是 0.0.6，未打包、未 publish、未建 tag/release。
 
 - **提示词按角色定价，改前/改后同一次跑量**（`estimateTokens`，不是按字符估）：领队 +150、实现者 +428、
   评审 +370，而 architect / tester / researcher / computerUser **增量为 0**。
@@ -45,8 +81,9 @@ registry saw 1.5.0 as the install-script fix release).
 
 - 没有新增 `internal-reviewer` 角色，也没有在代码里"注册 agent"——2.x 插件建不出 agent，且现有 reviewer 已经是那个东西。
 - 没有自动 `spawnSubagent` 触发审查：插件替用户做控制流，和审批门直接冲突。
-- 没有开 `noUnusedLocals` / `noUnusedParameters`（会先撞上 17 处存量死代码）。这是把死代码从"评审抓"变成"编译不过"的下一步，
-  等点头再做。
+- 没有把挖出来的两个 (b) 类缺口**接线**（`envProtectExtraDeny` 在 v2 无生效面、`exempt` 是空旋钮）——修它们要新增 deny 语义或
+  打开"调用方可解除红线"，两者都是改行为的设计决定，等用户点头；本轮只在源码注释与本文里点名。
+- 没有做 `--image-budget` 的 CLI 旗标（`cli.py` 当时有并行持有者），注入点已就位：`ComputerUseServer(..., image_ledger=capture.ImageLedger(n))`。
 
 ## [1.9.7] - 2026-11-01
 

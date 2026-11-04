@@ -395,7 +395,6 @@ export async function applyV2Probe(ctx: unknown, opts: ProbeOptions = {}): Promi
   const seenAgents = new Set<string>()
   const seenBeforeShapes = new Set<string>()
   const messageShapes: Array<Record<string, unknown>> = []
-  const envelopeForms = report.envelopeForms
 
   const write = (rec: Record<string, unknown>) => {
     if (!file || report.lines >= maxLines) return

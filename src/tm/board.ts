@@ -24,7 +24,7 @@
 
 import * as fs from "node:fs"
 import * as path from "node:path"
-import type { ToolDefinition, ToolResult } from "../types.js"
+import type { ToolResult } from "../types.js"
 import { tmError, toToolResult } from "./result.js"
 import type { TmPipelines } from "./pipelines.js"
 

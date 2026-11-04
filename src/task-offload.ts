@@ -69,7 +69,7 @@ export function parseTaskEnvelope(text: unknown): TaskEnvelope | null {
 }
 
 /** The replacement: same envelope, same summary, preview + a way to the whole. */
-export function renderOffloadedTask(env: TaskEnvelope, preview: string, tokens: number, previewTokens: number): string {
+export function renderOffloadedTask(env: TaskEnvelope, preview: string, tokens: number): string {
   return [
     `<task id="${env.sessionId}" state="completed">`,
     ...(env.summary ? [`<summary>${env.summary}</summary>`] : []),
@@ -192,7 +192,7 @@ export function createTaskOffload(deps: TaskOffloadDeps) {
           lines: deps.previewLines,
           maxTokens: deps.previewMaxTokens,
         })
-        part.text = renderOffloadedTask(env, preview, tokens, estimateTokens(preview))
+        part.text = renderOffloadedTask(env, preview, tokens)
       }
     } catch {
       // A governance hook that throws would eat the message. Fail open, always.

@@ -6893,6 +6893,48 @@ console.log("41. computeruse MCP — 按角色删除的哨兵、两种拼写、�
   console.log("   OK (角色判定/双拼写删除/三计数/权限层 deny + 内层空 input + 外层 input.code 三层各自拒绝、允许角色三层都放行、拼出来的名字绕过时当场写 computeruse_bypass 轨迹行、declared-off-surface 不再冒充「server 没注册」+ BOM)")
 }
 
+// 42. 未使用代码闸门 —— tsconfig 必须同时打开两个 flag，且源码在它们之下干净。
+console.log("42. noUnusedLocals / noUnusedParameters 闸门 —— flag 在位 + tsc 在双 flag 下零报错")
+{
+  // 为什么这一条值得单独守：`npm run build` 与 run-tests 的第一步都跑 tsc，所以
+  // 「没有未使用的局部变量/参数」本来是编译器负责的；这里负责的是**闸门本身不被
+  // 关掉** —— 谁把 flag 关成 false，17 处存量就会重新长回来，而构建照样绿。
+  const here = path.dirname(fileURLToPath(import.meta.url))
+  const tsconfigPath = path.join(here, "tsconfig.json")
+  const rawCfg = fs.readFileSync(tsconfigPath, "utf8")
+  // JSONC：注释先按整行剥掉再解析（宿主的规则，也是本包 config-layers 的规则）。
+  const cfg = JSON.parse(rawCfg.replace(/^\s*\/\/.*$/gm, ""))
+  assert.equal(cfg.compilerOptions.noUnusedLocals, true, "noUnusedLocals 仍然是 true")
+  assert.equal(cfg.compilerOptions.noUnusedParameters, true, "noUnusedParameters 仍然是 true")
+
+  // flag 在位只是声明；真正干净要看 tsc 怎么说。用 `-p` 走同一份 tsconfig，
+  // 于是这一条同时也是「新增代码带着未使用变量就过不了测试」的兜底。
+  const tscBin = path.join(here, "node_modules", "typescript", "bin", "tsc")
+  if (fs.existsSync(tscBin)) {
+    let out = ""
+    let code = 0
+    try {
+      out = execFileSync(process.execPath, [tscBin, "--noEmit", "-p", tsconfigPath], {
+        cwd: here,
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "pipe"],
+      })
+    } catch (err) {
+      const e = err
+      code = typeof e?.status === "number" ? e.status : 1
+      out = `${e?.stdout ?? ""}${e?.stderr ?? ""}`
+    }
+    const unused = String(out)
+      .split(/\r?\n/)
+      .filter((l) => /error TS61(33|96)\b/.test(l))
+    assert.equal(code, 0, `tsc 在双 flag 下必须退出 0，实际 ${code}：\n${String(out).slice(0, 600)}`)
+    assert.deepEqual(unused, [], `未使用局部变量/参数必须为 0，实际：\n${unused.join("\n")}`)
+    console.log("   OK (两个 flag = true · tsc --noEmit -p 零 TS6133/TS6196)")
+  } else {
+    console.log("   SKIP (没有本地 typescript/bin/tsc，只校验了 tsconfig 的两个 flag)")
+  }
+}
+
 // B5: the group count is DERIVED from the numbered group headers this file
 // actually printed, never hand-written — the last hand-written number was
 // already stale while the file had more.  The self-scan reads THIS file by its

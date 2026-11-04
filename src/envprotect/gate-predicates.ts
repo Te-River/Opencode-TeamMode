@@ -92,6 +92,13 @@ export function isAskGatedEnvCommand(
   extra: RegExp[] = [],
 ): boolean {
   const text = String(command ?? "")
+  // `mode` is part of the contract, not decoration: the R6 env ask face is only
+  // installed when the host asks at all (`bashAskPatterns` → `if (mode !== "off"
+  // && envFace)`, src/envprotect/patterns.ts), so under "off" NOTHING is
+  // dialog-governed and deferring on it would be a silent env read. Every caller
+  // today passes strict/standard (the v1 hook that deferred on this answer went
+  // with the v1 personality), so this gate changes no observable behaviour.
+  if (mode === "off") return false
   if (!text.trim()) return false
   for (const r of extra) if (r.test(text)) return false
   // command substitution runs its own line — the outer pattern never matches

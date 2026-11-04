@@ -1,6 +1,6 @@
 import type { V2Registration } from "./v2-types.js"
 import type { TeamScope } from "./v2-scope.js"
-import { capTokens, capKeepingAddressing, capKeepingTables, detectContentType, hasMarkdownTable } from "../tm/preview.js"
+import { capKeepingAddressing, capKeepingTables, detectContentType, hasMarkdownTable } from "../tm/preview.js"
 import { parseHostEnvelope, renderOffloadedSubagent } from "../task-offload.js"
 import { estimateTokens, resolveConfig } from "../tm/config.js"
 

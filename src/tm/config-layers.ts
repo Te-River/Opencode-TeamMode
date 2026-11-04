@@ -312,7 +312,12 @@ export interface ResolveLayeredConfigInput {
   /** System (managed settings) file raw JSONC, or null/undefined when absent.
    *  The HIGHEST-precedence layer — see the module header. */
   systemLayer?: string | null
-  /** Override the red-line exempt set (defaults to RED_LINE_EXEMPT_KEYS). */
+  /** Override the red-line exempt set (defaults to RED_LINE_EXEMPT_KEYS).
+   *  ACCEPTED BUT NOT CONSULTED: the rule below is derived from the registry
+   *  (`spec.redLine`) crossed with `RED_LINE_LAYERS`, so no value of this field
+   *  changes an outcome today. Kept as the seam it advertises, reported as a
+   *  dead knob — honouring it would let a caller un-protect a red line, which is
+   *  a design call, not a cleanup. */
   exempt?: readonly string[]
   /** Remove every file layer (test injection). */
   envOnly?: boolean
@@ -452,7 +457,6 @@ function projectLayerList(projectLayer: ResolveLayeredConfigInput["projectLayer"
  * header for the three rules.
  */
 export function resolveLayeredConfig(input: ResolveLayeredConfigInput): LayeredConfigResult {
-  const exempt = new Set(input.exempt ?? RED_LINE_EXEMPT_KEYS)
   const envOnlyActive = input.envOnly ?? false
 
   // Ordered low→high.  envOnly removes every file layer BEFORE any parse.

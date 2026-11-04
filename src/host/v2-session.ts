@@ -101,8 +101,6 @@ export interface SplitConfig {
 
 export const SPLIT_DEFAULTS: SplitConfig = { enabled: true, briefTokens: 4000, maxCriteria: 3 }
 
-const isOff = (value: unknown): boolean => typeof value === "string" && /^(off|0|false|no)$/i.test(value.trim())
-
 /** `splitAdvice: "off"` disables; the two numbers are clamped by `resolveConfig`. */
 export function resolveSplitConfig(
   config: { splitAdvice: string; splitBriefTokens: number; splitMaxCriteria: number } = resolveConfig(),

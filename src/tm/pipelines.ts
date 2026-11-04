@@ -65,13 +65,6 @@ export interface TmDeps {
    * WRONG payload).  PTC passes "ptc-"; the main instance stays "".
    */
   stepPrefix?: string
-  /**
-   * Workspace root (the server() directory).  Fix batch T3: the ctxDir
-   * fallback when the execute ctx carries no directory — the desktop
-   * sidecar's process cwd is the user HOME, NOT the workspace, so a
-   * HOME-cwd would misresolve every relative path.
-   */
-  workspaceDir?: string
 }
 
 // ---------- pipelines ----------------------------------------------------------
@@ -195,13 +188,12 @@ export function buildPipelines(deps: TmDeps) {
   let stepCounter = 0
   const nextStepId = () => `${deps.stepPrefix ?? ""}s${String(++stepCounter).padStart(4, "0")}`
 
-  function ctxDir(ctx: unknown): string {
-    const d = (ctx as { directory?: unknown } | null | undefined)?.directory
-    if (typeof d === "string" && d) return d
-    // fix batch T3: prefer the workspace root the runtime knows over the
-    // HOST process cwd (HOME on the desktop sidecar)
-    return deps.workspaceDir ?? process.cwd()
-  }
+  // (No `ctxDir(ctx)` helper here any more. Its doc carried fix batch T3 — prefer
+  // the runtime's workspace root over the host process cwd, because the desktop
+  // sidecar's cwd is the user HOME — and the helpers that needed it were
+  // tm_read/tm_grep/tm_bash, retired with the v1 tool layer. Path scoping that
+  // still happens reads the resolved roots (`store`, `projectRoot`) or the execute
+  // ctx directly (src/tm/dispatch.ts), so the fallback had no caller left.)
 
   /**
    * Threshold governance.  Inline under the content-class threshold;
