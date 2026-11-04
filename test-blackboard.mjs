@@ -766,6 +766,78 @@ let ROT_PINNED = 0
   A(leadP.includes("Each one is greppable"), "lead: the criteria are justified as checkable, which is what makes them criteria")
 }
 console.log(`   OK (${ROT_PINNED} anti-rot assertions pinned — every one goes red if its clause is deleted)`)
+
+/* Step 0a (the user's own ask: a stated goal gets a brainstorm round, information is
+   aligned, THEN a plan, THEN approval).  A heading-only assertion could pin neither of
+   the two properties that make this rule real — POSITION (a section after the triage
+   table is a footnote the model re-litigates per dispatch) and SCOPE (it fires on an
+   objective, not on every message, or one-line fixes pay for a meeting).  Both are
+   asserted below, whitespace-flattened like 8b so a re-flow cannot fake a failure. */
+console.log("8c. lead Step 0a — brainstorm the goal · align in one message · plan · wait for approval")
+let BRAINSTORM_PINNED = 0
+{
+  const flat = (s) => String(s).replace(/\s+/g, " ")
+  const A = (cond, msg) => {
+    BRAINSTORM_PINNED++
+    assert.ok(cond, msg)
+  }
+  const leadP = flat(leadPrompt)
+  const SEC = "## Brainstorm the goal before planning (Step 0a)"
+  A(leadP.includes(SEC), "lead: the Step 0a brainstorm section exists by its own name")
+  A(
+    leadP.indexOf(SEC) > leadP.indexOf("## Goal directive") && leadP.indexOf(SEC) < leadP.indexOf("## Triage"),
+    "lead: POSITION — Step 0a sits after the goal directive and BEFORE Triage, where an ask becomes work",
+  )
+  const sec = leadP.slice(leadP.indexOf(SEC), leadP.indexOf("## Triage"))
+  A(sec.length > 200, "lead: the section is not empty — it ends where Triage begins")
+  A(sec.includes("When the user states a GOAL"), "lead: SCOPE — the trigger is a stated goal / desired end state, named as such")
+  A(
+    sec.includes("does NOT trigger this") && sec.includes("routes straight to Triage"),
+    "lead: SCOPE — an explicit one-line fix, a question or a plain 'fix X' is excluded and goes straight to Triage",
+  )
+  A(sec.includes("Never turn every message into a meeting"), "lead: the anti-meeting consequence is stated in its own words")
+  A(sec.includes("at most 3 readings or paths"), "lead: divergence is bounded at three candidates")
+  A(sec.includes("one line each with its cost and consequence"), "lead: each candidate carries its cost and consequence")
+  A(sec.includes("Quantity is not the goal"), "lead: the brainstorm is explicitly not a volume exercise")
+  A(
+    sec.includes("the unknowns") && sec.includes("the user's constraints") && sec.includes("the evidence that counts as done"),
+    "lead: the brainstorm must surface unknowns, constraints and success evidence — that is what aligning information means here",
+  )
+  A(
+    sec.includes("Alignment is ONE message") && sec.includes("Never drip-feed"),
+    "lead: every clarifying question batches into ONE message — the repo's existing no-drip-feed rule, reused",
+  )
+  const iBS = sec.indexOf("brainstorm → align")
+  const iPlan = sec.indexOf("→ Plan")
+  const iWait = sec.indexOf("wait for approval")
+  const iDispatch = sec.indexOf("then dispatch")
+  A(
+    iBS > -1 && iPlan > iBS && iWait > iPlan && iDispatch > iWait,
+    "lead: ORDER — brainstorm → Plan → wait for approval → dispatch, in that word order",
+  )
+  A(sec.includes("the existing ≤30-line shape"), "lead: the plan reuses the existing ≤30-line shape rather than inventing one")
+  A(
+    leadP.includes("## Approval gate (mechanical, count-based)") &&
+      leadP.includes("RESEARCH first, then PRESENT THE PLAN, then END TURN") &&
+      leadP.includes("Questions never enter the gate."),
+    "lead: the count-based approval gate section is still there and unchanged — Step 0a ADDS a step, it does not replace the gate",
+  )
+  A(
+    sec.includes("does not replace it") && sec.includes("0-1 dispatch"),
+    "lead: Step 0a names the gate it precedes and keeps the 0-1 dispatch path intact",
+  )
+  A(
+    /pre-authorization/i.test(sec) && sec.includes("skips this step for the rest of the session"),
+    "lead: a user pre-authorization ('just do it' / 'self-iterate') exempts the rest of the session from Step 0a",
+  )
+  A(
+    sec.includes("`tm_goal set`") && sec.includes("come BEFORE the set"),
+    "lead: brainstorm + approval precede a persistent goal — once set it is the user's contract",
+  )
+}
+console.log(
+  `   OK (${BRAINSTORM_PINNED} Step 0a assertions pinned — position, scope, order, gate-untouched, pre-auth exemption)`,
+)
 const testerP = cfg2.agent["tester"].prompt
 assert.ok(testerP.includes("## Verification stack"), "tester: static verification stack")
 assert.ok(testerP.includes("typecheck"), "tester: typecheck layer")

@@ -50,6 +50,14 @@ the workspace"), because that list is what decides whether you may stop.
 - USER-STATED BOUNDARIES STILL OUTRANK THE GOAL: a goal never licenses crossing
   a limit the user set.  If the goal appears to require one, stop and ask.
 
+## Brainstorm the goal before planning (Step 0a)
+When the user states a GOAL — a desired end state, not a work order — it gets one bounded brainstorm round before the plan. An explicit one-line fix, a question, or a plain "fix X" does NOT trigger this: it routes straight to Triage. Never turn every message into a meeting.
+- Bounded divergence: at most 3 readings or paths, one line each with its cost and consequence, plus the unknowns, the user's constraints, and the evidence that counts as done. Quantity is not the goal.
+- Alignment is ONE message: batch every question the brainstorm raises. Never drip-feed.
+- Order: brainstorm → align → Plan (the existing ≤30-line shape) → END TURN and wait for approval → only then dispatch.
+- Adds a step in front of the count-based approval gate, does not replace it: ≥2 dispatches still need plan + approval, a 0-1 dispatch job is unchanged. A pre-authorization ("just do it") skips this step for the rest of the session.
+- For a persistent goal (\`tm_goal set\`) brainstorm + approval come BEFORE the set: it is then the user's contract.
+
 ## Triage — classify before acting (Step 0, always)
 - Question ≠ work order.  When the user asks, analyzes, or consults
   ("why does X fail?", "how would we do Y?"), ANSWER it — read code if
