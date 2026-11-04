@@ -1134,20 +1134,25 @@ await r6NoHook.value?.()
     "default (no plugin option): a native read of .env is denied — R6 is armed, not opt-in",
   )
   await dfltBoot.value?.()
-  // (b) envProtect:false is the explicit off switch
+  // (b) envProtect:false is the explicit off switch — off now means R6's FINE
+  // ask face only; the env-file path red line has no consent path to switch off.
   const offOpt = mkR6({ envProtect: false })
   const offBoot = await withCapturedConsole(() => plugin.setup(offOpt.ctx))
   assert.equal(
     (await fireEnvRead(offOpt)).effect,
-    "allow",
-    "envProtect:false turns R6 off — the file-path face classifies nothing",
+    "deny",
+    "envProtect:false no longer lifts the env-file path red line — a .env read stays denied under off, which switches the fine ask face only",
   )
   await offBoot.value?.()
-  // (c) envProtect:off in the file is the other off switch
+  // (c) envProtect:off in the file is the other off switch — same narrowed meaning
   writeCfg({ envProtect: "off" })
   const offEnv = mkR6(undefined)
   const offEnvBoot = await withCapturedConsole(() => plugin.setup(offEnv.ctx))
-  assert.equal((await fireEnvRead(offEnv)).effect, "allow", "envProtect=off turns R6 off too")
+  assert.equal(
+    (await fireEnvRead(offEnv)).effect,
+    "deny",
+    "envProtect=off in the config file no longer lifts the env-file path red line either — both off switches mean the fine ask face only",
+  )
   await offEnvBoot.value?.()
   clearCfg()
 }
@@ -3412,7 +3417,7 @@ console.log("20. R6's file-path face is back on 2.x — the native read/write/ed
   assert.equal(pathGuard("grep", ["*.env"], "audit")?.effect, "deny", "a glob include selecting env files is denied")
   assert.equal(pathGuard("grep", ["TODO"], "audit"), null, "an ordinary grep pattern is NOT mistaken for a path")
   assert.equal(pathGuard("grep", ["process.env"], "audit"), null, "a code identifier is not a file path")
-  assert.equal(pathGuard("read", ["src/.env"], "off"), null, "R6 off classifies nothing")
+  assert.equal(pathGuard("read", ["src/.env"], "off")?.effect, "deny", "off no longer lifts the env-file path red line — pathGuard keeps the mode parameter and deliberately never reads it")
   assert.equal(pathGuard("patch", ["src/.env"], "audit"), null, "patch is not in the covered set — its resource shape is unobserved, so it is not guessed at")
 
   // (b) the hook, on the fake host
@@ -6899,6 +6904,7 @@ console.log("42. noUnusedLocals / noUnusedParameters 闸门 —— flag 在位 +
   // 为什么这一条值得单独守：`npm run build` 与 run-tests 的第一步都跑 tsc，所以
   // 「没有未使用的局部变量/参数」本来是编译器负责的；这里负责的是**闸门本身不被
   // 关掉** —— 谁把 flag 关成 false，17 处存量就会重新长回来，而构建照样绿。
+  // 闸门覆盖 `tsconfig.json` include 的 `src/**/*`；测试文件自身的未使用变量不在内。
   const here = path.dirname(fileURLToPath(import.meta.url))
   const tsconfigPath = path.join(here, "tsconfig.json")
   const rawCfg = fs.readFileSync(tsconfigPath, "utf8")

@@ -356,7 +356,7 @@ console.log("  7. capability probe: SKIPPED — v1 createCapabilityProbe removed
     threw = true
   }
   ok(!threw, "a governance hook that throws would eat the user's message — it never throws")
-  ok(renderOffloadedTask({ sessionId: "s1", summary: "", body: "x" }, "prev", 5000, 40).includes('id="s1"'), "the renderer survives a missing summary")
+  ok(renderOffloadedTask({ sessionId: "s1", summary: "", body: "x" }, "prev", 5000).includes('id="s1"'), "the renderer survives a missing summary")
 
   // The `task_offload` row (and its three report states) was retired with its producer:
   // `createTaskOffload` was v1's `chat.message` hook and has no caller on 2.x, so the

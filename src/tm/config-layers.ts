@@ -218,7 +218,7 @@ export const CONFIG_KEYS: readonly ConfigKeySpec[] = [
     type: "string",
     default: "strict",
     redLine: true,
-    redLineReason: "R6 判定模式，off 即关掉环境防护；项目文件可被提交共享，不得关掉红线",
+    redLineReason: "R6 判定模式，off 只关掉细粒度 ask 面（strict/standard 判定与 extra-deny 偏好）；env-file 路径红线不受影响（deny 恒在）；项目文件可被提交共享，不得关掉红线",
     doc: "R6 环境防护模式（strict/standard/off）。",
   },
   {

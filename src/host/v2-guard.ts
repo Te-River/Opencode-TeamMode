@@ -129,10 +129,13 @@ const PATH_GUARD_ACTIONS = new Set(["read", "write", "edit", "glob", "grep"])
  *
  * A RED LINE, not a gate: v2 cannot raise a dialog, so there is no consent path
  * to name — telling the agent to "ask for approval" would be a window that never
- * appears.
+ * appears.  Because it is a red line it is also NOT switched off by
+ * `envProtect: "off"`: that key governs R6's fine ask face (strict/standard, the
+ * user's extra-deny preferences), and a setting that removed a class with no
+ * consent path would BE that consent path.  The parameter is kept (callers pass
+ * the resolved mode positionally) and deliberately never read.
  */
-export function pathGuard(action: string, resources: readonly string[], mode: EnvProtectMode): GuardDecision | null {
-  if (mode === "off") return null
+export function pathGuard(action: string, resources: readonly string[], _mode: EnvProtectMode): GuardDecision | null {
   if (!PATH_GUARD_ACTIONS.has(action)) return null
   for (const raw of resources) {
     const text = String(raw ?? "")
@@ -645,6 +648,11 @@ const ENV_FILE_INPUT_FIELDS: Record<string, readonly string[]> = {
  * never thrown into the host: a guard that cannot decide must not break the call
  * it is inspecting.  Team-scoped through the same `scope.decide` gate as every
  * other writer, and the counters land on `v2-surface` / `v2-shutdown`.
+ *
+ * The hook registers under EVERY mode.  `envProtectMode` is part of the options
+ * the caller resolves, but this face never reads it: an env-file path is the
+ * red line, and a red line that `off` unregisters is a gate with a door nobody
+ * meant to install.
  */
 export async function applyV2EnvFileInputGuard(
   ctx: V2Context,
@@ -653,7 +661,6 @@ export async function applyV2EnvFileInputGuard(
   const report = opts.report
   const tool = ctx.tool
   if (!tool || typeof tool.hook !== "function") return { registrations: [] }
-  if (opts.envProtectMode === "off") return { registrations: [] }
   let registrations: V2Registration[]
   try {
     registrations = [

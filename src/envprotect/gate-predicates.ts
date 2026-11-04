@@ -82,9 +82,12 @@ function commandMatchesAnyAskPatternExact(
  * alignment (compound statements, substitutions, `${…}`, `$ALLCAPS`,
  * assignment prefixes, `time`/subshell/escaped heads, user extra-deny, path
  * heads like `/usr/bin/env`, `cmd /c …`, and the PowerShell env-drive forms
- * with intervening flags or quotes that the globs miss) returns false → the
- * classifier keeps hard-throwing.  tm_* channels are hard-blocked separately
- * (the dialog never opens for them).
+ * with intervening flags or quotes that the globs miss) returns false simply
+ * means NO injected ask glob governs that command — it does NOT predict a hard
+ * throw, because the `off` pass-through short-circuits upstream: `inspectToolCall`
+ * returns null for bash under off (src/envprotect/hook.ts) and v2's `shellGuard`
+ * does the same (src/host/v2-guard.ts); neither decision is made here.  tm_*
+ * channels are hard-blocked separately (the dialog never opens for them).
  */
 export function isAskGatedEnvCommand(
   command: string,
@@ -92,12 +95,16 @@ export function isAskGatedEnvCommand(
   extra: RegExp[] = [],
 ): boolean {
   const text = String(command ?? "")
-  // `mode` is part of the contract, not decoration: the R6 env ask face is only
-  // installed when the host asks at all (`bashAskPatterns` → `if (mode !== "off"
-  // && envFace)`, src/envprotect/patterns.ts), so under "off" NOTHING is
-  // dialog-governed and deferring on it would be a silent env read. Every caller
-  // today passes strict/standard (the v1 hook that deferred on this answer went
-  // with the v1 personality), so this gate changes no observable behaviour.
+  // `mode` is part of the contract, not decoration: under "off" the R6 env ask
+  // face is not installed, so NOTHING is dialog-governed and deferring on this
+  // answer would be a silent env read.  The historical basis — `bashAskPatterns`
+  // → `if (mode !== "off" && envFace)` (src/envprotect/patterns.ts) — has no
+  // production caller in this revision; the LIVE v2 bases are `shellGuard`
+  // short-circuiting every command to null under "off" (src/host/v2-guard.ts)
+  // and the coarse shell-ask escalation gated on `envProtectMode !== "off"`
+  // (src/host/v2.ts).  The caller that used to defer on this answer — the v1
+  // hook, in-tree always resolved to "strict" — went with the v1 personality;
+  // the "off" branch is now exercised explicitly by test-envprotect.mjs group 8.
   if (mode === "off") return false
   if (!text.trim()) return false
   for (const r of extra) if (r.test(text)) return false

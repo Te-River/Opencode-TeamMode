@@ -37,17 +37,20 @@ export function classifyPathFields(
   extra: RegExp[] = [],
 ): string | null {
   if (!args || typeof args !== "object") return null
-  // The `off` gate is decided HERE as well as in `inspectToolCall` (which returns
-  // null before routing): this matcher is exported on the `envprotect` facade, and
-  // a direct caller must not reach the env-file path face while R6 is off. The v2
-  // sibling leaf does exactly this (`pathGuard`, src/host/v2-guard.ts). The one
-  // in-tree caller already gates on `off`, so behaviour is unchanged.
-  if (mode === "off") return null
+  // `envProtect: "off"` switches off R6's FINE face — the strict/standard ask
+  // behaviour and the user's own `extraDeny` preferences (a preference has a
+  // switch because it has a consent path: the user set it). It does NOT switch off
+  // the env-file PATH red line, which has no consent path to name and therefore
+  // stays refused under every setting (AGENTS.md, "R6/R2 on 2.x"). The same
+  // division holds on the v2 sibling leaf (`pathGuard`, src/host/v2-guard.ts) and
+  // on the `execute.before` input face; `webGuard` never took a mode at all.
   for (const [key, value] of Object.entries(args)) {
     if (typeof value !== "string" || !value) continue
     if (!PATH_LIKE_KEYS.test(key)) continue
-    for (const rule of extra) {
-      if (rule.test(value)) return CATEGORY_EXTRA_DENY
+    if (mode !== "off") {
+      for (const rule of extra) {
+        if (rule.test(value)) return CATEGORY_EXTRA_DENY
+      }
     }
     if (isEnvFilePath(value)) return CATEGORY_ENV_FILE_PATH
   }
@@ -74,7 +77,11 @@ const TM_TOOL_ALIASES: Record<string, string> = {
 
 /**
  * Top routing: tool name + tool args -> category to block, or null to pass.
- * `off` always passes (the hook stays installed but is a no-op).
+ * `off` ungates the BASH command-line face only (the R6 env ask globs are not
+ * installed under off — `bashAskPatterns`, src/envprotect/patterns.ts — so
+ * routing a bash command there would defer to a dialog that can never open), and
+ * the user's extra-deny preferences.  It does NOT ungate the env-file PATH red
+ * line, so the path-scan tools still route to `classifyPathFields` under off.
  */
 export function inspectToolCall(
   tool: string,
@@ -82,10 +89,10 @@ export function inspectToolCall(
   mode: EnvProtectMode,
   extra: RegExp[] = [],
 ): string | null {
-  if (mode === "off") return null
   const rawName = String(tool ?? "").trim().toLowerCase()
   const name = TM_TOOL_ALIASES[rawName] ?? rawName
   if (name === "bash") {
+    if (mode === "off") return null
     const command = (args as { command?: unknown } | undefined)?.command
     return classifyBashCommand(String(command ?? ""), mode, extra)
   }

@@ -17,6 +17,10 @@ import * as path from "node:path"
 
 const ep = await import("./dist/envprotect.js")
 const plugin = (await import("./dist/index.js")).default
+// group 8 checks the two envprotect leaves against the SHIPPED v2 guard faces
+// (webGuard / pathGuard / shellGuard / applyV2EnvFileInputGuard), so a claim here
+// is measured against the enforcement that runs, not against the matcher's own text.
+const vg = await import("./dist/host/v2-guard.js")
 
 /* ---------- 1. mode resolution + extra-deny parsing ---------- */
 assert.equal(ep.resolveEnvProtectMode(undefined), "strict", "default strict")
@@ -216,10 +220,13 @@ assert.equal(ep.inspectToolCall("read", { filePath: "TOPSECRET.txt" }, S, extra)
 // code identifiers and template copies pass the path scan too
 assert.equal(ep.inspectToolCall("grep", { pattern: "process.env", path: "src" }, S), null, "grep process.env pattern allowed")
 assert.equal(ep.inspectToolCall("read", { filePath: ".env.example" }, S), null, "read .env.example allowed")
-// off mode: everything passes (hook installed but no-op)
-assert.equal(ep.inspectToolCall("bash", { command: "env" }, "off"), null, "off: bash passes")
-assert.equal(ep.inspectToolCall("read", { filePath: ".env" }, "off"), null, "off: read passes")
-console.log("5. inspectToolCall: OK (filePath/path/pattern/include, scope boundary, extra-deny, off)")
+// off mode: R6's fine ask face is ungated, the env-file PATH red line is NOT
+assert.equal(ep.inspectToolCall("bash", { command: "env" }, "off"), null, "off: bash face passes (its ask glob is not installed under off)")
+assert.equal(ep.inspectToolCall("grep", { pattern: "TODO", path: "src" }, "off"), null, "off: an ordinary grep still passes")
+assert.equal(ep.inspectToolCall("read", { filePath: ".env" }, "off"), "env-file-path", "off does NOT lift the env-file path red line (resolution (a))")
+assert.equal(ep.inspectToolCall("glob", { pattern: "*.env" }, "off"), "env-file-path", "…and the same under the glob shape")
+assert.equal(ep.inspectToolCall("read", { filePath: "TOPSECRET.txt" }, "off", extra), null, "off DOES switch off the user's extra-deny preference face (a preference has a consent path)")
+console.log("5. inspectToolCall: OK (filePath/path/pattern/include, scope boundary, extra-deny, off = fine face only)")
 
 /* ---------- 6. loader integration + env-var wiring + audit — RETIRED with the
  *  v1 personality (1.7.0 cut).  This group drove plugin.server() to prove the
@@ -399,6 +406,223 @@ console.log("6. loader integration: SKIPPED — v1 plugin.server removed; R6 mat
     assert.ok(/官方确认框/.test(v.suggestion) && /bash/.test(v.suggestion), "rejection guidance mentions the bash confirmation dialog")
   }
   console.log("7. R6/R2 ask-face classification: OK (ask patterns incl. bare M3, expressible/inexpressible + byte-exact M4 split, categorize inference, tm_bash guidance; approval-gate timer/reply blocks retired with the v1 personality)")
+}
+
+/* ---------- 8. the `mode === "off"` branch of the two leaf matchers (2469ab4) ----------
+ * Commit 2469ab4 added `if (mode === "off") return false` to `isAskGatedEnvCommand`
+ * (src/envprotect/gate-predicates.ts:101) and `if (mode === "off") return null` to
+ * `classifyPathFields` (src/envprotect/hook.ts:45), both claimed "zero runtime change,
+ * provable". Every pre-existing case in this file passed "strict"/"standard", so BOTH
+ * branches were uncovered — a rule with no failing test behind it is a hope, so the
+ * branches get a matrix here, in the order the two claims stand or fall:
+ *   8a three-mode matrix per leaf (strict ≡ standard, off distinct);
+ *   8b the SEMANTICS that make off→false right instead of a mirror of the code: the R6
+ *      env ask face is installed only when `mode !== "off" && envFace`
+ *      (src/envprotect/patterns.ts:149-152), so a `true` under off defers a verdict to a
+ *      dialog the config never opens — and on 2.x a plugin raises no dialog at all, the
+ *      guard fails closed (src/host/v2-guard.ts). Checked against the SHIPPED guard, not
+ *      against the implementation's own text.
+ *      `false` also does NOT mean "not an env read": classifyBashCommand keeps naming
+ *      these commands env reads under off ("`off` is handled by the caller",
+ *      src/envprotect/bash-classify.ts:180-181). The two matchers must not be conflated.
+ *   8c the path leaf under strict/standard (env family blocked, templates + code
+ *      identifiers pass, extra-deny wins) and its routing parity with inspectToolCall —
+ *      the only in-tree caller, and the place where "behaviour unchanged" is checkable;
+ *   8d what the SAME `isEnvFilePath` red line answers on every other shipped face under
+ *      off — after resolution (a) all four path-bearing faces (classifyPathFields,
+ *      inspectToolCall, pathGuard, the #58 INPUT face) answer the way webGuard always
+ *      did, so the group pins the WHOLE group: leaving any one of them honouring `off`
+ *      fails its own line here;
+ *   8e the case that was written RED when the split was still open. Resolution (a) —
+ *      the red line holds under `off` for the env-file-path category, the user's
+ *      extra-deny preference keeps switching off — landed, so this assertion is now the
+ *      regression guard; its message (verbatim, unchanged) is what a future split reads.
+ * -------------------------------------------------------------------------------------------- */
+{
+  const MODES = ["strict", "standard", "off"]
+  let n = 0
+  const eq = (a, b, m) => { n++; assert.equal(a, b, m) }
+  const ok = (v, m) => { n++; assert.ok(v, m) }
+  const GATED = [
+    "printenv", "printenv PATH", "env", "env FOO=bar", "set",
+    "export -p", "declare -p PATH", "Get-ChildItem env:PATH", "$env:PATH",
+  ]
+  const NOT_GATED = [
+    "$(printenv PATH)", "(env)", "\\env", "time env", "FOO=1 env", "echo ${HOME}",
+    "echo $API_KEY", "cd /x && printenv", "Get-Content -Path env:HOME", "printenvx",
+    "/usr/bin/env", "GET-CONTENT ENV:PATH", "PrintEnv PATH", " printenv", "printenv\t",
+    "$ENV:PATH", "Get-Childitem env:PATH", "/usr/bin/printenv", "cmd /c set", "cat .env",
+  ]
+
+  /* 8a. isAskGatedEnvCommand — three modes, same two lists.
+   * strict ≡ standard (the function consults `mode` for nothing else), and `off` flips
+   * the GATED list to false. That flip is the new branch, and it IS observable at the
+   * leaf: before 2469ab4 these same nine commands answered `true` under "off". */
+  for (const c of GATED) {
+    const s = ep.isAskGatedEnvCommand(c, "strict")
+    const d = ep.isAskGatedEnvCommand(c, "standard")
+    eq(s, d, `strict ≡ standard for a dialog-governed form: ${c}`)
+    eq(s, true, `strict still gates: ${c}`)
+    eq(d, true, `standard still gates: ${c}`)
+    eq(ep.isAskGatedEnvCommand(c, "off"), false, `off gates NOTHING: ${c}`)
+  }
+  for (const c of NOT_GATED) {
+    for (const mode of MODES) {
+      eq(ep.isAskGatedEnvCommand(c, mode), false, `stays hard-throw, never gated (${mode}): ${c}`)
+    }
+  }
+  // user extra-deny wins over the popup in every mode, and a non-matching extra list
+  // never suppresses a gate (the extra scan runs before the off check is irrelevant here —
+  // both answers are false under off, so the strict/standard rows are the load-bearing ones)
+  eq(ep.isAskGatedEnvCommand("printenv PATH", "strict", [/printenv/]), false, "extra-deny hit not gated (strict)")
+  eq(ep.isAskGatedEnvCommand("printenv PATH", "standard", [/printenv/]), false, "extra-deny hit not gated (standard)")
+  eq(ep.isAskGatedEnvCommand("printenv PATH", "off", [/printenv/]), false, "extra-deny hit not gated (off)")
+  eq(ep.isAskGatedEnvCommand("printenv PATH", "strict", [/TOPSECRET\w*/]), true, "non-matching extra list does not ungate")
+
+  /* 8b. the entailment, checked against the config the same mode produces. */
+  {
+    const byteExact = (pattern, text) =>
+      new RegExp("^" + pattern.split("*").map((s) => s.replace(/[.+?^${}()|[\]\\]/g, "\\$&")).join(".*") + "$").test(text)
+    const strictAsk = ep.bashAskPatterns("strict")
+    const stdAsk = ep.bashAskPatterns("standard")
+    const offAsk = ep.bashAskPatterns("off")
+    for (const c of GATED) {
+      const hits = ep.R6_ENV_BASH_ASK_PATTERNS.filter((k) => byteExact(k, c))
+      ok(hits.length > 0, `a gated form must be reachable by the injected ask globs: ${c}`)
+      ok(hits.every((k) => strictAsk[k] === "ask"), `strict installs the ask glob for: ${c}`)
+      ok(hits.every((k) => stdAsk[k] === "ask"), `standard installs the ask glob for: ${c}`)
+      ok(hits.every((k) => offAsk[k] === undefined), `off installs NO env ask glob, so a true here would defer to a dialog that cannot open: ${c}`)
+      // the R2 face is independent of the R6 kill switch (off keeps it)
+      eq(offAsk["rm *"], "ask", `off keeps the R2 danger face (independent red line): ${c}`)
+      // shipped guard agrees with the leaf, in both directions
+      eq(vg.shellGuard(c, "strict")?.effect, "ask", `v2 shellGuard asks what strict gates: ${c}`)
+      eq(vg.shellGuard(c, "standard")?.effect, "ask", `v2 shellGuard asks what standard gates: ${c}`)
+      eq(vg.shellGuard(c, "off"), null, `v2 shellGuard is silent where off ungates: ${c}`)
+      // and the read is still a READ — off ungoverns it, it does not launder it
+      ok(ep.classifyBashCommand(c, "off") !== null, `classifyBashCommand still names it an env read under off: ${c}`)
+    }
+    eq(ep.classifyBashCommand("cat .env", "off"), "env-file-path", "env-file read via bash still classified under off")
+    console.log("  8a/8b. isAskGatedEnvCommand x 3 modes + ask-face entailment: OK (strict ≡ standard, off gates nothing, shipped shellGuard agrees, the read is still an env read)")
+  }
+
+  /* 8c. classifyPathFields — strict/standard matrix + routing parity. */
+  const ENV_ARGS = [
+    ["read", { filePath: ".env" }],
+    ["read", { filePath: "C:\\proj\\.env.local" }],
+    ["grep", { pattern: ".env" }],
+    ["grep", { include: "*.env" }],
+    ["glob", { pattern: ".env.*" }],
+    ["list", { path: "config/.env" }],
+  ]
+  for (const [tool, args] of ENV_ARGS) {
+    for (const mode of ["strict", "standard"]) {
+      eq(ep.classifyPathFields(args, mode), "env-file-path", `${tool} ${JSON.stringify(args)} blocked in ${mode}`)
+      eq(ep.inspectToolCall(tool, args, mode), ep.classifyPathFields(args, mode), `routing parity (${mode}): the leaf change did not move the answer the caller gets`)
+    }
+  }
+  for (const mode of MODES) {
+    eq(ep.classifyPathFields({ filePath: ".env.example" }, mode), null, `checked-in template passes (${mode})`)
+    eq(ep.classifyPathFields({ filePath: ".env.dist" }, mode), null, `template suffix .dist passes (${mode})`)
+    eq(ep.classifyPathFields({ pattern: "*.env.template" }, mode), null, `template glob passes (${mode})`)
+    eq(ep.classifyPathFields({ pattern: "process\\.env" }, mode), null, `code identifier (escaped) passes (${mode})`)
+    eq(ep.classifyPathFields({ filePath: "src/app.ts" }, mode), null, `ordinary file passes (${mode})`)
+    eq(ep.classifyPathFields({ filePath: "a.ts", note: ".env" }, mode), null, `non-path key never scanned (${mode})`)
+    eq(ep.classifyPathFields(undefined, mode), null, `undefined args are null-safe (${mode})`)
+    eq(ep.classifyPathFields("not-an-object", mode), null, `non-object args untouched (${mode})`)
+  }
+  eq(ep.classifyPathFields({ filePath: "printenv.txt" }, "strict", [/printenv/]), "extra-deny", "extra-deny wins on a path field (strict)")
+  eq(ep.classifyPathFields({ filePath: "printenv.txt" }, "standard", [/printenv/]), "extra-deny", "extra-deny wins on a path field (standard)")
+  console.log("  8c. classifyPathFields strict/standard + template/identifier exceptions + inspectToolCall parity: OK")
+
+  /* 8d. The faces of the same red line under `envProtect: "off"` — after resolution (a)
+   * every path-bearing face answers the SAME way the URL face always did. */
+  {
+    const envFileUrl = vg.webGuard(["https://x/.env"])
+    eq(vg.webGuard.length, 1, "webGuard takes NO mode parameter (arity 1) — the remote env-file URL face is mode-independent")
+    eq(envFileUrl?.effect, "deny", "FACT: a remote .env URL is still denied under any envProtect setting")
+    eq(envFileUrl?.why, "env-file URL", "FACT: the URL face refuses with its own category")
+    eq(vg.pathGuard("read", [".env"], "strict").effect, "deny", "FACT: pathGuard denies a local .env in strict")
+    eq(vg.pathGuard("read", [".env"], "standard").effect, "deny", "FACT: pathGuard denies a local .env in standard")
+    eq(vg.pathGuard("read", [".env"], "off")?.effect, "deny", "FIXED (was null — v2-guard.ts:135, c75c26f5 2026-10-06): the env-file path red line does not read the mode")
+    eq(vg.pathGuard("read", [".env"], "off")?.why, "env-file-path", "…and refuses with the same category the strict row uses")
+    eq(ep.inspectToolCall("read", { filePath: ".env" }, "off"), "env-file-path", "FIXED (was null — hook.ts:85, 392bdf5f 2026-09-13): the routed answer under off is a refusal")
+    eq(ep.classifyPathFields({ filePath: "printenv.txt" }, "off", [/printenv/]), null, "FACT: off still switches off the user's extra-deny preference (not a red line), so the leaf returns null for a preference-only hit")
+    const offReport = {
+      seen: 0, byAction: {}, strictened: 0, denied: 0, shellMatched: 0, foreignSkipped: 0,
+      envFileDenied: 0, envFileDeniedByInput: 0, envFileInputSeen: 0, envFileInputForeignSkipped: 0, envFileInputThrew: 0,
+    }
+    let offInputHandler = null
+    const inputGuard = await vg.applyV2EnvFileInputGuard(
+      { tool: { hook: (_name, handler) => { offInputHandler = handler; return () => {} } } },
+      { envProtectMode: "off", report: offReport },
+    )
+    eq(inputGuard?.registrations?.length, 1, "FIXED (was 0 — v2-guard.ts:656, d6138370 2026-10-06): off registers the grep/glob INPUT face like every other mode")
+    ok(typeof offInputHandler === "function", "and what it registered is a real handler")
+    let threw = null
+    try {
+      await offInputHandler({ tool: "grep", sessionID: "ses_off", agent: "team", input: { path: "config/.env" } })
+    } catch (e) {
+      threw = String(e?.message ?? e)
+    }
+    ok(threw !== null && threw.includes("R6 红线"), `off still throws at the INPUT face for a grep in an env file: ${threw}`)
+    eq(offReport.envFileDeniedByInput, 1, "and the refusal is COUNTED, so tm_stats can show it fired")
+    threw = null
+    try {
+      await offInputHandler({ tool: "grep", sessionID: "ses_off", agent: "team", input: { path: "src" } })
+    } catch (e) {
+      threw = String(e?.message ?? e)
+    }
+    eq(threw, null, "an ordinary grep path is untouched under off too — the tightening is scoped to the red-line category")
+    console.log("  8d. env-file red line under off, per shipped face: OK (URL face hard, path face hard — the faces no longer split)")
+  }
+
+  /* 8e. Formerly the DELIBERATE PRODUCT_BUG case (expected RED).  Resolution (a) —
+   * the red line holds under `off` for CATEGORY_ENV_FILE_PATH, extra-deny keeps
+   * switching off — landed, so this assertion is the REGRESSION GUARD for it: it
+   * goes red again the moment any path shape answers null under off.  Read its
+   * message in full if it fires. */
+  const lifted = []
+  for (const [, args] of ENV_ARGS) {
+    const got = ep.classifyPathFields(args, "off")
+    if (got !== "env-file-path") lifted.push(`${JSON.stringify(args)} -> ${JSON.stringify(got)}`)
+  }
+  console.log(`  case count so far: ${n} assertions in group 8 (8a-8d all green). Now the former PRODUCT_BUG case, green by resolution (a).`)
+  assert.deepStrictEqual(
+    lifted,
+    [],
+    [
+      "PRODUCT_BUG (this failure is intended, and it is the only one in this suite):",
+      "the env-file PATH red line is not refused under mode \"off\" — classifyPathFields",
+      "(src/envprotect/hook.ts:45, added by 2469ab4) answers null for every .env shape:",
+      ...lifted.map((l) => "      " + l),
+      "Expected: \"env-file-path\" (the red line survives the mode switch). Basis, in the",
+      "project's own words and code, not in what the implementation happens to return:",
+      "  - AGENTS.md (R6/R2 on 2.x): env-file paths are a class with NO consent path that",
+      "    \"stay refused under every setting\"; v2-guard.ts:130-132 calls pathGuard \"A RED",
+      "    LINE, not a gate ... there is no consent path to name\" — yet envProtect:\"off\"",
+      "    IS the consent path that removes it.",
+      "  - The SAME isEnvFilePath matcher is enforced with NO mode knob elsewhere, so off",
+      "    splits one red line across faces: webGuard (src/host/v2-guard.ts:84, arity 1 —",
+      "    https://x/.env still denied) and the native-browser preview path face",
+      "    (src/host/v2-browser-gate.ts:196-201, switched only by v2BrowserGate, never by",
+      "    envProtect) both stay hard, while a Team role may read .env with the native",
+      "    read tool.",
+      "Scope — NOT introduced by 2469ab4: the leaf merely joined the pre-existing gates at",
+      "  src/host/v2-guard.ts:135 (c75c26f5 2026-10-06), :656 (d6138370 2026-10-06) and",
+      "  src/envprotect/hook.ts:85 (392bdf5f 2026-09-13); this file's line 221 has pinned",
+      "  \"off: read passes\" since a199ad88 (2026-09-08). So the commit's \"no behaviour",
+      "  change\" claim holds for the ONE in-tree caller (8c parity) but the policy it",
+      "  encodes is the one above, and it is now the exported leaf's contract too.",
+      "Two honest resolutions — one must be taken, the faces must not stay split:",
+      "  (a) red line holds under off: stop honouring off for CATEGORY_ENV_FILE_PATH in",
+      "      pathGuard / inspectToolCall / this leaf (extra-deny may keep switching off),",
+      "      flip line 221, and this assertion goes green by itself.",
+      "  (b) off = R6 fully off INCLUDING the path face: then change this expectation to",
+      "      null AND correct AGENTS.md's \"under every setting\", and decide whether",
+      "      webGuard and the browser-gate path face follow the same switch.",
+      "Do not \"fix\" this by deleting the case; the split is what is being reported.",
+    ].join("\n"),
+  )
 }
 
 console.log("\nALL ENV-PROTECT TESTS PASSED ✅")
