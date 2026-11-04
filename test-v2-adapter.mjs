@@ -3419,6 +3419,7 @@ console.log("20. R6's file-path face is back on 2.x — the native read/write/ed
   assert.equal(pathGuard("grep", ["process.env"], "audit"), null, "a code identifier is not a file path")
   assert.equal(pathGuard("read", ["src/.env"], "off")?.effect, "deny", "off no longer lifts the env-file path red line — pathGuard keeps the mode parameter and deliberately never reads it")
   assert.equal(pathGuard("patch", ["src/.env"], "audit"), null, "patch is not in the covered set — its resource shape is unobserved, so it is not guessed at")
+  assert.equal(pathGuard.length, 3, "pathGuard keeps its 3-positional-arg arity (action, resources, _mode): the mode is deliberately never read, and a \"cleanup\" that deletes the formal would break the positional caller in v2-guard.ts, not just the contract")
 
   // (b) the hook, on the fake host
   const f = makeFakeCtx({ directory: ws, agents: [] })
@@ -3461,7 +3462,7 @@ console.log("20. R6's file-path face is back on 2.x — the native read/write/ed
 
   for (const r of g.registrations) await r.dispose()
 }
-console.log("   OK (R6 file-path face live on 2.x: .env / rc family denied with no consent path, .env.example and ordinary paths untouched, grep patterns not mistaken for paths, foreign sessions skipped and counted)")
+console.log("   OK (R6 file-path face live on 2.x: .env / rc family denied with no consent path, .env.example and ordinary paths untouched, grep patterns not mistaken for paths, foreign sessions skipped and counted, pathGuard arity 3 pinned — the unused _mode stays)")
 
 console.log("21. the lead id is `Team`, and identity is case-insensitive (#38)")
 {

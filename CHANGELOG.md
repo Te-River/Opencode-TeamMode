@@ -7,18 +7,6 @@ registry saw 1.5.0 as the install-script fix release).
 
 ## [Unreleased]
 
-### Added
-
-- **computer-use 零重启升级（一次重启是下限）。** 新版本装进 `<releases>/<version>/` 带版本的独立目录——Windows
-  不换运行中的 exe（`os error 32` 的根因），但**新版本从来不去覆盖旧文件**，安装可在 OpenCode 运行时完成；宿主只在
-  启动时读 MCP 的 `command`，所以**剩下一次重启**，文档明写零次做不到。MCP `command` 改指走
-  `config-surgery.cjs`（原子写 + 严格读回见 `b8df98d`）；旧 release 目录**绝不当场强删**——挪进
-  `.pending-delete/` 由下一趟回收（`-ComputerUseReclaim` / `CU-ReclaimReleases` 单独入口，两趟语义实测）。
-  selftest 不绿则配置条目一字不改、回执丢弃、明说「仍是旧版本在跑」。独立验收判 7 条（0 critical / 3 major：
-  sh 守卫漏最后一项、helper 非原子写、README 停在两次重启——三条全部修掉，见下 Fixed）。
-  **端到端未跑的腿如实记录**：真实 wheel 的 `uv tool install` 两腿（成功/失败）属代码顺序级静态判定；
-  宿主重启一次后新 `command` 才生效是宿主的 MCP 连接边界，不是本机制能省的。
-
 ### Fixed
 
 - **R6 路径红线不再认 `envProtect: "off"`（PRODUCT_BUG，方向 (a) 修复）。** 既有实现里 `off` 在**四个面**把 env 文件
@@ -30,6 +18,10 @@ registry saw 1.5.0 as the install-script fix release).
   反证是成组的：只修 3/4 面时 `tsc` 先响（TS2367 类型收窄暴露死分支）、套件红在
   `off does NOT lift the env-file path red line (resolution (a))`——证明断言盯的是"四个面一致"而非单点。
   遗留期望同批翻转：`test-v2-adapter` 三条（off→deny 一族 + `pathGuard` 形状），断言消息改写为自述新契约，不留化石。
+  后续文案半（`ses_e58faa`）：`pathGuard`/`applyV2EnvFileInputGuard` 两条**拒绝文案**补上范围分句
+  （`envProtect 的 off 不管这条红线，它只关细粒度 ask 面`），`envProtect` 键 `doc` 同口径——设过 off 的用户
+  遇到新拒绝时，文案自述原因，不像"配置被无视"；`pathGuard.length===3` 进组 20 护桩（删 `_mode` 会同时红
+  tsc TS2554 与该断言，造红验证过）。
 - **本批唯一的下划线形参（自述，免得读成逃生口）**：`pathGuard` 第三形参改 `_mode`——保留 arity（位置调用点与三条断言仍传 3 实参）、
   值刻意不读，代码注释与断言消息钉死。这不是 2469ab4 那条「无 `_` 改名」被打破：那是那一轮的清点；TS 官方豁免带文档在此适用。
 - **口径精度一批**：`config-layers.ts` 的 `envProtect` 键文档不再宣称"off 即关掉环境防护"；`gate-predicates.ts` 的
@@ -40,7 +32,18 @@ registry saw 1.5.0 as the install-script fix release).
 
 ### Added
 
-- **领队收到「目标」时先头脑风暴，再出 Plan，再等批准（Step 0a）。** 用户要求（2026-11-04）：提出目标时先对齐信息再出计划。
+- **computer-use 零重启升级（一次重启是下限）。** 新版本装进 `<releases>/<version>/` 带版本的独立目录——Windows
+  不换运行中的 exe（`os error 32` 的根因），但**新版本从来不去覆盖旧文件**，安装可在 OpenCode 运行时完成；宿主只在
+  启动时读 MCP 的 `command`，所以**剩下一次重启**，文档明写零次做不到。MCP `command` 改指走
+  `config-surgery.cjs`（原子写 + 严格读回见 `b8df98d`）；旧 release 目录**绝不当场强删**——挪进
+  `.pending-delete/` 由下一趟回收（`-ComputerUseReclaim` / `CU-ReclaimReleases` 单独入口，两趟语义实测）。
+  selftest 不绿则配置条目一字不改、回执丢弃、明说「仍是旧版本在跑」。独立验收判 7 条（0 critical / 3 major：
+  sh 守卫漏最后一项、helper 非原子写、README 停在两次重启——三条全部修掉，见 Fixed）。
+  **端到端未跑的腿如实记录**：真实 wheel 的 `uv tool install` 两腿（成功/失败）属代码顺序级静态判定；
+  宿主重启一次后新 `command` 才生效是宿主的 MCP 连接边界，不是本机制能省的。
+
+- **领队收到「目标」时先头脑风暴，再出 Plan，再等批准（Step 0a）。**
+  用户要求（2026-11-04）：提出目标时先对齐信息再出计划。
   新节 `## Brainstorm the goal before planning (Step 0a)` 插在 `## Goal directive` **之后**、`## Triage` **之前**——位置被
   `indexOf` 断言钉死，因为它必须发生在分类之前：一条 `fix X` 走进 Triage 就变成工作单了，那时候再问就晚了。内容：
   触发条件限**目标/期望状态**（明确的一行修、一个提问、`fix X` 一律不开会）；发散**有界**（≤3 个候选读法，每条一句代价）＋

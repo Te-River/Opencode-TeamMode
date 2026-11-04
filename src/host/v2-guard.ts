@@ -141,7 +141,7 @@ export function pathGuard(action: string, resources: readonly string[], _mode: E
     const text = String(raw ?? "")
     if (!text) continue
     if (isEnvFilePath(text)) {
-      return { effect: "deny", why: "env-file-path", message: "R6 红线：这个路径指向环境文件（.env / shell rc 家族），不授权、不弹窗。" }
+      return { effect: "deny", why: "env-file-path", message: "R6 红线：这个路径指向环境文件（.env / shell rc 家族），不授权、不弹窗；envProtect 的 off 不管这条红线，它只关细粒度 ask 面（strict/standard 判定与 extra-deny 偏好）。" }
     }
   }
   return null
@@ -681,7 +681,7 @@ export async function applyV2EnvFileInputGuard(
             const value = input[field]
             if (typeof value !== "string" || !value.trim()) continue
             if (isEnvFilePath(value)) {
-              refusal = `R6 红线：${name} 的 ${field} 指向环境文件（.env / shell rc 家族），不授权、不弹窗。`
+              refusal = `R6 红线：${name} 的 ${field} 指向环境文件（.env / shell rc 家族），不授权、不弹窗；envProtect 的 off 不管这条红线，它只关细粒度 ask 面（strict/standard 判定与 extra-deny 偏好）。`
               break
             }
           }
