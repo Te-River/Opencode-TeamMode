@@ -6,6 +6,10 @@
 // commented-out key can never be mistaken for a live one (the read-back would pass
 // while the config said nothing).
 //
+// EVERY disk write goes through `writeAtomic` below — tmp file in the SAME directory,
+// then renameSync over the target. A bare write that dies halfway leaves half a config
+// on disk; nothing here may assume writes are atomic, so the helper makes them so.
+//
 // Why the key is `plugins` and not `plugin`, why one entry may not sit in two files,
 // and why a directory target needs a root index.js: docs/research/plugin-loader-contract.md
 //
@@ -23,6 +27,69 @@ const [file, mode, value, other] = process.argv.slice(2);
 if (!file || !mode || !value) {
   console.error("ERR usage: node this.js <file> <plugins|default-agent|mcp-set|mcp-remove> <value> [otherFileToScrub]");
   process.exit(1);
+}
+
+// ── atomic disk write: the ONLY write path this helper has ────────────────────
+// Why this exists: the zero-restart install flow treats ONE edit here as the moment
+// the upgrade takes effect (computer-use's MCP `command` is repointed by an `mcp-set`),
+// so a half-written config is no longer a state the next restart absorbs — it is the
+// state the RUNNING host reads, and the host skips a config it cannot resolve in
+// silence. The contract, per call:
+//   * bytes land in `<target>.team-mode-tmp` first (SAME directory — a temp on another
+//     volume would turn the rename into an EXDEV copy, which is exactly the partial
+//     state we are removing), then `renameSync` replaces the target, so any reader
+//     sees either the whole old file or the whole new one, never a prefix of either.
+//   * a partial write, or a rename over a file another process holds (EPERM / EACCES /
+//     EBUSY are real on Windows, as is a read-only attribute), leaves the original
+//     byte-for-byte intact, removes the temp best-effort, names the file, exits 1.
+//   * a failed write NEVER degrades into a bare write on the target — a config this
+//     helper could not land safely is one the user has to land by hand.
+const TMP_SUFFIX = ".team-mode-tmp";
+
+const errWhy = (e) =>
+  (e && e.code ? e.code + ": " : "") + (e && e.message ? e.message : String(e));
+
+/** Remove the temp file after a failure. Returns the leftover path when it could not
+ *  be removed (so the report says so instead of claiming a clean directory); an
+ *  ENOENT means it was never created, which is clean. */
+const removeTmp = (tmp) => {
+  try { fs.unlinkSync(tmp); return null; }
+  catch (e) {
+    if (e && e.code === "ENOENT") return null;
+    return tmp + " (could not be removed: " + errWhy(e) + ")";
+  }
+};
+
+function failWrite(target, tmp, stage, e) {
+  console.error("ERR write FAILED for " + target + " at the " + stage + " step — " + errWhy(e));
+  console.error("    " + target + " was NOT replaced: its bytes are exactly what they were before this run.");
+  const left = removeTmp(tmp);
+  console.error(left
+    ? "    Delete this leftover by hand: " + left
+    : "    Temp file removed; nothing else was written.");
+  console.error("    Free the file (another process holding it? read-only attribute?) and re-run.");
+  process.exit(1);
+}
+
+function writeAtomic(target, text) {
+  const tmp = target + TMP_SUFFIX;
+  try {
+    fs.writeFileSync(tmp, text, "utf8");
+  } catch (e) {
+    failWrite(target, tmp, "temp write", e);
+  }
+  // Carry the target's own mode onto the temp before the swap: a rename installs the
+  // temp file's mode, so on POSIX a 0600 config would otherwise widen to the umask
+  // default. Windows has no POSIX mode to read — a throw here is noise, not a failure.
+  try {
+    const st = fs.statSync(target);
+    if (st && typeof st.mode === "number") fs.chmodSync(tmp, st.mode & 0o7777);
+  } catch { /* no mode to copy (Windows, or a target that does not exist yet) */ }
+  try {
+    fs.renameSync(tmp, target);
+  } catch (e) {
+    failWrite(target, tmp, "rename", e);
+  }
 }
 
 const mask = (s) => {
@@ -223,7 +290,7 @@ if (mode === "plugins") {
       "     is gone from this machine, the key and its entries are dead weight you can delete.");
   }
   if (!v0.a) {
-    fs.writeFileSync(file, insertMember(src, '"plugins": [\n    ' + lit + "\n  ]"));
+    writeAtomic(file, insertMember(src, '"plugins": [\n    ' + lit + "\n  ]"));
     console.log("OK  created the plugins array with " + lit);
   } else {
     const same = v0.els.filter(([a, b]) => v0.mk.slice(a, b) === lit);
@@ -235,7 +302,7 @@ if (mode === "plugins") {
         const [a, b] = dupe[n];
         out = n === 0 ? out.slice(0, a) + lit + out.slice(b) : out.slice(0, a) + out.slice(b);
       }
-      fs.writeFileSync(file, out);
+      writeAtomic(file, out);
       console.log("OK  replaced " + dupe.length + " previous Team entry/entries with " + lit);
     } else if (same.length) {
       console.log("OK  plugins already lists " + lit +
@@ -244,7 +311,7 @@ if (mode === "plugins") {
       const last = v0.els[v0.els.length - 1];
       const at = last ? last[1] : v0.a.head;
       const pad = last ? ",\n    " : "\n    ";
-      fs.writeFileSync(file, src.slice(0, at) + pad + lit + src.slice(at));
+      writeAtomic(file, src.slice(0, at) + pad + lit + src.slice(at));
       console.log("OK  added " + lit + " alongside " + v0.els.length + " existing entr" + (v0.els.length === 1 ? "y" : "ies"));
     }
   }
@@ -292,7 +359,7 @@ if (mode === "plugins") {
           out = out.slice(0, a) + out.slice(out[next] === "," ? next + 1 : b);  // first: remove element + its comma
         }
       }
-      fs.writeFileSync(other, out);
+      writeAtomic(other, out);
       // [Q, T,] with T removed keeps a comma either way (a separator on one side, a
       // trailing one on the other), so a single element + comma delete cannot produce
       // strict JSON. Strip a comma that now dangles immediately before THIS array's own
@@ -304,7 +371,7 @@ if (mode === "plugins") {
         while (p > after.a.head && /\s/.test(out[p])) p--;
         if (out[p] === ",") {
           out = out.slice(0, p) + out.slice(p + 1);
-          fs.writeFileSync(other, out);
+          writeAtomic(other, out);
         }
       }
       const chk = view(fs.readFileSync(other, "utf8"));
@@ -326,11 +393,11 @@ if (mode === "plugins") {
     if (m[2].trim() === lit) {
       console.log("OK  default_agent already " + lit + lineNo(src, m.index));
     } else {
-      fs.writeFileSync(file, src.slice(0, vStart) + lit + src.slice(vStart + m[2].length));
+      writeAtomic(file, src.slice(0, vStart) + lit + src.slice(vStart + m[2].length));
       console.log("OK  default_agent rewritten (was " + m[2].trim() + ")");
     }
   } else {
-    fs.writeFileSync(file, insertMember(src, '"default_agent": ' + lit));
+    writeAtomic(file, insertMember(src, '"default_agent": ' + lit));
     console.log("OK  default_agent added");
   }
   // Read it back — a fresh read of the file from disk, comments masked again.
@@ -444,7 +511,7 @@ if (mode === "plugins") {
       }
     }
     if (wrote) {
-      fs.writeFileSync(file, out);
+      writeAtomic(file, out);
       console.log("OK  " + action);
     }
     noteServers();
@@ -490,7 +557,7 @@ if (mode === "plugins") {
       while (next < out.length && /\s/.test(out[next])) next++;
       out = out.slice(0, a) + out.slice(out[next] === "," ? next + 1 : b);
     }
-    fs.writeFileSync(file, out);
+    writeAtomic(file, out);
     console.log("OK  removed mcp." + name);
     noteServers();
     const rb = readBackMcp(fs.readFileSync(file, "utf8"));
