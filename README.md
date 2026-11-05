@@ -21,6 +21,7 @@
 - [What's new in 1.9.7](#-whats-new-in-197)
 - [How the team works](#-how-the-team-works)
 - [Tools](#-tools)
+- [Optional: computer use](#-optional-computer-use-real-desktop)
 - [Governance & security](#-governance--security)
 - [Configuration](#️-configuration)
 - [Troubleshooting](#-troubleshooting)
@@ -37,7 +38,7 @@
 > Install the OpenCode plugin @te-river/opencode-team-mode. This package supports **OpenCode 2.x
 > only** — the 1.18.x personality was removed in the 1.7.0 line. Follow
 > https://raw.githubusercontent.com/Te-River/Opencode-TeamMode/main/docs/installation-v2.md
-> (a 2.x plugin cannot create an agent, so the six roles and six `/team-*` commands come from
+> (a 2.x plugin cannot create an agent, so the seven roles and six `/team-*` commands come from
 > a generator step in that guide — that step is not optional.) Then run its verification checks.
 > If a URL is unreachable — common on mainland-China networks — retry with the mirror prefix
 > https://ghproxy.net/ + the same path. If `npm` is slow or blocked, run
@@ -71,11 +72,11 @@ Under the table sits the workflow discipline: deterministic routing, a ≤30-lin
 **1 · Install.** Paste the [TL;DR](#tldr--skip-the-docs) block, run an installer, or follow [docs/installation-v2.md](./docs/installation-v2.md) by hand. Two things decide whether it works:
 
 - The key is **`plugins` (plural)**, and a 2.x entry is a string or `{ "package": …, "options": { … } }`. Entries across config files are **applied lowest→highest rather than replacing one another**, so keep exactly one Team entry — writing ours into both `opencode.json` and `opencode.jsonc` loads the plugin twice.
-- A 2.x plugin **cannot create an agent**, so `node <pkg>/scripts/gen-v2-config.mjs` writes the six roles and six `/team-*` commands into the config directory. The installer does this; doing it by hand means doing this.
+- A 2.x plugin **cannot create an agent**, so `node <pkg>/scripts/gen-v2-config.mjs` writes the seven roles and six `/team-*` commands into the config directory. The installer does this; doing it by hand means doing this.
 
 Then restart with `opencode service restart` (or quit Desktop from the tray, not just the window). A restart is safe mid-session: the conversation survives, only an in-flight tool call is aborted.
 
-**2 · Team is your default.** The installer writes `default_agent: "Team"` **last**, after the role files exist — a default naming a missing agent silently falls back to `build`, which is why the order matters and why boot reports what it found. Team is the picker's default; the five specialists run as subagents (dispatched by the Lead) and do not appear in the picker. The `/team-*` commands run as Team and dispatch the named specialist.
+**2 · Team is your default.** The installer writes `default_agent: "Team"` **last**, after the role files exist — a default naming a missing agent silently falls back to `build`, which is why the order matters and why boot reports what it found. Team is the picker's default; the six specialists run as subagents (dispatched by the Lead) and do not appear in the picker. The `/team-*` commands run as Team and dispatch the named specialist.
 
 **3 · Ask.** `/team-run <task>`, or `@team <task>`. If the run needs ≥2 dispatches you get a ≤30-line plan first and it waits for your approval.
 
@@ -87,7 +88,7 @@ Updates: **re-run the installer** (it regenerates the role/command files). On 2.
 All of it is outside this repo; the installer prints what it changed and reads the value back:
 
 - **Config entry** → `~/.config/opencode/opencode.jsonc` (created if missing; our entry is reclaimed from `opencode.json` — the two files merge, so exactly one Team entry is kept) — until you delete the line.
-- **Six roles + six commands** → `~/.config/opencode/agents/*.md` and `~/.config/opencode/commands/*.md`, generated from the installed package (a 2.x plugin cannot create an agent, so this step is not optional).
+- **Seven roles + six commands** → `~/.config/opencode/agents/*.md` and `~/.config/opencode/commands/*.md`, generated from the installed package (a 2.x plugin cannot create an agent, so this step is not optional).
 - **Default agent** → `default_agent: "Team"` written last, after the role files exist, and read back from disk.
 - **Not touched:** the host's npm cache and `OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS` — 2.x runs background sub-agents natively, so no env flag is set.
 - **Undo:** delete the `plugins` line (optionally the generated `agents/` / `commands/` files) and restart.
@@ -108,7 +109,7 @@ All of it is outside this repo; the installer prints what it changed and reads t
 | 🔎 **Researcher** | Knowledge finder | Local repo first, then the web — one of the two network roles |
 | 🖱️ **ComputerUser** | Desktop operator | Only when a computer-use MCP is installed: drives **one named window**, screenshots before acting, reports the verdict instead of assuming the click landed |
 
-Grants follow the job, not seniority: Lead `task / edit / write / shell / question`, Implementer and Tester `edit / write / shell`, Reviewer `shell` only, Architect and Researcher **nothing** beyond the governed tools. Only the Lead dispatches — no specialist can spawn a specialist.
+Grants follow the job, not seniority: Lead `task / edit / write / shell / question`, Implementer and Tester `edit / write / shell`, Reviewer `shell` only, Architect, Researcher and ComputerUser **nothing** beyond the governed tools; the desktop MCP itself is gated to Lead and ComputerUser. Only the Lead dispatches — no specialist can spawn a specialist.
 
 Slash commands map onto the same specialists: `/team-plan` (Architect), `/team-implement` (Implementer), `/team-review` (Reviewer), `/team-test` (Tester), `/team-research` (Researcher), `/team-run` (Team Lead).
 
@@ -130,6 +131,8 @@ Slash commands map onto the same specialists: `/team-plan` (Architect), `/team-i
 **computer-use 0.0.6 ships alongside**: every tool now accepts `window: "<title substring>"` — `screenshot` crops to that window and **never steals focus**, while `click` / `scroll` / `drag` / `type_text` / `key` focus it, act, and **restore your previous foreground window** afterwards. The tools' first 120 characters now carry the contract, because that is all the Code Mode catalog shows.
 
 **v2 registers nine governed tools:** `tm_fetch`, `tm_webfetch`, `tm_search`, `tm_memory`, `tm_join`, `tm_stats`, `tm_board_write`, `tm_ledger`, `tm_goal`.
+
+**Merged on `main`, not in any published release yet** (the next release after 1.9.7 / computer-use 0.0.6): the six specialists may no longer background their own work — a hard layer rewrites a truthy `background` on a non-lead call to `false` and the call runs in the foreground (enforcement, not a failure; the Lead is exempt); `envProtect: "off"` no longer lifts the env-file path red line — the published 1.9.7 still lets `off` short-circuit it, a bug already fixed on main; the one-restart computer-use upgrade; and the `CU_AUDIT_MAX_BYTES` / `CU_IMAGE_BUDGET_BYTES` knobs, which will ship with computer-use 0.0.7 (the tag does not exist yet). The sections below mark each of these in place.
 
 ---
 
@@ -154,17 +157,17 @@ Sub-agents cannot message each other live, so coordination is a **structured rep
 
 | Governed tool | In one line | Roles |
 |---|---|---|
-| `tm_fetch` | Pages an offloaded result by handle; JSON handles take a `fields` dot-path projection (`items[].name`). | all six |
+| `tm_fetch` | Pages an offloaded result by handle; JSON handles take a `fields` dot-path projection (`items[].name`). | every role |
 | `tm_webfetch` | One governed GET of an allowlisted page; redirects re-checked per hop, the whole chain named on refusal. | Lead + Researcher |
 | `tm_search` | Multi-engine search: parallel fan-out, host+path dedup, weighted-RRF fusion, an extractable hit list. | Lead + Researcher |
-| `tm_memory` | Session / project / global memory: add / search / list / forget / compact, with near-duplicate folding. | all six |
+| `tm_memory` | Session / project / global memory: add / search / list / forget / compact, with near-duplicate folding. | every role |
 | `tm_join` | The read side of sub-agent work: status, bounded `waitMs`, `cancel:true` with five distinct verdicts, a named child's whole reply. | Lead only |
-| `tm_stats` | Reads this plugin's own trajectory back: tokens kept out, dispatch overlap, capability matrix, layered-config sources. | all six |
-| `tm_board_write` | The board's write side: one new `NN-<role>-<topic>[-rN].md`, named by the tool, never overwritten. | all six |
+| `tm_stats` | Reads this plugin's own trajectory back: tokens kept out, dispatch overlap, capability matrix, layered-config sources. | every role |
+| `tm_board_write` | The board's write side: one new `NN-<role>-<topic>[-rN].md`, named by the tool, never overwritten. | every role |
 | `tm_ledger` | The Lead's task ledger in the host's `ctx.storage` — 2.x gives a plugin no `todowrite`. | Lead only |
-| `tm_goal` | Reads the host's goal; forwards set / pause / resume / clear to `/goal`. **已提交 ≠ 已生效.** | read: all six · write: Lead only |
+| `tm_goal` | Reads the host's goal; forwards set / pause / resume / clear to `/goal`. **已提交 ≠ 已生效.** | read: every role · write: Lead only |
 
-**There is no plugin-side dispatcher.** `tm_dispatch` was removed: a child a plugin creates is a session you can neither open from a card nor stop from the interface. Delegation goes through the host's own `task` / `task { background: true }` — a visible card, the host's kill switch — and `tm_join` is the collect side.
+**There is no plugin-side dispatcher.** `tm_dispatch` was removed (this sentence is history, not a current option): a child a plugin creates is a session you can neither open from a card nor stop from the interface. Delegation goes through the host's own `task` — for the Lead, `{ background: true }` is the standard shape (the plugin forces it), the card is visible and stoppable in the host, and `tm_join` is the collect side. From the next release (**merged on `main`, not published yet**) the six specialists may not background their own work: a truthy `background` on a non-lead call is rewritten to `false` and the call proceeds in the foreground — enforcement, not a failure, because once a child settles, its later background wake-up reaches neither side, so the result would have no receiver.
 
 **Browser and network grants.** Interactive browsing is the host's `browser_*` catalog. The Tester carries it for UI verification of your project; open web belongs to the Lead and the Researcher. Architect, Implementer and Reviewer have **no network grant** — a web question there is reported as a gap, never simulated. A host with no browser catalog (CLI / standalone) has no browser at all, and the agent says so.
 
@@ -217,13 +220,13 @@ What is and is not protected:
 Install it explicitly: `.\scripts\install.ps1 -ComputerUse` (POSIX
 `bash scripts/install.sh --computer-use`); the installer's main flow never touches it.
 
-**Upgrading takes one restart — and one restart is the floor.** A new version is written into its
+**Upgrading takes one restart — and one restart is the floor** *(the versioned-directory mechanism is merged on `main`, not in the published installer yet)*. A new version is written into its
 own versioned directory, so no file the host is running gets replaced: the install itself happens
 while OpenCode is up. That one restart is only what lets the host load the new command, and a
 fully zero-restart upgrade is impossible — the host reads its MCP connections at startup, and this
 installer never kills a process.
 
-Two user-visible knobs since 0.0.6: `CU_AUDIT_MAX_BYTES` (default 64 MiB — the total-size cap on
+Two more user-visible knobs are merged on `main` for the **pending computer-use 0.0.7 — the published 0.0.6 does not have them**: `CU_AUDIT_MAX_BYTES` (default 64 MiB — the total-size cap on
 the audit trail, `0` = no cap) and `CU_IMAGE_BUDGET_BYTES` (default 4 MiB — the per-process budget
 for JPEGs allowed to ride replies; an image left out of a reply is not a blank screen and not
 "nothing changed").
@@ -244,7 +247,7 @@ Every tool call runs under one pipeline. Under it sit the guards, and **each can
 - **Offload:** three outcomes, not two — offload (payload + preview + handle), **cap keeping addressing** (a browser snapshot keeps every `[ref=…]` line, drops prose, 1200-token budget), **cap keeping tables** (a report keeps its rows, 1600-token budget). A table with a row missing is not smaller, it is broken.
 - **Context pruning:** past 70% of the window a settled body becomes a one-line pointer — but only after it was offloaded, so the stub carries a real `tm_fetch` handle. Reply skeleton, GOAL/ACCEPTANCE, provenance, system messages and the board note are never cut.
 - **Retries:** a throttle is classified by name and text, then answered per request — 5s / 10s / 20s / 40s / 60s, never shared across requests; the host's own countdown wins when it has one. A hard quota is the billing family only and names no wait.
-- **Scope:** every hook fires for every session on the host, so each layer asks "is this one of our six roles?" first. `build`, `plan` and your own agents stay exactly as a fresh install leaves them; calls whose owner was not identified are left alone and **counted**, and `tm_stats` prints 作用域: 我们 · 他人 · 未判定.
+- **Scope:** every hook fires for every session on the host, so each layer asks "is this one of our seven roles?" first. `build`, `plan` and your own agents stay exactly as a fresh install leaves them; calls whose owner was not identified are left alone and **counted**, and `tm_stats` prints 作用域: 我们 · 他人 · 未判定.
 
 > ⚠️ **When you approve the host's own dialog, pick "once" — not "always".** Verified live: "always" records a far broader rule than the command you saw (approving `Get-ChildItem env:PATH` stores `Get-ChildItem *`), and one saved web rule answers for **every agent session in that project**. The reply says which path let a page in — static allowlist, the dialog you just answered, or a saved rule that answered in milliseconds — because an agent that cannot tell them apart reports "no dialog" as "that site is allowed".
 
@@ -284,7 +287,7 @@ That walk and precedence are the host's own config-layering rule, copied rather 
 |---|---|---|
 | `defaultAgent` | `true` | Check and report which agent the installer's `default_agent` names. The 2.x plugin ctx has no `agent.default`, so the plugin cannot promote anything; `false` skips the check. |
 | `autoCreate` | `true` | Write the inert global `team-mode.jsonc` at boot when absent. |
-| `envProtect` | `true` | Scope of `false`/`"off"`: the R6 **fine-grained ask face + extra-deny**. It does NOT lift the env-file path red line or the address red lines — a red line has no consent path (`65f738f`). |
+| `envProtect` | `true` | Scope of `false`/`"off"`: the R6 **fine-grained ask face + extra-deny**. It does NOT lift the env-file path red line or the address red lines — a red line has no consent path. **That scope is merged on `main` (`65f738f`), not published yet: the current release 1.9.7 still lets `off` short-circuit the path face — a bug, fixed on main.** |
 
 On 2.x an entry is a string **or** an object with `package` and `options`; the 1.x tuple form is rejected outright. Options do arrive — the object form is what the boot row reads back. Retention is configuration rather than an option: `blackboardTtlDays` (default 7) sets the blackboard and handle TTL.
 
@@ -308,7 +311,7 @@ Your own definitions win; the plugin never clobbers them. The one rule that make
 
 ## ❓ Troubleshooting
 
-**Will this eat my tokens?** The opposite is the point. Offload, ~80-token previews and Code Mode exist because a six-agent pipeline naively bolted onto one context window *would* eat your tokens. The governance is the token-saver; `tm_stats` shows the count.
+**Will this eat my tokens?** The opposite is the point. Offload, ~80-token previews and Code Mode exist because a seven-role pipeline naively bolted onto one context window *would* eat your tokens. The governance is the token-saver; `tm_stats` shows the count.
 
 **A `TM_*` variable I set does nothing.** Correct — configuration moved to JSON. Move the value into the matching registry key in `team-mode.jsonc`, then run `tm_stats`: its layered-config section names each key's source file, so a value you thought was accepted shows up as coming from somewhere you did not edit.
 
@@ -341,7 +344,7 @@ No DLLs harmed. Nothing was ever written to your working tree.
 [Apache License 2.0](./LICENSE)
 
 - [npm](https://www.npmjs.com/package/@te-river/opencode-team-mode) — `@te-river/opencode-team-mode`
-- [Install guide (**OpenCode 2.x**)](./docs/installation-v2.md) — the supported path; a 2.x plugin cannot create an agent, so the six roles and six commands are generated into the config directory
+- [Install guide (**OpenCode 2.x**)](./docs/installation-v2.md) — the supported path; a 2.x plugin cannot create an agent, so the seven roles and six commands are generated into the config directory
 - [Install guide (1.18.x)](./docs/installation.md) — **historical only**: that personality was removed in the 1.7.0 line
 - [OpenCode](https://opencode.ai) · [docs](https://opencode.ai/docs) · [plugin API](https://opencode.ai/docs/plugins)
 - Module map, per-layer seams and every measured host fact: [AGENTS.md](./AGENTS.md); dated evidence behind each v2 claim: [docs/v2-port-notes.md](./docs/v2-port-notes.md)

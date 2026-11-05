@@ -21,6 +21,7 @@
 - [1.9.7 新增](#-197-新增)
 - [团队怎么运作](#-团队怎么运作)
 - [工具](#-工具)
+- [可选：计算机使用（真实桌面）](#-可选计算机使用真实桌面)
 - [治理与安全](#-治理与安全)
 - [配置](#️-配置)
 - [故障排查](#-故障排查)
@@ -73,7 +74,7 @@
 
 然后 `opencode service restart` 重启（桌面版从托盘退出，光关窗口不算）。会话中途重启是安全的：对话还在，只有正在跑的那次工具调用会被中断、需要重发。
 
-**第二步 · Team 就是默认角色。** 安装器在角色文件落盘**之后**才写 `default_agent: "Team"`——默认值指向一个不存在的 agent 时，宿主会安静地退回 `build`，所以顺序有讲究，boot 行也会报它到底读到了什么。Team 是选择器的默认项；五个专家以子代理运行（由 Lead 派发），不会出现在选择器里。`/team-*` 命令以 Team 身份运行，再派发给对应专家。
+**第二步 · Team 就是默认角色。** 安装器在角色文件落盘**之后**才写 `default_agent: "Team"`——默认值指向一个不存在的 agent 时，宿主会安静地退回 `build`，所以顺序有讲究，boot 行也会报它到底读到了什么。Team 是选择器的默认项；六个专家以子代理运行（由 Lead 派发），不会出现在选择器里。`/team-*` 命令以 Team 身份运行，再派发给对应专家。
 
 **第三步 · 提问。** `/team-run <任务>`，或者 `@team <任务>`。需要 ≥2 次派工时，你会先拿到一份 ≤30 行的计划，它等你批准。
 
@@ -106,7 +107,7 @@
 | 🔎 **Researcher** 研究员 | 找知识 | 先本地仓库、后联网——两个联网角色之一 |
 | 🖱️ **ComputerUser** 桌面操作 | 驱动真实桌面 | 只在装了 computer-use MCP 时出场：**只操作一个指定窗口**，先截图再动手，读 verdict 而不是假设点击生效 |
 
-授权按职责走，不按资历：Lead `task / edit / write / shell / question`；Implementer 和 Tester `edit / write / shell`；Reviewer 只有 `shell`；Architect 和 Researcher 除了受治理工具**什么都没有**。只有 Lead 能派工——专家不可能再生专家。
+授权按职责走，不按资历：Lead `task / edit / write / shell / question`；Implementer 和 Tester `edit / write / shell`；Reviewer 只有 `shell`；Architect、Researcher 和 ComputerUser 除了受治理工具**什么都没有**；桌面 MCP 本身只对 Lead 和 ComputerUser 开放。只有 Lead 能派工——专家不可能再生专家。
 
 六条斜杠命令对应同样这些专家：`/team-plan`（架构师）、`/team-implement`（实现者）、`/team-review`（评审）、`/team-test`（测试）、`/team-research`（研究员）、`/team-run`（Team Lead）。
 
@@ -128,6 +129,8 @@
 **随行的 computer-use 0.0.6**：每个工具都接受 `window: "<标题子串>"`——`screenshot` 裁剪到该窗口且**完全不抢焦点**，`click` / `scroll` / `drag` / `type_text` / `key` 先把该窗口提到前台、执行、再**把你原来的前台窗口还原**。工具描述的前 120 字符现在装的就是契约，因为 Code Mode 目录只显示这么多。
 
 **v2 注册九个受治理工具：** `tm_fetch`、`tm_webfetch`、`tm_search`、`tm_memory`、`tm_join`、`tm_stats`、`tm_board_write`、`tm_ledger`、`tm_goal`。
+
+**main 已合入、尚未发布**（1.9.7 / computer-use 0.0.6 之后的下一版）：六个专家不得再把自己的工作后台化——硬层会把非领队调用里的 truthy `background` 改写成 `false`，调用照常在前台执行（那是执法生效，不是故障；领队不受禁）；`envProtect: "off"` 不再抬 env 文件路径红线——当前发布版 1.9.7 仍会被 `off` 短路，这是 main 上已修的缺陷；computer-use 的一次重启升级；以及 `CU_AUDIT_MAX_BYTES` / `CU_IMAGE_BUDGET_BYTES` 两个旋钮，它们将随 computer-use 0.0.7 发布（该 tag 尚不存在）。下文相应小节已就地标注。
 
 ---
 
@@ -152,17 +155,17 @@
 
 | 受治理工具 | 一句话 | 角色 |
 |---|---|---|
-| `tm_fetch` | 按句柄分页取回被卸载的结果；JSON 句柄支持 `fields` 点路径投影（`items[].name`）。 | 六个角色 |
+| `tm_fetch` | 按句柄分页取回被卸载的结果；JSON 句柄支持 `fields` 点路径投影（`items[].name`）。 | 全部角色 |
 | `tm_webfetch` | 对白名单页面做一次受治理 GET；重定向逐跳复检，被拒时报出整条链。 | Lead + 研究员 |
 | `tm_search` | 多引擎搜索：并行扇出、按 host+path 去重、加权 RRF 融合，输出可提取的命中列表。 | Lead + 研究员 |
-| `tm_memory` | 会话 / 项目 / 全局三层记忆：add / search / list / forget / compact，近乎重复的条目会折叠。 | 六个角色 |
+| `tm_memory` | 会话 / 项目 / 全局三层记忆：add / search / list / forget / compact，近乎重复的条目会折叠。 | 全部角色 |
 | `tm_join` | 子代理工作的读侧：状态、有界 `waitMs`、`cancel:true`（五种互不冒充的裁决）、指名子代理的完整回复。 | 仅 Lead |
-| `tm_stats` | 把插件自己的轨迹读回来：省下的 token、派工重叠、能力矩阵、分层配置来源。 | 六个角色 |
-| `tm_board_write` | 黑板的写侧：新增一个 `NN-<role>-<topic>[-rN].md`，名字由工具决定，绝不覆盖。 | 六个角色 |
+| `tm_stats` | 把插件自己的轨迹读回来：省下的 token、派工重叠、能力矩阵、分层配置来源。 | 全部角色 |
+| `tm_board_write` | 黑板的写侧：新增一个 `NN-<role>-<topic>[-rN].md`，名字由工具决定，绝不覆盖。 | 全部角色 |
 | `tm_ledger` | Lead 的任务账本，存在宿主的 `ctx.storage` 里——2.x 不给插件 `todowrite`。 | 仅 Lead |
-| `tm_goal` | 读宿主目标；把 set / pause / resume / clear 转投 `/goal`。**已提交 ≠ 已生效。** | 读：六个角色 · 写：仅 Lead |
+| `tm_goal` | 读宿主目标；把 set / pause / resume / clear 转投 `/goal`。**已提交 ≠ 已生效。** | 读：全部角色 · 写：仅 Lead |
 
-**插件侧没有派发器。** `tm_dispatch` 已移除：插件自己创建的子会话，你既不能从卡片打开，也不能从界面停掉。派工走宿主自己的 `task` / `task { background: true }`——看得见的卡片、宿主的急停开关——`tm_join` 是收集侧。
+**插件侧没有派发器。** `tm_dispatch` 已移除（这句是历史陈述，不是当前选项）：插件自己创建的子会话，你既不能从卡片打开，也不能从界面停掉。派工走宿主自己的 `task`——对领队来说 `{ background: true }` 就是标准形状（由插件强制），卡片可见、也能在宿主里停；`tm_join` 是收集侧。下一版起（**main 已合入、尚未发布**）六个专家不得把自己的工作后台化：非领队调用里的 truthy `background` 会被改写成 `false`，调用照常在前台执行——那是执法，不是故障；机理是子代理一结算，此后的后台唤醒既不回流给它、也不上传给领队，结果没有接收者。
 
 **浏览器与联网授权。** 交互式浏览是宿主的 `browser_*` 目录。Tester 带着它是为了验证你的项目的 UI；开放联网属于 Lead 和研究员。架构师、实现者、评审**没有联网授权**——那边出现联网问题，报成缺口，绝不模拟。没有原生浏览器目录的宿主（CLI / standalone）就没有浏览器，agent 会直说。
 
@@ -204,11 +207,11 @@
 显式安装：`.\scripts\install.ps1 -ComputerUse`（POSIX `bash scripts/install.sh --computer-use`）；
 主安装流程从不碰它。
 
-**升级只要一次重启——而一次重启就是下限。** 新版本写进它自己的、带版本号的独立目录，所以任何正在运行的
+**升级只要一次重启——而一次重启就是下限**（带版本目录这套机制 main 已合入、发布安装器里还没有）。新版本写进它自己的、带版本号的独立目录，所以任何正在运行的
 文件都不会被替换：安装这一步本身就能在 OpenCode 开着的时候做完。那一次重启只是为了让宿主加载新的
 command；完全零重启做不到——宿主只在启动时读 MCP 连接，而本安装器从不杀进程。
 
-0.0.6 之后新增两个用户可见的旋钮：`CU_AUDIT_MAX_BYTES`（默认 64 MiB——审计轨的总量上限，`0` = 不设上限）
+另有两个用户可见旋钮在 main 上合入，将随**待发布的 computer-use 0.0.7** 到来——已发布的 0.0.6 里没有它们：`CU_AUDIT_MAX_BYTES`（默认 64 MiB——审计轨的总量上限，`0` = 不设上限）
 与 `CU_IMAGE_BUDGET_BYTES`（默认 4 MiB——本进程允许随回复附出的 JPEG 总预算；一张图没附出，既不等于屏幕是
 空的，也不等于画面没变化）。
 
@@ -227,7 +230,7 @@ command；完全零重启做不到——宿主只在启动时读 MCP 连接，�
 - **卸载（offload）：** 三种结局而不是两种——卸载（载荷 + 预览 + 句柄）、**保留寻址的截断**（浏览器快照保留每一条 `[ref=…]` 行，丢掉散文，预算 1200 token）、**保留表格的截断**（报告保留行，预算 1600 token）。少一行的表格不是更小，是坏了。
 - **上下文裁剪：** 越过窗口 70% 后，已结算的消息体变成一行指针——但先卸载过，所以桩里带的是真 `tm_fetch` 句柄。回复骨架、GOAL/ACCEPTANCE、来源、系统消息和黑板注记永不被裁。
 - **重试：** 限流按名字和文本分类，然后按请求给阶梯——5s / 10s / 20s / 40s / 60s，跨请求不共享；宿主自己有倒计时就以宿主为准。硬配额只认计费那一族，且不给等待秒数。
-- **作用域：** 宿主的 hook 对每个会话都触发，所以每一层先问「这是我们六个角色之一吗」。`build`、`plan` 和你自己写的 agent 保持全新安装的样子；认不出归属的调用原样放过**并计数**，`tm_stats` 会打印 作用域：我们 · 他人 · 未判定。
+- **作用域：** 宿主的 hook 对每个会话都触发，所以每一层先问「这是我们七个角色之一吗」。`build`、`plan` 和你自己写的 agent 保持全新安装的样子；认不出归属的调用原样放过**并计数**，`tm_stats` 会打印 作用域：我们 · 他人 · 未判定。
 
 > ⚠️ **批宿主自己的对话框时，选「once」，别选「always」。** 实测：「always」记下的规则比你看的那条宽得多（批准 `Get-ChildItem env:PATH`，存下的是 `Get-ChildItem *`）；联网也一样，一条保存下来的规则对**那个项目里的每个 agent 会话**都算数。所以回复会说明这次页面是走静态白名单、走你刚答的对话框、还是走一条毫秒级就答完的保存规则——分不清这三者的 agent 会把「没弹窗」报成「那个站点是允许的」。
 
@@ -267,7 +270,7 @@ command；完全零重启做不到——宿主只在启动时读 MCP 连接，�
 |---|---|---|
 | `defaultAgent` | `true` | 检查并报告安装器写的 `default_agent` 指向谁。2.x 插件 ctx 没有 `agent.default`，插件没法替你设默认角色；`false` 只是跳过这项检查。 |
 | `autoCreate` | `true` | 全局文件缺失时，启动写一份惰性模板。 |
-| `envProtect` | `true` | `false`/`"off"` 的管辖面：R6 **细粒度 ask 面 + extra-deny**。它**不**抬 env 文件路径红线与地址红线——红线没有同意路径（`65f738f`）。 |
+| `envProtect` | `true` | `false`/`"off"` 的管辖面：R6 **细粒度 ask 面 + extra-deny**。它**不**抬 env 文件路径红线与地址红线——红线没有同意路径。**这个范围是 main 已合入、尚未发布（`65f738f`）：当前发布版 1.9.7 里 `off` 仍会把路径面一并短路——那是 main 已修掉的缺陷。** |
 
 2.x 的条目是字符串**或**带 `package`、`options` 的对象；1.x 的元组写法会被直接拒绝。选项确实送得到——boot 行读的就是对象形式。保留期属于配置而不是插件选项：`blackboardTtlDays`（默认 7）同时决定黑板和句柄的 TTL。
 
@@ -291,7 +294,7 @@ command；完全零重启做不到——宿主只在启动时读 MCP 连接，�
 
 ## ❓ 故障排查
 
-**会不会很烧 token？** 恰恰相反，省 token 才是目的。卸载、约 80 token 的预览、Code Mode，全都是因为六个 agent 的流水线要是裸接一个上下文窗口，那才叫烧 token。治理层是省的那一方，省了多少 `tm_stats` 会写出来。
+**会不会很烧 token？** 恰恰相反，省 token 才是目的。卸载、约 80 token 的预览、Code Mode，全都是因为七个角色的流水线要是裸接一个上下文窗口，那才叫烧 token。治理层是省的那一方，省了多少 `tm_stats` 会写出来。
 
 **我设的 `TM_*` 变量没反应。** 正常——配置已经搬到 JSON 了。把值搬进 `team-mode.jsonc` 里对应的注册表键，再跑一次 `tm_stats`：它的分层配置小节会点名每个键的来源文件，于是你以为被认了的那个值，来源栏会显示不是你改的那个文件。
 
