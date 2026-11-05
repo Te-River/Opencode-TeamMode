@@ -1,5 +1,11 @@
 # OpenCode 2.0.16 — how the host actually loads a plugin from `config.plugins`
 
+> **Dated evidence file.** Everything below was measured on the host build named in the
+> heading (2.0.16), and entries are **not deleted or rewritten** when a later host changes the
+> fact. A tool name that no longer exists on current `main` (`tm_read` / `tm_grep` / `tm_bash`
+> / `tm_pty` / `tm_ptc_run` / `tm_dispatch`) is part of that record, not a live instruction.
+> New evidence appends as a new dated section; the rule in force lives in `AGENTS.md`.
+
 **Scope:** read-only forensics. The strings below were cut out of
 `resources/opencode-cli.exe` with a windowed byte scan; the live confirmations were
 run against a sandboxed `OPENCODE_CONFIG_DIR` + temp store roots. Nothing in the host

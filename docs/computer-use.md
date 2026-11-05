@@ -40,7 +40,9 @@ The installer downloads the pinned wheel, **verifies its sha256 before installin
 ```
 
 A hash that does not match installs nothing and writes zero config bytes. The entry path is
-VERSIONED, and that is the whole upgrade mechanism — see the **Upgrade / 升级** section below.
+VERSIONED, and that is the whole upgrade mechanism — see the **Upgrade / 升级** section below
+(that versioned layout is `main`, **待发布**; the released 1.9.7 entry still points into uv's
+own tool dir).
 
 安装器会先校验 sha256，再 `uv tool install`（写进 `<releases>/<版本>/` 这个独立目录），再跑
 `--selftest`，最后才写配置 —— 哈希不符、或 `--selftest` 不是 0，就什么都不装、一个配置字节都不写，
@@ -67,6 +69,13 @@ to the largest title match — an app window beats its own dialog.
 ---
 
 ## Upgrade / 升级 —— 一次重启（不是一步都不需要，也不是两次）
+
+> **发版状态 / release status:** 这一节（每版本一个 `<releases>/<version>/` 目录、一次重启是下限、
+> `-ComputerUseReclaim` 两趟回收）是 `main` 上安装器的行为，来自 `b3393a3`，**尚未发版**——已发布的
+> `1.9.7` 安装器仍是原地 `uv tool install --force`，Windows 上它换不掉宿主正占着的 exe（`os error 32/5`），
+> 所以那一版仍是下面"为什么以前非要两次重启"描述的那两趟。
+> This section describes the installer on `main` (`b3393a3`) and is **not in the released 1.9.7**;
+> that build installs in place and still needs the two-pass procedure explained further down.
 
 Every version gets its OWN directory, and the upgrade is the single edit that moves the
 config entry onto it:

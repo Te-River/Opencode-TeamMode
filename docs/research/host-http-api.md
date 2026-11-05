@@ -1,5 +1,12 @@
 # OpenCode 2.0.18 — the host's own HTTP API, and what it changes for a plugin
 
+> **Dated evidence file.** Every route below was read out of the host build named in the
+> heading, and entries are **not deleted or rewritten** when a later host changes the fact. A
+> tool name that no longer exists on current `main` (`tm_read` / `tm_grep` / `tm_bash` /
+> `tm_pty` / `tm_ptc_run` / `tm_dispatch`) is part of that record, not a live instruction — the
+> retirement decisions this page comments on are settled in `AGENTS.md`, and nothing here has
+> ever been called over the network.
+
 **Status: mapped, not called.** Every route below was read out of the installed host's
 embedded JS (the SDK client factory: `method:"GET", path:"/api/…"` entries, both literal and
 template-literal), cross-checked against the official v2 API page for the plugin endpoints. **No

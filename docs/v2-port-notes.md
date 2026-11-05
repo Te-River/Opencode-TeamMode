@@ -1,5 +1,34 @@
 # The v2 port, in full — evidence, history and the reasoning behind each rule
 
+> **STATUS: dated evidence — entries are neither deleted nor rewritten.** Every section
+> below records what was measured, on which host build, on which date. Tool names in those
+> entries (`tm_read` / `tm_grep` / `tm_bash` / `tm_pty` / `tm_ptc_run` / `tm_dispatch` /
+> `tm_browser`), version numbers, and claims that a later entry falsified are the RECORD of
+> that measurement, not the current contract — read them as history and go to `AGENTS.md`
+> for the rule in force. New evidence is written as a NEW dated entry; it does not edit an
+> old one, because the audit trail (what we believed, and what changed our mind) is the
+> whole value of this file. Same rule for `docs/research/*.md`.
+>
+> **状态：这是带日期的证据文件——条目不删、不改。** 下面每一节记的是"哪一天、在哪个宿主
+> 版本上量到了什么"。旧条目里的工具名（`tm_read` / `tm_grep` / `tm_bash` / `tm_pty` /
+> `tm_ptc_run` / `tm_dispatch` / `tm_browser`）、版本号、以及后来被推翻的说法，都是那次测量
+> 的**记录**，不是当前的约定——当历史读，当前规则看 `AGENTS.md`。新证据一律**追加新的日期
+> 条目**，不回头改旧条目，因为"我们当时信了什么、后来被什么推翻"正是这个文件的全部价值。
+> `docs/research/*.md` 同此规则。
+
+Index of the dated entries (newest last; content untouched):
+
+- `## The v2 delta (2026-09-25, in force)` — the rules carried over from AGENTS.md
+- `### 2026-09-26 (later the same day)` — that BODY sentence was our decode miss
+- `### 2026-09-28` — the stop seam, and why `false` is an answer
+- `### 2026-09-30` — the same seam missed 2.0.20's MESSAGE shape; both are normalised now
+- `### 2026-10-06` — the 1.7.0 cut: four measurements that shaped it
+- `### 2026-10-07` — the 1.7.1 cut: the 75% trigger is gone, and why the readers stayed
+- `### 2026-10-07` — the agent ID is the FILE NAME, and a case-only difference is not cosmetic
+- `### 2026-10-18` — the request-layer `temperature` fill is gone
+- `### 2026-10-21` — host 2.1.x: where its release notes actually live, and the #57260 renames
+- `### 2026-10-21` — the plugin ctx's session METHODS surface is richer than we declared
+
 AGENTS.md keeps the **rules** and points here for the **evidence and the story**: what was
 measured, on which host build, which claim was later falsified and by what, and why a
 decision was taken the way it was. This split exists because AGENTS.md is loaded into every

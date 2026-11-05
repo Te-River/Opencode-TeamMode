@@ -1,5 +1,12 @@
 # OpenCode 2.0.16 — every built-in tool, forensically
 
+> **Dated evidence file.** Every line below is a measurement of the host build named in the
+> heading (2.0.16), and entries are **not deleted or rewritten** when a later host changes the
+> fact: a shape that moved in 2.1.x / 2.2.x is recorded there, not here. The `tm_*` names in
+> the retirement table (`tm_read` / `tm_grep` / `tm_bash` / `tm_ptc_run` / `tm_pty`) are the
+> record of a decision that has since SHIPPED (v2 registers none of them) — read them as
+> history; the rule in force lives in `AGENTS.md`.
+
 **Scope:** read-only static forensics on the installed host. Nothing in the host was
 modified, no `opencode` session was run (a live agent owns that lane), and no existing
 repo file was touched — this page is the only artifact.

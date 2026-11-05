@@ -1,5 +1,12 @@
 # OpenCode 2.x — how a background sub-agent is dispatched, acknowledged, and answered
 
+> **Dated evidence file.** Everything below was measured on the host build named in it, on the
+> date in the heading, and entries are **not deleted or rewritten** when a later host changes
+> the fact. A tool name that no longer exists on current `main` (`tm_read` / `tm_grep` /
+> `tm_bash` / `tm_pty` / `tm_ptc_run` / `tm_dispatch` / `tm_browser`) is part of that record,
+> not a live instruction. New evidence appends as a new dated section; the rule in force lives
+> in `AGENTS.md`.
+
 **Scope:** one exported desktop session (`e-f.json`, provided by the user on 2026-09-26),
 read as evidence. Nothing in the host was modified and nothing here was inferred from the
 v1 behaviour: every claim below is either quoted from that export or measured against it.

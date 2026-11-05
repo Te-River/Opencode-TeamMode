@@ -1,5 +1,11 @@
 # The host's own goal feature (`opencode.goal`) — evidence trail
 
+> **Dated evidence file.** Every line below is what was observed on the host build named here,
+> and entries are **not deleted or rewritten** when a later host changes the fact — new
+> evidence appends as a new dated section. This page is the source the `tm_goal` bridge was
+> written against; the rule in force lives in `AGENTS.md`, the install surface in
+> `docs/installation-v2.md`.
+
 Read-only investigation on **OpenCode host 2.2.1** (desktop, Windows). Nothing here
 modifies the host, its binary, the user's `~/.config/opencode`, or the SQLite DB.
 Every claim states how it was observed.

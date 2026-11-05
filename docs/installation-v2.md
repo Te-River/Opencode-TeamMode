@@ -2,19 +2,25 @@
 
 > **Read this page instead of `installation.md` if your host is OpenCode 2.x.**
 > The two generations are not variants of one install: a 2.x plugin **cannot create
-> an agent**, so the six Team roles and the six `/team-*` commands reach the host as
+> an agent**, so the seven Team roles and the six `/team-*` commands reach the host as
 > **config files** this package generates, and several v1 mechanisms have no v2
-> equivalent at all. `installation.md` describes the 1.18.x path and stays correct
-> there.
+> equivalent at all. `installation.md` describes the 1.18.x path **as the 1.6.x-era v1
+> package ran it**: the `server` personality has since been deleted, the package now
+> exports `{id, setup}` alone, and a 1.18.x host ignores `setup` — so the current
+> package does not load there at all. That page is history, not an install path.
 >
 > 如果你的宿主是 OpenCode 2.x，请看本页而不是 `installation.md`：2.x 的插件**不能创建
 > agent**，七个角色和六条 `/team-*` 命令是以**配置文件**的形式由本包生成出去的；v1 的几处
-> 机制在 v2 上根本没有对应物。`installation.md` 讲的是 1.18.x，那份仍然是对的。
+> 机制在 v2 上根本没有对应物。`installation.md` 讲的是 1.18.x 在 **1.6.x 时代 v1 包**下的
+> 装法：`server` 人格此后已被删除，本包现在只导出 `{id, setup}`，而 1.18.x 宿主根本不读
+> `setup`——当前发布的包在 1.18.x 上加载不了。那一页是历史记录，不是安装路径。
 
 Find out which one you are on / 先确认你在哪一代：
 
 ```bash
-opencode --version        # 1.18.x → installation.md ;  2.x → this page
+opencode --version        # 2.x → this page ;  1.18.x → installation.md, which documents
+                          # the 1.6.x-era v1 package — the CURRENT package does not load
+                          # there at all, so on 1.18.x it is history, not an install path
 ```
 
 ---
@@ -46,7 +52,7 @@ implied:
 
 | | OpenCode 1.18.x | OpenCode 2.x |
 |---|---|---|
-| The seven roles | injected by the plugin at boot | `~/.config/opencode/agents/*.md`, written by the generator below — a plugin cannot add an agent |
+| The seven roles | injected by the plugin at boot — the 1.6.x-era v1 package shipped **six**; `computerUser`, the seventh, is a v2-line role | `~/.config/opencode/agents/*.md`, written by the generator below — a plugin cannot add an agent |
 | The six `/team-*` commands | injected by the plugin | `~/.config/opencode/commands/*.md`, same generator |
 | Default agent | filled only if the user left it alone | **the installer writes `default_agent: "Team"`** — the 2.1.x plugin ctx has no `agent.default` at all (`typeof === "undefined"`), so a plugin cannot promote anything, and the boot row reports which role the installer named (`agents_default: installer:Team` / `installer:other`); `default_agent` in config is the checkable part. Opt out with `{ "package": "@te-river/opencode-team-mode@latest", "options": { "defaultAgent": false } }` in `plugins` — the object form, not the 1.x tuple (measured 2026-10-06: a tuple is rejected with `path=$.plugins.1 kind=invalid`, the object form is delivered) |
 | Non-blocking commands | `tm_pty` — **removed with v1 support** | **not registered at all** — the v2 plugin context has no pty domain, so the tool could only ever report its own missing seam. Run a slow step as its own `shell` call (one per call, each with its own `timeout`) and tee the output to a log you can read back |
@@ -57,13 +63,14 @@ implied:
 | The task ledger | the host's `todowrite` | **`tm_ledger`**, stored in the host's `ctx.storage` (v2 has no `todowrite`) |
 | Asking the user | the host's official per-request dialog | **a plugin cannot open a dialog on v2.** Governed calls that would have asked instead **fail closed** with a refusal that says why. The dialogs you do see are raised by the host itself (permission rules, out-of-project access) |
 | Web access | a 22-host allowlist + the confirm dialog | **the domain gate is off** (`webfetchAllowedDomains` defaults to `["*"]` on v2): a 2.x plugin cannot raise a dialog, so "approve to proceed" was an instruction to wait for a window that never opens. Address classes are still policed — cloud-metadata / link-local / reserved ranges are refused under every setting, and private space (RFC1918, CGNAT, ULA, IPv6 link-local, `.localhost`) is refused too, but the refusal now names both exits instead of promising a click: `"privateSpace": "allow"` in the global `team-mode.jsonc` (opens the class) or that one hostname in `webfetchAllowedDomains` (opens exactly it). **Loopback (`127/8`, `::1`, `localhost`) is served by default** — it reaches only a service the user started on their own machine, and a gate whose only exit is a dialog the plugin cannot raise is a wall, not a gate |
-| Sub-agents | needs `OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS=true` | native; the plugin forces `background: true` on every `subagent` call, so **do not set that env var for 2.x** (it is a v1 workaround and changes nothing here) |
+| Sub-agents | needs `OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS=true` | native; the plugin forces `background: true` on every `subagent` call, so **do not set that env var for 2.x** (it is a v1 workaround and changes nothing here). The mirror rule (`78e7d48`, on `main` — **待发布**, a released 1.9.7 build does not have it): a truthy `background` on a **non-lead** Team session's own tool call is rewritten to `false` and the call runs in the foreground — a settled child has no receiver for a late background wake-up, so the result would be silently dropped. The lead is never rewritten, and `subagent` is skipped by that layer so the two forces cannot meet one call |
 | Effect on your other modes | the plugin's hooks are global | **none.** Every hook checks the session's owner first, so `build`, `plan` and any agent you installed yourself stay exactly as a fresh OpenCode leaves them — no tool is deleted from their requests, no temperature is set, nothing is offloaded, no permission is tightened, no dispatch is converted to background |
 
 ### Prerequisite
 
 OpenCode 2.x (desktop or CLI) and Node.js on PATH (the plugin runs on the host's own
-runtime; Node 20+ additionally enables the Playwright browser engine).
+runtime; the Node-20 Playwright engine is **not** needed any more — it belonged to the
+self-built `tm_browser`, which `1.7.0` removed in favour of the host's own `browser_*`).
 
 ### Step 1 — Install the plugin
 
@@ -123,7 +130,8 @@ returning cleanly is not evidence the plugin loaded.
    ours, keep the comments, and leave no comma dangling before `]` — the host tolerates it,
    the next hand edit may not.
 3. Generate the roles and commands (Step 2). A plugin cannot create an agent on 2.x, so
-   without these twelve files Team does not exist however well the plugin loaded.
+   without these thirteen files (7 roles + 6 commands) Team does not exist however well the
+   plugin loaded.
 4. Set `default_agent: "Team"` **last** (Step 3) — a default naming agents that are not on
    disk makes the host fall back to `build` silently.
 5. Verify, in this order, and report what you actually saw:
@@ -148,7 +156,8 @@ returning cleanly is not evidence the plugin loaded.
 
 This is the step 2.x exists for and the v1 installer never needed. Run the generator
 that ships **inside the installed package** — never copy the markdown by hand, or the
-prompts drift away from what the plugin injects on v1:
+prompts drift away from what `dist/agents.js` actually exports — there is no v1 injection
+path left to compare against:
 
 ```bash
 # the installed copy of this package (global config's node_modules):
@@ -160,8 +169,9 @@ node …/scripts/gen-v2-config.mjs --print
 node …/scripts/gen-v2-config.mjs --dir ~/.config/opencode
 ```
 
-Expected output: `共 12 个文件（角色 6 + 命令 6）`. It is idempotent — re-running writes
-nothing and prints `已是最新`. A file it did not generate (no marker) is **refused**, not
+Expected output: `共 13 个文件（角色 7 + 命令 6）` — the generator projects every key of
+the `agents` export, and `computerUser` is the seventh role. It is idempotent — re-running
+writes nothing and prints `已是最新`. A file it did not generate (no marker) is **refused**, not
 overwritten, so your own `agents/Team.md` survives; `--force` overrides that.
 
 On Windows the installed path is
@@ -175,8 +185,12 @@ rewrite rule stops matching the source. That is deliberate — a v2 model told t
 
 ### Step 3 — Make Team the default, in config
 
-The plugin also calls `default("team")` on every boot, but a 2.x plugin cannot read the
-value back, so the config key is the one you can verify:
+The plugin cannot set this for you: host 2.1.x gives the plugin ctx no `agent.default`
+at all (`typeof ctx.agent.default === "undefined"`, measured 2026-10-25 — the domain is
+`get / list / transform / reload`), so nothing calls `default("team")` any more and the
+config key is the only mechanism. The boot row reports what it read from disk
+(`agents_default: installer:Team` / `installer:other` / `missing` / `no-config`), which is
+what you verify:
 
 ```jsonc
 { "default_agent": "Team" }
@@ -198,8 +212,10 @@ opencode service restart   # official: restart the background server (the deskto
 
 Four checks, in this order:
 
-1. `opencode agents` (or the picker) lists `Team`, `architect`, `implementer`,
-   `reviewer`, `tester`, `researcher`.
+1. `ls ~/.config/opencode/agents` shows the **seven** role files (`Team`, `architect`,
+   `implementer`, `reviewer`, `tester`, `researcher`, `computerUser`). The picker itself
+   lists `Team` only — every specialist is `mode: subagent`, so it runs in a child session
+   rather than appearing as a picker entry. `opencode agents` prints the whole set.
 2. A new session starts as Team. Ask: `tm_stats` — the reply has a
    **启动与人格** section showing the v2 boot line: which tools were registered, whether
    `tool.execute.after` / `permission.evaluate` / `session.context` attached, the probe's
@@ -238,9 +254,11 @@ Also check for the decline marker `<config dir>/team-mode.computeruse-declined`.
 
 **Step 1 — ask ONCE, in ONE message.** Do not split this into follow-up questions:
 
-> Install the optional **computer use** MCP server? It lets Team (the lead), `researcher` and
-> `tester` take screenshots and drive the mouse and keyboard on **this real desktop** — any
-> window. Two hard boundaries: **elevated (UAC) windows are unreachable** (only a Windows
+> Install the optional **computer use** MCP server? It lets Team (the lead) and the dedicated
+> `ComputerUser` specialist take screenshots and drive the mouse and keyboard on **this real
+> desktop** — any window. The other roles are deliberately **not** given the mouse: `researcher`
+> is the role that reads untrusted web pages, and `tester` is not a desktop driver either. Two
+> hard boundaries: **elevated (UAC) windows are unreachable** (only a Windows
 > process can touch the secure desktop), and **there is no per-action confirmation** — typing
 > into a terminal is delivered as keystrokes, so it **bypasses this project's R2/R6
 > classifiers** and the env-variable red line simply does not exist on that path. It is
@@ -250,9 +268,16 @@ Also check for the decline marker `<config dir>/team-mode.computeruse-declined`.
 
 - **Yes** → run `.\scripts\install.ps1 -ComputerUse` (POSIX: `bash scripts/install.sh --computer-use`).
   Relay its own "already present / skipped" or undo text **verbatim** — do not paraphrase it.
-  Then verify and restart, exactly as Step 4 above: `<uv tool dir>/computeruse-mcp/Scripts/computeruse.exe --selftest` (POSIX: `<uv tool dir>/computeruse-mcp/bin/computeruse --selftest`)
-  must print `dpi_aware: true` and the virtual-screen size, then `opencode service restart`,
-  then `tm_stats`: the new **计算机使用** section must name the tool ids it actually saw.
+  Then `opencode service restart` — **once, and that floor is a `main` claim (待发布)**: the
+  per-version release directory is `b3393a3`, while the RELEASED 1.9.7 installer still runs
+  `uv tool install --force` in place, so on that build Windows refuses to replace the exe the
+  host is running and the procedure is the old two-pass one (remove the entry → restart →
+  install → restart). On `main` the installer has also already run `--selftest` against the
+  directory it wrote (`<releases>/<version>/computeruse-mcp/Scripts/computeruse.exe`, POSIX
+  `.../computeruse-mcp/bin/computeruse`; on 1.9.7 it is
+  `<uv tool dir>/computeruse-mcp/Scripts/computeruse.exe`) and wrote **zero config bytes** if
+  that exited non-zero. Then `tm_stats`: the new **计算机使用** section must name the
+  tool ids it actually saw.
   **The tool names are measured at runtime, never assumed** — the plugin records what actually
   arrived (the measured spelling is `computeruse.control_status`), so do not write a specific
   name into any summary of yours before `tm_stats` has shown it. The role split is enforced at
@@ -279,10 +304,14 @@ Also check for the decline marker `<config dir>/team-mode.computeruse-declined`.
 **Undo (say this out loud for either branch).**
 
 ```bash
-uv tool uninstall computeruse-mcp                                   # 1. remove the tool
-node scripts/lib/config-surgery.cjs <cfg> mcp-remove computeruse # 2. remove the key
-rm -rf "%LOCALAPPDATA%/te-river/computeruse"                    # 3. remove the audit trail
-rm -f <config dir>/team-mode.computeruse-declined                # 4. only if you declined
+node scripts/lib/config-surgery.cjs <cfg> mcp-remove computeruse # 1. remove the key
+rm -rf <releases root>                                       # 2. ONLY on `main` (待发布, b3393a3):
+                                                             #    %LOCALAPPDATA%\te-river\computeruse\releases
+                                                             #    ${XDG_DATA_HOME:-~/.local/share}/te-river/computeruse/releases
+uv tool uninstall computeruse-mcp                            # 3. the RELEASED 1.9.7 layout — that tool
+                                                             #    lives in uv's own tool dir, not under <releases>
+rm -rf "%LOCALAPPDATA%/te-river/computeruse"                 # 4. the audit trail (and on `main`, every release dir)
+rm -f <config dir>/team-mode.computeruse-declined                # 5. only if you declined
 ```
 
 **What this feature is not.** It is not a security boundary — it is a blast-radius limiter
@@ -321,13 +350,15 @@ before concluding the install is broken.
 **Two traps when upgrading by hand:**
 
 - **`npm install @te-river/opencode-team-mode@latest` may move nothing.** If your `package.json`
-  carries a caret range (`^1.6.2`) and a lockfile pins the resolved version, npm treats the range as
+  carries a caret range (`^1.9.0`) and a lockfile pins the resolved version, npm treats the range as
   already satisfied and leaves the old copy in place — the version on disk does not change. Install
-  the **exact** version (`@1.7.0`), or drop the lockfile entry first. Check what you actually got:
+  the **exact** published version (`@1.9.7`), or drop the lockfile entry first. Check what you actually got:
   `node -p "require('<dir>/node_modules/@te-river/opencode-team-mode/package.json').version"`.
 - **A v1 leftover env var.** `OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS` is a 1.18.x workaround;
   on 2.x sub-agents are background natively and the plugin forces `background:true` on every
-  dispatch, so it changes nothing here. The installer prints the undo — on Windows
+  `subagent` dispatch (while a **non-lead** Team session asking for `background` on its own tool
+  call gets it rewritten to `false` and runs in the foreground — `78e7d48`, on `main`, **待发布**),
+  so the variable changes nothing here. The installer prints the undo — on Windows
   `REG delete HKCU\Environment /v OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS /f`, on macOS
   `launchctl unsetenv …`, on Linux `systemctl --user unset-environment …`.
 
@@ -355,7 +386,7 @@ internal `TM_CONFIG_AUTOCREATE=off`); the boot row records `config_autocreate` a
 `created` / `present` / `off` / `failed`.
 
 Keys are camelCase (`offloadThreshold`, `searchDefaultEngine`, …) — the registry in
-`src/tm/config-layers.ts` is the single source of truth (58 keys, each with its type, default and
+`src/tm/config-layers.ts` is the single source of truth (66 keys, each with its type, default and
 doc). Five keys are **red lines a PROJECT file may not change** — `envProtect`, `r6FineAsk`,
 `privateSpace`, `webfetchAllowedDomains`, `bashReadonlyAllowed`; they are settable only in the
 global or `system` file, and a project value is ignored and reported. A file that fails to parse is skipped
@@ -367,8 +398,16 @@ keys a file tried to set and lost, the unknown keys, the skipped layers, and the
 values are `strict` / `standard` / `off`). A Team role's native `read` of a `.env` is denied
 outright, and a shell command that reads the environment goes to the host's own permission prompt.
 Turn it off with the plugin option `envProtect: false` or with `"envProtect": "off"` in the
-**global or `system`** file (it is a red-line key); on 2.x the shell face is an `ask` (the host's dialog — a
-plugin cannot raise one) while the env-FILE face is a hard `deny` with no consent path.
+**global or `system`** file (it is a red-line key) — and read what that switch actually covers.
+**On `main` (`65f738f` + `3df9c2e`, 待发布) it is narrower than it once was:** `off` governs
+**only R6's fine-grained ask face** (the `strict` / `standard` per-command judgement plus your
+extra-deny preferences), and the env-file **path** red line is NOT switched off by it — the
+`.env` / shell-rc family stays denied under every value, for `read` / `write` / `edit` / `glob` /
+`grep` and for the env-file-bearing input fields, because a setting that removed a class with no
+consent path would BE that consent path. **On the released 1.9.7 that narrowing has not shipped
+yet:** there `off` still short-circuits the four path faces, so a `.env` read falls through to
+YOUR host rules rather than to our deny. The refusal text on `main` says so verbatim:
+`R6 红线：这个路径指向环境文件（.env / shell rc 家族），不授权、不弹窗；envProtect 的 off 不管这条红线，它只关细粒度 ask 面（strict/standard 判定与 extra-deny 偏好）。`
 
 The only `TM_*` environment variables left are internal/test switches, not configuration:
 `TM_STORE_RECLAIM` (test override of the `storeReclaim` key), `TM_V2_PROBE` (name-level JSONL
@@ -377,7 +416,7 @@ dump) and `TM_CONFIG_AUTOCREATE` (the auto-create off switch).
 ### Uninstalling
 
 1. Remove the plugin entry (`opencode plugin remove @te-river/opencode-team-mode`).
-2. Delete the generated files: `~/.config/opencode/agents/{Team,architect,implementer,reviewer,tester,researcher}.md`
+2. Delete the generated files: `~/.config/opencode/agents/{Team,architect,implementer,reviewer,tester,researcher,computerUser}.md`
    and `~/.config/opencode/commands/team-*.md`. Only files carrying our marker were written
    by the generator — anything else you wrote yourself is yours.
 3. Remove `"default_agent": "Team"` if you set it.
@@ -388,13 +427,13 @@ dump) and `TM_CONFIG_AUTOCREATE` (the auto-create off switch).
 
 | Symptom | Cause and move |
 |---|---|
-| Roles are not in the picker | Step 2 never ran, or ran against a different `--dir`. `ls ~/.config/opencode/agents` |
+| The seven role files are not under `~/.config/opencode/agents` | Step 2 never ran, or ran against a different `--dir`. `ls ~/.config/opencode/agents` — and note the picker itself only ever shows `Team`: the six specialists are `mode: subagent`, so "a specialist is missing" is a missing FILE, never a missing picker entry |
 | The default silently became `build` | `default_agent` names an agent that does not exist — re-run Step 2, then Step 3 |
 | A hand-written `agents/Team.md` was not updated | By design: the generator refuses files it did not create. Move yours aside, or pass `--force` |
 | The picker shows the lead as `team`, or Team is not the default | The host takes an agent's ID from the FILE NAME. A machine that ever carried the pre-1.7 `team.md` registers the lead as `team`, while the installer writes `default_agent: "Team"` — and the documented behaviour for a default naming an agent it cannot find is a silent fall back to `build`. **Fixed in 1.7.2**: the generator renames a case-only entry it has proven is the same file to the canonical spelling. On 1.7.1 or older a re-run does NOT fix it (a write through `Team.md` keeps the old spelling on Windows) — rename by hand in two steps: `team.md` → `Team.md` |
 | `/team-plan` etc. run but not as the specialist | 2.x documents `mode: subagent` as "runs only in a child session"; if a command selecting a specialist does not behave, the fix is `mode: "all"` in the role definition (report it — this is the one item in this flow still unverified on a live host) |
-| `tm_webfetch` on an odd site says it refused **without asking anyone** | Expected on 2.x: a plugin cannot raise a dialog. Use a source that works, or let the host's own permission rule allow it; the address red line (metadata / private) has no consent path at all, on either generation |
-| `task`/`subagent` seems to block the lead | On 2.x the plugin forces `background: true`; if you also set the old `OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS`, unset it — it is a v1 flag and only confuses the picture |
+| `tm_webfetch` on an odd site says it refused **without asking anyone** | Expected on 2.x: a plugin cannot raise a dialog. Use a source that works, or let the host's own permission rule allow it. Keep the two classes apart: cloud-metadata / link-local / reserved addresses are a RED LINE with no consent path on either generation, while private space (RFC1918, CGNAT, ULA, IPv6 link-local, `.localhost`) is refused too but DOES have a config exit on 2.x — `"privateSpace": "allow"` in the global or `system` `team-mode.jsonc`, or that one hostname in `webfetchAllowedDomains` (see the Web-access row above) |
+| `task`/`subagent` seems to block the lead | On 2.x the plugin forces `background: true` on the lead's `subagent` calls; if you also set the old `OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS`, unset it — it is a v1 flag and only confuses the picture. A **specialist** reporting that its `background` request ran in the foreground is the `78e7d48` layer working (a settled child has no receiver for a late background wake-up), not a fault — that layer is on `main` (**待发布**; a released 1.9.7 build does not rewrite it) and `tm_stats` shows it as `bg_forced_foreground` |
 | A tool's output arrives un-offloaded | `"nativeOffload": "off"` in the config file (or a missing `tool.execute.after` seam on an older 2.x build) — `tm_stats` names which |
 | Sessions used to compact at 75% on their own; they do not any more | That trigger was **removed in 1.7.1** (it shipped in 1.7.0). The host owns when a conversation is summarized again, exactly as if the plugin were not installed. The three knobs that drove it (`TM_COMPACT_TRIGGER`, `TM_COMPACT_AT_PERCENT`, `TM_COMPACT_MIN_MS`) are gone, and a `team-mode.jsonc` that still names them reports them as unknown keys at boot instead of applying them. What stays is additive and only runs when the HOST compacts: the survival list is pushed on `session.hook("compaction")` (the `compactionContext` key is a v1-only parse-compat entry) |
 | The plugin behaves oddly — two dialogs, doubled hooks, tools registered twice | It is loaded twice. `opencode.json` and `opencode.jsonc` are merged, and the host's dedupe matches only an identical string, so the same package under two spellings (or in both files) is two personalities. Count the Team entries across BOTH files; `msg="loading plugin"` appearing twice for one id is the proof |
@@ -418,7 +457,7 @@ dump) and `TM_CONFIG_AUTOCREATE` (the auto-create off switch).
 
 | | OpenCode 1.18.x | OpenCode 2.x |
 |---|---|---|
-| 七个角色 | 插件启动时注入 | `~/.config/opencode/agents/*.md`，由下面的生成器写出——插件没有"造 agent"的接口 |
+| 七个角色 | 插件启动时注入——1.6.x 时代的 v1 包发的是**六个**，第七个 `computerUser` 是 v2 线才有的角色 | `~/.config/opencode/agents/*.md`，由下面的生成器写出——插件没有"造 agent"的接口 |
 | 六条 `/team-*` 命令 | 插件注入 | 同一个生成器写 `commands/*.md` |
 | 默认 agent | 只在用户没动过时补位 | **由安装器写 `default_agent: "Team"`**——2.1.x 插件 ctx 根本没有 `agent.default`（`typeof === "undefined"`），插件提不了默认；启动行会报安装器写的是谁（`agents_default: installer:Team` / `installer:other`），配置里的 `default_agent` 才是可核对的那一条。退出方式：`plugins` 里写 `{ "package": "@te-river/opencode-team-mode@latest", "options": { "defaultAgent": false } }`——必须是对象形状，不是 1.x 的元组（2026-10-06 实测：元组被拒 `path=$.plugins.1 kind=invalid`，对象形状能送达） |
 | 读文件 / 搜代码 / 跑命令 | `tm_read` / `tm_grep` / `tm_bash`——**已随 v1 支持一起移除** | 宿主的 `read` / `grep` / `glob` / `shell`，**治理照旧**：超大结果照样在 `tool.execute.after` 被卸载成预览 + 句柄，跨出项目的路径走宿主自己的 `external_directory` 权限（v1 是硬拒，v2 是弹窗） |
@@ -430,13 +469,14 @@ dump) and `TM_CONFIG_AUTOCREATE` (the auto-create off switch).
 | 征求用户同意 | 宿主官方逐次弹窗 | **插件在 v2 弹不出对话框。** 原本该问的受治理调用一律**直接拒绝**，并说明是"没人可问"而不是"问了被拒"。你看到的弹窗都来自宿主自己（权限规则、越出项目目录） |
 | 联网 | 22 个域名白名单 + 确认弹窗 | **域名门禁关掉**（`webfetchAllowedDomains` 在 v2 上默认 `["*"]`）：2.x 插件弹不出确认框，"批准后放行"等于让 agent 去等一个永远不会出现的窗口。地址类别照管——元数据 / 链路本地 / 保留网段在任何设置下都拒；私网（RFC1918、CGNAT、ULA、IPv6 链路本地、`.localhost`）也拒，但拒绝语现在给出两条出口而不是承诺点击：在全局 `team-mode.jsonc` 里写 `"privateSpace": "allow"`（放开整段），或把那一台主机名写进 `webfetchAllowedDomains`（只放开它自己）。**回环（`127/8`、`::1`、`localhost`）默认放行**——它只打到用户自己机器上的服务，而一道唯一出口是"插件弹不出来的确认框"的门禁，是墙不是门 |
 | 非阻塞命令 | `tm_pty`——**已随 v1 支持一起移除** | **完全不注册**——v2 插件上下文没有 pty 域，这个工具只能报自己缺缝。慢步骤请一条一个 `shell` 调用（各自带 `timeout`），并把输出 tee 到日志好回读 |
-| 子代理 | 需要 `OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS=true` | 原生能力；插件对每次 `subagent` 强制 `background: true`，所以 **2.x 不要去设那个环境变量**（那是 v1 的补丁，在这里什么也不改变，只会让人误判） |
+| 子代理 | 需要 `OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS=true` | 原生能力；插件对每次 `subagent` 强制 `background: true`，所以 **2.x 不要去设那个环境变量**（那是 v1 的补丁，在这里什么也不改变，只会让人误判）。反面的同一条规则（`78e7d48`，在 `main` 上——**待发布**，已发布的 1.9.7 还没有它）：**非领队**的 Team 会话若在自己的工具调用上传来真值 `background`，会被改写成 `false`，调用照常在前台跑完——已结算的子会话没有接收方，迟到的后台唤醒是一次静默丢弃。领队不会被改写，`subagent` 这一层被无条件跳过，两个相反的力不会落在同一个调用上 |
 | 对你其它模式的影响 | 插件钩子是全局的 | **没有影响。** 每个钩子都先看会话归属，所以 `build`、`plan` 和你自己装的 agent 都保持刚装好 OpenCode 时的样子——不会从它们的请求里删工具、不会设温度、不会卸载结果、不会收紧权限、也不会把它们的派发改成后台 |
 
 ### 前置条件
 
-OpenCode 2.x（桌面版或 CLI），以及 PATH 上可用的 Node.js（插件跑在宿主的运行时里；
-Node 20+ 还会额外启用 Playwright 浏览器引擎）。
+OpenCode 2.x（桌面版或 CLI），以及 PATH 上可用的 Node.js（插件跑在宿主的运行时里）。
+**不再需要** Node 20+ 那个 Playwright 引擎——它属于自建的 `tm_browser`，而 `1.7.0` 已经把它
+换成宿主自己的 `browser_*`。
 
 ### 第 1 步 — 安装插件
 
@@ -487,8 +527,8 @@ Node 20+ 还会额外启用 Playwright 浏览器引擎）。
 2. 只写**一条**条目，写进已经装着用户其他配置的那个文件（优先 `.jsonc`，因为以前的安装器
    就写在那里）。别人家的条目一条都不许动，注释保留，`)`/`]` 前不要留悬挂逗号——宿主容忍它，
    下一个手工编辑的人未必容忍。
-3. 生成角色与命令（第 2 步）。2.x 上插件不能创建 agent，所以这十二个文件不在，Team 就不存在，
-   插件加载得再好也没用。
+3. 生成角色与命令（第 2 步）。2.x 上插件不能创建 agent，所以这十三个文件（7 角色 + 6 命令）不在，
+   Team 就不存在，插件加载得再好也没用。
 4. 最后一步才写 `default_agent: "Team"`（第 3 步）——默认值指向不存在的 agent 会让宿主
    静默退回 `build`。
 5. 验证，按顺序，并且把你真正看到的说出来：
@@ -505,7 +545,7 @@ Node 20+ 还会额外启用 Playwright 浏览器引擎）。
 ### 第 2 步 — 生成七个角色和六条命令
 
 这一步就是 2.x 存在、而 v1 安装脚本从不需要的那件事。请运行**已安装包里**自带的那个生成器
-——不要手抄 markdown，否则 v1 注入的提示词和 v2 配置文件里的会悄悄分叉：
+——不要手抄 markdown，否则生成出去的配置文件和 `dist/agents.js` 真正导出的提示词会悄悄分叉（v1 那条注入路径已经不存在了，没有第二个地方可以对照）：
 
 ```bash
 node ~/.config/opencode/node_modules/@te-river/opencode-team-mode/scripts/gen-v2-config.mjs
@@ -516,7 +556,8 @@ node …/scripts/gen-v2-config.mjs --print
 node …/scripts/gen-v2-config.mjs --dir ~/.config/opencode
 ```
 
-期望输出 `共 12 个文件（角色 6 + 命令 6）`。它是幂等的：再跑一次什么都不写，只报
+期望输出 `共 13 个文件（角色 7 + 命令 6）`——生成器投影的是 `agents` 导出的每一个键，第七个角色就是
+`computerUser`。它是幂等的：再跑一次什么都不写，只报
 `已是最新`。不是它生成的文件（没有标记）会被**拒绝覆盖**，所以你自己手写的
 `agents/Team.md` 安全；要强行覆盖才用 `--force`。
 
@@ -530,7 +571,7 @@ Windows 上的路径是
 
 ### 第 3 步 — 在配置里把 Team 设为默认
 
-插件每次启动也会调 `default("team")`，但 v2 插件读不回这个值，所以能核对的是配置键：
+插件替不了你做这件事：宿主 2.1.x 的插件 ctx 根本没有 `agent.default`（`typeof ctx.agent.default === "undefined"`，2026-10-25 实测——那个域只有 `get / list / transform / reload`），所以现在没人再调 `default("team")`，配置键是唯一的机制。启动行会报告它从磁盘读到了什么（`agents_default: installer:Team` / `installer:other` / `missing` / `no-config`），那才是你要核对的东西：
 
 ```jsonc
 { "default_agent": "Team" }
@@ -551,8 +592,9 @@ opencode service restart
 
 按顺序做四项核对：
 
-1. `opencode agents`（或选择器里）能看到 `Team`、`architect`、`implementer`、`reviewer`、
-   `tester`、`researcher`。
+1. `ls ~/.config/opencode/agents` 里应有**七个**角色文件（`Team`、`architect`、`implementer`、
+   `reviewer`、`tester`、`researcher`、`computerUser`）。选择器本身只列 `Team`——六个专家都是
+   `mode: subagent`，它们在子会话里运行，不会成为选择器条目；`opencode agents` 打出来的是全集。
 2. 新会话默认是 Team。在里面跑 `tm_stats` —— 回复里应有**启动与人格**一段，展示 v2 的启动
    快照：注册了哪些工具、`tool.execute.after` / `permission.evaluate` / `session.context`
    有没有挂上、探针计到的东西，以及 `storage_probe`（`tm_ledger` 依赖的那次
@@ -587,8 +629,9 @@ opencode service restart
 
 **第 1 步 —— 只问一次，一段话问完**（不得拆成多轮追问）：
 
-> 要不要装可选的**计算机使用** MCP？它让 Team 主代理、`researcher`、`tester` 能截屏，并用
-> 鼠标键盘操作你这台**真实**的桌面（任意窗口）。两条硬边界：**UAC / 提权窗口它碰不到**
+> 要不要装可选的**计算机使用** MCP？它让 Team 领队，以及专门的 `ComputerUser` 角色能截屏，并用
+> 鼠标键盘操作你这台**真实**的桌面（任意窗口）。其它角色是**刻意**不给鼠标的：`researcher` 正是
+> 读不可信网页的那个角色，`tester` 也不该当桌面司机。两条硬边界：**UAC / 提权窗口它碰不到**
 > （只有 Windows 进程能访问安全桌面）；而且**没有逐动作确认**——往终端里打字是以"按键"
 > 送进去的，所以它**绕过本项目的 R2/R6 分类器**，环境变量红线在那条路上根本不存在。
 > 它是**可选**的，不装不影响 Team 其他功能。要装吗？
@@ -596,9 +639,13 @@ opencode service restart
 **第 2 步 —— 按回答行事。**
 
 - **要装** → 运行 `.\scripts\install.ps1 -ComputerUse`（POSIX：`bash scripts/install.sh --computer-use`）。
-  把它自己输出的"已存在 / 跳过"或撤销提示**原样**转述，不要改写。然后照上面第 4 步验证并重启：
-  `<uv tool dir>/computeruse-mcp/Scripts/computeruse.exe --selftest`（POSIX：`<uv tool dir>/computeruse-mcp/bin/computeruse --selftest`）必须打印 `dpi_aware: true`
-  与虚拟屏幕尺寸，再 `opencode service restart`，最后 `tm_stats`——新的**计算机使用**小节会
+  把它自己输出的"已存在 / 跳过"或撤销提示**原样**转述，不要改写。
+  然后 `opencode service restart`——**一次，而"一次"这个下限是 `main` 的说法（待发布）**：每个版本一个
+  release 目录是 `b3393a3` 才改的，而**已发布的 1.9.7 安装器仍是原地 `uv tool install --force`**，
+  Windows 不会替换宿主正占着的 exe，所以那一版仍是老的两趟：删条目 → 重启 → 装 → 再重启。在 `main`
+  上，安装器还会对它写入的目录先跑 `--selftest`（`<releases>/<版本>/computeruse-mcp/Scripts/computeruse.exe`，
+  POSIX 为 `.../computeruse-mcp/bin/computeruse`；1.9.7 的布局是 `<uv tool dir>/computeruse-mcp/Scripts/computeruse.exe`），
+  非 0 就**一个配置字节都不写**。最后 `tm_stats`——新的**计算机使用**小节会
   列出它**实际看到**的工具名。**工具名是运行时量出来的，不是假设的**：插件记录真实到达的名字
   （实测拼写是 `computeruse.control_status`），所以在 `tm_stats` 给出名字之前，不要在你自己写的
   任何总结里写死某个工具名。角色划分由**三层**执行，只有前两层是硬的：`permission.evaluate`
@@ -623,10 +670,14 @@ opencode service restart
 **撤销（两条分支都要说清楚）。**
 
 ```bash
-uv tool uninstall computeruse-mcp                                    # 1. 卸掉工具
-node scripts/lib/config-surgery.cjs <cfg> mcp-remove computeruse # 2. 删掉那个键
-rm -rf "%LOCALAPPDATA%/te-river/computeruse"                     # 3. 删掉审计轨
-rm -f <配置目录>/team-mode.computeruse-declined                   # 4. 只有拒绝过才需要
+node scripts/lib/config-surgery.cjs <cfg> mcp-remove computeruse # 1. 删掉那个键
+rm -rf <releases 根目录>                                     # 2. 只在 `main`（待发布，b3393a3）上有：
+                                                             #    %LOCALAPPDATA%\te-river\computeruse\releases
+                                                             #    ${XDG_DATA_HOME:-~/.local/share}/te-river/computeruse/releases
+uv tool uninstall computeruse-mcp                            # 3. **已发布的 1.9.7** 那一套——它的工具就在
+                                                             #    uv 自己的工具目录里，不在 <releases> 下
+rm -rf "%LOCALAPPDATA%/te-river/computeruse"                 # 4. 审计轨（在 `main` 上还连带全部版本目录）
+rm -f <配置目录>/team-mode.computeruse-declined                   # 5. 只有拒绝过才需要
 ```
 
 **它不是什么。** 它**不是安全边界**，只是爆炸半径限制器：动作预算、审计轨
@@ -658,12 +709,13 @@ node ~/.config/opencode/node_modules/@te-river/opencode-team-mode/scripts/gen-v2
 
 **手工升级的两个坑：**
 
-- **`npm install @te-river/opencode-team-mode@latest` 可能什么都不动。** 如果你的 `package.json` 写的是 caret 区间（`^1.6.2`）
-  且 lockfile 钉住了已解析的版本，npm 会认为区间已满足，旧副本原地不动——磁盘上的版本号不变。请装**精确版本**（`@1.7.0`），
+- **`npm install @te-river/opencode-team-mode@latest` 可能什么都不动。** 如果你的 `package.json` 写的是 caret 区间（`^1.9.0`）
+  且 lockfile 钉住了已解析的版本，npm 会认为区间已满足，旧副本原地不动——磁盘上的版本号不变。请装**已发布的精确版本**（`@1.9.7`），
   或先删掉 lockfile 里那一条。核对实际拿到什么：
   `node -p "require('<dir>/node_modules/@te-river/opencode-team-mode/package.json').version"`。
 - **一个 v1 遗留环境变量。** `OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS` 是 1.18.x 的权宜之计；2.x 上子代理本来就是后台，
-  插件还会在每次派发时强制 `background:true`，所以它在这里不起作用。安装器会打印撤销命令——Windows 上
+  插件还在每次 `subagent` 派发时强制 `background:true`（而**非领队**的 Team 会话若在自己的工具调用上
+  要 `background`，会被改写成 `false` 并改在前台跑——`78e7d48`，在 `main` 上，**待发布**），所以它在这里不起作用。安装器会打印撤销命令——Windows 上
   `REG delete HKCU\Environment /v OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS /f`，macOS 用 `launchctl unsetenv …`，
   Linux 用 `systemctl --user unset-environment …`。
 
@@ -686,14 +738,18 @@ node ~/.config/opencode/node_modules/@te-river/opencode-team-mode/scripts/gen-v2
 启动行会记录 `config_autocreate`（`created` / `present` / `off` / `failed`）。
 
 键名是 camelCase（`offloadThreshold`、`searchDefaultEngine` …）——`src/tm/config-layers.ts` 里的注册表是唯一事实来源
-（58 个键，每个都带类型、默认值与说明）。有五个键是**项目文件不许改写的红线**——`envProtect`、`r6FineAsk`、
+（66 个键，每个都带类型、默认值与说明）。有五个键是**项目文件不许改写的红线**——`envProtect`、`r6FineAsk`、
 `privateSpace`、`webfetchAllowedDomains`、`bashReadonlyAllowed`；它们只能在**全局或 system 文件**里设置，项目文件里写了会被忽略并报告。
 解析失败的那一层**整层跳过**（半份配置比没有配置更危险），单个坏键只丢它自己。未知键在启动时告警、**不应用**。
 `tm_stats` 会显示每个键最终来自哪一层、被忽略的红线键、未知键、被跳过的层，以及自动生成的状态。
 
 **R6（环境变量保护）默认开启**（`envProtect` 默认 `"strict"`；规范取值 `strict` / `standard` / `off`）。Team 角色用原生 `read` 读 `.env` 会被直接拒；
-读环境变量的 shell 命令会走宿主自己的权限提示。关闭方式：插件选项 `envProtect: false`，或在**全局/system**文件里写 `"envProtect": "off"`（它是红线键）。
-2.x 上 shell 面是 `ask`（宿主的对话框——插件弹不出来），env-FILE 面是硬 `deny`、没有同意路径。
+读环境变量的 shell 命令会走宿主自己的权限提示。关闭方式：插件选项 `envProtect: false`，或在**全局/system**文件里写 `"envProtect": "off"`（它是红线键）
+——但这个开关到底管什么要看清楚。**在 `main` 上（`65f738f` + `3df9c2e`，待发布）它比以前窄：**`off` **只关 R6 的细粒度 ask 面**（`strict` / `standard` 的逐命令判定，加上你自己的 extra-deny 偏好），
+env 文件的**路径**红线不被它关掉——`.env` / shell rc 家族在任何取值下都照旧拒，`read` / `write` / `edit` / `glob` / `grep` 以及带 env 文件路径的输入字段都一样，
+因为一个能移除"没有同意路径那一类"的设置本身就成了那条同意路径。**已发布的 1.9.7 还没带上这次收窄**：那一版上 `off` 仍会把那四个路径面一起短路，`.env` 读不读得到
+就落到**你自己的宿主规则**上，而不是我们的 deny。`main` 上的拒绝语原文如此：
+`R6 红线：这个路径指向环境文件（.env / shell rc 家族），不授权、不弹窗；envProtect 的 off 不管这条红线，它只关细粒度 ask 面（strict/standard 判定与 extra-deny 偏好）。`
 
 仅存的 `TM_*` 环境变量是内部/测试开关，不是配置：`TM_STORE_RECLAIM`（测试覆盖 `storeReclaim` 键）、
 `TM_V2_PROBE`（只记名字的 JSONL 转储）、`TM_CONFIG_AUTOCREATE`（自动生成的关闭开关）。
@@ -701,7 +757,7 @@ node ~/.config/opencode/node_modules/@te-river/opencode-team-mode/scripts/gen-v2
 ### 卸载
 
 1. 去掉插件条目（`opencode plugin remove @te-river/opencode-team-mode`）。
-2. 删掉生成的文件：`~/.config/opencode/agents/{Team,architect,implementer,reviewer,tester,researcher}.md`
+2. 删掉生成的文件：`~/.config/opencode/agents/{Team,architect,implementer,reviewer,tester,researcher,computerUser}.md`
    和 `~/.config/opencode/commands/team-*.md`。只有带我们标记的文件是生成器写的，你自己写的
    东西它从不碰。
 3. 如果设过 `"default_agent": "Team"`，一并删掉。
@@ -712,19 +768,19 @@ node ~/.config/opencode/node_modules/@te-river/opencode-team-mode/scripts/gen-v2
 
 | 现象 | 原因与处置 |
 |---|---|
-| 选择器里没有那六个角色 | 第 2 步没跑，或者 `--dir` 指到了别处。`ls ~/.config/opencode/agents` |
+| `~/.config/opencode/agents` 下没有那七个角色文件 | 第 2 步没跑，或者 `--dir` 指到了别处。`ls ~/.config/opencode/agents`——另外记住：选择器本来就只显示 `Team`，六个专家都是 `mode: subagent`，所以"少了某个专家"看的是文件在不在，不是选择器里有没有 |
 | 默认 agent 悄悄变成 `build` | `default_agent` 指向了一个不存在的角色——重跑第 2 步，再做第 3 步 |
 | 手写的 `agents/Team.md` 没被更新 | 这是设计：生成器拒绝覆盖不是它生成的文件。把你的文件挪开，或显式加 `--force` |
 | 选择器里领队显示成 `team`，或者 Team 不是默认 | 宿主按**文件名**取 agent id。机器上只要曾经有过 1.7 之前的 `team.md`，领队就以 `team` 注册，而安装器写的是 `default_agent: "Team"`——按文档，默认值指向一个找不到的 agent 时会**静默回退 build**。**1.7.2 已修**：生成器会把"已确认是同一个文件、仅大小写不同"的条目标成规范拼写。1.7.1 及更早版本重跑**修不好**（Windows 上从 `Team.md` 写入会保留旧拼写），需要手工两步改名：`team.md` → `Team.md` |
 | `/team-plan` 能跑但不是以那个专家身份跑 | 2.x 把 `mode: subagent` 文档化为"只在子会话里运行"。如果选定专家的命令行为不对，改法是角色定义里用 `mode: "all"`（请回报——这是本流程里唯一还没在活体宿主上验证过的一项） |
-| `tm_webfetch` 说它"没问任何人就直接拒绝" | v2 的预期行为：插件弹不出对话框。换一个不需要这次访问的源，或让宿主自己的权限规则放行；地址红线（元数据 / 私网）在两代宿主上都没有授权路径 |
-| `subagent` 好像把领队挡住了 | v2 上插件会强制 `background: true`；如果你顺手设了老的 `OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS`，请取消它——那是 v1 的开关，在这里只会误导判断 |
+| `tm_webfetch` 说它"没问任何人就直接拒绝" | v2 的预期行为：插件弹不出对话框。换一个不需要这次访问的源，或让宿主自己的权限规则放行。两类要分开说：云元数据 / 链路本地 / 保留网段是**红线**，两代宿主都没有授权路径；私网（RFC1918、CGNAT、ULA、IPv6 链路本地、`.localhost`）同样被拒，但在 2.x 上**有配置出口**——全局或 system 的 `team-mode.jsonc` 里写 `"privateSpace": "allow"`，或把那一台主机名写进 `webfetchAllowedDomains`（见上面联网那一行） |
+| `subagent` 好像把领队挡住了 | v2 上插件会对**领队**的 `subagent` 调用强制 `background: true`；如果你顺手设了老的 `OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS`，请取消它——那是 v1 的开关，在这里只会误导判断。而如果某个**专家**报告说它要的 `background` 在前台跑完了，那是 `78e7d48` 那层在正常工作（已结算的子会话没有接收方去接住迟到的后台唤醒），不是故障——这一层在 `main` 上（**待发布**，已发布的 1.9.7 不会改写它），`tm_stats` 里记作 `bg_forced_foreground` |
 | 某个工具的输出没被卸载 | 配置文件里写 `"nativeOffload": "off"`（或者那个 2.x 构建没有 `tool.execute.after` 缝）——`tm_stats` 会告诉你是哪一种 |
 | 会话不再自己提前压缩了（1.7.0 曾是模型窗口的 75%） | 那个触发器在 **1.7.1 已整体移除**（它随 1.7.0 发布）。压缩时机重新完全归宿主，跟没装插件一样。驱动它的三个开关（`TM_COMPACT_TRIGGER`、`TM_COMPACT_AT_PERCENT`、`TM_COMPACT_MIN_MS`）已删除；`team-mode.jsonc` 里若还留着它们，启动时会报为未知键而不是照旧生效。保留下来的是"只在宿主自己压缩时"才追加的一项：必须存活清单在 `session.hook("compaction")` 上推送（`compactionContext` 键是 v1-only 的解析兼容项） |
 | 插件行为怪：两次弹窗、钩子重复、工具像注册了两遍 | 它被加载了两次。`opencode.json` 与 `opencode.jsonc` 是合并读取的，而宿主去重只认完全相同的字符串，所以同一个包换两种写法（或者同时躺在两个文件里）就是两套人格。把两个文件里指向 Team 的条目一起数一遍；`msg="loading plugin"` 对同一个 id 出现两条就是证据 |
 | 写了条目，但宿主日志里关于它一个字都没有 | 两个"设计上静默"的原因：键名写成了单数 `plugin`（2.x 读 `plugins`），或者目录里既没有 `server` 也没有 `index` 模块。宿主解析目录只认这两个入口名，试不出来就直接丢掉、不留任何消息 —— 在这里"没报错"不是成功信号 |
-| 后台子代理的回复太长 | 子会话现在会被登记、可被收集（`tm_join` 会列出它，行上标着「宿主 subagent 派发」），但它的**正文**仍然是宿主的注入消息，v2 不会在落盘前把这条消息交给插件；我们也不改写发出的消息（猜错那一层的形状等于静默删证据）。所以超限交付走黑板文件：正文进文件、回复里带路径，领队读那个文件 |
-| `tm_join` 说"没有匹配的派发"，可孩子明明跑完了 | 活体在 2.0.16 上复现过：领队用的是**宿主的** `subagent{background:true}`，插件不创建子会话所以登记里没有它，而收养/按 id 认领原本走 `client.session.children` / `client.session.get`——v2 的插件上下文里根本没有 client。所以回复是通过宿主自己的完成注入到达领队的，不是通过我们的收集通道。这条待补的桥是 `ctx.session.get` 做父子校验（事件流已经能给出候选 sessionID） |
+| 后台子代理的回复太长 | 子会话现在会被登记、可被收集（`tm_join` 会列出它，行上标着「宿主 subagent 派发」），而且**正文也读得回来**：`tm_join` 经 `ctx.session.context` 取回它的报告，并写明正文来源（`正文来源=ctx.session.context`），所以超限的回复和别的工具结果走同一条 JIT 管线（卸载 + ≤80 token 预览 + `tm_fetch` 句柄）。v2 仍然不给插件"宿主落盘之前"的那条注入消息，所以我们读得到报告、改不了注入——这也是为什么 >~50 行的**交付物**仍该走黑板文件：正文进文件、回复里带路径，领队读那个文件 |
+| `tm_join` 说"没有匹配的派发"，可孩子明明跑完了 | 这条在 2.0.16 上确实是缺口，现在已经补上：`src/host/v2-subagent.ts` 从派发返回的 `result.metadata.sessionID` 登记**宿主自己**的 `subagent` 子会话，按 id 认领时先用 `ctx.session.get` 校验父子关系（别人的会话一律不当作我们的），结算走事件流 + 宿主完成注入，`tm_join` 把来源印在行上（`event` / `injection` / 推定）。如果这一行还是空的，看回复里说的是哪一种：没缝、查询失败、还是"查过了、树上确实没有"——这三种以前共用一句话，现在分开报 |
 | 想在侧边栏看到插件自己的浏览器页面 | 做不到（面板挂的是服务端自己的浏览器服务；见 `docs/research/browser-pane.md`，自建 `tm_browser` 已在 1.7.0 移除）。能看到的是**静帧**：让 agent 把截图交给宿主的 `browser_preview { path }`，它会把服务端本地文件（png/html/md/pdf/mermaid）渲染进面板——这条尚未在你的 GUI 里验证过 |
 | 想知道宿主到底给了什么 | `TM_V2_PROBE=<路径>.jsonl` 只记工具名与权限动作名**以及计数**，绝不记命令行、路径、URL 或环境变量值；`tm_stats` 会把能力矩阵渲染出来 |
 
@@ -734,7 +790,7 @@ node ~/.config/opencode/node_modules/@te-river/opencode-team-mode/scripts/gen-v2
 
 | 键 / 变量 | 默认 | 作用 |
 |---|---|---|
-| `webfetchAllowedDomains`（配置） | `["*"]`（**仅 v2**） | 域名门禁默认关掉，只留地址红线；显式给了值就以它为准（v1 仍是 24 个种子域名） |
+| `webfetchAllowedDomains`（配置） | `["*"]`（**仅 v2**） | 域名门禁默认关掉，只留地址红线；显式给了值就以它为准（那 22 个种子主机——加引擎种子共 24 个——是 v1 时代的默认，v1 支持已移除） |
 | `nativeOffload`（配置） | on | 用 `tool.execute.after` 治理宿主原生工具的结果；off 就退回宿主原样 |
 | `r6FineAsk`（配置） | `""`（自动） | 由按命令分类器决定哪条 shell 要问；`off` 回到"每条 shell 都问"，宿主没有 `permission.hook` 时也自动回到这一档 |
 | `TM_V2_PROBE`（环境，内部） | 未设 | 把宿主真实工具面/动作名记成 JSONL（只有名字和计数） |
