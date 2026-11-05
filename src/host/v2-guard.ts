@@ -49,6 +49,7 @@ import {
   isEnvFilePath,
   type EnvProtectMode,
 } from "../envprotect.js"
+import { isLeadAgent } from "../identity.js"
 import { classifyHost } from "../tm/egress.js"
 import { classifyReadonlyCommand } from "../tm/guard.js"
 import type { TeamScope } from "./v2-scope.js"
@@ -233,6 +234,130 @@ export async function applyV2BackgroundForce(
       report.forced++
     }),
   ]
+  return { registrations, report }
+}
+
+export interface NonLeadBackgroundDenyReport {
+  seen: number
+  /** calls whose truthy `background` was rewritten to `false` */
+  denied: number
+  leadSkipped: number
+  subagentSkipped: number
+  foreignSkipped: number
+  /** ours-scoped, but the event carried no agent name — not provably non-lead */
+  noAgentSkipped: number
+  /** the trajectory sink threw; the rewrite stands, the row is lost */
+  sinkThrew: number
+  /** the guard itself threw and the call was let through untouched */
+  threw: number
+}
+
+/**
+ * The shapes a model sends for a truthy `background`: the real boolean, the number
+ * 1, and the case-insensitive strings true / 1 / yes / on.  Re-declared here rather
+ * than imported from the retired v1 arg-repair — that module is gone, and this layer
+ * must stand alone.  Anything else (`false`, `"false"`, an absent field) is NOT a
+ * background request and stays byte-exact: the mirror never invents a field.
+ */
+export function isBackgroundTruthy(value: unknown): boolean {
+  if (value === true || value === 1) return true
+  if (typeof value === "string") return /^(true|1|yes|on)$/i.test(value.trim())
+  return false
+}
+
+/**
+ * The mirror of `applyV2BackgroundForce`, and deliberately not its enemy.
+ *
+ * The user's standing rule (2026-11-04): a specialist session may never background
+ * its own work.  The mechanism, stated so nobody "fixes" the guard away: once a
+ * child session settles, the host passes the child's reply body out and the session
+ * STOPS; the later wake-up of a backgrounded call then fires into that stopped
+ * session, and it is never forwarded to the lead either.  The result has NO receiver
+ * — a silent drop on top of the spawn cost already paid.  The lead is exempt by
+ * construction (its own backgrounded calls are woken by the host — see the lead's
+ * Delegation clause), and `subagent` dispatches belong to the EXISTING force: this
+ * hook skips that tool unconditionally, so the two layers can never fight over one
+ * call — the exception is checked before scope, so even a foreign subagent call is
+ * skipped here rather than counted against either side.
+ *
+ * The rewrite is `background: false` — the call proceeds in the synchronous shape
+ * the model assembled, never a failure.  Team-scoped like every other writer (#22):
+ * foreign and unknown are untouched and counted.  An ours-session event with NO
+ * `agent` is not rewritten either: without a name the caller cannot be proven not
+ * the lead, and this layer rewrites ARGUMENTS — the one write shape the scope rule
+ * exists to police.  No command line or path leaves the hook: `onDeny` sees tool,
+ * agent and sessionID only (the R6 privacy rule binds diagnostics).  A throw is
+ * swallowed into `threw` — fail-open: an argument rewrite that cannot complete must
+ * not break the call it guards.  The caller wires `onDeny` to one trajectory row,
+ * suggested name `bg_forced_foreground`, same shape as the clamp's `onClamp`.
+ */
+export async function applyV2NonLeadBackgroundDeny(
+  ctx: V2Context,
+  opts: {
+    scope?: TeamScope
+    /** trajectory sink, wired by the caller (v2.ts) — never the command line */
+    onDeny?: (info: { tool: string; agent: string; sessionID?: string }) => void
+  } = {},
+): Promise<{ registrations: V2Registration[]; report: NonLeadBackgroundDenyReport }> {
+  const report: NonLeadBackgroundDenyReport = {
+    seen: 0,
+    denied: 0,
+    leadSkipped: 0,
+    subagentSkipped: 0,
+    foreignSkipped: 0,
+    noAgentSkipped: 0,
+    sinkThrew: 0,
+    threw: 0,
+  }
+  const tool = ctx.tool
+  if (!tool || typeof tool.hook !== "function") return { registrations: [], report }
+  let registrations: V2Registration[]
+  try {
+    registrations = [
+      await tool.hook("execute.before", (event) => {
+        try {
+          const name = String(event?.tool ?? "")
+          if (!name) return
+          report.seen++
+          if (name === "subagent") {
+            report.subagentSkipped++
+            return
+          }
+          if (opts.scope && opts.scope.count(opts.scope.decide(event)) !== "ours") {
+            report.foreignSkipped++
+            return
+          }
+          const agent = typeof event?.agent === "string" ? event.agent.trim() : ""
+          if (!agent) {
+            report.noAgentSkipped++
+            return
+          }
+          if (isLeadAgent(agent)) {
+            report.leadSkipped++
+            return
+          }
+          const input = event.input as Record<string, unknown> | undefined
+          if (!input || typeof input !== "object" || Array.isArray(input)) return
+          if (!isBackgroundTruthy(input.background)) return
+          input.background = false
+          report.denied++
+          const sessionID = typeof event.sessionID === "string" ? event.sessionID : undefined
+          try {
+            opts.onDeny?.({ tool: name, agent, sessionID })
+          } catch {
+            // the trajectory is an extra, never a reason to fail the call.
+            report.sinkThrew++
+          }
+        } catch {
+          report.threw++
+        }
+      }),
+    ]
+  } catch {
+    // No hook seam: the layer is simply absent, and the empty counters say so
+    // rather than throwing into boot — same discipline as the timeout clamp.
+    return { registrations: [], report }
+  }
   return { registrations, report }
 }
 

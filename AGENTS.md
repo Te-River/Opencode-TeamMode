@@ -100,9 +100,11 @@ difference between "the host has it" and "we left it in the request" is visible.
 
 Every design choice is evaluated in LLM round-trips and in tokens-per-request, both
 measured rather than adjectived: the role prompt is priced through our own
-`estimateTokens` on `agents[role].prompt` alone — **measured 2026-11-04: lead 9 457,
-researcher 7 033, tester 6 391, reviewer 6 258, implementer 6 096, computerUser 5 838,
-architect 5 789** — while the older figures recorded in `docs/v2-port-notes.md`
+`estimateTokens` on `agents[role].prompt` alone — **measured 2026-11-04: lead 9 663,
+researcher 7 225, tester 6 583, reviewer 6 450, implementer 6 287, computerUser 6 030,
+architect 5 980** (an earlier same-day snapshot read lead 9 457 before the background-rule
+landing; the SHARED_RULES family of rules is the only class that moves all six specialists at
+once — the per-role table lives here, not in the prompt) — while the older figures recorded in `docs/v2-port-notes.md`
 (2 660 / 4 726 / 6 391) were **definitions + tool schemas after the request-layer trim**,
 a different 口径, so the two are not substitutes for one another. `tm_browser`'s description was cut to what a model cannot recover from a
 result, and the prompt layer follows the same subtraction philosophy (deterministic routing

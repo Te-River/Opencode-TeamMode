@@ -1436,6 +1436,168 @@ await fake.hook("tool.execute.before").fire(noObj)
 assert.equal(noObj.input, null, "an input that is not an object is left alone rather than invented")
 console.log("   OK (background forced on every subagent call, nothing else touched)")
 
+console.log("7c2. non-lead Team calls may not background their own work — the mirror of the force")
+let BGD_PINNED = 0
+{
+  const B = (cond, msg) => {
+    BGD_PINNED++
+    assert.ok(cond, msg)
+  }
+  const { createTeamScope } = await import("./dist/host/v2-scope.js")
+  const { applyV2BackgroundForce, applyV2NonLeadBackgroundDeny, isBackgroundTruthy } = await import("./dist/host/v2-guard.js")
+  const scope = createTeamScope(["team", "architect", "implementer", "reviewer", "tester", "researcher", "computeruser"])
+  const f = makeFakeCtx({ directory: ws, agents: [] })
+  const rows = []
+  const bgd = await applyV2NonLeadBackgroundDeny(f.ctx, { scope, onDeny: (info) => rows.push(info) })
+  const bgf = await applyV2BackgroundForce(f.ctx, { scope })
+  const fireBoth = (ev) => f.hook("tool.execute.before").handlers.forEach((h) => h(ev))
+  // (a) a specialist's backgrounded shell is rewritten to false — and the accounting
+  //     names tool + role and NOTHING about the command (the R6 rule binds diagnostics).
+  const SECRET = "npm test SECRET-CMDLINE --env-file=D:\\private\\secrets.env"
+  const shellEv = { tool: "shell", sessionID: "ses_impl", agent: "implementer", input: { command: SECRET, background: true, timeout: 300000 } }
+  await fireBoth(shellEv)
+  assert.strictEqual(shellEv.input.background, false, "(a) the truthy background becomes false — the call proceeds in its original synchronous shape, not as a failure")
+  assert.strictEqual(shellEv.input.command, SECRET, "(a) only the flag is rewritten — the command bytes stay exact")
+  assert.strictEqual(shellEv.input.timeout, 300000, "(a) nothing else in the input changes")
+  B(rows.length === 1 && rows[0].tool === "shell" && rows[0].agent === "implementer", "(a) the trajectory sink got exactly one row with tool + role")
+  B(!JSON.stringify(rows).includes("SECRET-CMDLINE") && !JSON.stringify(rows).includes("secrets"), "(a) no command text or path reached the sink")
+  // (b) every truthy spelling lands the same way; falsy and absent stay byte-exact.
+  for (const v of ["True", "true", "yes", 1]) {
+    const ev = { tool: "shell", sessionID: "ses_impl", agent: "implementer", input: { command: "npm test", background: v } }
+    await fireBoth(ev)
+    assert.strictEqual(ev.input.background, false, `(b) the ${JSON.stringify(v)} spelling is a background request too`)
+  }
+  assert.strictEqual(bgd.report.denied, 5, "(b) five rewrites and no more")
+  const offEv = { tool: "shell", sessionID: "ses_impl", agent: "implementer", input: { command: "x", background: false } }
+  const absentEv = { tool: "shell", sessionID: "ses_impl", agent: "implementer", input: { command: "x" } }
+  await fireBoth(offEv)
+  await fireBoth(absentEv)
+  assert.strictEqual(offEv.input.background, false, "(b) an explicit false is already foreground — untouched")
+  assert.ok(!("background" in absentEv.input), "(b) an omitted background is NOT invented")
+  B(isBackgroundTruthy("0") === false && isBackgroundTruthy(false) === false, "(b) '0' / false are not truthy spellings")
+  // (c) the lead passes through untouched, under every lead spelling identity.ts normalises.
+  for (const leadName of ["team", "Team", "TEAM"]) {
+    const ev = { tool: "shell", sessionID: "ses_lead", agent: leadName, input: { command: "npm test", background: true } }
+    await fireBoth(ev)
+    assert.strictEqual(ev.input.background, true, `(c) the lead (${leadName}) keeps its own background lever`)
+  }
+  assert.strictEqual(bgd.report.leadSkipped, 3, "(c) the lead skip is COUNTED, not silent")
+  B(rows.length === 5, "(c) the lead's backgrounded calls logged nothing new — the deny rows stayed exactly the five specialist rewrites")
+  // (d) the existing subagent force survives the mirror untouched.
+  const kid = { tool: "subagent", sessionID: "ses_lead", agent: "team", input: { agent: "implementer", prompt: "x" } }
+  await fireBoth(kid)
+  assert.strictEqual(kid.input.background, true, "(d) subagent dispatches stay forced to true — applyV2BackgroundForce is not the mirror's target")
+  const kidFalse = { tool: "subagent", sessionID: "ses_impl", agent: "implementer", input: { agent: "tester", prompt: "x", background: false } }
+  await fireBoth(kidFalse)
+  assert.strictEqual(kidFalse.input.background, true, "(d) the subagent exception is UNCONDITIONAL — a non-lead subagent call is the force's, not the mirror's")
+  assert.strictEqual(bgd.report.subagentSkipped, 2, "(d) both subagent calls skipped, counted")
+  B(rows.every((r) => r.tool !== "subagent"), "(d) the mirror logged nothing against subagent")
+  // (e) foreign is untouched and counted; an ours event with no agent name is NOT rewritten.
+  const foreign = { tool: "shell", sessionID: "ses_build", agent: "build", input: { command: "y", background: true } }
+  await fireBoth(foreign)
+  assert.strictEqual(foreign.input.background, true, "(e) a build session's background call is not ours to rewrite (#22)")
+  assert.strictEqual(bgd.report.foreignSkipped, 1, "(e) the foreign skip is counted")
+  scope.learn("implementer", "ses_mystery")
+  const anon = { tool: "shell", sessionID: "ses_mystery", input: { command: "y", background: true } }
+  await fireBoth(anon)
+  assert.strictEqual(anon.input.background, true, "(e) ours but nameless: NOT rewritten — the caller cannot be proven not the lead")
+  assert.strictEqual(bgd.report.noAgentSkipped, 1, "(e) and the no-agent pass is a number, so a host that drops `agent` gets noticed")
+  // fail-open: a throwing trajectory sink never breaks the guarded call.
+  const f2 = makeFakeCtx({ directory: ws, agents: [] })
+  const sinkBad = await applyV2NonLeadBackgroundDeny(f2.ctx, { scope, onDeny: () => { throw new Error("sink died") } })
+  const ev2 = { tool: "shell", sessionID: "ses_impl", agent: "implementer", input: { background: "True" } }
+  let escaped = false
+  for (const h of f2.hook("tool.execute.before").handlers) {
+    try { h(ev2) } catch { escaped = true }
+  }
+  assert.strictEqual(escaped, false, "fail-open: a throwing sink does not escape into the host hook")
+  assert.strictEqual(ev2.input.background, false, "…and the rewrite stands")
+  assert.strictEqual(sinkBad.report.sinkThrew, 1, "the sink failure is its own counter")
+  const noSeam = await applyV2NonLeadBackgroundDeny({ tool: undefined }, { scope })
+  assert.deepEqual(noSeam.registrations, [], "no hook seam → the layer is simply absent")
+  for (const r of [...bgd.registrations, ...bgf.registrations, ...sinkBad.registrations]) await r.dispose()
+}
+console.log(`   OK (${BGD_PINNED} mirror assertions — rewrite/count/exception/fail-open; commenting the enforcement goes red)`)
+
+console.log("7c3. the mirror ARRIVES in production — wired through setup(), on the trail, counted on BOTH rows")
+// 7c2 proves the layer; this group proves the wiring.  Everything below goes
+// through the FULL `setup()` chain on the fake host — nobody calls
+// `applyV2NonLeadBackgroundDeny` by hand here, so commenting out the two lines in
+// v2.ts turns (a) red instead of leaving a written-and-tested layer that no host
+// ever reaches (arrival ≠ write).
+let BGW_PINNED = 0
+{
+  const W = (cond, msg) => {
+    BGW_PINNED++
+    assert.ok(cond, msg)
+  }
+  const v2srcBg = fs.readFileSync(path.join(path.dirname(fileURLToPath(import.meta.url)), "src", "host", "v2.ts"), "utf8")
+  const tjRoot = mktmp("bg-deny-arrival")
+  writeCfg({ trajectoryDir: tjRoot })
+  try {
+    const f = makeFakeCtx({ directory: workspace("bg-deny-arrival"), agents: sixAgents })
+    const boot = await withCapturedConsole(() => plugin.setup(f.ctx))
+    const SECRET = "npm test BGWIRE-SECRET-CMDLINE"
+    // (a) a non-lead Team session's backgrounded shell: by the time the WHOLE
+    //     handler chain setup registered has run, the call is foreground.
+    const a = { tool: "shell", sessionID: "ses_w_impl", agent: "implementer", input: { command: SECRET, background: true } }
+    await f.hook("tool.execute.before").fire(a)
+    assert.strictEqual(a.input.background, false, "(a) setup's chain rewrote background to false — the guard is REACHED, not just written")
+    assert.strictEqual(a.input.command, SECRET, "(a) the command bytes stay exact — only the flag moves")
+    // (b) the existing force keeps its own tool: the mirror skips `subagent`
+    //     unconditionally, so the two opposite directions cannot fight over one call.
+    const b = { tool: "subagent", sessionID: "ses_w_impl", agent: "implementer", input: { agent: "tester", prompt: "x", background: false } }
+    await f.hook("tool.execute.before").fire(b)
+    assert.strictEqual(b.input.background, true, "(b) a subagent dispatch still lands forced-to-true even from a specialist — force and mirror do not collide")
+    // (c) the lead's same-shape call is untouched, end to end rather than unit-only.
+    const c = { tool: "shell", sessionID: "ses_w_lead", agent: "Team", input: { command: "npm test", background: true } }
+    await f.hook("tool.execute.before").fire(c)
+    assert.strictEqual(c.input.background, true, "(c) the lead keeps its own background lever through the full chain")
+    // (d) teardown writes the numbers, so the claim is readable after the fact.
+    await boot.value()
+    const rows = readDeathRows(tjRoot)
+    const deny = rows.filter((r) => r.event === "bg_forced_foreground")
+    W(deny.length === 1, "(d) exactly ONE bg_forced_foreground row — the specialist rewrite and nothing else")
+    const row = deny[0] ?? {}
+    W(row.tool === "host" && row.step_id === "v2-bg-deny", "(d) the row keeps this file's host-row discriminator spelling (`tool: \"host\"`)")
+    W(row.native_tool === "shell" && row.agent === "implementer" && row.sessionID === "ses_w_impl", "(d) tool + role + session, spelled `native_tool` like the probe-chain row — not a third spelling for the observed tool")
+    W(!JSON.stringify(rows).includes("BGWIRE-SECRET-CMDLINE"), "(d) no command text reached the trail (R6 binds a diagnostic)")
+    W(!("input" in row) && !("args" in row) && !("command" in row), "(d) the row carries no args field at all")
+    const shutdown = rows.find((r) => r.step_id === "v2-shutdown")
+    W(shutdown?.bg_deny_seen === 3, "(d) the shutdown row counts every named call the mirror looked at (3 fired)")
+    W(shutdown?.bg_deny_forced_foreground === 1, "(d) …and the rewrite is a measured number, not a comment")
+    W(shutdown?.bg_deny_lead_skipped === 1, "(d) the lead exemption is COUNTED, not silent")
+    W(shutdown?.bg_deny_subagent_skipped === 1, "(d) the subagent exception is COUNTED, not silent")
+  } finally {
+    clearCfg()
+  }
+  // (e) BOTH rows carry the counter set.  The throttled `v2-surface` row cannot be
+  //     flushed inside a suite (its own 20 s throttle), so the wiring is pinned at
+  //     its single definition: the fields live in `observationCounters`, and both
+  //     rows spread THAT closure — which is what makes #87's one-return-path shape
+  //     structurally impossible here.
+  const ocStart = v2srcBg.indexOf("observationCounters = (source) => ({")
+  W(ocStart > 0, "(e) the one closure both rows spread still exists")
+  const ocBody = v2srcBg.slice(ocStart, v2srcBg.indexOf("\n    })", ocStart))
+  for (const k of [
+    "bg_deny_seen",
+    "bg_deny_forced_foreground",
+    "bg_deny_lead_skipped",
+    "bg_deny_subagent_skipped",
+    "bg_deny_foreign_skipped",
+    "bg_deny_no_agent_skipped",
+    "bg_deny_sink_threw",
+    "bg_deny_threw",
+  ]) {
+    W(ocBody.includes(`${k}: bgDeny.report.`), `(e) ${k} is inside observationCounters, so surface AND shutdown carry it`)
+  }
+  W(/\.\.\.observationCounters\("surface"\)/.test(v2srcBg), '(e) the throttled v2-surface row still spreads that closure')
+  W(/\.\.\.observationCounters\("shutdown"\)/.test(v2srcBg), '(e) the v2-shutdown row spreads it too — never one path only (#87)')
+  const shStart = v2srcBg.indexOf('step_id: "v2-shutdown"')
+  const shBlock = v2srcBg.slice(shStart, v2srcBg.indexOf('...observationCounters("shutdown")', shStart))
+  W(/bg_deny_forced_foreground: bgDeny\.report\.denied/.test(shBlock), "(e) the shutdown row's own literal names the counter explicitly (n8: a field only the spread adds can silently drift)")
+}
+console.log(`   OK (${BGW_PINNED} arrival assertions — setup-chain rewrite, the trail row, counters on both rows; commenting the wiring goes red on (a))`)
 
 console.log("7e. Team-scope isolation — nothing outside Team may be touched (#22)")
 // The user's rule: every change the plugin makes must stay inside Team mode, and

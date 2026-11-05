@@ -7,6 +7,26 @@ registry saw 1.5.0 as the install-script fix release).
 
 ## [Unreleased]
 
+### Added
+
+- **子代理禁用后台执行——提示词 + 执法两层（领队明确豁免）。** 用户机理（原话入档）：子代理一结算正文即
+  送达领队，**此后的后台唤醒既不回流已结算的子会话、也不上传给领队**——被后台化的工作没有任何接收者，
+  静默丢弃外加白付的启动开销。层一：SHARED_RULES 新节 `## No background execution (hard rule)`
+  （六专家全员，含"前台+显式 timeout / 拆小批同轮 / tee 日志自取"的替代路径）；顺手消掉一处**自相矛盾**——
+  原 `## Command time budget` 竟主动推荐 `shell background:true`，已改写并把旧钉转成否定钉。
+  层二：领队 `## Delegation` 加自知条款——**领队自己的 background 唤醒本来就回得来，不受禁令**；但专家报告里
+  出现"调用被改成前台"时那是执法在生效，不是故障。层三（硬面）：`v2-guard.ts` 新导出
+  `applyV2NonLeadBackgroundDeny`——非领队 Team 会话 `tool.execute.before` 里 truthy `background`
+  （`true`/`1`/`"true|1|yes|on"` 串）改写为 `false`，**继续同步执行而非失败**；`subagent` 工具无条件跳过
+  （与既有反向强制 `applyV2BackgroundForce` 零交集）；无名字会话不碰（`noAgentSkipped`，改写实参的层只对
+  有名字的调用动手）；foreign/unknown 不碰；每次改写落 `bg_forced_foreground` 轨迹（tool+角色+会话，
+  **不含 args 值**，R6 口径）并上 `v2-surface`/`v2-shutdown` 两路计数。
+  测试：`test-blackboard` 组 `8e`（70 条，双向钉——专家含禁令、领队含自知且不含自禁句式）+
+  `test-v2-adapter` 组 `7c2` 与 setup 全链端到端组（非领队被改 / `subagent` 反向强制回归 / 轨迹无 args /
+  领队原样）。造红各一次贴原文。
+  token 实测（estimateTokens，HEAD→工作树）：六专家各 +191/192（SHARED_RULES 摊全员，这是首个
+  整族移动的规则类），领队 +206（仅自知条款）。
+
 ### Fixed
 
 - **R6 路径红线不再认 `envProtect: "off"`（PRODUCT_BUG，方向 (a) 修复）。** 既有实现里 `off` 在**四个面**把 env 文件

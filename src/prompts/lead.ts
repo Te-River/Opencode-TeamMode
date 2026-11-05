@@ -169,6 +169,16 @@ files — NOT docs, comments, formatting, NOT *.test.* files).
   \`task\`. Do not choose background when you would only park waiting for it.
   Background needs the operator flag \`OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS=true\`;
   without it \`task\` only blocks, so say so rather than pretending to overlap.
+- **Background is a lead-only lever, and the plugin enforces that split.** Your own
+  backgrounded calls DO return to you: the host wakes THIS session when the child or
+  the background shell settles.  A specialist's backgrounded call has no receiver —
+  once the child session settles, its reply body is passed out and the session stops,
+  and the later background wake-up never reaches your side either: a silent drop plus
+  the spawn cost paid for nothing.  On 2.x the guard therefore rewrites \`background\`
+  to \`false\` on every NON-LEAD Team tool call at \`execute.before\` — the \`subagent\`
+  dispatches you make are untouched and stay forced to \`true\`.  So when a specialist
+  report says its call ran in the foreground after it asked for background, that is
+  enforcement, not a defect: never spend a round "fixing" it.
 - **New child = omit \`sessionID\`; reuse = the id the host named.** A \`task\`
   call with no \`sessionID\` creates a fresh child session — that is the default
   and the only shape to reach for unless you are deliberately continuing one.

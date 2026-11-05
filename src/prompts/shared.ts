@@ -247,12 +247,22 @@ because the two batching shapes are not interchangeable:
   the expected duration, and split so the user sees progress between
   steps instead of one long silence.
 - Independent SLOW steps do not belong serialised inside one shell script
-  either: give each its own call, or run it through \`shell\` with
-  \`background:true\` (it returns at once with a shell ID and the file its output
-  streams to, and the host notifies you when it exits — so do NOT poll, and never
-  re-run the command to watch it pass again).  Either way tee the output
+  either: give each its own call — in the FOREGROUND with an explicit \`timeout\`,
+  per ## No background execution below.  Have each write its own log
   (\`<cmd> 2>&1 | tee
-  <log>\`) and read that log for EVIDENCE.
+  <log>\`) and read that log for EVIDENCE; never re-run a step to watch it pass again.
+
+## No background execution (hard rule)
+Never pass \`background: true\` to any tool — \`shell\` is the usual face, but the rule
+covers every one.  The host's and the lead's "send slow work to the background" advice
+does NOT apply to you.  WHY: once a child session settles, its reply body is passed
+out and the session stops — the later background wake-up then reaches neither you nor
+the lead: no receiver, silently dropped work, a spawn cost paid for nothing.  Do
+instead: run the step in the FOREGROUND with an explicit \`timeout\`; split slow
+independent work into smaller calls batched into the same round; or tee the half you
+need not read (\`<cmd> 2>&1 | tee <log>\`) and name the log path in CHANGES for the
+caller.  A \`background\` arriving as \`false\` on a call you did not set is this rule
+enforced by the 2.x guard — say so in FINDINGS, and never retry it in background.
 
 ## Presentation (the host renders Markdown — use the right shape)
 Replies render as GFM: headings, lists, **tables**, fenced code with syntax

@@ -45,7 +45,7 @@ import { setAskUnavailableNote } from "../tm/perm-ask.js"
 import { setPrivateSpacePolicy } from "../tm/webfetch.js"
 import type { PluginInput, ToolDefinition } from "../types.js"
 import { blackboardNote } from "./note.js"
-import { applyV2BackgroundForce, applyV2EnvFileInputGuard, applyV2PermissionGuards, applyV2ShellTimeoutClamp, needsCoarseShellAsk } from "./v2-guard.js"
+import { applyV2BackgroundForce, applyV2EnvFileInputGuard, applyV2NonLeadBackgroundDeny, applyV2PermissionGuards, applyV2ShellTimeoutClamp, needsCoarseShellAsk } from "./v2-guard.js"
 import { applyV2EventFeed } from "./v2-events.js"
 import { createV2SessionReader } from "./v2-session-client.js"
 import { applyV2Probe, probeSummary } from "./v2-probe.js"
@@ -463,6 +463,40 @@ export const v2Personality: V2Plugin = {
     registrations.push(...envFileInput.registrations)
     const bgForce = await applyV2BackgroundForce(ctx, { scope })
     registrations.push(...bgForce.registrations)
+    // The MIRROR of the force (the user's standing rule 2026-11-04): a specialist
+    // session may not background its OWN work — once a child settles the session
+    // stops, so the wake-up of a backgrounded call has no reader and the reply is
+    // silently dropped.  Registered immediately AFTER the force, so the two
+    // background layers stay adjacent and every existing relative order (guards →
+    // force → this → clamp → offload) is untouched; the collision that ordering
+    // would otherwise create is closed by construction, because this layer skips
+    // `subagent` unconditionally (see v2-guard.ts's header) and the force only
+    // ever writes `subagent`.  The row lands AT THE MOMENT of the rewrite — the
+    // throttled `v2-surface` snapshot alone is the shape #80/#33 already caught
+    // (a one-shot CLI round exits before any flush), and a rewrite nobody can see
+    // is the overstated claim this product exists to refuse.  Tool name, role and
+    // session id only: no command line, path or arg value (the R6 口径).
+    const bgDeny = await applyV2NonLeadBackgroundDeny(ctx, {
+      scope,
+      onDeny: (info) => {
+        try {
+          tmRuntime.pipelines.store.appendTrajectory({
+            tool: "host",
+            step_id: "v2-bg-deny",
+            event: "bg_forced_foreground",
+            // The row's `tool` key is the trajectory's own discriminator ("host"
+            // here, as on every host-layer row), so the observed tool name rides
+            // `native_tool` — the spelling `probe-chain` already uses, not a third.
+            native_tool: info.tool,
+            agent: info.agent,
+            sessionID: info.sessionID ?? "",
+          })
+        } catch {
+          /* the trajectory is an extra, never a reason to fail the call */
+        }
+      },
+    })
+    registrations.push(...bgDeny.registrations)
     // The shell timeout clamp (issue #6), ported here when the v1 personality was
     // cut: the host gives `execute.before` a mutable `input`, the same seam
     // `applyV2BackgroundForce` writes, so the protection survives the deletion —
@@ -1233,6 +1267,18 @@ export const v2Personality: V2Plugin = {
       guard_foreign_skipped: guards.report.foreignSkipped,
       subagent_seen: bgForce.report.seen,
       subagent_forced: bgForce.report.forced,
+      // The mirror (2026-11-04): every field of its report, so a silent stop is a
+      // number.  `bg_deny_seen` counts every named tool call this layer looked at
+      // (the subagent exception is checked first, hence `bg_deny_subagent_skipped`),
+      // and the three skip counters say WHICH calls were left alone and why.
+      bg_deny_seen: bgDeny.report.seen,
+      bg_deny_forced_foreground: bgDeny.report.denied,
+      bg_deny_lead_skipped: bgDeny.report.leadSkipped,
+      bg_deny_subagent_skipped: bgDeny.report.subagentSkipped,
+      bg_deny_foreign_skipped: bgDeny.report.foreignSkipped,
+      bg_deny_no_agent_skipped: bgDeny.report.noAgentSkipped,
+      bg_deny_sink_threw: bgDeny.report.sinkThrew,
+      bg_deny_threw: bgDeny.report.threw,
       ...capCounters(),
       shell_timeout_seen: shellTimeout.report.seen,
       shell_timeout_clamped: shellTimeout.report.clamped,
@@ -1496,6 +1542,16 @@ export const v2Personality: V2Plugin = {
           guard_envfile_input_foreign_skipped: guards.report.envFileInputForeignSkipped,
           subagent_seen: bgForce.report.seen,
           subagent_forced: bgForce.report.forced,
+          // The mirror's own record, spelled out in this row's literal (n8: a field
+          // only the spread adds is a field that can silently drift).
+          bg_deny_seen: bgDeny.report.seen,
+          bg_deny_forced_foreground: bgDeny.report.denied,
+          bg_deny_lead_skipped: bgDeny.report.leadSkipped,
+          bg_deny_subagent_skipped: bgDeny.report.subagentSkipped,
+          bg_deny_foreign_skipped: bgDeny.report.foreignSkipped,
+          bg_deny_no_agent_skipped: bgDeny.report.noAgentSkipped,
+          bg_deny_sink_threw: bgDeny.report.sinkThrew,
+          bg_deny_threw: bgDeny.report.threw,
           ...capCounters(),
           shell_timeout_seen: shellTimeout.report.seen,
           shell_timeout_clamped: shellTimeout.report.clamped,

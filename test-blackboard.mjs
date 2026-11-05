@@ -456,7 +456,10 @@ for (const lit of ["footnotes", "==highlight==", "<hr>", "definition lists", ":s
   assert.ok(cfg2.agent["implementer"].prompt.includes(lit), `implementer: the unsupported-shape list names ${lit}`)
 }
 assert.ok(cfg2.agent["implementer"].prompt.includes("markdown\n  TABLE with stable\n  columns") || /TABLE with stable/.test(cfg2.agent["implementer"].prompt), "implementer: findings/reports use a table shape")
-assert.ok(cfg2.agent["implementer"].prompt.includes("`shell` with\n  `background:true`"), "implementer: the time budget names the host's own background shell for slow independent steps")
+assert.ok(
+  !/run it through `shell` with\s+`background:true`/.test(cfg2.agent["implementer"].prompt),
+  "implementer: the old background-shell recommendation is gone — the time budget now points at ## No background execution",
+)
 /* The v1 cut ends at the prompt layer: a role may not be told to reach for a
  * tool this package no longer registers.  The banned set is DERIVED from
  * `V1_ONLY_TOOLS` (src/host/v2-permissions.ts, the one source — five names as
@@ -945,6 +948,51 @@ let BREVITY_PINNED = 0
 }
 console.log(
   `   OK (${BREVITY_PINNED} brevity-cap assertions pinned — cap present, scoped to routing text, Step 0a named in-section, bounded, non-contagious)`,
+)
+/* The no-background rule for specialists (user standing rule): SHARED_RULES lands on
+   EVERY specialist, while the lead gets a self-awareness clause and NOT the ban.  The
+   negative half is as load-bearing as the positive — a future edit that copied the
+   prohibition into the lead prompt would strip the lead of the lever the whole
+   dispatch design relies on, and one that deleted the ban from a specialist would
+   silently keep backgrounding work that no session ever receives. */
+console.log("8e. no-background execution — specialists banned, lead briefed, the ban must not travel")
+let NOBG_PINNED = 0
+{
+  const flat = (s) => String(s).replace(/\s+/g, " ")
+  const A = (cond, msg) => {
+    NOBG_PINNED++
+    assert.ok(cond, msg)
+  }
+  const SEC = "## No background execution (hard rule)"
+  const BAN = "Never pass `background: true` to any tool"
+  const specialists = Object.entries(cfg2.agent).filter(([n]) => n.toLowerCase() !== "team")
+  A(specialists.length === 6, `8e: six specialist roles expected, found ${specialists.length} — the ban must reach every one`)
+  for (const [name, a] of specialists) {
+    const p = flat(a.prompt)
+    A(p.includes(SEC), `${name}: the no-background section is present`)
+    A(p.includes(BAN), `${name}: the ban sentence is present, in its own words`)
+    A(p.includes("does NOT apply to you"), `${name}: the host/lead background advice is explicitly disclaimed for the role`)
+    A(p.includes("reaches neither you nor the lead"), `${name}: the WHY names the no-receiver mechanism`)
+    A(p.includes("no receiver"), `${name}: the phrase 'no receiver' is in the WHY`)
+    A(p.includes("silently dropped work"), `${name}: the silent-drop consequence is stated`)
+    A(p.includes("FOREGROUND with an explicit `timeout`"), `${name}: the foreground+timeout alternative is offered`)
+    A(p.includes("smaller calls batched into the same round"), `${name}: the split-into-one-round alternative is offered`)
+    A(p.includes("tee the half you need not read"), `${name}: the tee-to-log alternative is offered`)
+    A(p.includes("enforced by the 2.x guard"), `${name}: a guard-rewritten background is named as enforcement, not failure`)
+  }
+  const leadP = flat(leadPrompt)
+  A(leadP.includes("Background is a lead-only lever"), "lead: the self-awareness clause is present")
+  A(leadP.includes("never reaches your side"), "lead: the clause states the no-receiver mechanism as fact")
+  A(leadP.includes("rewrites `background`"), "lead: the clause names the 2.x rewrite it will see reported")
+  A(leadP.includes("stay forced to `true`"), "lead: subagent dispatches stay the existing force's — the mirror does not fight it")
+  A(leadP.includes("that is enforcement, not a defect"), "lead: a forced-foreground report is labelled enforcement, not a bug to fix")
+  A(!leadP.includes(SEC), "lead: the specialist prohibition does NOT travel into the lead prompt")
+  A(!leadP.includes(BAN), "lead: no self-directed ban — the lead keeps its own background lever")
+  A(leadP.includes("task { background: true }"), "lead: the lead's own background task shape is still taught")
+  A(leadP.includes("shell {background:true}"), "lead: the lead's own background shell shape is still taught")
+}
+console.log(
+  `   OK (${NOBG_PINNED} no-background assertions pinned — deleting the section, or moving the ban into the lead, goes red)`,
 )
 const testerP = cfg2.agent["tester"].prompt
 assert.ok(testerP.includes("## Verification stack"), "tester: static verification stack")
