@@ -81,8 +81,8 @@ const writeCfg = (obj) => fs.writeFileSync(CFG_FILE(), JSON.stringify(obj))
 const clearCfg = () => fs.rmSync(CFG_FILE(), { force: true })
 fs.writeFileSync(path.join(ws, "sample.txt"), "hello from the v2 adapter test\nsecond line with NEEDLE\n")
 
-const sixAgents = Object.keys(agents).map((id) => ({ id, name: id, permissions: [] }))
-sixAgents[0].permissions = [
+const allAgents = Object.keys(agents).map((id) => ({ id, name: id, permissions: [] }))
+allAgents[0].permissions = [
   // an action our matrix does not mention at all — a user's own MCP tool
   { action: "my_mcp_thing", resource: "*", effect: "allow" },
   // an action our matrix DENIES for this role: the whitelist must win, or the
@@ -91,7 +91,7 @@ sixAgents[0].permissions = [
   { action: "websearch", resource: "*", effect: "allow" },
 ]
 
-const fake = makeFakeCtx({ directory: ws, agents: sixAgents })
+const fake = makeFakeCtx({ directory: ws, agents: allAgents })
 const { value: cleanup, warns, errors } = await withCapturedConsole(() => plugin.setup(fake.ctx))
 
 assert.equal(errors.length, 0, `setup must not throw into the host: ${errors.join(" | ")}`)
@@ -250,7 +250,7 @@ const readDeathRows = (root) =>
         .filter(Boolean),
     )
 {
-  const f = makeFakeCtx({ directory: workspace("def-call"), agents: sixAgents })
+  const f = makeFakeCtx({ directory: workspace("def-call"), agents: allAgents })
   let calls = 0
   const vanilla = f.agents.default
   f.agents.default = (id) => {
@@ -263,7 +263,7 @@ const readDeathRows = (root) =>
   await b.value?.()
 }
 {
-  const optedOut = makeFakeCtx({ directory: workspace("def-optout"), agents: sixAgents, options: { defaultAgent: false } })
+  const optedOut = makeFakeCtx({ directory: workspace("def-optout"), agents: allAgents, options: { defaultAgent: false } })
   let calls = 0
   optedOut.agents.default = () => {
     calls++
@@ -294,7 +294,7 @@ const readDeathRows = (root) =>
     if (json === null) fs.rmSync(file, { force: true })
     else fs.writeFileSync(file, json, "utf8")
     const dir = workspace("def-case")
-    const f = makeFakeCtx({ directory: dir, agents: sixAgents })
+    const f = makeFakeCtx({ directory: dir, agents: allAgents })
     const b = await withCapturedConsole(() => plugin.setup(f.ctx))
     await b.value?.()
     // Each boot gets its own run dir and readdir order is not chronological, so the
@@ -332,7 +332,7 @@ const readDeathRows = (root) =>
   const tjRoot = path.join(root, "tj")
   writeCfg({ trajectoryDir: tjRoot, dynamicTail: "off" })
   const nmDir = workspace("def-nomethod-ws")
-  const f = makeFakeCtx({ directory: nmDir, agents: sixAgents })
+  const f = makeFakeCtx({ directory: nmDir, agents: allAgents })
   delete f.agents.default
   assert.equal(typeof f.agents.default, "undefined", "the fake now mirrors 2.1.4: no agent.default at all")
   const b = await withCapturedConsole(() => plugin.setup(f.ctx))
@@ -1053,7 +1053,7 @@ assert.ok(
 assert.ok(
   ["architect", "implementer", "reviewer", "tester", "researcher"].every((role) =>
     fake.agents.get(role).permissions.some((p) => p.action === "tm_ledger" && p.effect === "deny")),
-  "the five specialists are explicitly denied it — the runtime onlyAgent gate now has a rule the user can read (that gate is UNREACHABLE on the real host: the request layer removes tm_ledger from every non-lead surface, so it is unit-covered only — see group 7g)",
+  "the five specialists this loop names are explicitly denied it (the sixth, computerUser, is not exercised here — it gets the same deny from the one rule `isLeadAgent ? allow : deny`) — the runtime onlyAgent gate now has a rule the user can read (that gate is UNREACHABLE on the real host: the request layer removes tm_ledger from every non-lead surface, so it is unit-covered only — see group 7g)",
 )
 assert.ok(
   find("my_mcp_thing").some((p) => p.effect === "allow" && p.resource === "*"),
@@ -1069,7 +1069,7 @@ assert.equal(JSON.stringify(fake.agents.get("Team").permissions), before, "booti
 await reboot.value?.()
 
 const wsR6 = workspace("r6")
-const r6Fake = makeFakeCtx({ directory: wsR6, options: { envProtect: true }, agents: sixAgents.map((a) => ({ ...a, permissions: [] })) })
+const r6Fake = makeFakeCtx({ directory: wsR6, options: { envProtect: true }, agents: allAgents.map((a) => ({ ...a, permissions: [] })) })
 clearCfg()
 const r6 = await withCapturedConsole(() => plugin.setup(r6Fake.ctx))
 const r6Team = r6Fake.agents.get("Team")
@@ -1099,7 +1099,7 @@ assert.ok(
 )
 await r6Coarse.value?.()
 
-const noHook = makeFakeCtx({ directory: wsR6, options: { envProtect: true }, agents: sixAgents.map((a) => ({ ...a, permissions: [] })) })
+const noHook = makeFakeCtx({ directory: wsR6, options: { envProtect: true }, agents: allAgents.map((a) => ({ ...a, permissions: [] })) })
 delete noHook.ctx.permission
 const r6NoHook = await withCapturedConsole(() => plugin.setup(noHook.ctx))
 assert.ok(
@@ -1118,7 +1118,7 @@ await r6NoHook.value?.()
 // that rule "hard".  Two switches turn it off, and only those two.
 {
   const wsR6d = workspace("r6-default")
-  const mkR6 = (options) => makeFakeCtx({ directory: wsR6d, options, agents: sixAgents.map((a) => ({ ...a, permissions: [] })) })
+  const mkR6 = (options) => makeFakeCtx({ directory: wsR6d, options, agents: allAgents.map((a) => ({ ...a, permissions: [] })) })
   const fireEnvRead = async (fake) => {
     const ev = { sessionID: "ses_r6d", agent: "team", action: "read", resources: ["src/.env"], effect: "allow" }
     for (const h of fake.hook("permission.evaluate").handlers ?? []) await h(ev)
@@ -1189,7 +1189,7 @@ assert.ok(
 )
 assert.ok(
   second.warns.some((w) => Object.keys(agents).every((id) => w.includes(id))),
-  "the log names all six roles the installer must provide",
+  "the log names all seven roles the installer must provide",
 )
 // This used to assert the OPPOSITE — that the promotion is withheld when
 // editor.get('team') finds nothing.  Both halves are gone: on 2.1.4 the plugin has
@@ -1313,7 +1313,7 @@ console.log("   OK (surface trimmed per role, no temperature written, board root
 {
   const tjRoot = mktmp("tools-removed")
   writeCfg({ trajectoryDir: tjRoot })
-  const f = makeFakeCtx({ directory: workspace("tools-removed"), agents: sixAgents })
+  const f = makeFakeCtx({ directory: workspace("tools-removed"), agents: allAgents })
   const boot = await withCapturedConsole(() => plugin.setup(f.ctx))
   try {
     // Simulate the LIVE host: the permission layer has already excluded the denied
@@ -1357,7 +1357,8 @@ console.log("   OK (surface trimmed per role, no temperature written, board root
 // adds an explicit `tm_ledger: deny` triple for them (group 4).  So a specialist
 // never sees the tool, and the host answers `Unknown tool` if one is
 // hallucinated; the gate only fires in a unit test that calls `execute` directly
-// (group 26c).  This group pins the surface exclusion for ALL five specialists,
+// (group 26c).  This group pins the surface exclusion for the five specialists
+// it iterates (computerUser, the sixth, is not exercised here),
 // so the "unreachable" claim is a measurement rather than a comment.
 {
   for (const role of ["architect", "implementer", "reviewer", "tester", "researcher"]) {
@@ -1445,7 +1446,7 @@ let BGD_PINNED = 0
   }
   const { createTeamScope } = await import("./dist/host/v2-scope.js")
   const { applyV2BackgroundForce, applyV2NonLeadBackgroundDeny, isBackgroundTruthy } = await import("./dist/host/v2-guard.js")
-  const scope = createTeamScope(["team", "architect", "implementer", "reviewer", "tester", "researcher", "computeruser"])
+  const scope = createTeamScope(Object.keys(agents).map((id) => id.toLowerCase()))
   const f = makeFakeCtx({ directory: ws, agents: [] })
   const rows = []
   const bgd = await applyV2NonLeadBackgroundDeny(f.ctx, { scope, onDeny: (info) => rows.push(info) })
@@ -1482,7 +1483,7 @@ let BGD_PINNED = 0
     assert.strictEqual(ev.input.background, true, `(c) the lead (${leadName}) keeps its own background lever`)
   }
   assert.strictEqual(bgd.report.leadSkipped, 3, "(c) the lead skip is COUNTED, not silent")
-  B(rows.length === 5, "(c) the lead's backgrounded calls logged nothing new — the deny rows stayed exactly the five specialist rewrites")
+  B(rows.length === 5, "(c) the lead's backgrounded calls logged nothing new — the deny rows are still exactly the five rewrites so far: (a)'s one plus (b)'s four spellings, ALL of them the implementer's (the per-role sweep is leg (f) below)")
   // (d) the existing subagent force survives the mirror untouched.
   const kid = { tool: "subagent", sessionID: "ses_lead", agent: "team", input: { agent: "implementer", prompt: "x" } }
   await fireBoth(kid)
@@ -1527,6 +1528,35 @@ let BGD_PINNED = 0
     assert.strictEqual(bgd3.report.denied, 0, `(e) …and nothing was denied (${shape})`)
     for (const r of bgd3.registrations) await r.dispose()
   }
+  // (f) the mirror is PER-ROLE, and every specialist has to be fired: (a), (b) and
+  //     (e) above all ran as the implementer, so a role that quietly misses this
+  //     gate is invisible to the counters — computerUser, the sixth specialist and a
+  //     non-lead Team session just like the others, was never exercised here at all.
+  //     The expected growth below is the LITERAL six, bound to a list that is itself
+  //     asserted to be the export's specialist family: drop one role from the list
+  //     and `denied + 6` goes red on the spot.
+  const SPECIALISTS = ["architect", "implementer", "reviewer", "tester", "researcher", "computerUser"]
+  B(
+    JSON.stringify([...SPECIALISTS].sort()) ===
+      JSON.stringify(Object.keys(agents).filter((id) => id.toLowerCase() !== "team").sort()),
+    `(f) the list IS the specialist family the export declares (${SPECIALISTS.join(", ")})`,
+  )
+  const deniedBefore = bgd.report.denied
+  const rowsBefore = rows.length
+  for (const who of SPECIALISTS) {
+    const ev = { tool: "shell", sessionID: `ses_sweep_${who}`, agent: who, input: { command: "npm test", background: "True" } }
+    await fireBoth(ev)
+    assert.strictEqual(ev.input.background, false, `(f) ${who}'s truthy background is rewritten to false — the mirror is not implementer-only`)
+    assert.strictEqual(ev.input.command, "npm test", `(f) ${who}: only the flag moves, the command bytes stay exact`)
+    B(
+      rows[rows.length - 1].agent === who &&
+        rows[rows.length - 1].tool === "shell" &&
+        rows[rows.length - 1].sessionID === `ses_sweep_${who}`,
+      `(f) the newest row is ${who}'s — tool + role + the session it fired as`,
+    )
+  }
+  assert.strictEqual(bgd.report.denied, deniedBefore + 6, "(f) exactly six more rewrites, one per specialist — this literal 6 is what the list above has to match")
+  B(rows.length === rowsBefore + 6, "(f) six new deny rows and no silent extra")
   // fail-open: a throwing trajectory sink never breaks the guarded call.
   const f2 = makeFakeCtx({ directory: ws, agents: [] })
   const sinkBad = await applyV2NonLeadBackgroundDeny(f2.ctx, { scope, onDeny: () => { throw new Error("sink died") } })
@@ -1560,7 +1590,7 @@ let BGW_PINNED = 0
   const tjRoot = mktmp("bg-deny-arrival")
   writeCfg({ trajectoryDir: tjRoot })
   try {
-    const f = makeFakeCtx({ directory: workspace("bg-deny-arrival"), agents: sixAgents })
+    const f = makeFakeCtx({ directory: workspace("bg-deny-arrival"), agents: allAgents })
     const boot = await withCapturedConsole(() => plugin.setup(f.ctx))
     const SECRET = "npm test BGWIRE-SECRET-CMDLINE"
     // (a) a non-lead Team session's backgrounded shell: by the time the WHOLE
@@ -1668,7 +1698,7 @@ console.log("7e. Team-scope isolation — nothing outside Team may be touched (#
   const f = makeFakeCtx({ directory: ws, agents: [] })
   const { applyV2PermissionGuards, applyV2BackgroundForce } = await import("./dist/host/v2-guard.js")
   const { applyV2NativeOffload } = await import("./dist/host/v2-offload.js")
-  const scope = createTeamScope(["team", "architect", "implementer", "reviewer", "tester", "researcher", "computeruser"])
+  const scope = createTeamScope(Object.keys(agents).map((id) => id.toLowerCase()))
   const gg = await applyV2PermissionGuards(f.ctx, { envProtectMode: "off", scope })
   const bgg = await applyV2BackgroundForce(f.ctx, { scope })
   const off = applyV2NativeOffload(f.ctx, {
@@ -2049,7 +2079,7 @@ const cmdFiles = fs.readdirSync(path.join(genRoot, "commands")).sort()
 assert.deepEqual(
   agentFiles,
   Object.keys(agents).map((id) => `${id}.md`).sort(),
-  `all six roles are projected as markdown (got ${agentFiles.join(",")})`,
+  `all seven roles are projected as markdown (got ${agentFiles.join(",")})`,
 )
 assert.deepEqual(
   cmdFiles,
@@ -2596,7 +2626,7 @@ console.log("12. a child's own report is readable in process — no credential (
   //     wiring (bridge → tm_join) is tested, not just the pure function.
   const fakeT = makeFakeCtx({
     directory: workspace("transcript-e2e"),
-    agents: sixAgents,
+    agents: allAgents,
     sessionData: {
       sessions: { ses_kidT: { parentID: "ses_leadT", agent: "researcher" } },
       messages: { ses_kidT: flat },
@@ -2868,7 +2898,7 @@ console.log("14. the lead can STOP a background child — five verdicts, not one
   const bootStop = async (stop, name) => {
     const fakeT = makeFakeCtx({
       directory: workspace(name),
-      agents: sixAgents,
+      agents: allAgents,
       sessionData: {
         sessions: { ses_kidS: { parentID: "ses_leadS", agent: "tester" } },
         messages: { ses_kidS: [{ id: "m1", time: { created: 1 }, type: "text", text: "STATUS: 半成品" }] },
@@ -3086,7 +3116,7 @@ console.log("15. the 2.0.20 message shape is normalised AT the seam — a real b
   writeCfg({ trajectoryDir: tjRoot })
   const fakeC = makeFakeCtx({
     directory: workspace("a1-2020"),
-    agents: sixAgents,
+    agents: allAgents,
     sessionData: {
       sessions: {
         ses_kidOK: { parentID: "ses_leadC", agent: "implementer" },
@@ -3285,7 +3315,7 @@ console.log("17. the lead can STEER a running child — three outcomes, parentag
   const bootSteer = async (name, extra) => {
     const fakeT = makeFakeCtx({
       directory: workspace(name),
-      agents: sixAgents,
+      agents: allAgents,
       sessionData: {
         sessions: {
           ses_kidW: { parentID: "ses_leadW", agent: "implementer" },
@@ -3517,7 +3547,7 @@ console.log("18. Context Pruning's capability row (#49) — kept after the compa
     // wiring: the personality attaches the layers that survive — the request layer and
     // the prune layer both sit on session.context. The compaction layer was removed in
     // 1.7.1, so this assertion is now what catches prune silently going away.
-    const wf = makeFakeCtx({ directory: ws, agents: sixAgents, sessionData: {} })
+    const wf = makeFakeCtx({ directory: ws, agents: allAgents, sessionData: {} })
     await withCapturedConsole(() => plugin.setup(wf.ctx))
     const handlers = wf.hook("session.context").handlers.length
     assert.ok(handlers >= 2, `the request layer AND the prune layer both sit on session.context (got ${handlers})`)
@@ -3573,7 +3603,7 @@ console.log("19. the shell timeout clamp came back to 2.x — the same lever, th
   assert.equal(parseShellTimeout(undefined), null, "absent stays absent")
 
   // (b) the hook itself, on the fake host
-  const f = makeFakeCtx({ directory: ws, agents: sixAgents })
+  const f = makeFakeCtx({ directory: ws, agents: allAgents })
   const clamps = []
   const layer = await applyV2ShellTimeoutClamp(f.ctx, {
     probeMs: 60_000,
@@ -3634,7 +3664,7 @@ console.log("20. R6's file-path face is back on 2.x — the native read/write/ed
 
   // (b) the hook, on the fake host
   const f = makeFakeCtx({ directory: ws, agents: [] })
-  const scope = createTeamScope(["team", "architect", "implementer", "reviewer", "tester", "researcher", "computeruser"])
+  const scope = createTeamScope(Object.keys(agents).map((id) => id.toLowerCase()))
   const g = await applyV2PermissionGuards(f.ctx, { envProtectMode: "audit", scope })
   const fire = (ev) => f.hook("permission.evaluate").fire(ev)
 
@@ -3696,7 +3726,8 @@ console.log("21. the lead id is `Team`, and identity is case-insensitive (#38)")
   const spec = await byName.tm_join.execute({}, { agent: "architect", sessionID: "ses_spec" })
   assert.ok(textOf(spec).includes("能收集派发结果"), "a specialist is still refused the collect side")
 
-  // (c) tm_ledger: lead allow (both spellings), five specialists deny
+  // (c) tm_ledger: lead allow (both spellings), the five specialists this loop
+  // names deny (computerUser, the sixth, is not exercised here)
   const ledT = await byName.tm_ledger.execute({ action: "add", text: "x" }, { agent: "Team", sessionID: "ses_ledT" })
   const ledL = await byName.tm_ledger.execute({ action: "add", text: "x" }, { agent: "team", sessionID: "ses_ledL" })
   assert.ok(!textOf(ledT).includes("只有领队"), "tm_ledger allows `Team`")
@@ -3737,7 +3768,7 @@ console.log("21. the lead id is `Team`, and identity is case-insensitive (#38)")
   const prevCfg = process.env.OPENCODE_CONFIG_DIR
   process.env.OPENCODE_CONFIG_DIR = cfgDir
   fs.writeFileSync(path.join(cfgDir, "opencode.jsonc"), '{\n  "default_agent": "Ghost",\n  "secret": "TOKEN-abc"\n}\n', "utf8")
-  const warnFake = makeFakeCtx({ directory: ws, agents: sixAgents })
+  const warnFake = makeFakeCtx({ directory: ws, agents: allAgents })
   const w = await withCapturedConsole(() => plugin.setup(warnFake.ctx))
   const warnText = (w.warns ?? []).join("\n")
   assert.ok(/default_agent="Ghost"/.test(warnText), "the missing-role warning names the role")
@@ -3937,7 +3968,7 @@ console.log("26. R6's file-path face on the seam that sees the whole input — g
   const v2src = fs.readFileSync(path.join(repoRoot, "src", "host", "v2.ts"), "utf8")
 
   const f = makeFakeCtx({ directory: ws, agents: [] })
-  const scope = createTeamScope(["team", "architect", "implementer", "reviewer", "tester", "researcher", "computeruser"])
+  const scope = createTeamScope(Object.keys(agents).map((id) => id.toLowerCase()))
   const g = await applyV2PermissionGuards(f.ctx, { envProtectMode: "audit", scope })
   const eg = await applyV2EnvFileInputGuard(f.ctx, { envProtectMode: "audit", scope, report: g.report })
   const fire = (ev) => f.hook("tool.execute.before").fire(ev)
@@ -4026,7 +4057,7 @@ console.log("27. the Code Mode adoption hint — a run of native calls appends a
 
   // (e) hook level: the 4th native result is annotated, the first three are not
   const f = makeFakeCtx({ directory: ws, agents: [] })
-  const scope = createTeamScope(["team", "architect", "implementer", "reviewer", "tester", "researcher", "computeruser"])
+  const scope = createTeamScope(Object.keys(agents).map((id) => id.toLowerCase()))
   const advised = []
   const pc = applyV2ProbeChain(f.ctx, { scope, env: {}, onAdvise: (i) => advised.push(i) })
   const fire = (tool, text, agent = "team", sessionID = "ses_chain") =>
@@ -4619,7 +4650,7 @@ console.log("30. 错峰重试 — recognise a provider throttle, inject an exact
   {
     const ws31 = workspace("retry-roles")
     const f3 = makeFakeCtx({ directory: ws31, agents: [] })
-    const scope3 = createTeamScope(["team", "architect", "implementer", "reviewer", "tester", "researcher", "computeruser"])
+    const scope3 = createTeamScope(Object.keys(agents).map((id) => id.toLowerCase()))
     const g3 = createRetryGovernor({
       baseMs: 5000,
       maxMs: 60000,
@@ -4692,7 +4723,7 @@ console.log("30. 错峰重试 — recognise a provider throttle, inject an exact
   {
     const ws32 = workspace("redrive")
     const f4 = makeFakeCtx({ directory: ws32, agents: [] })
-    const scope4 = createTeamScope(["team", "architect", "implementer", "reviewer", "tester", "researcher", "computeruser"])
+    const scope4 = createTeamScope(Object.keys(agents).map((id) => id.toLowerCase()))
     const timersFired = []
     const timersCleared = []
     let redriveSink = null
@@ -4755,7 +4786,7 @@ console.log("30. 错峰重试 — recognise a provider throttle, inject an exact
   // (g) the hooks, on the fake host
   const ws30 = workspace("retry")
   const f = makeFakeCtx({ directory: ws30, agents: [] })
-  const scope = createTeamScope(["team", "architect", "implementer", "reviewer", "tester", "researcher", "computeruser"])
+  const scope = createTeamScope(Object.keys(agents).map((id) => id.toLowerCase()))
   const rows = []
   const gov = createRetryGovernor({ baseMs: 5000, maxMs: 60000, jitter: 0, breakAfter: 5, cooldownMs: 60000, random: () => 0.5, onEvent: (row) => rows.push(row) })
   const layer = await applyV2RetryGovernor(f.ctx, { scope, governor: gov, onEvent: (row) => rows.push(row) })
@@ -4860,7 +4891,7 @@ console.log("31. 拆分任务 — a big brief arms ONE advice line for the lead'
   // (d) the hooks, on the fake host
   const ws31 = workspace("split")
   const f = makeFakeCtx({ directory: ws31, agents: [] })
-  const scope = createTeamScope(["team", "architect", "implementer", "reviewer", "tester", "researcher", "computeruser"])
+  const scope = createTeamScope(Object.keys(agents).map((id) => id.toLowerCase()))
   const rows = []
   const layer = await applyV2SessionLayer(f.ctx, {
     note: "", noteAgents: [], plan: new Map(), scope,
@@ -4998,7 +5029,7 @@ console.log("32. subagentConcurrency — a BURST is really capped, not just the 
 
   // (f) the hook: through the fake host, three dispatches with a ceiling of 2
   const f = makeFakeCtx({ directory: ws, agents: [] })
-  const scope = createTeamScope(["team", "architect", "implementer", "reviewer", "tester", "researcher", "computeruser"])
+  const scope = createTeamScope(Object.keys(agents).map((id) => id.toLowerCase()))
   const g = await applyV2PermissionGuards(f.ctx, { envProtectMode: "off", scope, subagentConcurrency: 2 })
   const dispatch = () => ({ sessionID: "ses_lead", agent: "team", action: "subagent", resources: [], effect: "allow" })
   const e1 = dispatch(); await f.hook("permission.evaluate").fire(e1)
@@ -5126,7 +5157,7 @@ console.log("32c. a dispatch that cannot run takes no slot; ids are not reused; 
   const { applyV2PermissionGuards, createSubagentCapGate, normalizeCapLimit, DEFAULT_SUBAGENT_CONCURRENCY } = await import("./dist/host/v2-guard.js")
   const { applyV2SubagentRegistry } = await import("./dist/host/v2-subagent.js")
   const { createTeamScope } = await import("./dist/host/v2-scope.js")
-  const scope = createTeamScope(["team", "architect", "implementer", "reviewer", "tester", "researcher", "computeruser"])
+  const scope = createTeamScope(Object.keys(agents).map((id) => id.toLowerCase()))
 
   // Minor 1 — `v2-retry`'s cooldown denies exactly at this layer, and a denied call never
   // reaches execute.after: admitting it leaked one slot per attempt for a whole 60s TTL.
@@ -5269,7 +5300,7 @@ console.log("34. 任务状态卡 — 请求侧 JIT 状态注入：一条 ≤300 
   // `dynamicTail: "off"` 是本组的对照（也是注册表默认）：本组钉的是 **system** 注入那一条
   // 路径的逐字节行为，尾层（`dynamicTail: "on"` 才启用）会把卡片搬到请求末尾，见组 39。
   writeCfg({ trajectoryDir: tj1, dynamicTail: "off" })
-  const w = makeFakeCtx({ directory: workspace("state-card"), agents: sixAgents })
+  const w = makeFakeCtx({ directory: workspace("state-card"), agents: allAgents })
   const boot = await withCapturedConsole(() => plugin.setup(w.ctx))
   const SID = "ses_state_lead"
   const KEY = `team-mode/ledger/${SID}`
@@ -5341,7 +5372,7 @@ console.log("34. 任务状态卡 — 请求侧 JIT 状态注入：一条 ≤300 
   // ④ an empty state is NOT a card (and it does not suppress the board note).
   const tj2 = mktmp("state-card-empty")
   writeCfg({ trajectoryDir: tj2, dynamicTail: "off" })
-  const e2 = makeFakeCtx({ directory: workspace("state-card-empty"), agents: sixAgents })
+  const e2 = makeFakeCtx({ directory: workspace("state-card-empty"), agents: allAgents })
   const boot2 = await withCapturedConsole(() => plugin.setup(e2.ctx))
   e2.ctx.storage._map.set("team-mode/ledger/ses_empty", { sessionID: "ses_empty", items: [{ id: 1, text: "已经收口的一项", status: "done", at: 1 }], updated: 1 })
   const emptyReq = { agent: "team", sessionID: "ses_empty", system: [], messages: [], options: {}, tools: {} }
@@ -5385,7 +5416,7 @@ console.log("34. 任务状态卡 — 请求侧 JIT 状态注入：一条 ≤300 
   // ⑦ `stateCard: "off"`: byte-identical to the build before this layer — it does not register.
   const tj4 = mktmp("state-card-off")
   writeCfg({ trajectoryDir: tj4, stateCard: "off", dynamicTail: "off" })
-  const o = makeFakeCtx({ directory: workspace("state-card-off"), agents: sixAgents })
+  const o = makeFakeCtx({ directory: workspace("state-card-off"), agents: allAgents })
   const bootOff = await withCapturedConsole(() => plugin.setup(o.ctx))
   o.ctx.storage._map.set(KEY, { sessionID: SID, items: [{ id: 31, text: "有进行项也不该出现", status: "doing", at: 1 }], updated: 1 })
   const offReq = { agent: "team", sessionID: SID, system: [], messages: [], options: {}, tools: {} }
@@ -5402,7 +5433,7 @@ console.log("34. 任务状态卡 — 请求侧 JIT 状态注入：一条 ≤300 
 
   // The off/on handler difference, stated as its own assertion rather than assumed.
   writeCfg({ trajectoryDir: mktmp("state-card-on-again"), dynamicTail: "off" })
-  const onAgain = makeFakeCtx({ directory: workspace("state-card-on-again"), agents: sixAgents })
+  const onAgain = makeFakeCtx({ directory: workspace("state-card-on-again"), agents: allAgents })
   const bootOn = await withCapturedConsole(() => plugin.setup(onAgain.ctx))
   assert.equal(
     onAgain.hook("session.context").handlers.length,
@@ -5415,7 +5446,7 @@ console.log("34. 任务状态卡 — 请求侧 JIT 状态注入：一条 ≤300 
   // ⑧ the layer's two gates that the wired personality cannot reach are pinned
   //    DIRECTLY (same precedent as tm_ledger's runtime onlyAgent gate): a scope
   //    that does not own `team` must leave the request byte-exact…
-  const fu = makeFakeCtx({ directory: workspace("state-card-scope"), agents: sixAgents })
+  const fu = makeFakeCtx({ directory: workspace("state-card-scope"), agents: allAgents })
   const layer = await applyV2StateCard(fu.ctx, {
     boardRoot: "/board",
     scope: createTeamScope(["researcher"]),
@@ -5461,7 +5492,7 @@ console.log("34. 任务状态卡 — 请求侧 JIT 状态注入：一条 ≤300 
     sessionID: "ses_other_parent",
   })
   assert.ok(ownedCard.includes("ses_other"), "有 sessionID 且 parent 匹配时照样列出来")
-  const fe = makeFakeCtx({ directory: workspace("state-card-nosid"), agents: sixAgents })
+  const fe = makeFakeCtx({ directory: workspace("state-card-nosid"), agents: allAgents })
   const layerE = await applyV2StateCard(fe.ctx, {
     boardRoot: "/board",
     loadLedger: async () => ({ sessionID: "", items: [{ id: 1, text: "只有账本项", status: "doing", at: 1 }], updated: 1 }),
@@ -5498,7 +5529,7 @@ console.log("34. 任务状态卡 — 请求侧 JIT 状态注入：一条 ≤300 
     dynamicTail: "off",
   })
   const CATsmall = [{ id: "glm", providerID: "lxns", modelID: "glm", limit: { context: 1000, output: 100 } }]
-  const pOff = makeFakeCtx({ directory: workspace("state-card-prune-off"), agents: sixAgents, models: CATsmall })
+  const pOff = makeFakeCtx({ directory: workspace("state-card-prune-off"), agents: allAgents, models: CATsmall })
   const bootPOff = await withCapturedConsole(() => plugin.setup(pOff.ctx))
   pOff.ctx.storage._map.set("team-mode/ledger/ses_card_off", {
     sessionID: "ses_card_off",
@@ -5539,7 +5570,7 @@ console.log("34. 任务状态卡 — 请求侧 JIT 状态注入：一条 ≤300 
 
   // ⑭ R2：状态清空后旧卡必须被摘掉（宿主会跨请求保留 event.system）。
   let ledgerNow = { sessionID: "ses_clear", items: [{ id: 1, text: "先有一项", status: "doing", at: 1 }], updated: 1 }
-  const fc = makeFakeCtx({ directory: workspace("state-card-clear"), agents: sixAgents })
+  const fc = makeFakeCtx({ directory: workspace("state-card-clear"), agents: allAgents })
   const layerC = await applyV2StateCard(fc.ctx, {
     boardRoot: "/board",
     loadLedger: async () => ledgerNow,
@@ -5608,7 +5639,7 @@ console.log("35. 无损修剪 — 修剪前先离载，stub 带完整 tm_fetch �
   const rootA = mktmp("prune-offload")
   const boardA = path.join(rootA, "board")
   writeCfg({ blackboardDir: boardA, trajectoryDir: path.join(rootA, "tj"), pruneKeepTailPercent: 0 })
-  const fA = makeFakeCtx({ directory: workspace("prune-offload-ws"), agents: sixAgents, models: CAT })
+  const fA = makeFakeCtx({ directory: workspace("prune-offload-ws"), agents: allAgents, models: CAT })
   const bootA = await withCapturedConsole(() => plugin.setup(fA.ctx))
   const byA = Object.fromEntries(fA.tools.list().map((t) => [t.id ?? t.name, t]))
   const msgA = [mat(BODY), mat("tail", "user")]
@@ -5662,7 +5693,7 @@ console.log("35. 无损修剪 — 修剪前先离载，stub 带完整 tm_fetch �
     const boardC = path.join(rootC, "board")
     const tjC = path.join(rootC, "tj")
     writeCfg({ blackboardDir: boardC, trajectoryDir: tjC, pruneKeepTailPercent: 0 })
-    const fC = makeFakeCtx({ directory: workspace("prune-offload-expired-ws"), agents: sixAgents, models: CAT })
+    const fC = makeFakeCtx({ directory: workspace("prune-offload-expired-ws"), agents: allAgents, models: CAT })
     const bootC = await withCapturedConsole(() => plugin.setup(fC.ctx))
     const fireC = async (messages) =>
       fC.hook("session.context").fire({ agent: "team", sessionID: "ses_prune_exp", system: [], messages, tools: {} })
@@ -5789,7 +5820,7 @@ console.log("35. 无损修剪 — 修剪前先离载，stub 带完整 tm_fetch �
     const rootB = mktmp("prune-offload-off")
     const boardB = path.join(rootB, "board")
     writeCfg({ blackboardDir: boardB, trajectoryDir: path.join(rootB, "tj"), pruneKeepTailPercent: 0, pruneOffload: "off" })
-    const fB = makeFakeCtx({ directory: workspace("prune-offload-off-ws"), agents: sixAgents, models: CAT })
+    const fB = makeFakeCtx({ directory: workspace("prune-offload-off-ws"), agents: allAgents, models: CAT })
     const bootB = await withCapturedConsole(() => plugin.setup(fB.ctx))
     const msgB = [mat(BODY), mat("tail", "user")]
     await fB.hook("session.context").fire({ agent: "team", sessionID: "ses_prune_off2", system: [], messages: msgB, tools: {} })
@@ -5850,7 +5881,7 @@ console.log("36. 窗口占用条目 — 独立 system 条目：最近 5% 分桶�
 
   const root = mktmp("state-window")
   writeCfg({ trajectoryDir: path.join(root, "tj"), blackboardDir: path.join(root, "board"), dynamicTail: "off" })
-  const f = makeFakeCtx({ directory: workspace("state-window"), agents: sixAgents, models: CATbig })
+  const f = makeFakeCtx({ directory: workspace("state-window"), agents: allAgents, models: CATbig })
   const boot = await withCapturedConsole(() => plugin.setup(f.ctx))
   const SID = "ses_window"
   const reader = createUsagePercent(f.ctx)
@@ -5909,7 +5940,7 @@ console.log("36. 窗口占用条目 — 独立 system 条目：最近 5% 分桶�
   // ⑤ no catalog = no denominator → the entry never appears at all.
   const rootNoCat = mktmp("state-window-nocat2")
   writeCfg({ trajectoryDir: path.join(rootNoCat, "tj"), blackboardDir: path.join(rootNoCat, "board"), dynamicTail: "off" })
-  const fnc = makeFakeCtx({ directory: workspace("state-window-nocat2"), agents: sixAgents, models: [] })
+  const fnc = makeFakeCtx({ directory: workspace("state-window-nocat2"), agents: allAgents, models: [] })
   const bootNoCat = await withCapturedConsole(() => plugin.setup(fnc.ctx))
   const rnc = { agent: "team", sessionID: SID, system: [], messages: [turn(42000)], options: {}, tools: {} }
   await fnc.hook("session.context").fire(rnc)
@@ -5992,7 +6023,7 @@ console.log("36b. 缓存命中 — cacheStatsOf 的分母口径（没报 cache �
   // ---- end to end: one row per request that HAD a reading ----
   const root = mktmp("cache-stats")
   writeCfg({ trajectoryDir: path.join(root, "tj"), blackboardDir: path.join(root, "board"), dynamicTail: "off" })
-  const f = makeFakeCtx({ directory: workspace("cache-stats"), agents: sixAgents, models: CAT })
+  const f = makeFakeCtx({ directory: workspace("cache-stats"), agents: allAgents, models: CAT })
   const boot = await withCapturedConsole(() => plugin.setup(f.ctx))
   const SID = "ses_cache"
   const fire = async (messages) => {
@@ -6046,7 +6077,7 @@ console.log("36b. 缓存命中 — cacheStatsOf 的分母口径（没报 cache �
   // meter read "没有 v2-cache 行", i.e. "caching never happens".
   const rootOff = mktmp("cache-offcatalog")
   writeCfg({ trajectoryDir: path.join(rootOff, "tj"), blackboardDir: path.join(rootOff, "board"), dynamicTail: "off" })
-  const fOff = makeFakeCtx({ directory: workspace("cache-offcatalog"), agents: sixAgents, models: [] })
+  const fOff = makeFakeCtx({ directory: workspace("cache-offcatalog"), agents: allAgents, models: [] })
   const bootOff = await withCapturedConsole(() => plugin.setup(fOff.ctx))
   const SID_OFF = "ses_cache_offcatalog"
   const OUTSIDE = { providerID: "lxns-hikari", id: "deepseek-ai/DeepSeek-V4.1-Flash-1017" }
@@ -6278,7 +6309,7 @@ console.log("38. 修剪保护正则 pruneProtectPatterns — 命中即不剪；�
     pruneKeepTailPercent: 0,
     pruneProtectPatterns: "SECRET-FILE",
   })
-  const fw = makeFakeCtx({ directory: workspace("prune-protect-wired"), agents: sixAgents, models: CAT })
+  const fw = makeFakeCtx({ directory: workspace("prune-protect-wired"), agents: allAgents, models: CAT })
   const boot = await withCapturedConsole(() => plugin.setup(fw.ctx))
   const kept = mat("SECRET-FILE " + big)
   const other = mat("旧命令回显：" + big)
@@ -6347,7 +6378,7 @@ console.log("39. 易变上下文尾部注入 dynamicTail — system 逐字节稳
   const tjOn = mktmp("dynamic-tail")
   // 默认已是 off：本组测的是尾部注入这条路径，必须显式开启。
   writeCfg({ trajectoryDir: tjOn, dynamicTail: "on" })
-  const h = makeFakeCtx({ directory: workspace("dynamic-tail"), agents: sixAgents })
+  const h = makeFakeCtx({ directory: workspace("dynamic-tail"), agents: allAgents })
   const boot = await withCapturedConsole(() => plugin.setup(h.ctx))
   const SID = "ses_tail_lead"
   const KEY = `team-mode/ledger/${SID}`
@@ -6400,7 +6431,7 @@ console.log("39. 易变上下文尾部注入 dynamicTail — system 逐字节稳
   // ④ off：状态卡回到 system，且没有尾部消息；handler 恰好少一个（层没注册）
   const tjOff = mktmp("dynamic-tail-off")
   writeCfg({ trajectoryDir: tjOff, dynamicTail: "off" })
-  const o = makeFakeCtx({ directory: workspace("dynamic-tail-off"), agents: sixAgents })
+  const o = makeFakeCtx({ directory: workspace("dynamic-tail-off"), agents: allAgents })
   const bootOff = await withCapturedConsole(() => plugin.setup(o.ctx))
   o.ctx.storage._map.set(KEY, { sessionID: SID, items: [{ id: 31, text: "off 下回到 system", status: "doing", at: 1 }], updated: 1 })
   const rOff = { agent: "team", sessionID: SID, system: [], messages: [], options: {}, tools: {} }
@@ -6417,7 +6448,7 @@ console.log("39. 易变上下文尾部注入 dynamicTail — system 逐字节稳
 
   // ⑤ 重试指令：on 进尾部、system 无它；off 回到 system
   const rf = makeFakeCtx({ directory: workspace("dynamic-tail-retry"), agents: [] })
-  const scope5 = createTeamScope(["team", "architect", "implementer", "reviewer", "tester", "researcher", "computeruser"])
+  const scope5 = createTeamScope(Object.keys(agents).map((id) => id.toLowerCase()))
   const sink5 = createDynamicSink()
   const gov5 = createRetryGovernor({ baseMs: 5000, maxMs: 60000, jitter: 0, breakAfter: 5, cooldownMs: 60000, random: () => 0.5 })
   const retryOn = await applyV2RetryGovernor(rf.ctx, { scope: scope5, governor: gov5, sink: sink5 })
@@ -6519,7 +6550,7 @@ console.log("40. sessionInstructions — 易变上下文写成宿主的 keyed �
       directory: workspace("instr-pure"),
       sessionData: { instructions: { put: "ok", remove: "ok", list: [] } },
     })
-    const scope = createTeamScope(["team", "architect", "implementer", "reviewer", "tester", "researcher", "computeruser"])
+    const scope = createTeamScope(Object.keys(agents).map((id) => id.toLowerCase()))
     const sink = createDynamicSink()
     const layer = await applyV2SessionInstructions(f.ctx, { scope, sink, enabled: true })
     assert.equal(layer.report.status, "on", "有缝 ⇒ status = on")
@@ -6554,7 +6585,7 @@ console.log("40. sessionInstructions — 易变上下文写成宿主的 keyed �
   writeCfg({ trajectoryDir: tjA }) // 默认 on
   const A = makeFakeCtx({
     directory: workspace("instructions-on"),
-    agents: sixAgents,
+    agents: allAgents,
     sessionData: { instructions: { put: "ok", remove: "ok", list: [] } },
   })
   const bootA = await withCapturedConsole(() => plugin.setup(A.ctx))
@@ -6596,7 +6627,7 @@ console.log("40. sessionInstructions — 易变上下文写成宿主的 keyed �
   // ---- ② 没有这个缝（2.1.x）：层不注册，状态卡回到 system，观测量报 fallback-system ----
   const tjB = mktmp("instructions-absent")
   writeCfg({ trajectoryDir: tjB })
-  const B = makeFakeCtx({ directory: workspace("instructions-absent"), agents: sixAgents })
+  const B = makeFakeCtx({ directory: workspace("instructions-absent"), agents: allAgents })
   const bootB = await withCapturedConsole(() => plugin.setup(B.ctx))
   B.ctx.storage._map.set(LEDGER_KEY, { sessionID: SIDI, items: [{ id: 42, text: "无缝合回退", status: "doing", at: 1 }], updated: 1 })
   const rB = { agent: "team", sessionID: SIDI, system: [], messages: [], options: {}, tools: {} }
@@ -6618,7 +6649,7 @@ console.log("40. sessionInstructions — 易变上下文写成宿主的 keyed �
   writeCfg({ trajectoryDir: tjC })
   const C = makeFakeCtx({
     directory: workspace("instructions-throws"),
-    agents: sixAgents,
+    agents: allAgents,
     sessionData: { instructions: { put: new Error("put refused"), remove: "ok", list: [] } },
   })
   const bootC = await withCapturedConsole(() => plugin.setup(C.ctx))
@@ -6637,7 +6668,7 @@ console.log("40. sessionInstructions — 易变上下文写成宿主的 keyed �
   writeCfg({ trajectoryDir: tjD, sessionInstructions: "off" })
   const D = makeFakeCtx({
     directory: workspace("instructions-off"),
-    agents: sixAgents,
+    agents: allAgents,
     sessionData: { instructions: { put: "ok", remove: "ok", list: [] } },
   })
   const bootD = await withCapturedConsole(() => plugin.setup(D.ctx))
@@ -6701,7 +6732,7 @@ console.log("41. computeruse MCP — 按角色删除的哨兵、两种拼写、�
 
   // (c) 两种拼写都算：直接面 `computeruse_screenshot`，Code Mode 目录 `computeruse.screenshot`
   //     ——v2-browser-gate.ts:103-108 就是只认一种拼写、结果什么都没治理。
-  const cuFake = makeFakeCtx({ directory: workspace("cu"), agents: sixAgents })
+  const cuFake = makeFakeCtx({ directory: workspace("cu"), agents: allAgents })
   const cuLayer = await S.applyV2SessionLayer(cuFake.ctx, {
     note: "",
     noteAgents: ["Team"],
@@ -6831,7 +6862,7 @@ console.log("41. computeruse MCP — 按角色删除的哨兵、两种拼写、�
     const { RunStore } = await import("./dist/tm/store.js")
     const cuScope = createTeamScope(["team", "architect", "implementer", "reviewer", "researcher", "tester", "computeruser"])
     const gdir = workspace("cuGate")
-    const gateFake = makeFakeCtx({ directory: gdir, agents: sixAgents })
+    const gateFake = makeFakeCtx({ directory: gdir, agents: allAgents })
     // A REAL store: the leak row must land on disk, where tm_stats and the user can
     // read it.  The round that failed left 0 rows because the only outlet was the
     // 20 s-throttled `v2-surface` snapshot and a one-shot CLI session never flushes.

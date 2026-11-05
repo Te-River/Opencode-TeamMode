@@ -180,7 +180,8 @@ assert.ok(
 assert.ok(leadPrompt.includes("BLACKBOARD WRITE FAILED"), "lead fallback rule")
 assert.equal(lead.mode, "primary", "team visible in Desktop switcher")
 assert.ok(cfg.command["team-run"].template.includes("Approval gate"), "team-run template updated")
-/* The picker lists Team and nothing else: the five specialists are subagent-only, so a
+/* The picker lists Team and nothing else: the six specialists are all `mode: "subagent"`
+ * (src/agents.ts — Team is the only `mode: "primary"`), so a
  * command naming one of them in `agent:` could not run it in the main session at all.
  * Every specialist command therefore runs as the LEAD and opens with a dispatch order
  * naming its specialist.  A template that loses the verb silently becomes a self-run —
@@ -1141,7 +1142,7 @@ assert.ok(teamRun.includes("update AGENTS.md"), "team-run: docs sync step")
 assert.ok(teamRun.includes("TTL sweeper"), "team-run: TTL-only cleanup")
 assert.ok(cfg.command["team-review"].template.includes("Dimension"), "team-review: dimension selector")
 
-console.log("4. loader contract + definition surface: OK (v2-only export, 6 agents, 6 commands, note TTL)")
+console.log("4. loader contract + definition surface: OK (v2-only export, 7 agents, 6 commands, note TTL)")
 console.log("5. v1.4.7 contract: OK (routing, approval gate, skeleton, hybrid board, adaptive review, static verify)")
 console.log("6. opt-out default-agent promotion + triage/boundaries: OK")
 console.log("7. TTL-only reclamation + session-partitioned boards: OK")
@@ -1266,7 +1267,7 @@ console.log("\n8. board-write call shape (A5) + write-capable wording (A8)")
       "src/agents.ts: role comments name TM_TOOLS rather than a hand-written count")
     assert.match(sources["src/agents.ts"], /const TM_TOOLS = \[/, "src/agents.ts: TM_TOOLS is the single source the comments can point at")
   }
-  console.log("   OK (catalog shape + guard in all six roles and the board note, v1 call shape intact, no tool-less overstatement left)")
+  console.log("   OK (catalog shape + guard in all seven roles and the board note, v1 call shape intact, no tool-less overstatement left)")
 }
 
 /* The computer-use install contract lives in docs/installation-v2.md, and that page
