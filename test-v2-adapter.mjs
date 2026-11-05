@@ -1492,7 +1492,8 @@ let BGD_PINNED = 0
   assert.strictEqual(kidFalse.input.background, true, "(d) the subagent exception is UNCONDITIONAL — a non-lead subagent call is the force's, not the mirror's")
   assert.strictEqual(bgd.report.subagentSkipped, 2, "(d) both subagent calls skipped, counted")
   B(rows.every((r) => r.tool !== "subagent"), "(d) the mirror logged nothing against subagent")
-  // (e) foreign is untouched and counted; an ours event with no agent name is NOT rewritten.
+  // (e) foreign is untouched and counted; an ours event that carries no `agent`
+  //     falls back to the role the scope already learned for that sessionID.
   const foreign = { tool: "shell", sessionID: "ses_build", agent: "build", input: { command: "y", background: true } }
   await fireBoth(foreign)
   assert.strictEqual(foreign.input.background, true, "(e) a build session's background call is not ours to rewrite (#22)")
@@ -1500,8 +1501,32 @@ let BGD_PINNED = 0
   scope.learn("implementer", "ses_mystery")
   const anon = { tool: "shell", sessionID: "ses_mystery", input: { command: "y", background: true } }
   await fireBoth(anon)
-  assert.strictEqual(anon.input.background, true, "(e) ours but nameless: NOT rewritten — the caller cannot be proven not the lead")
-  assert.strictEqual(bgd.report.noAgentSkipped, 1, "(e) and the no-agent pass is a number, so a host that drops `agent` gets noticed")
+  assert.strictEqual(anon.input.background, false, "(e) ours-by-session and nameless: the stored role answers, so the rewrite DOES happen")
+  assert.strictEqual(bgd.report.noAgentSkipped, 0, "(e) the fallback means `noAgentSkipped` is not the happy path — the store knows this caller")
+  assert.strictEqual(bgd.report.denied, 6, "(e) the rewrite lands on `denied`, not on a skip counter")
+  B(rows.length === 6 && rows[5].agent === "implementer" && rows[5].sessionID === "ses_mystery", "(e) the row carries the RESOLVED role plus the session id")
+  //     …and `noAgentSkipped` stays a live number when NOTHING can name the caller:
+  //     a scope whose `agentOf` answers "" (a session the store never saw), or an
+  //     older scope shape with no `agentOf` seam at all.  Neither writes the args.
+  const anonScope = {
+    names: new Set(["team", "implementer"]),
+    isOurs: () => true,
+    decide: () => "ours",
+    learn: () => {},
+    count: (v) => v,
+    report: { ours: 0, foreign: 0, unknown: 0 },
+  }
+  for (const shape of ["agentOf answers empty", "no agentOf seam"]) {
+    const f3 = makeFakeCtx({ directory: ws, agents: [] })
+    const scope3 = shape === "no agentOf seam" ? { ...anonScope, agentOf: undefined } : { ...anonScope, agentOf: () => "" }
+    const bgd3 = await applyV2NonLeadBackgroundDeny(f3.ctx, { scope: scope3 })
+    const ev3 = { tool: "shell", sessionID: "ses_unlearned", input: { command: "y", background: true } }
+    for (const h of f3.hook("tool.execute.before").handlers) await h(ev3)
+    assert.strictEqual(ev3.input.background, true, `(e) a scope that cannot name the caller (${shape}) → the args are NOT rewritten`)
+    assert.strictEqual(bgd3.report.noAgentSkipped, 1, `(e) …and the pass is counted (${shape})`)
+    assert.strictEqual(bgd3.report.denied, 0, `(e) …and nothing was denied (${shape})`)
+    for (const r of bgd3.registrations) await r.dispose()
+  }
   // fail-open: a throwing trajectory sink never breaks the guarded call.
   const f2 = makeFakeCtx({ directory: ws, agents: [] })
   const sinkBad = await applyV2NonLeadBackgroundDeny(f2.ctx, { scope, onDeny: () => { throw new Error("sink died") } })
@@ -1561,7 +1586,23 @@ let BGW_PINNED = 0
     const row = deny[0] ?? {}
     W(row.tool === "host" && row.step_id === "v2-bg-deny", "(d) the row keeps this file's host-row discriminator spelling (`tool: \"host\"`)")
     W(row.native_tool === "shell" && row.agent === "implementer" && row.sessionID === "ses_w_impl", "(d) tool + role + session, spelled `native_tool` like the probe-chain row — not a third spelling for the observed tool")
-    W(!JSON.stringify(rows).includes("BGWIRE-SECRET-CMDLINE"), "(d) no command text reached the trail (R6 binds a diagnostic)")
+    // (d) The R6 claim is about BYTES, not about the lines `readDeathRows` happens
+    //     to parse: walk the whole store (payload files and subdirectories included)
+    //     and assert none of it carries the command line.  This layer writes no
+    //     payload today, so the verdict does not change — the 口径 does, and a future
+    //     offload under this root cannot silently widen the claim's blind spot.
+    const storeFiles = []
+    const walkStore = (dir) => {
+      for (const ent of fs.readdirSync(dir, { withFileTypes: true })) {
+        const p = path.join(dir, ent.name)
+        if (ent.isDirectory()) walkStore(p)
+        else if (ent.isFile()) storeFiles.push(p)
+      }
+    }
+    walkStore(tjRoot)
+    const leaked = storeFiles.filter((p) => fs.readFileSync(p, "utf8").includes("BGWIRE-SECRET-CMDLINE"))
+    W(storeFiles.length > 0, "(d) the recursive store scan opened real files — an empty walk would pass vacuously")
+    W(leaked.length === 0, `(d) no command text reached ANY byte under the store (${storeFiles.length} files scanned, ${leaked.length} carrying it) — R6 binds a diagnostic, payload dirs included`)
     W(!("input" in row) && !("args" in row) && !("command" in row), "(d) the row carries no args field at all")
     const shutdown = rows.find((r) => r.step_id === "v2-shutdown")
     W(shutdown?.bg_deny_seen === 3, "(d) the shutdown row counts every named call the mirror looked at (3 fired)")
@@ -1578,7 +1619,15 @@ let BGW_PINNED = 0
   //     structurally impossible here.
   const ocStart = v2srcBg.indexOf("observationCounters = (source) => ({")
   W(ocStart > 0, "(e) the one closure both rows spread still exists")
-  const ocBody = v2srcBg.slice(ocStart, v2srcBg.indexOf("\n    })", ocStart))
+  // An -1 end marker would make the slice run to the END OF FILE, and then every
+  // `inside observationCounters` pin below degrades to `anywhere in v2.ts` — the
+  // shutdown row's own inline literals satisfy that, so the group passes forever.
+  const ocEnd = v2srcBg.indexOf("\n    })", ocStart)
+  W(ocEnd > ocStart, "(e) the closure END marker was found (an unbounded slice below is the vacuous-pass shape)")
+  const ocBody = v2srcBg.slice(ocStart, ocEnd)
+  // Reverse pin: the two spread sites live OUTSIDE the closure, so a slice that lost
+  // its bound fails HERE instead of quietly matching text from outside the region.
+  W(!ocBody.includes('...observationCounters('), "(e) the slice really is bounded — the spread sites sit outside it, so an unbounded slice cannot pass these pins on their text")
   for (const k of [
     "bg_deny_seen",
     "bg_deny_forced_foreground",

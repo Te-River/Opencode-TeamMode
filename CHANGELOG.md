@@ -29,6 +29,13 @@ registry saw 1.5.0 as the install-script fix release).
 
 ### Fixed
 
+- **评审建议硬化批（`78e7d48` correctness 评审的三条非阻塞建议全收）。** ① 无名事件不再直接跳过改写：
+  `scope.agentOf(sessionID)` 兜底（存储里只有 Team 七角色名会被学会，foreign 早在 `decide()` 被挡），兜底也
+  拿不到才 `noAgentSkipped` 且不碰 args；误标残余面=同一会话中途换 agent（`v2-retry`/`roleOfSession` 早就吃
+  同一个口径，非新引入）。② `test-v2-adapter` 的 ocBody 切片加 end-marker 守卫——`indexOf` 返回 -1 会让
+  8 条"计数在闭包内"断言退化成"文件里任何地方存在"=恒真，正是本仓库禁的"不会吭声的断言"形状；另加反向钉。
+  ③ 7c3(d) 的"磁盘无秘密"从只扫 `steps.jsonl` 改成**递归扫全 store**+防空扫描断言。造红两次（dist 桩 +
+  坏锚点）各贴原文。7c2=6、7c3=24 断言。
 - **R6 路径红线不再认 `envProtect: "off"`（PRODUCT_BUG，方向 (a) 修复）。** 既有实现里 `off` 在**四个面**把 env 文件
   路径红线整体短路（`classifyPathFields` / `inspectToolCall` / `pathGuard` / `applyV2EnvFileInputGuard`），而同一条红线在
   URL 面（`webGuard`，arity=1 无 mode）与浏览器面不短路——AGENTS.md 的「env-file paths … stay refused under every

@@ -244,7 +244,7 @@ export interface NonLeadBackgroundDenyReport {
   leadSkipped: number
   subagentSkipped: number
   foreignSkipped: number
-  /** ours-scoped, but the event carried no agent name — not provably non-lead */
+  /** neither the event nor the scope's stored role named the caller — not provably non-lead */
   noAgentSkipped: number
   /** the trajectory sink threw; the rewrite stands, the row is lost */
   sinkThrew: number
@@ -283,9 +283,13 @@ export function isBackgroundTruthy(value: unknown): boolean {
  * The rewrite is `background: false` — the call proceeds in the synchronous shape
  * the model assembled, never a failure.  Team-scoped like every other writer (#22):
  * foreign and unknown are untouched and counted.  An ours-session event with NO
- * `agent` is not rewritten either: without a name the caller cannot be proven not
- * the lead, and this layer rewrites ARGUMENTS — the one write shape the scope rule
- * exists to police.  No command line or path leaves the hook: `onDeny` sees tool,
+ * `agent` on the event falls back to `scope.agentOf(sessionID)` — the role the
+ * scope already learned for that session, which is exactly what `decide()` used a
+ * line above to call it ours, so the name is not a guess.  Only when THAT answers
+ * nothing (no scope, an older scope shape without `agentOf`, or a session the
+ * store never saw) is the call left alone and counted as `noAgentSkipped`: with no
+ * name at all the caller cannot be proven not the lead, and this layer rewrites
+ * ARGUMENTS — the one write shape the scope rule exists to police.  No command line or path leaves the hook: `onDeny` sees tool,
  * agent and sessionID only (the R6 privacy rule binds diagnostics).  A throw is
  * swallowed into `threw` — fail-open: an argument rewrite that cannot complete must
  * not break the call it guards.  The caller wires `onDeny` to one trajectory row,
@@ -327,7 +331,19 @@ export async function applyV2NonLeadBackgroundDeny(
             report.foreignSkipped++
             return
           }
-          const agent = typeof event?.agent === "string" ? event.agent.trim() : ""
+          const sessionID = typeof event.sessionID === "string" ? event.sessionID : undefined
+          let agent = typeof event?.agent === "string" ? event.agent.trim() : ""
+          if (!agent) {
+            // The event carries no role name.  `decide()` above called this session
+            // ours either by a name on the event or by the pair the scope learned
+            // for this sessionID, so read the learned name rather than skipping
+            // the rewrite.  `agentOf` answers "" only when there is no scope, no
+            // `agentOf` seam on it, or the store never saw this session.
+            agent =
+              opts.scope && typeof opts.scope.agentOf === "function" && sessionID
+                ? opts.scope.agentOf(sessionID).trim()
+                : ""
+          }
           if (!agent) {
             report.noAgentSkipped++
             return
@@ -341,7 +357,6 @@ export async function applyV2NonLeadBackgroundDeny(
           if (!isBackgroundTruthy(input.background)) return
           input.background = false
           report.denied++
-          const sessionID = typeof event.sessionID === "string" ? event.sessionID : undefined
           try {
             opts.onDeny?.({ tool: name, agent, sessionID })
           } catch {
