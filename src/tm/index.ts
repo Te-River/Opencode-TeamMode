@@ -522,7 +522,10 @@ export async function createTmTools(
   })
   // (The self-built governed interactive browser was REMOVED
   // (2026-10-06, user decision): the host's own native `browser_*` catalog is
-  // the only browser path now, governed by src/host/v2-browser-gate.ts.  On a
+  // the only browser path now.  The gate we ran over it
+  // (src/host/v2-browser-gate.ts) was removed outright on 2026-11-07 (user
+  // decision: "删除我们对内置浏览器的一切保护") — the native catalog now runs
+  // under the host's own permissions, not ours.  On a
   // host without that catalog (CLI/standalone) there is simply no browser, and
   // an agent must report that gap rather than simulate one.)
   // (tm_ptc_run was the v1-only batch-orchestration tool; the v2 host's native

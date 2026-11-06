@@ -58,7 +58,7 @@ implied:
 | Non-blocking commands | `tm_pty` — **removed with v1 support** | **not registered at all** — the v2 plugin context has no pty domain, so the tool could only ever report its own missing seam. Run a slow step as its own `shell` call (one per call, each with its own `timeout`) and tee the output to a log you can read back |
 | File access | `tm_read` / `tm_grep` / `tm_bash` — **removed with v1 support** | the host's own `read` / `grep` / `glob` / `shell` — **governed anyway**: oversized results are offloaded through `tool.execute.after`, and out-of-project paths go through the host's own `external_directory` permission (a dialog, where v1 had a hard refusal) |
 | Batch calls | `tm_ptc_run` — **removed with v1 support** | the host's own `execute` (Code Mode) |
-| Interactive browsing | `tm_browser` (our own playwright/CDP browser) — **removed in 1.7.0** | **the host's own `browser_*` tools are the only browser** — they are the one the desktop renders in its side panel (`docs/research/browser-pane.md`). The host catalog is policed by `src/host/v2-browser-gate.ts` (URL / address red line / env-file path at `execute.before`, with a leak-detected fallback that replaces the page with the refusal). Snapshots are capped, not offloaded, so every `[ref=…]` the next click needs stays in context. **Known cost:** on a host with no native browser catalog (CLI / standalone) there is now no browser at all — the agent reports that gap rather than simulating one. Calling convention: `evaluate` takes `{tabID, script}` where `script` is an expression and the return value must be stringified; snapshot tokens read `@e8 [link]` |
+| Interactive browsing | `tm_browser` (our own playwright/CDP browser) — **removed in 1.7.0** | **the host's own `browser_*` tools are the only browser** — they are the one the desktop renders in its side panel (`docs/research/browser-pane.md`). The plugin policed the host catalog until the 2026-11-07 user decision deleted `src/host/v2-browser-gate.ts` — URL / address / env-file checks there are gone; what remains is the permission matrix's role visibility (who is offered `browser_*` at all) and the snapshot capping below. Snapshots are capped, not offloaded, so every `[ref=…]` the next click needs stays in context. **Known cost:** on a host with no native browser catalog (CLI / standalone) there is now no browser at all — the agent reports that gap rather than simulating one. Calling convention: `evaluate` takes `{tabID, script}` where `script` is an expression and the return value must be stringified; snapshot tokens read `@e8 [link]` |
 | Sub-agent settlement | the host `event` hook | `ctx.event.subscribe()` — zero-dependency async iterable, filtered by event-type name (`src/host/v2-events.ts`). Without it `tm_join` cannot tell a settled child from a running one; `tm_stats` reports what the feed forwarded and which type names went unrecognised (names only, never payloads) |
 | The task ledger | the host's `todowrite` | **`tm_ledger`**, stored in the host's `ctx.storage` (v2 has no `todowrite`) |
 | Asking the user | the host's official per-request dialog | **a plugin cannot open a dialog on v2.** Governed calls that would have asked instead **fail closed** with a refusal that says why. The dialogs you do see are raised by the host itself (permission rules, out-of-project access) |
@@ -386,7 +386,7 @@ internal `TM_CONFIG_AUTOCREATE=off`); the boot row records `config_autocreate` a
 `created` / `present` / `off` / `failed`.
 
 Keys are camelCase (`offloadThreshold`, `searchDefaultEngine`, …) — the registry in
-`src/tm/config-layers.ts` is the single source of truth (66 keys, each with its type, default and
+`src/tm/config-layers.ts` is the single source of truth (65 keys, each with its type, default and
 doc). Five keys are **red lines a PROJECT file may not change** — `envProtect`, `r6FineAsk`,
 `privateSpace`, `webfetchAllowedDomains`, `bashReadonlyAllowed`; they are settable only in the
 global or `system` file, and a project value is ignored and reported. A file that fails to parse is skipped
@@ -463,11 +463,11 @@ dump) and `TM_CONFIG_AUTOCREATE` (the auto-create off switch).
 | 读文件 / 搜代码 / 跑命令 | `tm_read` / `tm_grep` / `tm_bash`——**已随 v1 支持一起移除** | 宿主的 `read` / `grep` / `glob` / `shell`，**治理照旧**：超大结果照样在 `tool.execute.after` 被卸载成预览 + 句柄，跨出项目的路径走宿主自己的 `external_directory` 权限（v1 是硬拒，v2 是弹窗） |
 | 批量调用 | `tm_ptc_run`——**已随 v1 支持一起移除** | 宿主自己的 `execute`（Code Mode） |
 | 入口文件（v2 主机的硬要求） | — | 宿主只接受插件**目录**（单文件被跳过），并加载其中的 `server` 或 `index` 模块；只写 `package.json#exports` 的目录会被**静默忽略**（连错误都没有）。本包根目录的 `index.js` 就是为这条存在的——`plugins: ["./vendor/team-mode"]` 这类官方写法能加载，靠的是它 |
-| 交互式浏览 | `tm_browser`（我们自己起的 playwright/CDP 浏览器）——**已在 1.7.0 移除** | **宿主自己的 `browser_*` 是唯一的浏览器**——只有它是桌面端侧边栏里那个浏览器（`docs/research/browser-pane.md`）。原生目录由 `src/host/v2-browser-gate.ts` 管（`execute.before` 上判 URL / 地址红线 / 环境文件路径，并且有"漏过去就把页面换成拒绝语"的兜底）。快照是**截断**而不是卸载，所以下一次点击要的 `[ref=…]` 都留在上下文里。**已知代价：** 没有原生浏览器目录的宿主（CLI / standalone）从此没有浏览器可用——agent 如实报告这个缺口，绝不模拟。调用约定：`evaluate` 的参数是 `{tabID, script}`，`script` 是表达式，返回值要自己 stringify；快照记号形如 `@e8 [link]` |
+| 交互式浏览 | `tm_browser`（我们自己起的 playwright/CDP 浏览器）——**已在 1.7.0 移除** | **宿主自己的 `browser_*` 是唯一的浏览器**——只有它是桌面端侧边栏里那个浏览器（`docs/research/browser-pane.md`）。插件曾管辖原生目录，直到 2026-11-07 用户决定删除 `src/host/v2-browser-gate.ts`——URL / 地址 / 环境文件检查已不存在；留下的是权限矩阵的角色可见性（谁被提供 `browser_*`）和下面的快照截断。快照是**截断**而不是卸载，所以下一次点击要的 `[ref=…]` 都留在上下文里。**已知代价：** 没有原生浏览器目录的宿主（CLI / standalone）从此没有浏览器可用——agent 如实报告这个缺口，绝不模拟。调用约定：`evaluate` 的参数是 `{tabID, script}`，`script` 是表达式，返回值要自己 stringify；快照记号形如 `@e8 [link]` |
 | 子代理结算检测 | 宿主的 `event` 钩子 | `ctx.event.subscribe()`——零依赖的 async iterable，按事件类型名过滤（`src/host/v2-events.ts`）。没有它 `tm_join` 分不清「已结算」和「仍在跑」；`tm_stats` 会给出转发了多少、哪些类型名没认出来（只记名字，绝不记负载） |
 | 任务清单 | 宿主 `todowrite` | **`tm_ledger`**，存在宿主的 `ctx.storage` 里（v2 不给插件 `todowrite`） |
 | 征求用户同意 | 宿主官方逐次弹窗 | **插件在 v2 弹不出对话框。** 原本该问的受治理调用一律**直接拒绝**，并说明是"没人可问"而不是"问了被拒"。你看到的弹窗都来自宿主自己（权限规则、越出项目目录） |
-| 联网 | 22 个域名白名单 + 确认弹窗 | **域名门禁关掉**（`webfetchAllowedDomains` 在 v2 上默认 `["*"]`）：2.x 插件弹不出确认框，"批准后放行"等于让 agent 去等一个永远不会出现的窗口。地址类别照管——元数据 / 链路本地 / 保留网段在任何设置下都拒；私网（RFC1918、CGNAT、ULA、IPv6 链路本地、`.localhost`）也拒，但拒绝语现在给出两条出口而不是承诺点击：在全局 `team-mode.jsonc` 里写 `"privateSpace": "allow"`（放开整段），或把那一台主机名写进 `webfetchAllowedDomains`（只放开它自己）。**回环（`127/8`、`::1`、`localhost`）默认放行**——它只打到用户自己机器上的服务，而一道唯一出口是"插件弹不出来的确认框"的门禁，是墙不是门 |
+| 联网 | 22 个域名白名单 + 确认弹窗 | **域名门禁关掉**（`webfetchAllowedDomains` 在 v2 上默认 `["*"]`）：2.x 插件弹不出确认框，"批准后放行"等于让 agent 去等一个永远不会出现的窗口。地址类别照管（就 `tm_webfetch`/`tm_search` 这些受治理通道而言；宿主 `browser_*` 自 2026-11-07 起不在任何插件墙之后）——元数据 / 链路本地 / 保留网段在任何设置下都拒；私网（RFC1918、CGNAT、ULA、IPv6 链路本地、`.localhost`）也拒，但拒绝语现在给出两条出口而不是承诺点击：在全局 `team-mode.jsonc` 里写 `"privateSpace": "allow"`（放开整段），或把那一台主机名写进 `webfetchAllowedDomains`（只放开它自己）。**回环（`127/8`、`::1`、`localhost`）默认放行**——它只打到用户自己机器上的服务，而一道唯一出口是"插件弹不出来的确认框"的门禁，是墙不是门 |
 | 非阻塞命令 | `tm_pty`——**已随 v1 支持一起移除** | **完全不注册**——v2 插件上下文没有 pty 域，这个工具只能报自己缺缝。慢步骤请一条一个 `shell` 调用（各自带 `timeout`），并把输出 tee 到日志好回读 |
 | 子代理 | 需要 `OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS=true` | 原生能力；插件对每次 `subagent` 强制 `background: true`，所以 **2.x 不要去设那个环境变量**（那是 v1 的补丁，在这里什么也不改变，只会让人误判）。反面的同一条规则（`78e7d48`，在 `main` 上——**待发布**，已发布的 1.9.7 还没有它）：**非领队**的 Team 会话若在自己的工具调用上传来真值 `background`，会被改写成 `false`，调用照常在前台跑完——已结算的子会话没有接收方，迟到的后台唤醒是一次静默丢弃。领队不会被改写，`subagent` 这一层被无条件跳过，两个相反的力不会落在同一个调用上 |
 | 对你其它模式的影响 | 插件钩子是全局的 | **没有影响。** 每个钩子都先看会话归属，所以 `build`、`plan` 和你自己装的 agent 都保持刚装好 OpenCode 时的样子——不会从它们的请求里删工具、不会设温度、不会卸载结果、不会收紧权限、也不会把它们的派发改成后台 |
@@ -738,7 +738,7 @@ node ~/.config/opencode/node_modules/@te-river/opencode-team-mode/scripts/gen-v2
 启动行会记录 `config_autocreate`（`created` / `present` / `off` / `failed`）。
 
 键名是 camelCase（`offloadThreshold`、`searchDefaultEngine` …）——`src/tm/config-layers.ts` 里的注册表是唯一事实来源
-（66 个键，每个都带类型、默认值与说明）。有五个键是**项目文件不许改写的红线**——`envProtect`、`r6FineAsk`、
+（65 个键，每个都带类型、默认值与说明）。有五个键是**项目文件不许改写的红线**——`envProtect`、`r6FineAsk`、
 `privateSpace`、`webfetchAllowedDomains`、`bashReadonlyAllowed`；它们只能在**全局或 system 文件**里设置，项目文件里写了会被忽略并报告。
 解析失败的那一层**整层跳过**（半份配置比没有配置更危险），单个坏键只丢它自己。未知键在启动时告警、**不应用**。
 `tm_stats` 会显示每个键最终来自哪一层、被忽略的红线键、未知键、被跳过的层，以及自动生成的状态。
@@ -790,7 +790,7 @@ env 文件的**路径**红线不被它关掉——`.env` / shell rc 家族在任
 
 | 键 / 变量 | 默认 | 作用 |
 |---|---|---|
-| `webfetchAllowedDomains`（配置） | `["*"]`（**仅 v2**） | 域名门禁默认关掉，只留地址红线；显式给了值就以它为准（那 22 个种子主机——加引擎种子共 24 个——是 v1 时代的默认，v1 支持已移除） |
+| `webfetchAllowedDomains`（配置） | `["*"]`（**仅 v2**） | 域名门禁默认关掉，只留地址红线（管的是受治理的 `tm_*` 通道；原生浏览器目录自 2026-11-07 起不受任何插件墙管辖）；显式给了值就以它为准（那 22 个种子主机——加引擎种子共 24 个——是 v1 时代的默认，v1 支持已移除） |
 | `nativeOffload`（配置） | on | 用 `tool.execute.after` 治理宿主原生工具的结果；off 就退回宿主原样 |
 | `r6FineAsk`（配置） | `""`（自动） | 由按命令分类器决定哪条 shell 要问；`off` 回到"每条 shell 都问"，宿主没有 `permission.hook` 时也自动回到这一档 |
 | `TM_V2_PROBE`（环境，内部） | 未设 | 把宿主真实工具面/动作名记成 JSONL（只有名字和计数） |

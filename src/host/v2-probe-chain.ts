@@ -123,7 +123,7 @@ export interface ProbeChainDeps {
   scope?: TeamScope
   /** The resolved runtime config (probeChain / probeChainAfter). */
   config?: { probeChain: string; probeChainAfter: number }
-  /** the trajectory sink — wired in v2.ts, same shape as the browser gate's `onSerp` */
+  /** the trajectory sink — wired in v2.ts (the browser gate's deleted `onSerp` was its original model) */
   onAdvise?: (info: { tool: string; count: number; sessionID?: unknown }) => void
 }
 

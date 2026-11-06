@@ -1899,7 +1899,7 @@ why it broke
 }
 console.log("   OK (closed tool list, unknown shapes untouched, attachments and metadata preserved, failure degrades, off restores verbatim)")
 
-console.log("7d2. the native snapshot stays ADDRESSABLE, and the browser gate has teeth")
+console.log("7d2. the native snapshot stays ADDRESSABLE under the cap")
 {
   const { estimateTokens } = await import("./dist/tm/config.js")
   // A native `browser_snapshot` is not a document, it is an addressing table:
@@ -1956,117 +1956,8 @@ console.log("7d2. the native snapshot stays ADDRESSABLE, and the browser gate ha
     const dropped = Number(m2 ? m2[1] : -1)
     assert.equal(kept2 + dropped, 2000, "kept + dropped is the whole page — the arithmetic the model acts on has to close")
   }
-
-  // The gate: two layers, because the before-hook's power to abort is a host promise
-  // nobody has made. Layer 2 is also the measurement.
-  const { applyV2BrowserGate, browserGateSummary, NATIVE_BROWSER_NOTE } = await import("./dist/host/v2-browser-gate.js")
-  const { createTeamScope } = await import("./dist/host/v2-scope.js")
-  const scope = createTeamScope(["team"])
-  const gf = makeFakeCtx({ directory: workspace("gate"), agents: [] })
-  const g = applyV2BrowserGate(gf.ctx, { allowlist: ["*"], env: {}, scope })
-  assert.equal(g.registrations.length, 3, "before + after + the sweeper's teardown — the host reloads plugins in this process, so a timer that outlives teardown would add another sweeper per boot")
-  let threw = ""
-  try {
-    g.fireBefore({ tool: "browser_navigate", input: { url: "http://169.254.169.254/latest/meta-data/" }, agent: "team", sessionID: "ses_1" })
-  } catch (err) {
-    threw = String(err?.message ?? err)
-  }
-  assert.match(threw, /元数据|不可批准/, "the door refuses the cloud-metadata endpoint in words")
-  const leakedRes = { content: [{ type: "text", text: "AKIA-FAKE-CREDENTIALS" }], output: "AKIA-FAKE-CREDENTIALS" }
-  g.fireAfter({ tool: "browser_navigate", result: leakedRes, agent: "team", sessionID: "ses_1" })
-  assert.ok(!String(leakedRes.content[0].text).includes("AKIA-FAKE"), "when the host walks past the throw anyway, the page content is taken back out")
-  assert.match(String(leakedRes.content[0].text), /被宿主放过去/, "and the reply says the gate leaked instead of pretending it held")
-  assert.equal(g.report.leaked, 1, "the leak is counted — that number is the evidence the gate has teeth or does not")
-  let ok = true
-  try {
-    g.fireBefore({ tool: "browser_navigate", input: { url: "https://cn.bing.com/search?q=x" }, agent: "team", sessionID: "ses_1" })
-  } catch {
-    ok = false
-  }
-  assert.ok(ok, "an allowed target is not disturbed")
-  let pathThrew = ""
-  try {
-    g.fireBefore({ tool: "browser_preview", input: { path: "D:/proj/.env" }, agent: "team", sessionID: "ses_1" })
-  } catch (err) {
-    pathThrew = String(err?.message ?? err)
-  }
-  assert.match(pathThrew, /R6|环境文件/, "and the one native verb that reads the server's own disk rides the env-file red line")
-  let foreign = true
-  try {
-    g.fireBefore({ tool: "browser_navigate", input: { url: "http://169.254.169.254/" }, agent: "build", sessionID: "ses_other" })
-  } catch {
-    foreign = false
-  }
-  assert.ok(foreign, "a non-Team session is left exactly as the user configured it (#22)")
-  assert.equal(g.report.foreignSkipped, 1, "and skipping it is counted, not silent")
-  assert.match(browserGateSummary(g.report), /原生 browser_\*/, "the summary reads as a sentence for tm_stats")
 }
-console.log("   OK (snapshot refs stay addressable under the cap; the gate refuses, detects its own leaks, and stays out of other agents' way)")
-
-console.log("24. the SERP-loop guard rides the native browser path (#14)")
-{
-  const { serpTarget, createSerpLoopGuard, serpRefusal, SERP_NAV_LIMIT } = await import("./dist/tm/serp-loop.js")
-  // pure recognition: the four engines tm_search covers, and nothing else
-  assert.equal(serpTarget("https://cn.bing.com/search?q=hello")?.engine, "bing", "bing's /search is recognised")
-  assert.equal(serpTarget("https://stackoverflow.com/search?q=hello")?.engine, "stackoverflow", "stackoverflow's /search is recognised")
-  assert.equal(serpTarget("https://github.com/search?q=hello")?.engine, "github", "github's /search is recognised")
-  assert.equal(serpTarget("https://www.bilibili.com/search?keyword=hello")?.engine, "bilibili", "bilibili's /search is recognised")
-  assert.equal(serpTarget("https://example.com/article"), null, "a non-SERP URL is never judged")
-  assert.equal(serpTarget("https://cn.bing.com/"), null, "a SERP host with no query is not a search")
-  assert.equal(serpTarget("not a url"), null, "an unparseable target is not a search")
-  // per-engine+query accounting: the 4th of the SAME query is refused, a different query has its own budget
-  const guard = createSerpLoopGuard()
-  const q = "https://cn.bing.com/search?q=same"
-  assert.equal(guard.observe(q)?.blocked, false, "1st same-query navigation passes")
-  assert.equal(guard.observe(q)?.blocked, false, "2nd passes")
-  assert.equal(guard.observe(q)?.blocked, false, "3rd passes (the limit is 3)")
-  const fourth = guard.observe(q)
-  assert.equal(fourth?.blocked, true, "the 4th of the SAME query is refused")
-  assert.equal(fourth?.count, 4, "…and the count is per engine+query, not global")
-  assert.equal(guard.observe("https://cn.bing.com/search?q=other")?.blocked, false, "a DIFFERENT query gets its own budget")
-  assert.equal(guard.seen(), 5, "seen() totals every SERP navigation across queries")
-  assert.match(serpRefusal(fourth), /tm_search/, "the refusal names tm_search as the next move")
-  assert.equal(SERP_NAV_LIMIT, 3, "the limit is 3")
-}
-console.log("   OK (SERP recognition is pure; the 4th same-query navigation is refused and names tm_search)")
-
-console.log("25. the SERP guard is wired into the native gate's execute.before")
-{
-  const { applyV2BrowserGate } = await import("./dist/host/v2-browser-gate.js")
-  const { createTeamScope } = await import("./dist/host/v2-scope.js")
-  const scope = createTeamScope(["team"])
-  const sf = makeFakeCtx({ directory: workspace("serp"), agents: [] })
-  const events = []
-  const sg = applyV2BrowserGate(sf.ctx, { allowlist: ["*"], env: {}, scope, onSerp: (e) => events.push(e) })
-  const nav = (url) => sg.fireBefore({ tool: "browser_navigate", input: { url }, agent: "team", sessionID: "ses_s" })
-  const url = "https://cn.bing.com/search?q=loop"
-  nav(url)
-  nav(url)
-  nav(url)
-  let refused = ""
-  try {
-    nav(url)
-  } catch (err) {
-    refused = String(err?.message ?? err)
-  }
-  assert.match(refused, /tm_search/, "the 4th native navigation to the same SERP is refused, naming tm_search")
-  assert.equal(sg.report.serpNav, 4, "every SERP navigation is counted")
-  assert.equal(sg.report.serpRefused, 1, "the refusal is counted separately from a policy refusal")
-  assert.ok(
-    events.some((e) => e.event === "serp_nav") && events.some((e) => e.event === "serp_refused"),
-    "the trajectory sink sees both serp_nav and serp_refused",
-  )
-  // a non-navigation verb carries no url and is never judged or counted
-  let snapOk = true
-  try {
-    sg.fireBefore({ tool: "browser_snapshot", input: { tabID: "t1" }, agent: "team", sessionID: "ses_s" })
-  } catch {
-    snapOk = false
-  }
-  assert.ok(snapOk, "a non-navigation action is untouched")
-  assert.equal(sg.report.serpNav, 4, "…and it does not move the SERP counter")
-}
-console.log("   OK (the native gate refuses the 4th same-SERP navigation and leaves non-navigation verbs alone)")
+console.log("   OK (snapshot refs stay addressable under the cap; the kept/dropped arithmetic closes)")
 
 console.log("8. the config projection — what the installer copies onto disk")
 const genRoot = workspace("gen")
@@ -2463,13 +2354,9 @@ for (const dir of made) {
 // claimed these exact pins. It now carries its OWN bindings (the ones it used to borrow from
 // the 7d2 block are long gone out of scope) and announces itself, because an assertion that
 // cannot be seen running is an assertion that is not running.
-console.log("9b. the report cap, the Code Mode gate leg, and the native reading note")
+console.log("9b. the report cap")
 {
   const { estimateTokens } = await import("./dist/tm/config.js")
-  const { createTeamScope } = await import("./dist/host/v2-scope.js")
-  const { applyV2BrowserGate, NATIVE_BROWSER_NOTE } = await import("./dist/host/v2-browser-gate.js")
-  const scope = createTeamScope(["team"])
-  const g = applyV2BrowserGate(makeFakeCtx({ directory: workspace("gate-cm"), agents: [] }).ctx, { allowlist: ["*"], env: {}, scope })
 
   // A report is not a log: the generic offload would leave the lead describing a
   // table it could not see (measured live — a 2 917-token tm_stats answer arriving
@@ -2508,93 +2395,7 @@ console.log("9b. the report cap, the Code Mode gate leg, and the native reading 
     assert.equal(t2.o.report.reportCapped, 0, "a plain log does not enter the report branch")
     assert.match(String(t2.ev.result.content[0].text), /PREVIEW≤80|已按 JIT 治理卸载/, "the generic offload still governs it")
   }
-  // `execute` program may never surface as its own execute.before, so a gate that only
-  // reads input.url is bypassable by putting the navigate in a program.
-  {
-    const secret = 'AKIA-SUPER-SECRET-TOKEN'
-    const prog = 'const r = await tools.browser_navigate({ tabID: "t1", url: "http://169.254.169.254/latest/meta-data/?t=' + secret + '" })' + String.fromCharCode(10) + 'return r'
-    let cmThrew = ''
-    try {
-      // MEASURED wire format on 2.2.1: the outer `execute` call carries `code`. Feeding
-      // `program` here is exactly how this scan stayed green while firing zero times on a
-      // live host — the same defect that left the computer-use gate inert.
-      g.fireBefore({ tool: 'execute', input: { code: prog }, agent: 'team', sessionID: 'ses_1' })
-    } catch (err) {
-      cmThrew = String(err && err.message ? err.message : err)
-    }
-    assert.match(cmThrew, /169\.254\.169\.254/, 'the program is refused and the host is named')
-    assert.ok(!cmThrew.includes(secret), 'and the refusal quotes the HOST, never the program text (the query string can carry the token)')
-    assert.equal(g.report.codeModeRefused, 1, 'the code-mode leg counts its own refusals')
-    let legacyThrew = ''
-    try {
-      g.fireBefore({ tool: 'execute', input: { program: prog }, agent: 'team', sessionID: 'ses_1b' })
-    } catch (err) {
-      legacyThrew = String(err && err.message ? err.message : err)
-    }
-    assert.match(legacyThrew, /169\.254\.169\.254/, 'the legacy `program` spelling is still refused (the fallback is real, not decoration)')
-    assert.equal(g.report.codeModeRefused, 2, 'and that leg counts too')
-    let cmOk = true
-    try {
-      g.fireBefore({ tool: 'execute', input: { program: 'await tools.browser_navigate({ url: "https://cn.bing.com/search?q=x" })' }, agent: 'team', sessionID: 'ses_1' })
-    } catch {
-      cmOk = false
-    }
-    assert.ok(cmOk, 'a public target inside a program is not disturbed')
-    const before = g.report.classified
-    g.fireBefore({ tool: 'execute', input: { program: 'return 1 + 1' }, agent: 'team', sessionID: 'ses_1' })
-    assert.equal(g.report.classified, before, 'a program that never touches the browser is not classified at all')
-    const cmRes = { content: [{ type: 'text', text: 'METADATA-CREDENTIALS' }], output: 'x' }
-    g.fireAfter({ tool: 'execute', result: cmRes, agent: 'team', sessionID: 'ses_1' })
-    assert.ok(!String(cmRes.content[0].text).includes('METADATA-CREDENTIALS'), 'and if the host ran it anyway, the program result is taken back out')
-  }
-  // The reachability of that leg, pinned separately because it WAS dead: `fireBefore` opened
-  // with `if (!tool.startsWith("browser_")) return`, so the `execute` branch below it could
-  // never run — a navigate inside a Code Mode program was gated by nothing. Reading the
-  // compiled hook is what found it; a test that only asserted the refusal text passed anyway.
-  {
-    const gf2 = makeFakeCtx({ directory: workspace('gate2'), agents: [] })
-    const g2 = applyV2BrowserGate(gf2.ctx, { allowlist: ['*'], env: {}, scope })
-    let reach = ''
-    try {
-      g2.fireBefore({ tool: 'execute', input: { program: 'await tools.browser.navigate({ url: "http://169.254.169.254/" })' }, agent: 'team', sessionID: 'ses_9' })
-    } catch (err) {
-      reach = String(err?.message ?? err)
-    }
-    assert.match(reach, /169\.254\.169\.254/, 'the dotted Code Mode spelling reaches the gate at all')
-    assert.equal(g2.report.codeModeRefused, 1, 'and counts it as its own leg, not the direct one')
-    assert.equal(g2.report.seen, 1, 'the execute event is seen even though no browser_* name appears')
-    // A plain program must not be pulled into the browser accounting at all.
-    let plain = true
-    try {
-      g2.fireBefore({ tool: 'execute', input: { program: 'return 1 + 1' }, agent: 'team', sessionID: 'ses_9' })
-    } catch {
-      plain = false
-    }
-    assert.ok(plain, 'a program that never names the browser passes untouched')
-    assert.equal(g2.report.classified, 1, 'and it is not classified')
-  }
-  // The reading note: the user's desktop log drove the whole task through execute +
-  // `browser.snapshot`, so a note attached only to a direct `browser_*` result never reached
-  // the model. It now reads the host's own metadata.toolCalls to know a browser ran.
-  {
-    const gf3 = makeFakeCtx({ directory: workspace('gate3'), agents: [] })
-    const g3 = applyV2BrowserGate(gf3.ctx, { allowlist: ['*'], env: {}, scope })
-    const cm = { content: [{ type: 'text', text: 'PAGE-ONE' }], metadata: { toolCalls: [{ tool: 'browser.tabs.open', status: 'completed' }] } }
-    g3.fireAfter({ tool: 'execute', result: cm, agent: 'team', sessionID: 'ses_n' })
-    assert.ok(String(cm.content[0].text).includes(NATIVE_BROWSER_NOTE), 'the note rides an execute result whose inner calls drove the browser')
-    assert.equal(g3.report.annotated, 1, 'one note per session, counted')
-    const cm2 = { content: [{ type: 'text', text: 'PAGE-TWO' }], metadata: { toolCalls: [{ tool: 'browser.evaluate', status: 'completed' }] } }
-    g3.fireAfter({ tool: 'execute', result: cm2, agent: 'team', sessionID: 'ses_n' })
-    assert.equal(g3.report.annotated, 1, 'and not a second time for the same session')
-    assert.ok(!String(cm2.content[0].text).includes('宿主原生浏览器'), 'the second result stays the host’s own')
-    const noBrowser = { content: [{ type: 'text', text: 'JUST-CODE' }], metadata: { toolCalls: [{ tool: 'read', status: 'completed' }] } }
-    g3.fireAfter({ tool: 'execute', result: noBrowser, agent: 'team', sessionID: 'ses_other' })
-    assert.equal(noBrowser.content[0].text, 'JUST-CODE', 'an execute that did not browse is left byte-exact')
-    const direct = { content: [{ type: 'text', text: 'SNAP' }] }
-    g3.fireAfter({ tool: 'browser.snapshot', result: direct, agent: 'team', sessionID: 'ses_d' })
-    assert.ok(String(direct.content[0].text).includes(NATIVE_BROWSER_NOTE), 'the dotted direct spelling is a browser tool too')
-  }
-  console.log("   OK (report keeps its table; a Code Mode navigate is refused at the door; the reading note reaches the model)")
+  console.log("   OK (report keeps its table; prose pays for it; a plain log still takes the generic offload)")
 }
 console.log("12. a child's own report is readable in process — no credential (#32, 2026-09-26)")
 {
@@ -5605,7 +5406,7 @@ console.log("35. 无损修剪 — 修剪前先离载，stub 带完整 tm_fetch �
   assert.equal(resolveConfig({ pruneOffload: "maybe" }).pruneOffload, "on", "无效值回落默认（不是静默关掉）")
   const offloadSpec = CONFIG_KEYS.find((k) => k.key === "pruneOffload")
   assert.ok(offloadSpec && offloadSpec.type === "string" && offloadSpec.default === "on" && offloadSpec.enum.includes("off"), "pruneOffload 是 on/off 字符串键")
-  assert.equal(CONFIG_KEYS.length, 66, "注册表 66 条（61 + pruneOffload + pruneFallbackContextTokens + pruneProtectPatterns + dynamicTail + sessionInstructions）")
+  assert.equal(CONFIG_KEYS.length, 65, "注册表 65 条（60 + pruneOffload + pruneFallbackContextTokens + pruneProtectPatterns + dynamicTail + sessionInstructions；v2BrowserGate 已随原生 browser_* 门禁删除）")
 
   const CAT = [{ id: "glm", providerID: "lxns", modelID: "glm", limit: { context: 1000, output: 100 } }]
   const mat = (text, role = "assistant") => ({ role, model: { providerID: "lxns", id: "glm" }, parts: [{ type: "text", text }] })
@@ -6253,7 +6054,7 @@ console.log("38. 修剪保护正则 pruneProtectPatterns — 命中即不剪；�
   assert.equal(spec.type, "string", "type = string")
   assert.equal(spec.default, "", "默认空串（=关闭）")
   assert.match(String(spec.doc), /无效正则被忽略/, "doc 说明无效正则被忽略")
-  assert.equal(CONFIG_KEYS.length, 66, "注册表 66 条（62 + pruneFallbackContextTokens + pruneProtectPatterns + dynamicTail + sessionInstructions）")
+  assert.equal(CONFIG_KEYS.length, 65, "注册表 65 条（61 + pruneFallbackContextTokens + pruneProtectPatterns + dynamicTail + sessionInstructions；v2BrowserGate 已随原生 browser_* 门禁删除）")
   assert.deepEqual(pc({}).protectPatterns, [], "空串 = 关闭（空数组）")
   assert.equal(pc({ pruneProtectPatterns: "SECRET-FILE|^EVIDENCE BLOCK" }).protectPatterns.length, 1, "逗号分隔 = 一条正则（交替式）")
   assert.equal(pc({ pruneProtectPatterns: "a, b" }).protectPatterns.length, 2, "逗号分隔 + trim = 两条")
@@ -6731,7 +6532,7 @@ console.log("41. computeruse MCP — 按角色删除的哨兵、两种拼写、�
   assert.ok(wild.unmapped.includes(P.COMPUTER_USE_CATALOG), "…而是作为「宿主没有这个动作」被报出来")
 
   // (c) 两种拼写都算：直接面 `computeruse_screenshot`，Code Mode 目录 `computeruse.screenshot`
-  //     ——v2-browser-gate.ts:103-108 就是只认一种拼写、结果什么都没治理。
+  //     ——当年的原生 browser_* 门禁就是只认一种拼写、结果什么都没治理（该层已删，教训保留）。
   const cuFake = makeFakeCtx({ directory: workspace("cu"), agents: allAgents })
   const cuLayer = await S.applyV2SessionLayer(cuFake.ctx, {
     note: "",

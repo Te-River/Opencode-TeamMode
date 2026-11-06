@@ -166,8 +166,6 @@ export interface TmConfig {
   nativeSnapshotMaxTokens: number
   /** Token budget a native report keeps (tables). */
   nativeReportMaxTokens: number
-  /** The native `browser_*` catalog gate. */
-  v2BrowserGate: "on" | "off"
   /** tm_ledger per-session item cap. */
   ledgerMaxItems: number
   /** 任务状态卡：请求侧 JIT 状态注入（`on` / `off`）。 */

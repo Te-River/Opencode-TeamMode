@@ -496,6 +496,15 @@ survivors were written. Each is recorded here so the next reader does not re-der
   gate's teeth. Known cost, accepted: on CLI / standalone there is now no browser at
   all, and the prompts require the agent to report that gap rather than simulate it.
   `[L]`
+- **The native-path enforcement above was deleted on 2026-11-07** (user decision: "delete all our
+  protections for the built-in browser"). `src/host/v2-browser-gate.ts` and `src/tm/serp-loop.ts`
+  were removed whole: the host's `browser_*` catalog now passes URL, address, and env-file
+  judgement to nothing in the plugin — metadata / private ranges / `file://` are reachable through
+  it by the three roles still granted the catalog (Lead, Researcher, Tester; matrix + request-layer
+  visibility unchanged, and that is what "all protections" scoped out, not the tm_* egress red
+  lines, which stay enforced). The gate-teeth groups left `test-v2-adapter` with it; nothing on
+  the native browser path is plugin-governed anymore except the snapshot cap in `v2-offload`.
+  `[L]` — the removal is a measurement in `git diff HEAD` of the deleting round, reviewed 3-dimensionally.
 - **Native browser calling convention, which differs from the deleted tool.**
   `browser_evaluate` takes `{tabID, script}` where `script` is an **expression** (not
   a function source) and the return value must be a scalar you `JSON.stringify`

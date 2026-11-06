@@ -85,7 +85,7 @@ export function computerUseAllowed(agentName: string | undefined | null): boolea
 /**
  * Both spellings, always: `browser_*` was matched only in its underscore form
  * once and the Code Mode catalog's dotted `browser.snapshot` slipped past the
- * gate entirely (v2-browser-gate.ts:103-108).  The real name of a server tool is
+ * (since-removed) native-browser gate entirely.  The real name of a server tool is
  * measured at runtime, never assumed — `computeruse_tools` records what arrived.
  */
 export function isComputerUseTool(name: string): boolean {
@@ -118,7 +118,7 @@ export function isComputerUseAction(name: string): boolean {
  * real 2.2.1 Code Mode catalog), `computer_use`, `computer-use`, and therefore
  * also `mcp__computeruse__<tool>`.  ONE pattern for both readers below, because
  * two spelling lists is exactly how `browser_*` ended up governing nothing
- * (v2-browser-gate.ts:103-108): the request layer reads tool NAMES and the
+ * once: the request layer reads tool NAMES and the
  * `execute` gate reads program TEXT, and a spelling one of them forgets is a
  * silent hole.
  */

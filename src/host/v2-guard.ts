@@ -783,8 +783,8 @@ const ENV_FILE_INPUT_FIELDS: Record<string, readonly string[]> = {
  *
  * A refusal is THROWN, not returned: `execute.before` has no `effect` field, and
  * silently rewriting a path the model chose is the guesswork this product
- * refuses — the model has to see the refusal.  Same shape as the browser gate's
- * red line.  An internal failure is swallowed and counted (`envFileInputThrew`),
+ * refuses — the model has to see the refusal.
+ * An internal failure is swallowed and counted (`envFileInputThrew`),
  * never thrown into the host: a guard that cannot decide must not break the call
  * it is inspecting.  Team-scoped through the same `scope.decide` gate as every
  * other writer, and the counters land on `v2-surface` / `v2-shutdown`.

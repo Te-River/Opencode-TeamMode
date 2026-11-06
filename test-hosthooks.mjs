@@ -183,7 +183,7 @@ console.log("  7. capability probe: SKIPPED — v1 createCapabilityProbe removed
     eq(snaps.filter((s) => s.step_id === "v2-surface" && s.run_id === "r1").length, 1, "one run's repeated snapshots collapse to the newest")
     // A `v2-surface` line is written whenever the host surface changes, so a
     // newest-N window used to push the boot record out — and the boot record is the
-    // only carrier of the Team-scope counts and the browser-gate line a live session
+    // only carrier of the Team-scope counts a live session
     // went looking for and could not find. It now reserves its slot.
     eq(snaps[0].step_id, "v2-boot", "the boot record survives no matter how many surface snapshots followed it")
     eq(snaps[1].native_seen, 7, "and the surviving surface snapshot is still the informative last write")

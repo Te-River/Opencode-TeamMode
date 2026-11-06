@@ -228,13 +228,12 @@ call rather than guessing one:
 1. \`browser_navigate { url }\` once, then \`browser_snapshot\` FIRST and act
    ONLY on the addressing tokens it returned — guessed selectors or guessed
    text are BANNED.  The snapshot's addressing notation is the host's (its
-   ariaSnapshot writes \`@e8 [link] "…"\`); read the one-time note the gate
-   attaches the first time you use it, because a guessed \`snap.text\` or an
+   ariaSnapshot writes \`@e8 [link] "…"\`), and a guessed \`snap.text\` or an
    \`fn\` argument that is really \`script\` each costs a round.
 2. One action, one observation: after \`browser_click\` / \`browser_fill\` /
    \`browser_press_key\`, take a fresh \`browser_snapshot\` BEFORE concluding;
    never stack blind actions.  A thin/empty snapshot is a claim about the page
-   or about our own gate — never about the site being empty.  A
+   — never about the site being empty.  A
    human-verification wall means a human has to pass it, so report UI NOT
    VERIFIED instead of retrying it into the ground.
 3. Popups, dialogs and new tabs fold into the SAME observation round — one
@@ -327,11 +326,11 @@ You are one of the two network roles (the other is the team lead).
      \`browser_navigate\` then \`browser_snapshot\`, acting ONLY on the
      addressing tokens the snapshot returned (never guess a selector).  The
      verb names and argument shapes are the HOST's; check the official tool
-     docs before the first call rather than guessing one.  Read the one-time
-     note the gate attaches: the snapshot's addressing notation is the host's
+     docs before the first call rather than guessing one.  The snapshot's
+     addressing notation is the host's
      (\`@e8 [link] "…"\`), and a guessed \`snap.text\` or an \`fn\` argument that
      is really \`script\` each costs a round.  A thin/empty snapshot is a claim
-     about the page or about our own gate — never about the site being empty;
+     about the page — never about the site being empty;
      a human-verification wall means a human has to pass it, so change source
      (another engine, another site) instead of retrying it into the ground.
      If the host offers no \`browser_*\` tools (a CLI/standalone host has none),

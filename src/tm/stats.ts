@@ -328,8 +328,8 @@ export function bootSnapshots(
   }
   const idx = [...last.values()].sort(byNewest)
   // The boot record is the line that answers "which personality ran, and what did
-  // it find missing" — and it is also the only carrier of the Team-scope counts and
-  // the native-browser gate line. A plain newest-N used to drop it: the probe writes
+  // it find missing" — and it is also the only carrier of the Team-scope counts.
+  // A plain newest-N used to drop it: the probe writes
   // `v2-surface` whenever the host surface changes, so a long session pushed
   // `v2-boot` out of the window and tm_stats quietly stopped showing the two facts
   // the user asked about (a live session searched the output for them and found
@@ -652,7 +652,6 @@ export function renderStats(
           ? `作用域：我们 ${line.scope_ours} · 他人 ${line.scope_foreign} · 未判定 ${line.scope_unknown}`
           : "",
         line.guard_foreign_skipped ? `门禁为非 Team 会话让路 ${line.guard_foreign_skipped} 次` : "",
-        line.browser_gate ? `原生 browser_* 门禁：${line.browser_gate}` : "",
         // The honest half of the delivery question: what we SENT (tools_codemode) and
         // what the assembled request actually CARRIED (tools_in_request). On 2.0.16 the
         // two disagree, and printing only the first would let a boot line claim a
@@ -663,7 +662,6 @@ export function renderStats(
         // row do, so a sent flag can never be read as an outcome, and a run that never
         // reaches dispose still shows what the host actually delivered.
         line.tools_in_request ? `工具交付：请求内实际可见=${line.tools_in_request}（direct 是否被宿主采纳只看这一项）` : "",
-        line.browser_gate_note ? `  ${line.browser_gate_note}` : "",
         line.native_capped !== undefined ? `快照按寻址预算截断 ${line.native_capped} 次（不是卸载：ref 留在上下文里）` : "",
         line.native_report_capped !== undefined ? `报告型输出保留表格截断散文 ${line.native_report_capped} 次（表格整份留下，句柄装全文）` : "",
         // The collect side's own coverage. `seen > 0` with `registered = 0` is the tm_join

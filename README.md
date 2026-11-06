@@ -169,7 +169,7 @@ Sub-agents cannot message each other live, so coordination is a **structured rep
 
 **There is no plugin-side dispatcher.** `tm_dispatch` was removed (this sentence is history, not a current option): a child a plugin creates is a session you can neither open from a card nor stop from the interface. Delegation goes through the host's own `task` — for the Lead, `{ background: true }` is the standard shape (the plugin forces it), the card is visible and stoppable in the host, and `tm_join` is the collect side. From the next release (**merged on `main`, not published yet**) the six specialists may not background their own work: a truthy `background` on a non-lead call is rewritten to `false` and the call proceeds in the foreground — enforcement, not a failure, because once a child settles, its later background wake-up reaches neither side, so the result would have no receiver.
 
-**Browser and network grants.** Interactive browsing is the host's `browser_*` catalog. The Tester carries it for UI verification of your project; open web belongs to the Lead and the Researcher. Architect, Implementer and Reviewer have **no network grant** — a web question there is reported as a gap, never simulated. A host with no browser catalog (CLI / standalone) has no browser at all, and the agent says so.
+**Browser and network grants.** Interactive browsing is the host's `browser_*` catalog — the plugin stopped policing it with the 2026-11-07 decision that deleted `v2-browser-gate.ts`; who is offered the catalog at all stays the permission matrix's call. The Tester carries it for UI verification of your project; open web belongs to the Lead and the Researcher. Architect, Implementer and Reviewer have **no network grant** — a web question there is reported as a gap, never simulated. A host with no browser catalog (CLI / standalone) has no browser at all, and the agent says so.
 
 ---
 
@@ -268,7 +268,7 @@ Scratch work is told to live in the OS temp dir and be deleted before a run repo
 
 That walk and precedence are the host's own config-layering rule, copied rather than invented. JSONC comments are masked at the byte level, so a commented-out key cannot read as live; a layer that fails to parse is skipped **whole**; a single bad key loses only itself, and unknown keys are warned about and never applied.
 
-**It writes itself.** When the global file is absent the plugin creates it — atomically, never overwriting an existing file — with all **66** registry keys present as *comments* under a one-line description. It parses to `{}` and sets nothing until you uncomment. `autoCreate: false` (or `TM_CONFIG_AUTOCREATE=off`) turns that off.
+**It writes itself.** When the global file is absent the plugin creates it — atomically, never overwriting an existing file — with all **65** registry keys present as *comments* under a one-line description. It parses to `{}` and sets nothing until you uncomment. `autoCreate: false` (or `TM_CONFIG_AUTOCREATE=off`) turns that off.
 
 **Red-line keys** (`envProtect`, `r6FineAsk`, `privateSpace`, `webfetchAllowedDomains`, `bashReadonlyAllowed`) are honored **only in the global or `system` layer**. A project file may set them; the value is ignored and reported, because a committed project config must not switch off a guard for everyone who clones the repo. The set is derived from the registry, so a new red-line key is red-line by declaration.
 

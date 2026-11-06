@@ -202,8 +202,8 @@ const removable = (name: string, denied: Set<string>): boolean =>
   (denied.has(BROWSER_CATALOG) && name.startsWith("browser_")) ||
   // BOTH spellings: `computeruse_screenshot` on the direct surface,
   // `computeruse.screenshot` if the host routes MCP tools through the Code Mode
-  // catalog.  Matching only one is exactly how the browser gate governed nothing
-  // (v2-browser-gate.ts:103-108) — and here the failure would be a deny that
+  // catalog.  Matching only one is exactly how the native-browser gate once
+  // governed nothing — and here the failure would be a deny that
   // removes nothing while reporting success.
   //
   // KEEP THIS LAYER, even though on a 2.2.1 host it deletes nothing: MCP tools

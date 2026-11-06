@@ -52,9 +52,7 @@ import { applyV2Probe, probeSummary } from "./v2-probe.js"
 import { applyV2NativeOffload } from "./v2-offload.js"
 import { applyV2ProbeChain } from "./v2-probe-chain.js"
 import { applyV2SubagentRegistry, applyV2CompletionWatch } from "./v2-subagent.js"
-import { applyV2BrowserGate, browserGateSummary } from "./v2-browser-gate.js"
 import { applyV2ComputerUseGate, computerUseGateSummary } from "./v2-computeruse-gate.js"
-import { seedWebfetchDomains } from "../tm/webfetch.js"
 import { v2CapabilityRows } from "./v2-capabilities.js"
 import { applyV2SessionLayer, removalPlan, resolveSplitConfig } from "./v2-session.js"
 import { applyV2RetryGovernor, createRetryGovernor, resolveRetryConfig, roleOfSession, sessionIDOf } from "./v2-retry.js"
@@ -613,41 +611,14 @@ export const v2Personality: V2Plugin = {
     if (!completion.active) {
       notes.push("子代理完成注入的监听没装上（ctx.session.hook 不可用）：tm_join 会把已完成的后台子代理报成运行中")
     }
-    // BEFORE the session layer registers its own context hook, so the probe sees
-    // the host's full surface rather than the set we trimmed — that difference is
-    // exactly what it is there to record.
-    // The host's own browser catalog, behind OUR gate (#9): `permission.evaluate` was
-    // observed NOT firing for `browser_*`, so until now the domain list, the address
-    // red line and the R6 env-file rule had a bypass the length of a tool name — in
-    // the one surface that is also the only one with a native side panel.
-    const browserGate = applyV2BrowserGate(ctx, {
-      allowlist: seedWebfetchDomains(tmRuntime.config.webfetchAllowedDomains),
-      scope,
-      config: cfg,
-      // #14: the SERP rate limit's trajectory line.  The gate has no store, so the
-      // sink is wired here — same shape as the shell-timeout clamp's `onClamp`.
-      onSerp: (info) => {
-        try {
-          tmRuntime.pipelines.store.appendTrajectory({
-            tool: "browser",
-            step_id: "serp-loop",
-            event: info.event,
-            engine: info.engine,
-            query: info.query,
-            host: info.host,
-            count: info.count,
-            limit: info.limit,
-            sessionID: info.sessionID,
-          })
-        } catch {
-          /* the trajectory is an extra, never a reason to fail the call */
-        }
-      },
-    })
-    if (!browserGate.registrations.length) {
-      notes.push("原生 browser_* 的门禁没装上（ctx.tool.hook 不可用）：宿主的 45 个浏览器工具在 Team 会话里也不受我们的域名 / 地址规则约束")
-    }
-    registrations.push(...browserGate.registrations)
+    // The host's own browser catalog is NO LONGER policed by us (user decision
+    // 2026-11-07, "删除我们对内置浏览器的一切保护"): the `v2-browser-gate` layer
+    // that checked its URLs against the domain list, the address red line and the
+    // R6 env-file rule was removed outright, so the host's `browser_*` tools run
+    // with the host's own permissions and nothing of ours. The address red lines
+    // and the allowlist stay enforced on OUR web channel (`tm_webfetch` /
+    // `tm_search`), and the per-role catalog VISIBILITY stays trimmed by the
+    // request layer (`BROWSER_CATALOG`); only the gate is gone.
     // The optional desktop-control MCP server: refused per ROLE at three layers.
     // Primary = `permission.evaluate` (MEASURED firing for MCP tools:
     // `action=computeruse_control_status`), then the INNER `execute.before` event
@@ -704,6 +675,9 @@ export const v2Personality: V2Plugin = {
         "观察计数器还没接上（请求层与事件流当时尚未注册）——这一行里缺失的字段是「没有地方去读」，不是 0 次，别把它读成「宿主从没调用过」",
     })
     const probe = await applyV2Probe(ctx, {
+      // Registered BEFORE the session layer registers its own context hook, so the
+      // probe sees the host's full surface rather than the set we trimmed — that
+      // difference is exactly what it is there to record.
       onSummary: (summary) => {
         try {
           tmRuntime.pipelines.store.appendTrajectory({
@@ -1019,7 +993,7 @@ export const v2Personality: V2Plugin = {
     // stands either way.
     const retryConfig = resolveRetryConfig(cfg)
     // The layer owns no store, so the trajectory sink is wired here — same shape
-    // as the shell-timeout clamp's `onClamp` and the SERP guard's `onSerp`.
+    // as the shell-timeout clamp's `onClamp`.
     const retrySink = (row: Record<string, unknown>): void => {
       try {
         tmRuntime.pipelines.store.appendTrajectory({ tool: "host", step_id: "v2-retry", api: 2, ...row })
@@ -1403,12 +1377,6 @@ export const v2Personality: V2Plugin = {
       event_received: feed.report.received,
       event_forwarded: feed.report.forwarded,
       event_unknown_types: Object.entries(feed.report.unknown).map(([k, v]) => `${k}=${v}`).join(" "),
-      browser_gate_seen: browserGate.report.seen,
-      browser_gate_refused: browserGate.report.refused,
-      browser_gate_leaked: browserGate.report.leaked,
-      browser_gate_held: browserGate.report.held,
-      browser_gate_serp_nav: browserGate.report.serpNav,
-      browser_gate_serp_refused: browserGate.report.serpRefused,
       computeruse_gate_refused: computerUseGate.report.refused,
       computeruse_gate_bypass: computerUseGate.report.bypass,
       computeruse_gate_layers: `permission=${computerUseGate.report.permissionSeen} inner=${computerUseGate.report.innerSeen} outer=${computerUseGate.report.seen}`,
@@ -1467,7 +1435,6 @@ export const v2Personality: V2Plugin = {
         scope_ours: scope.report.ours,
         scope_foreign: scope.report.foreign,
         scope_unknown: scope.report.unknown,
-        browser_gate: browserGate.registrations.length ? "armed" : "absent",
         private_space: privateSpace,
         tools_codemode: v2CodeModeDirect ? "direct" : "catalog",
         guard_foreign_skipped: guards.report.foreignSkipped,
@@ -1646,13 +1613,6 @@ export const v2Personality: V2Plugin = {
           event_forwarded: feed.report.forwarded,
           event_unknown_types: Object.entries(feed.report.unknown).map(([k, v]) => `${k}=${v}`).join(" "),
           event_stopped: feed.report.stopped ?? "",
-          browser_gate_seen: browserGate.report.seen,
-          browser_gate_refused: browserGate.report.refused,
-          browser_gate_leaked: browserGate.report.leaked,
-          browser_gate_held: browserGate.report.held,
-          browser_gate_serp_nav: browserGate.report.serpNav,
-          browser_gate_serp_refused: browserGate.report.serpRefused,
-          browser_gate_note: browserGateSummary(browserGate.report),
           computeruse_gate_refused: computerUseGate.report.refused,
           computeruse_gate_bypass: computerUseGate.report.bypass,
           computeruse_gate_layers: `permission=${computerUseGate.report.permissionSeen} inner=${computerUseGate.report.innerSeen} outer=${computerUseGate.report.seen}`,

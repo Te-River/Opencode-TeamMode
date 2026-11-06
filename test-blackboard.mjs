@@ -1093,8 +1093,8 @@ for (const dead of ["bing-int", "sogou", "baidu", "360"]) {
 }
 assert.ok(cfg2.agent["researcher"].prompt.includes("never build a search URL there"), "researcher: dead CN SERPs are named as dead ends, not options")
 assert.ok(cfg2.agent["researcher"].prompt.includes("ONE SEARCH IS A SAMPLE, NOT A SEARCH"), "researcher: multi-query refinement loop is mandatory (no one-shot search)")
-// A thin/empty snapshot is a claim about the page or about our own gate, never
-// about the site being empty — and a human-verification wall is a different
+// A thin/empty snapshot is a claim about the page, never about the site being
+// empty — and a human-verification wall is a different
 // fact again whose move is another source.
 assert.ok(
   cfg2.agent["researcher"].prompt.includes("human-verification wall"),
@@ -1102,7 +1102,7 @@ assert.ok(
 )
 assert.ok(
   cfg2.agent["tester"].prompt.includes("never about the site being empty"),
-  "tester: the same three-way reading of an empty snapshot, on the UI-verification side",
+  "tester: the same reading of an empty snapshot, on the UI-verification side",
 )
 assert.ok(/independent web calls: two unrelated tm_search queries belong in/.test(cfg2.agent["researcher"].prompt), "researcher: independent web calls batch into one round")
 assert.ok(cfg2.agent["researcher"].prompt.includes("Command time budget"), "researcher: command time budget section present")

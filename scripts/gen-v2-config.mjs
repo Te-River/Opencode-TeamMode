@@ -178,9 +178,11 @@ const V2_TEXT = [
   /* The browser fork entries are GONE (user decision 2026-10-06): the self-built
    * tm_browser was removed outright, so the shared source prompts now name the
    * host's native browser_* tools natively and there is nothing left to fork.
-   * Governance is unchanged: the gate lives in src/host/v2-browser-gate.ts
-   * (execute.before + a leak-detected fallback that replaces the page with the
-   * refusal), and snapshots stay addressable through capKeepingAddressing. */
+   * The gate on the native catalog was itself removed on 2026-11-07 (user
+   * decision: "删除我们对内置浏览器的一切保护") — nothing of ours polices the
+   * host's browser_* URLs / addresses / paths any more; snapshots stay
+   * addressable through capKeepingAddressing (that is JIT context governance,
+   * not a guard). */
 ]
 
 function forkBody(text, hits) {

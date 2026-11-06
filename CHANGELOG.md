@@ -7,25 +7,7 @@ registry saw 1.5.0 as the install-script fix release).
 
 ## [Unreleased]
 
-### Added
-
-- **子代理禁用后台执行——提示词 + 执法两层（领队明确豁免）。** 用户机理（原话入档）：子代理一结算正文即
-  送达领队，**此后的后台唤醒既不回流已结算的子会话、也不上传给领队**——被后台化的工作没有任何接收者，
-  静默丢弃外加白付的启动开销。层一：SHARED_RULES 新节 `## No background execution (hard rule)`
-  （六专家全员，含"前台+显式 timeout / 拆小批同轮 / tee 日志自取"的替代路径）；顺手消掉一处**自相矛盾**——
-  原 `## Command time budget` 竟主动推荐 `shell background:true`，已改写并把旧钉转成否定钉。
-  层二：领队 `## Delegation` 加自知条款——**领队自己的 background 唤醒本来就回得来，不受禁令**；但专家报告里
-  出现"调用被改成前台"时那是执法在生效，不是故障。层三（硬面）：`v2-guard.ts` 新导出
-  `applyV2NonLeadBackgroundDeny`——非领队 Team 会话 `tool.execute.before` 里 truthy `background`
-  （`true`/`1`/`"true|1|yes|on"` 串）改写为 `false`，**继续同步执行而非失败**；`subagent` 工具无条件跳过
-  （与既有反向强制 `applyV2BackgroundForce` 零交集）；无名字会话不碰（`noAgentSkipped`，改写实参的层只对
-  有名字的调用动手）；foreign/unknown 不碰；每次改写落 `bg_forced_foreground` 轨迹（tool+角色+会话，
-  **不含 args 值**，R6 口径）并上 `v2-surface`/`v2-shutdown` 两路计数。
-  测试：`test-blackboard` 组 `8e`（70 条，双向钉——专家含禁令、领队含自知且不含自禁句式）+
-  `test-v2-adapter` 组 `7c2` 与 setup 全链端到端组（非领队被改 / `subagent` 反向强制回归 / 轨迹无 args /
-  领队原样）。造红各一次贴原文。
-  token 实测（estimateTokens，HEAD→工作树）：六专家各 +191/192（SHARED_RULES 摊全员，这是首个
-  整族移动的规则类），领队 +206（仅自知条款）。
+## [1.9.8] - 2026-11-07
 
 ### Fixed
 
@@ -58,6 +40,24 @@ registry saw 1.5.0 as the install-script fix release).
   `v2-tail`/`v2-session-instructions` 两份 `isOff` 的写法统一——为风格改动正在执法的 v2 层，纯风险无验收。
 
 ### Added
+
+- **子代理禁用后台执行——提示词 + 执法两层（领队明确豁免）。** 用户机理（原话入档）：子代理一结算正文即
+  送达领队，**此后的后台唤醒既不回流已结算的子会话、也不上传给领队**——被后台化的工作没有任何接收者，
+  静默丢弃外加白付的启动开销。层一：SHARED_RULES 新节 `## No background execution (hard rule)`
+  （六专家全员，含"前台+显式 timeout / 拆小批同轮 / tee 日志自取"的替代路径）；顺手消掉一处**自相矛盾**——
+  原 `## Command time budget` 竟主动推荐 `shell background:true`，已改写并把旧钉转成否定钉。
+  层二：领队 `## Delegation` 加自知条款——**领队自己的 background 唤醒本来就回得来，不受禁令**；但专家报告里
+  出现"调用被改成前台"时那是执法在生效，不是故障。层三（硬面）：`v2-guard.ts` 新导出
+  `applyV2NonLeadBackgroundDeny`——非领队 Team 会话 `tool.execute.before` 里 truthy `background`
+  （`true`/`1`/`"true|1|yes|on"` 串）改写为 `false`，**继续同步执行而非失败**；`subagent` 工具无条件跳过
+  （与既有反向强制 `applyV2BackgroundForce` 零交集）；无名字会话不碰（`noAgentSkipped`，改写实参的层只对
+  有名字的调用动手）；foreign/unknown 不碰；每次改写落 `bg_forced_foreground` 轨迹（tool+角色+会话，
+  **不含 args 值**，R6 口径）并上 `v2-surface`/`v2-shutdown` 两路计数。
+  测试：`test-blackboard` 组 `8e`（70 条，双向钉——专家含禁令、领队含自知且不含自禁句式）+
+  `test-v2-adapter` 组 `7c2` 与 setup 全链端到端组（非领队被改 / `subagent` 反向强制回归 / 轨迹无 args /
+  领队原样）。造红各一次贴原文。
+  token 实测（estimateTokens，HEAD→工作树）：六专家各 +191/192（SHARED_RULES 摊全员，这是首个
+  整族移动的规则类），领队 +206（仅自知条款）。
 
 - **computer-use 零重启升级（一次重启是下限）。** 新版本装进 `<releases>/<version>/` 带版本的独立目录——Windows
   不换运行中的 exe（`os error 32` 的根因），但**新版本从来不去覆盖旧文件**，安装可在 OpenCode 运行时完成；宿主只在
@@ -135,6 +135,19 @@ registry saw 1.5.0 as the install-script fix release).
   不能因为兄弟模块改了就先失败。
 - **已知边界，写在这里而不是藏进实现**：一个**活跃 run 自己**超限时无可驱逐对象，本进程内收不了口（本机就是
   `27 MB / runs 1` 这一种形状），只能等下个进程回收；`over_cap=1` 挨着 `evicted_runs=0` 就是这个事实的读数。
+
+### Removed
+
+- **插件不再对宿主内置浏览器设任何墙（用户令 2026-11-07「删除我们对内置浏览器的一切保护」）。**
+  `src/host/v2-browser-gate.ts` 整层删除（URL/地址红线、env 文件路径、泄漏回落兜底），同族的
+  `src/tm/serp-loop.ts`（3 次 SERP 页浏览器抓取节流）、`v2BrowserGate` 配置键（注册表 66→65）、
+  提示词里的门禁归属句、`test-v2-adapter` 的门禁牙齿组一并删除。**已接受并写明的后果**：被允许看到
+  目录的 Lead/Researcher/Tester 三角色，经浏览器可达云元数据、私网、`file://`——插件不再拦截，也
+  不再弹窗询问（2.x 本来就没有对话框）。**没删的**：`tm_webfetch`/`tm_search` 自己的地址红线与
+  `webGuard` 执法原样保留（那是我们工具的出网面，不是内置浏览器）；`browser_*` 的角色可见性仍归权限
+  矩阵 + 请求层删除；快照截断（`v2-offload` 保留寻址行）仍在。老配置若显式写过 `"v2BrowserGate"`，
+  启动会警告「未知键（已忽略，未应用）」并进 `tm_stats` 清单——删掉那行即可，运行不受影响。
+  三维度评审 approve；不可授权红线的拒绝语不再把 agent 指向已脱管的浏览器（`webfetch.ts` forbidden 分支同批改口）。
 
 ### Measured
 

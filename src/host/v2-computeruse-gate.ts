@@ -110,7 +110,7 @@ export interface ComputerUseGate {
   registrations: V2Registration[]
   report: ComputerUseGateReport
   /** Both hook bodies are exported through this seam so a test can drive them
-   *  without a live host — same construction as the browser gate's. */
+   *  without a live host. */
   firePermission: (event: unknown) => void
   fireBefore: (event: unknown) => void
   fireAfter: (event: unknown) => void
@@ -255,8 +255,8 @@ export function applyV2ComputerUseGate(
     writeLeak({ event: "computeruse_denied", layer, agent, cu_tool: tool })
   }
 
-  /** The code-path layers refuse by THROWING (the browser gate's convention: the
-   *  program is the model's own source text, so it must not be rewritten). */
+  /** The code-path layers refuse by THROWING: the program is the model's own
+   *  source text, so it must not be rewritten. */
   const refuse = (layer: ComputerUseLayer, agent: string, tool: string, message: string): void => {
     countRefusal(layer, agent, tool)
     throw new Error(message)
