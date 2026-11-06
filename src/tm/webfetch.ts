@@ -189,7 +189,8 @@ export function checkWebUrl(raw: unknown, allowlist: readonly string[]): UrlVerd
       message:
         `目标 ${url.hostname} 落在不可路由 / 元数据地址段（${egress.via}）——R6 同级红线，不可批准。` +
         `这类地址没有"看起来对不对"可供判断：云元数据端点会把临时凭据直接送进上下文、run store 和 trajectory。` +
-        `要本机服务请用宿主原生浏览器（有头窗口由用户自己看着），要公网内容请给公开主机名。`,
+        `原生 browser_* 自 2026-11-07 起已不受本插件管辖，但那不是侧门——元数据 / 链路本地地址不是被墙挡住的普通站点，不要改用浏览器去取它。` +
+        `要本机服务就用 localhost / 127.0.0.1 直连（回环本来就放行），要公网内容请给公开主机名。`,
     }
   }
   if (egress.level === "loopback") {
