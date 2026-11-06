@@ -60,8 +60,8 @@ $PKG_NAME = "@te-river/opencode-team-mode"
 # because an unverified binary is exactly what this constant exists to prevent. Publishing
 # a new asset and overwriting this value belong in the SAME commit — a stale hash fails
 # closed, which is the correct failure.
-$CU_VERSION = "0.0.6"
-$CU_WHEEL_SHA256 = "fdde2e2df3726c33cdc1fb57adbc5d85b3ab067bb7871df9290eb7f75e21eb91"
+$CU_VERSION = "0.0.7"
+$CU_WHEEL_SHA256 = "53dc835e864a5346ad31e18bde780d802d7d074fe7cbd2ac0929be8e936a5887"
 $CU_RELEASE_URL = "https://github.com/Te-River/Opencode-TeamMode/releases/download/computeruse-v$($CU_VERSION)/computeruse_mcp-$($CU_VERSION)-py3-none-any.whl"
 
 # ── the release layout that made the upgrade ONE restart instead of two ────────────────
