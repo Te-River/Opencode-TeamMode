@@ -7,30 +7,32 @@
 >
 > **Scope of everything below.** This page is true only of the **1.6.x-era v1 package** —
 > the last one a 1.18.x host could actually load. Everything it describes belongs to that
-> build and NOT to the current release (`1.9.7`): the governed `tm_*` file / search / shell /
+> build and NOT to the current release (`1.9.8`): the governed `tm_*` file / search / shell /
 > pty / batch tools v1 registered (2.x registers none of them and uses the host's own
 > `read` / `grep` / `glob` / `shell` / `execute` instead), the self-built browser, the plugin
 > promoting the default agent, the `OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS` env var, and
 > an `envProtect` value of `"off"` that silenced the whole R6 face. On the current 2.x package
 > a plugin cannot raise a dialog at all and that background env var is a v1 leftover. Two more
-> things changed on `main` and are **待发布 (not in the released 1.9.7)**: `65f738f` narrows
-> `envProtect: "off"` to R6's fine-grained ask face only — the env-file PATH red line stays
-> denied — and `78e7d48` rewrites a non-lead Team session's `background` to `false`. Read those
-> sentences below as v1-era descriptions, not as instructions.
+> things changed since and are **shipped in the current release (1.9.8)** — on the 2.x side only:
+> `65f738f` narrows `envProtect: "off"` to R6's fine-grained ask face only — the env-file PATH red
+> line stays denied — and `78e7d48` rewrites a non-lead Team session's `background` to `false`. The
+> frozen v1 build this page describes keeps its own era's semantics: there `off` still silenced the
+> whole R6 face. Read the sentences below as v1-era descriptions, not as instructions.
 >
 > **⚠️ 历史文档——1.18.x 已不再支持。** 自 1.7.0 线起本包只面向 OpenCode 2.x：`server`
 > （1.18.x）人格已移除，插件只导出 `{id, setup}`。本页仅作历史记录，**不是可用的安装
 > 路径**——请走 **[installation-v2.md](./installation-v2.md)**。
 >
 > **下面正文的适用范围。** 本页只对 **1.6.x 时代的 v1 包**成立——那是 1.18.x 宿主最后
-> 还能真正加载的一份。页里描述的东西全部属于那个构建，**不属于当前发布版（`1.9.7`）**：
+> 还能真正加载的一份。页里描述的东西全部属于那个构建，**不属于当前发布版（`1.9.8`）**：
 > v1 注册的那套受治理 `tm_*` 文件 / 搜索 / shell / pty / 批量工具（2.x 一个都不注册，改用
 > 宿主自己的 `read` / `grep` / `glob` / `shell` / `execute`）、自建浏览器、插件自己提默认
 > agent、`OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS` 环境变量，以及会把整个 R6 面关掉的
 > `envProtect: "off"`。在当前 2.x 包上插件根本弹不出对话框，那个后台环境变量也只是 v1 遗留。
-> 还有两件事只在 `main` 上、**尚未发版（不在已发布的 1.9.7 里）**：`65f738f` 把 `envProtect` 的
+> 还有两件事其后已随**当前发布版 1.9.8** 发布——只在 2.x 一侧：`65f738f` 把 `envProtect` 的
 > `off` 收窄到只管 R6 的细粒度 ask 面——env 文件的**路径**红线照旧拒；`78e7d48` 把非领队 Team
-> 会话的 `background` 改写成 `false`。请把下面的句子读成 v1 时代的描述，而不是指令。
+> 会话的 `background` 改写成 `false`。本页描述的那份冻结 v1 保持它当年的语义：v1 上 `off` 仍是
+> 把整个 R6 面关掉。请把下面的句子读成 v1 时代的描述，而不是指令。
 
 > **This page is the OpenCode 1.18.x path.** On OpenCode 2.x a plugin cannot create an
 > agent, so the roles and the six `/team-*` commands have to be generated into
@@ -298,7 +300,7 @@ never re-resolved on its own).
 | Version is old despite `@latest` | Plugin cache never invalidates | See Updating — delete the cache dir (recursively; both layouts) |
 | Still the old version after bumping the version or re-running the installer | The scoped cache `packages/@te-river/opencode-team-mode@latest` is nested below the top-level `packages/*opencode-team-mode*` glob, so the stale copy was never purged | Recursively delete that cache dir (`Get-ChildItem -Recurse -Filter '*opencode-team-mode*'` / `find -type d -name '*opencode-team-mode*' -prune`), then restart — the current installers already recurse |
 | Node version error on startup | npm needs Node ≥ 18 | Upgrade Node |
-| Env-var commands suddenly prompt for confirmation | That's the plugin's R6 protection working as designed | Approve once per operation, or set `envProtect: "off"` in `team-mode.jsonc` (not recommended; on `main` — 待发布, not the released 1.9.7 — that switch stops only these prompts, since `65f738f` the env-file PATH red line stays denied. See the banner above) |
+| Env-var commands suddenly prompt for confirmation | That's the plugin's R6 protection working as designed | Approve once per operation, or set `envProtect: "off"` in `team-mode.jsonc` (not recommended. On the frozen v1 build this page describes, `off` silenced the whole R6 face — that is the body text's v1-era semantics; from 1.9.8, the 2.x package narrows `off` to these prompts only and the env-file PATH red line stays denied. See the banner above) |
 | A user-defined agent named `team`/`architect`/… got shadowed | Plugin injects defaults; your own definitions always win | The plugin never clobbers user agents — check for typos in your agent names |
 
 ---
@@ -526,5 +528,5 @@ https://raw.githubusercontent.com/Te-River/Opencode-TeamMode/main/docs/installat
 | 用着 `@latest` 版本还是旧的 | 插件缓存永不失效 | 见"更新"——递归删除缓存目录（两种布局） |
 | 改了版本/重跑安装器后仍是旧版 | 作用域缓存 `packages/@te-river/opencode-team-mode@latest` 嵌在顶层 `packages/*opencode-team-mode*` 通配符扫不到的下一层，旧副本根本没被清掉 | 递归删除该缓存目录（`Get-ChildItem -Recurse -Filter '*opencode-team-mode*'` / `find -type d -name '*opencode-team-mode*' -prune`）后重启——当前安装器已改为递归清理 |
 | 启动报 Node 版本错误 | npm 需要 Node ≥ 18 | 升级 Node |
-| 环境变量命令突然弹确认框 | 这是插件的 R6 保护在正常工作 | 每个操作选"一次"，或设 `envProtect: "off"`（不推荐；在 `main` 上——**待发布**，不是已发布的 1.9.7——这个开关只停掉这类弹窗，因为 `65f738f` 之后 env 文件**路径**红线照旧拒。见页首横幅） |
+| 环境变量命令突然弹确认框 | 这是插件的 R6 保护在正常工作 | 每个操作选"一次"，或设 `envProtect: "off"`（不推荐。本页描述的那份冻结 v1 上，`off` 仍是把整个 R6 面一起关掉——那是正文的 v1 时代语义；从 1.9.8 起，2.x 包里的 `off` 只停掉这类弹窗——env 文件的**路径**红线照旧拒。见页首横幅） |
 | 用户自定义的 `team`/`architect` 等 agent 被遮蔽 | 插件注入默认值；你的定义永远优先 | 插件从不覆盖用户 agent——检查你的 agent 名字有没有拼错 |

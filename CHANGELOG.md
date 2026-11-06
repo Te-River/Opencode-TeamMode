@@ -154,7 +154,7 @@ registry saw 1.5.0 as the install-script fix release).
 - computer-use 合并后的全量：**113 passed, 1 skipped**（改动前基线 87 passed；新增 12 + 15 条用例）。两次造红：
   驱逐顺序改成最新优先 ⇒ `test_audit.py` 两条当场红；`is_repeat` 改成恒 False ⇒ `test_image_budget.py` 四条当场红。
   本机只读读数：`{"bytes": 27106663, "cap_bytes": 67108864, "ttl_days": 7, "evicted_runs": 0, "runs": 1, "over_cap": 0}`。
-- **这批全部只在 `main`，没有发版**：npm 仍是 1.9.7，computer-use 仍是 0.0.6，未打包、未 publish、未建 tag/release。
+- **本批已发布**：2026-11-07 npm **1.9.8**（签名 tag `v1.9.8` + GitHub Release）；computer-use **0.0.7** 先行发布（tag `computeruse-v0.0.7`，资产 sha256 `53dc835e…`——构建不可重现，pin 与该枚 wheel 同一提交，禁止重构建后上传）。
 
 - **提示词按角色定价，改前/改后同一次跑量**（`estimateTokens`，不是按字符估）：领队 +150、实现者 +428、
   评审 +370，而 architect / tester / researcher / computerUser **增量为 0**。

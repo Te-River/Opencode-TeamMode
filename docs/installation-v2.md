@@ -63,7 +63,7 @@ implied:
 | The task ledger | the host's `todowrite` | **`tm_ledger`**, stored in the host's `ctx.storage` (v2 has no `todowrite`) |
 | Asking the user | the host's official per-request dialog | **a plugin cannot open a dialog on v2.** Governed calls that would have asked instead **fail closed** with a refusal that says why. The dialogs you do see are raised by the host itself (permission rules, out-of-project access) |
 | Web access | a 22-host allowlist + the confirm dialog | **the domain gate is off** (`webfetchAllowedDomains` defaults to `["*"]` on v2): a 2.x plugin cannot raise a dialog, so "approve to proceed" was an instruction to wait for a window that never opens. Address classes are still policed — cloud-metadata / link-local / reserved ranges are refused under every setting, and private space (RFC1918, CGNAT, ULA, IPv6 link-local, `.localhost`) is refused too, but the refusal now names both exits instead of promising a click: `"privateSpace": "allow"` in the global `team-mode.jsonc` (opens the class) or that one hostname in `webfetchAllowedDomains` (opens exactly it). **Loopback (`127/8`, `::1`, `localhost`) is served by default** — it reaches only a service the user started on their own machine, and a gate whose only exit is a dialog the plugin cannot raise is a wall, not a gate |
-| Sub-agents | needs `OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS=true` | native; the plugin forces `background: true` on every `subagent` call, so **do not set that env var for 2.x** (it is a v1 workaround and changes nothing here). The mirror rule (`78e7d48`, on `main` — **待发布**, a released 1.9.7 build does not have it): a truthy `background` on a **non-lead** Team session's own tool call is rewritten to `false` and the call runs in the foreground — a settled child has no receiver for a late background wake-up, so the result would be silently dropped. The lead is never rewritten, and `subagent` is skipped by that layer so the two forces cannot meet one call |
+| Sub-agents | needs `OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS=true` | native; the plugin forces `background: true` on every `subagent` call, so **do not set that env var for 2.x** (it is a v1 workaround and changes nothing here). The mirror rule (`78e7d48`, **shipped in 1.9.8** — builds released before 1.9.8 do not have it): a truthy `background` on a **non-lead** Team session's own tool call is rewritten to `false` and the call runs in the foreground — a settled child has no receiver for a late background wake-up, so the result would be silently dropped. The lead is never rewritten, and `subagent` is skipped by that layer so the two forces cannot meet one call |
 | Effect on your other modes | the plugin's hooks are global | **none.** Every hook checks the session's owner first, so `build`, `plan` and any agent you installed yourself stay exactly as a fresh OpenCode leaves them — no tool is deleted from their requests, no temperature is set, nothing is offloaded, no permission is tightened, no dispatch is converted to background |
 
 ### Prerequisite
@@ -268,14 +268,14 @@ Also check for the decline marker `<config dir>/team-mode.computeruse-declined`.
 
 - **Yes** → run `.\scripts\install.ps1 -ComputerUse` (POSIX: `bash scripts/install.sh --computer-use`).
   Relay its own "already present / skipped" or undo text **verbatim** — do not paraphrase it.
-  Then `opencode service restart` — **once, and that floor is a `main` claim (待发布)**: the
-  per-version release directory is `b3393a3`, while the RELEASED 1.9.7 installer still runs
-  `uv tool install --force` in place, so on that build Windows refuses to replace the exe the
-  host is running and the procedure is the old two-pass one (remove the entry → restart →
-  install → restart). On `main` the installer has also already run `--selftest` against the
+  Then `opencode service restart` — **once, and one is the floor shipped with 1.9.8**: the
+  per-version release directory (`b3393a3`) is in the published installer now; 1.9.7 and earlier
+  ran `uv tool install --force` in place, so on those builds Windows refuses to replace the exe the
+  host is running and the procedure was the old two-pass one (remove the entry → restart →
+  install → restart — history). The 1.9.8 installer also runs `--selftest` against the
   directory it wrote (`<releases>/<version>/computeruse-mcp/Scripts/computeruse.exe`, POSIX
-  `.../computeruse-mcp/bin/computeruse`; on 1.9.7 it is
-  `<uv tool dir>/computeruse-mcp/Scripts/computeruse.exe`) and wrote **zero config bytes** if
+  `.../computeruse-mcp/bin/computeruse`; a 1.9.7-era entry points at
+  `<uv tool dir>/computeruse-mcp/Scripts/computeruse.exe`) and writes **zero config bytes** if
   that exited non-zero. Then `tm_stats`: the new **计算机使用** section must name the
   tool ids it actually saw.
   **The tool names are measured at runtime, never assumed** — the plugin records what actually
@@ -305,12 +305,12 @@ Also check for the decline marker `<config dir>/team-mode.computeruse-declined`.
 
 ```bash
 node scripts/lib/config-surgery.cjs <cfg> mcp-remove computeruse # 1. remove the key
-rm -rf <releases root>                                       # 2. ONLY on `main` (待发布, b3393a3):
+rm -rf <releases root>                                       # 2. on the 1.9.8+ installer (b3393a3):
                                                              #    %LOCALAPPDATA%\te-river\computeruse\releases
                                                              #    ${XDG_DATA_HOME:-~/.local/share}/te-river/computeruse/releases
-uv tool uninstall computeruse-mcp                            # 3. the RELEASED 1.9.7 layout — that tool
+uv tool uninstall computeruse-mcp                            # 3. a 1.9.7-era (pre-1.9.8) install — that tool
                                                              #    lives in uv's own tool dir, not under <releases>
-rm -rf "%LOCALAPPDATA%/te-river/computeruse"                 # 4. the audit trail (and on `main`, every release dir)
+rm -rf "%LOCALAPPDATA%/te-river/computeruse"                 # 4. the audit trail (and on 1.9.8+, every release dir)
 rm -f <config dir>/team-mode.computeruse-declined                # 5. only if you declined
 ```
 
@@ -352,12 +352,12 @@ before concluding the install is broken.
 - **`npm install @te-river/opencode-team-mode@latest` may move nothing.** If your `package.json`
   carries a caret range (`^1.9.0`) and a lockfile pins the resolved version, npm treats the range as
   already satisfied and leaves the old copy in place — the version on disk does not change. Install
-  the **exact** published version (`@1.9.7`), or drop the lockfile entry first. Check what you actually got:
+  the **exact** published version (`@1.9.8`), or drop the lockfile entry first. Check what you actually got:
   `node -p "require('<dir>/node_modules/@te-river/opencode-team-mode/package.json').version"`.
 - **A v1 leftover env var.** `OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS` is a 1.18.x workaround;
   on 2.x sub-agents are background natively and the plugin forces `background:true` on every
   `subagent` dispatch (while a **non-lead** Team session asking for `background` on its own tool
-  call gets it rewritten to `false` and runs in the foreground — `78e7d48`, on `main`, **待发布**),
+  call gets it rewritten to `false` and runs in the foreground — `78e7d48`, shipped in 1.9.8),
   so the variable changes nothing here. The installer prints the undo — on Windows
   `REG delete HKCU\Environment /v OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS /f`, on macOS
   `launchctl unsetenv …`, on Linux `systemctl --user unset-environment …`.
@@ -399,14 +399,14 @@ values are `strict` / `standard` / `off`). A Team role's native `read` of a `.en
 outright, and a shell command that reads the environment goes to the host's own permission prompt.
 Turn it off with the plugin option `envProtect: false` or with `"envProtect": "off"` in the
 **global or `system`** file (it is a red-line key) — and read what that switch actually covers.
-**On `main` (`65f738f` + `3df9c2e`, 待发布) it is narrower than it once was:** `off` governs
+**Since 1.9.8 (`65f738f` + `3df9c2e`) it is narrower than it once was:** `off` governs
 **only R6's fine-grained ask face** (the `strict` / `standard` per-command judgement plus your
 extra-deny preferences), and the env-file **path** red line is NOT switched off by it — the
 `.env` / shell-rc family stays denied under every value, for `read` / `write` / `edit` / `glob` /
 `grep` and for the env-file-bearing input fields, because a setting that removed a class with no
-consent path would BE that consent path. **On the released 1.9.7 that narrowing has not shipped
-yet:** there `off` still short-circuits the four path faces, so a `.env` read falls through to
-YOUR host rules rather than to our deny. The refusal text on `main` says so verbatim:
+consent path would BE that consent path. **On releases before 1.9.8 that narrowing had not shipped:**
+there `off` still short-circuited the four path faces, so a `.env` read fell through to
+YOUR host rules rather than to our deny. The shipped refusal text says so verbatim:
 `R6 红线：这个路径指向环境文件（.env / shell rc 家族），不授权、不弹窗；envProtect 的 off 不管这条红线，它只关细粒度 ask 面（strict/standard 判定与 extra-deny 偏好）。`
 
 The only `TM_*` environment variables left are internal/test switches, not configuration:
@@ -433,7 +433,7 @@ dump) and `TM_CONFIG_AUTOCREATE` (the auto-create off switch).
 | The picker shows the lead as `team`, or Team is not the default | The host takes an agent's ID from the FILE NAME. A machine that ever carried the pre-1.7 `team.md` registers the lead as `team`, while the installer writes `default_agent: "Team"` — and the documented behaviour for a default naming an agent it cannot find is a silent fall back to `build`. **Fixed in 1.7.2**: the generator renames a case-only entry it has proven is the same file to the canonical spelling. On 1.7.1 or older a re-run does NOT fix it (a write through `Team.md` keeps the old spelling on Windows) — rename by hand in two steps: `team.md` → `Team.md` |
 | `/team-plan` etc. run but not as the specialist | 2.x documents `mode: subagent` as "runs only in a child session"; if a command selecting a specialist does not behave, the fix is `mode: "all"` in the role definition (report it — this is the one item in this flow still unverified on a live host) |
 | `tm_webfetch` on an odd site says it refused **without asking anyone** | Expected on 2.x: a plugin cannot raise a dialog. Use a source that works, or let the host's own permission rule allow it. Keep the two classes apart: cloud-metadata / link-local / reserved addresses are a RED LINE with no consent path on either generation, while private space (RFC1918, CGNAT, ULA, IPv6 link-local, `.localhost`) is refused too but DOES have a config exit on 2.x — `"privateSpace": "allow"` in the global or `system` `team-mode.jsonc`, or that one hostname in `webfetchAllowedDomains` (see the Web-access row above) |
-| `task`/`subagent` seems to block the lead | On 2.x the plugin forces `background: true` on the lead's `subagent` calls; if you also set the old `OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS`, unset it — it is a v1 flag and only confuses the picture. A **specialist** reporting that its `background` request ran in the foreground is the `78e7d48` layer working (a settled child has no receiver for a late background wake-up), not a fault — that layer is on `main` (**待发布**; a released 1.9.7 build does not rewrite it) and `tm_stats` shows it as `bg_forced_foreground` |
+| `task`/`subagent` seems to block the lead | On 2.x the plugin forces `background: true` on the lead's `subagent` calls; if you also set the old `OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS`, unset it — it is a v1 flag and only confuses the picture. A **specialist** reporting that its `background` request ran in the foreground is the `78e7d48` layer working (a settled child has no receiver for a late background wake-up), not a fault — that layer shipped in 1.9.8 (builds released before 1.9.8 do not rewrite it) and `tm_stats` shows it as `bg_forced_foreground` |
 | A tool's output arrives un-offloaded | `"nativeOffload": "off"` in the config file (or a missing `tool.execute.after` seam on an older 2.x build) — `tm_stats` names which |
 | Sessions used to compact at 75% on their own; they do not any more | That trigger was **removed in 1.7.1** (it shipped in 1.7.0). The host owns when a conversation is summarized again, exactly as if the plugin were not installed. The three knobs that drove it (`TM_COMPACT_TRIGGER`, `TM_COMPACT_AT_PERCENT`, `TM_COMPACT_MIN_MS`) are gone, and a `team-mode.jsonc` that still names them reports them as unknown keys at boot instead of applying them. What stays is additive and only runs when the HOST compacts: the survival list is pushed on `session.hook("compaction")` (the `compactionContext` key is a v1-only parse-compat entry) |
 | The plugin behaves oddly — two dialogs, doubled hooks, tools registered twice | It is loaded twice. `opencode.json` and `opencode.jsonc` are merged, and the host's dedupe matches only an identical string, so the same package under two spellings (or in both files) is two personalities. Count the Team entries across BOTH files; `msg="loading plugin"` appearing twice for one id is the proof |
@@ -469,7 +469,7 @@ dump) and `TM_CONFIG_AUTOCREATE` (the auto-create off switch).
 | 征求用户同意 | 宿主官方逐次弹窗 | **插件在 v2 弹不出对话框。** 原本该问的受治理调用一律**直接拒绝**，并说明是"没人可问"而不是"问了被拒"。你看到的弹窗都来自宿主自己（权限规则、越出项目目录） |
 | 联网 | 22 个域名白名单 + 确认弹窗 | **域名门禁关掉**（`webfetchAllowedDomains` 在 v2 上默认 `["*"]`）：2.x 插件弹不出确认框，"批准后放行"等于让 agent 去等一个永远不会出现的窗口。地址类别照管（就 `tm_webfetch`/`tm_search` 这些受治理通道而言；宿主 `browser_*` 自 2026-11-07 起不在任何插件墙之后）——元数据 / 链路本地 / 保留网段在任何设置下都拒；私网（RFC1918、CGNAT、ULA、IPv6 链路本地、`.localhost`）也拒，但拒绝语现在给出两条出口而不是承诺点击：在全局 `team-mode.jsonc` 里写 `"privateSpace": "allow"`（放开整段），或把那一台主机名写进 `webfetchAllowedDomains`（只放开它自己）。**回环（`127/8`、`::1`、`localhost`）默认放行**——它只打到用户自己机器上的服务，而一道唯一出口是"插件弹不出来的确认框"的门禁，是墙不是门 |
 | 非阻塞命令 | `tm_pty`——**已随 v1 支持一起移除** | **完全不注册**——v2 插件上下文没有 pty 域，这个工具只能报自己缺缝。慢步骤请一条一个 `shell` 调用（各自带 `timeout`），并把输出 tee 到日志好回读 |
-| 子代理 | 需要 `OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS=true` | 原生能力；插件对每次 `subagent` 强制 `background: true`，所以 **2.x 不要去设那个环境变量**（那是 v1 的补丁，在这里什么也不改变，只会让人误判）。反面的同一条规则（`78e7d48`，在 `main` 上——**待发布**，已发布的 1.9.7 还没有它）：**非领队**的 Team 会话若在自己的工具调用上传来真值 `background`，会被改写成 `false`，调用照常在前台跑完——已结算的子会话没有接收方，迟到的后台唤醒是一次静默丢弃。领队不会被改写，`subagent` 这一层被无条件跳过，两个相反的力不会落在同一个调用上 |
+| 子代理 | 需要 `OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS=true` | 原生能力；插件对每次 `subagent` 强制 `background: true`，所以 **2.x 不要去设那个环境变量**（那是 v1 的补丁，在这里什么也不改变，只会让人误判）。反面的同一条规则（`78e7d48`，**自 1.9.8 已发布**；更早的发布版没有它）：**非领队**的 Team 会话若在自己的工具调用上传来真值 `background`，会被改写成 `false`，调用照常在前台跑完——已结算的子会话没有接收方，迟到的后台唤醒是一次静默丢弃。领队不会被改写，`subagent` 这一层被无条件跳过，两个相反的力不会落在同一个调用上 |
 | 对你其它模式的影响 | 插件钩子是全局的 | **没有影响。** 每个钩子都先看会话归属，所以 `build`、`plan` 和你自己装的 agent 都保持刚装好 OpenCode 时的样子——不会从它们的请求里删工具、不会设温度、不会卸载结果、不会收紧权限、也不会把它们的派发改成后台 |
 
 ### 前置条件
@@ -640,11 +640,11 @@ opencode service restart
 
 - **要装** → 运行 `.\scripts\install.ps1 -ComputerUse`（POSIX：`bash scripts/install.sh --computer-use`）。
   把它自己输出的"已存在 / 跳过"或撤销提示**原样**转述，不要改写。
-  然后 `opencode service restart`——**一次，而"一次"这个下限是 `main` 的说法（待发布）**：每个版本一个
-  release 目录是 `b3393a3` 才改的，而**已发布的 1.9.7 安装器仍是原地 `uv tool install --force`**，
-  Windows 不会替换宿主正占着的 exe，所以那一版仍是老的两趟：删条目 → 重启 → 装 → 再重启。在 `main`
-  上，安装器还会对它写入的目录先跑 `--selftest`（`<releases>/<版本>/computeruse-mcp/Scripts/computeruse.exe`，
-  POSIX 为 `.../computeruse-mcp/bin/computeruse`；1.9.7 的布局是 `<uv tool dir>/computeruse-mcp/Scripts/computeruse.exe`），
+  然后 `opencode service restart`——**一次；这个"一次"的下限自 1.9.8 起就是发布现实**：每个版本一个
+  release 目录（`b3393a3`）就在发布出去的安装器里；**1.9.7 及更早的安装器是原地 `uv tool install --force`**（历史），
+  Windows 不会替换宿主正占着的 exe，所以那一版走的是老的两趟：删条目 → 重启 → 装 → 再重启。1.9.8
+  的安装器还会对它写入的目录先跑 `--selftest`（`<releases>/<版本>/computeruse-mcp/Scripts/computeruse.exe`，
+  POSIX 为 `.../computeruse-mcp/bin/computeruse`；1.9.7 时代的布局是 `<uv tool dir>/computeruse-mcp/Scripts/computeruse.exe`），
   非 0 就**一个配置字节都不写**。最后 `tm_stats`——新的**计算机使用**小节会
   列出它**实际看到**的工具名。**工具名是运行时量出来的，不是假设的**：插件记录真实到达的名字
   （实测拼写是 `computeruse.control_status`），所以在 `tm_stats` 给出名字之前，不要在你自己写的
@@ -671,12 +671,12 @@ opencode service restart
 
 ```bash
 node scripts/lib/config-surgery.cjs <cfg> mcp-remove computeruse # 1. 删掉那个键
-rm -rf <releases 根目录>                                     # 2. 只在 `main`（待发布，b3393a3）上有：
+rm -rf <releases 根目录>                                     # 2. 1.9.8+ 的安装器才有（b3393a3）：
                                                              #    %LOCALAPPDATA%\te-river\computeruse\releases
                                                              #    ${XDG_DATA_HOME:-~/.local/share}/te-river/computeruse/releases
-uv tool uninstall computeruse-mcp                            # 3. **已发布的 1.9.7** 那一套——它的工具就在
+uv tool uninstall computeruse-mcp                            # 3. **1.9.7 时代（1.9.8 之前）**那一套——它的工具就在
                                                              #    uv 自己的工具目录里，不在 <releases> 下
-rm -rf "%LOCALAPPDATA%/te-river/computeruse"                 # 4. 审计轨（在 `main` 上还连带全部版本目录）
+rm -rf "%LOCALAPPDATA%/te-river/computeruse"                 # 4. 审计轨（1.9.8+ 上还连带全部版本目录）
 rm -f <配置目录>/team-mode.computeruse-declined                   # 5. 只有拒绝过才需要
 ```
 
@@ -710,12 +710,12 @@ node ~/.config/opencode/node_modules/@te-river/opencode-team-mode/scripts/gen-v2
 **手工升级的两个坑：**
 
 - **`npm install @te-river/opencode-team-mode@latest` 可能什么都不动。** 如果你的 `package.json` 写的是 caret 区间（`^1.9.0`）
-  且 lockfile 钉住了已解析的版本，npm 会认为区间已满足，旧副本原地不动——磁盘上的版本号不变。请装**已发布的精确版本**（`@1.9.7`），
+  且 lockfile 钉住了已解析的版本，npm 会认为区间已满足，旧副本原地不动——磁盘上的版本号不变。请装**已发布的精确版本**（`@1.9.8`），
   或先删掉 lockfile 里那一条。核对实际拿到什么：
   `node -p "require('<dir>/node_modules/@te-river/opencode-team-mode/package.json').version"`。
 - **一个 v1 遗留环境变量。** `OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS` 是 1.18.x 的权宜之计；2.x 上子代理本来就是后台，
   插件还在每次 `subagent` 派发时强制 `background:true`（而**非领队**的 Team 会话若在自己的工具调用上
-  要 `background`，会被改写成 `false` 并改在前台跑——`78e7d48`，在 `main` 上，**待发布**），所以它在这里不起作用。安装器会打印撤销命令——Windows 上
+  要 `background`，会被改写成 `false` 并改在前台跑——`78e7d48`，自 1.9.8 已发布），所以它在这里不起作用。安装器会打印撤销命令——Windows 上
   `REG delete HKCU\Environment /v OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS /f`，macOS 用 `launchctl unsetenv …`，
   Linux 用 `systemctl --user unset-environment …`。
 
@@ -745,10 +745,10 @@ node ~/.config/opencode/node_modules/@te-river/opencode-team-mode/scripts/gen-v2
 
 **R6（环境变量保护）默认开启**（`envProtect` 默认 `"strict"`；规范取值 `strict` / `standard` / `off`）。Team 角色用原生 `read` 读 `.env` 会被直接拒；
 读环境变量的 shell 命令会走宿主自己的权限提示。关闭方式：插件选项 `envProtect: false`，或在**全局/system**文件里写 `"envProtect": "off"`（它是红线键）
-——但这个开关到底管什么要看清楚。**在 `main` 上（`65f738f` + `3df9c2e`，待发布）它比以前窄：**`off` **只关 R6 的细粒度 ask 面**（`strict` / `standard` 的逐命令判定，加上你自己的 extra-deny 偏好），
+——但这个开关到底管什么要看清楚。**自 1.9.8（`65f738f` + `3df9c2e`）它比以前窄：**`off` **只关 R6 的细粒度 ask 面**（`strict` / `standard` 的逐命令判定，加上你自己的 extra-deny 偏好），
 env 文件的**路径**红线不被它关掉——`.env` / shell rc 家族在任何取值下都照旧拒，`read` / `write` / `edit` / `glob` / `grep` 以及带 env 文件路径的输入字段都一样，
-因为一个能移除"没有同意路径那一类"的设置本身就成了那条同意路径。**已发布的 1.9.7 还没带上这次收窄**：那一版上 `off` 仍会把那四个路径面一起短路，`.env` 读不读得到
-就落到**你自己的宿主规则**上，而不是我们的 deny。`main` 上的拒绝语原文如此：
+因为一个能移除"没有同意路径那一类"的设置本身就成了那条同意路径。**1.9.8 之前的发布版还没带上这次收窄**：在那些版本上 `off` 仍会把那四个路径面一起短路，`.env` 读不读得到
+就落到**你自己的宿主规则**上，而不是我们的 deny。发布出去的拒绝语原文如此：
 `R6 红线：这个路径指向环境文件（.env / shell rc 家族），不授权、不弹窗；envProtect 的 off 不管这条红线，它只关细粒度 ask 面（strict/standard 判定与 extra-deny 偏好）。`
 
 仅存的 `TM_*` 环境变量是内部/测试开关，不是配置：`TM_STORE_RECLAIM`（测试覆盖 `storeReclaim` 键）、
@@ -774,7 +774,7 @@ env 文件的**路径**红线不被它关掉——`.env` / shell rc 家族在任
 | 选择器里领队显示成 `team`，或者 Team 不是默认 | 宿主按**文件名**取 agent id。机器上只要曾经有过 1.7 之前的 `team.md`，领队就以 `team` 注册，而安装器写的是 `default_agent: "Team"`——按文档，默认值指向一个找不到的 agent 时会**静默回退 build**。**1.7.2 已修**：生成器会把"已确认是同一个文件、仅大小写不同"的条目标成规范拼写。1.7.1 及更早版本重跑**修不好**（Windows 上从 `Team.md` 写入会保留旧拼写），需要手工两步改名：`team.md` → `Team.md` |
 | `/team-plan` 能跑但不是以那个专家身份跑 | 2.x 把 `mode: subagent` 文档化为"只在子会话里运行"。如果选定专家的命令行为不对，改法是角色定义里用 `mode: "all"`（请回报——这是本流程里唯一还没在活体宿主上验证过的一项） |
 | `tm_webfetch` 说它"没问任何人就直接拒绝" | v2 的预期行为：插件弹不出对话框。换一个不需要这次访问的源，或让宿主自己的权限规则放行。两类要分开说：云元数据 / 链路本地 / 保留网段是**红线**，两代宿主都没有授权路径；私网（RFC1918、CGNAT、ULA、IPv6 链路本地、`.localhost`）同样被拒，但在 2.x 上**有配置出口**——全局或 system 的 `team-mode.jsonc` 里写 `"privateSpace": "allow"`，或把那一台主机名写进 `webfetchAllowedDomains`（见上面联网那一行） |
-| `subagent` 好像把领队挡住了 | v2 上插件会对**领队**的 `subagent` 调用强制 `background: true`；如果你顺手设了老的 `OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS`，请取消它——那是 v1 的开关，在这里只会误导判断。而如果某个**专家**报告说它要的 `background` 在前台跑完了，那是 `78e7d48` 那层在正常工作（已结算的子会话没有接收方去接住迟到的后台唤醒），不是故障——这一层在 `main` 上（**待发布**，已发布的 1.9.7 不会改写它），`tm_stats` 里记作 `bg_forced_foreground` |
+| `subagent` 好像把领队挡住了 | v2 上插件会对**领队**的 `subagent` 调用强制 `background: true`；如果你顺手设了老的 `OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS`，请取消它——那是 v1 的开关，在这里只会误导判断。而如果某个**专家**报告说它要的 `background` 在前台跑完了，那是 `78e7d48` 那层在正常工作（已结算的子会话没有接收方去接住迟到的后台唤醒），不是故障——这一层自 1.9.8 已发布（更早的发布版不会改写它），`tm_stats` 里记作 `bg_forced_foreground` |
 | 某个工具的输出没被卸载 | 配置文件里写 `"nativeOffload": "off"`（或者那个 2.x 构建没有 `tool.execute.after` 缝）——`tm_stats` 会告诉你是哪一种 |
 | 会话不再自己提前压缩了（1.7.0 曾是模型窗口的 75%） | 那个触发器在 **1.7.1 已整体移除**（它随 1.7.0 发布）。压缩时机重新完全归宿主，跟没装插件一样。驱动它的三个开关（`TM_COMPACT_TRIGGER`、`TM_COMPACT_AT_PERCENT`、`TM_COMPACT_MIN_MS`）已删除；`team-mode.jsonc` 里若还留着它们，启动时会报为未知键而不是照旧生效。保留下来的是"只在宿主自己压缩时"才追加的一项：必须存活清单在 `session.hook("compaction")` 上推送（`compactionContext` 键是 v1-only 的解析兼容项） |
 | 插件行为怪：两次弹窗、钩子重复、工具像注册了两遍 | 它被加载了两次。`opencode.json` 与 `opencode.jsonc` 是合并读取的，而宿主去重只认完全相同的字符串，所以同一个包换两种写法（或者同时躺在两个文件里）就是两套人格。把两个文件里指向 Team 的条目一起数一遍；`msg="loading plugin"` 对同一个 id 出现两条就是证据 |

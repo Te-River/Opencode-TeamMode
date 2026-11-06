@@ -18,7 +18,7 @@
 - [为什么是 TeamMode？](#-为什么是-teammode)
 - [快速开始](#-快速开始)
 - [团队阵容](#-团队阵容)
-- [1.9.7 新增](#-197-新增)
+- [1.9.8 新增](#-198-新增)
 - [团队怎么运作](#-团队怎么运作)
 - [工具](#-工具)
 - [可选：计算机使用（真实桌面）](#-可选计算机使用真实桌面)
@@ -113,24 +113,21 @@
 
 ---
 
-## ✨ 1.9.7 新增
+## ✨ 1.9.8 新增
 
-*1.9.7 是当前发布版本。*
+*1.9.8 是当前发布版本。*
 
-**1.9.7 —— goal 功能的两半。** 宿主 2.2.x 自带 `opencode.goal` 插件，RPC **只暴露一个方法**（`get`）；写 RPC 根本不存在（验证方式是：在客户端定义里声明 `set`/`clear`/`pause` 再真的调用，宿主原话 `Unknown RPC method: opencode.goal.set`）。它的状态存在自己的 storage 命名空间里，`ctx.storage` 读不到。所以：
+**1.9.8 —— 执法这一批。** 下面每一条都已是发布现实；括号里写明 1.9.8 之前的构建是什么行为。
 
-- `status` 读宿主目标（objective、status、rounds、stalls、reason、boot）。在子会话里向上找父会话的目标（最多 5 层、带环保护）——那是这条工作线继承下来的契约。
-- `set` / `pause` / `resume` / `clear` **转投给宿主自己的 `/goal` 命令**，且不 await：那条命令会跑完一整轮宿主流程，await 它等于把调用方挂在那儿。所以答复写的是**「已提交」，不是「已生效」**——只有下一轮宿主自己报的 `status:"active"` 才算凭证。
-- **目标结束只有两条路，`clear` 不是常走的那条。** 宿主自己的 reviewer 读你**最后一条消息**就可能判 `complete`——一句自信的"做完了"才是用户契约真正的死因。`status` 把它报成**宿主的判断**，从不写成验收通过。
-- **收尾有闸门**：账本还有未完成项时 `clear`/`pause` 直接拒绝并点名 id；`resume` 从不拦；读不到账本时**明说**，不把"没看见"当成"没有"。
-- **领队听得见变化。** 宿主每次写入都 emit `events.changed`；`tm_goal` 订阅它，按状态去重（我们自己的 `set` 也会经由同一条事件回来），每次真实变更落一条不含 objective 正文的轨迹，并往领队下一张状态卡里放一行：*「宿主刚刚把目标改成 complete（第 N 轮）——这是宿主的判断，不是你的验收。」*
-- 写只有 **Lead 能发**；读对所有角色开放。`set` 拒绝空目标、拒绝宿主**实测**的 4000 字符上限、拒绝恰好是 `pause`/`resume`/`clear` 三个词之一的目标（宿主会把它当子命令执行），并在已有目标且状态不是 `complete` 时要求 `replace:true`。
-
-**随行的 computer-use 0.0.6**：每个工具都接受 `window: "<标题子串>"`——`screenshot` 裁剪到该窗口且**完全不抢焦点**，`click` / `scroll` / `drag` / `type_text` / `key` 先把该窗口提到前台、执行、再**把你原来的前台窗口还原**。工具描述的前 120 字符现在装的就是契约，因为 Code Mode 目录只显示这么多。
+- **六个专家不得再把自己的工作后台化。** 三层：SHARED_RULES 的硬规则覆盖全部六专家、领队 Delegation 节的自知条款、以及硬守卫层——非领队调用里的 truthy `background` 被改写成 `false`，调用照常在前台执行（那是执法生效，不是故障；领队豁免——它自己的后台唤醒本来就回得来）。机理：子代理一结算，此后的后台唤醒既不回流给它、也不上传给领队，结果没有接收者。每次改写落一条 `tm_stats` 的 `bg_forced_foreground`。
+- **`envProtect: "off"` 不再抬 env 文件路径红线**（`65f738f` + `3df9c2e`）。`off` 如今只管 R6 的细粒度 ask 面 + extra-deny；`.env` / shell rc 家族在任何取值下照旧拒，覆盖 `read` / `write` / `edit` / `glob` / `grep` 与带 env 文件路径的输入字段——发布出去的拒绝语原话写明了这个范围。1.9.8 之前的发布版里 `off` 会把路径面一并短路：那是缺陷，现已修复。
+- **computer-use 升级只要一次重启——一次就是下限**（`b3393a3`）。每个版本装进自己的带版本目录，不替换任何正在运行的文件，安装可以在 OpenCode 开着时做完；那一次重启只是让宿主加载新的 MCP command。1.9.7 及更早的安装器走的是原地 `uv tool install --force` 的两趟程序（历史）。
+- **插件不再对宿主内置浏览器设任何墙。** 2026-11-07 用户决定把 `v2-browser-gate.ts` 整层删除。**已接受并写明的后果**：被提供 `browser_*` 目录的角色经浏览器可达云元数据与私网地址——插件既不拦截、也不弹窗（2.x 本来就没有对话框）。保留的东西：`tm_webfetch` / `tm_search` 自己的地址红线、权限矩阵的角色可见性、`v2-offload` 保留寻址行的快照截断。
+- **computer-use 0.0.7 已发布**——`CU_AUDIT_MAX_BYTES`（默认 64 MiB——审计轨的总量上限，`0` = 不设上限）与 `CU_IMAGE_BUDGET_BYTES`（默认 4 MiB——本进程允许随回复附出的 JPEG 总预算）连同重复帧去重，从此是已发布能力。
 
 **v2 注册九个受治理工具：** `tm_fetch`、`tm_webfetch`、`tm_search`、`tm_memory`、`tm_join`、`tm_stats`、`tm_board_write`、`tm_ledger`、`tm_goal`。
 
-**main 已合入、尚未发布**（1.9.7 / computer-use 0.0.6 之后的下一版）：六个专家不得再把自己的工作后台化——硬层会把非领队调用里的 truthy `background` 改写成 `false`，调用照常在前台执行（那是执法生效，不是故障；领队不受禁）；`envProtect: "off"` 不再抬 env 文件路径红线——当前发布版 1.9.7 仍会被 `off` 短路，这是 main 上已修的缺陷；computer-use 的一次重启升级；以及 `CU_AUDIT_MAX_BYTES` / `CU_IMAGE_BUDGET_BYTES` 两个旋钮，它们将随 computer-use 0.0.7 发布（该 tag 尚不存在）。下文相应小节已就地标注。
+**此前（1.9.7）**——goal 功能的两半（`tm_goal`：读宿主目标；写转投宿主的 `/goal` 命令——**已提交，从不声称已生效**——收尾受账本闸门约束、写仅限 Lead），以及 computer-use 0.0.6 的窗口作用域（每个工具都接受 `window:`）：全文见 [CHANGELOG](./CHANGELOG.md)。
 
 ---
 
@@ -165,7 +162,7 @@
 | `tm_ledger` | Lead 的任务账本，存在宿主的 `ctx.storage` 里——2.x 不给插件 `todowrite`。 | 仅 Lead |
 | `tm_goal` | 读宿主目标；把 set / pause / resume / clear 转投 `/goal`。**已提交 ≠ 已生效。** | 读：全部角色 · 写：仅 Lead |
 
-**插件侧没有派发器。** `tm_dispatch` 已移除（这句是历史陈述，不是当前选项）：插件自己创建的子会话，你既不能从卡片打开，也不能从界面停掉。派工走宿主自己的 `task`——对领队来说 `{ background: true }` 就是标准形状（由插件强制），卡片可见、也能在宿主里停；`tm_join` 是收集侧。下一版起（**main 已合入、尚未发布**）六个专家不得把自己的工作后台化：非领队调用里的 truthy `background` 会被改写成 `false`，调用照常在前台执行——那是执法，不是故障；机理是子代理一结算，此后的后台唤醒既不回流给它、也不上传给领队，结果没有接收者。
+**插件侧没有派发器。** `tm_dispatch` 已移除（这句是历史陈述，不是当前选项）：插件自己创建的子会话，你既不能从卡片打开，也不能从界面停掉。派工走宿主自己的 `task`——对领队来说 `{ background: true }` 就是标准形状（由插件强制），卡片可见、也能在宿主里停；`tm_join` 是收集侧。自 **1.9.8** 起，六个专家不得把自己的工作后台化：非领队调用里的 truthy `background` 会被改写成 `false`，调用照常在前台执行——那是执法，不是故障；机理是子代理一结算，此后的后台唤醒既不回流给它、也不上传给领队，结果没有接收者。
 
 **浏览器与联网授权。** 交互式浏览是宿主的 `browser_*` 目录——2026-11-07 用户决定删除 `v2-browser-gate.ts` 后，插件不再对它设墙；谁能被提供该目录，仍由权限矩阵决定。Tester 带着它是为了验证你的项目的 UI；开放联网属于 Lead 和研究员。架构师、实现者、评审**没有联网授权**——那边出现联网问题，报成缺口，绝不模拟。没有原生浏览器目录的宿主（CLI / standalone）就没有浏览器，agent 会直说。
 
@@ -174,7 +171,7 @@
 ## 🖱️ 可选：计算机使用（真实桌面）
 
 一个**可选**的 MCP 服务器（`computeruse`，默认不装，作为独立的
-[Release 资产](https://github.com/Te-River/Opencode-TeamMode/releases/tag/computeruse-v0.0.6) 发布）：
+[Release 资产](https://github.com/Te-River/Opencode-TeamMode/releases/tag/computeruse-v0.0.7) 发布）：
 让 `Team`（主代理）和 **ComputerUser** 专家能截屏并用鼠标键盘操作。`researcher`、`tester`、
 `architect`、`implementer`、`reviewer` 在**三层**被挡住——因为第一层在真机上被证明是空操作：
 ① `permission.evaluate`，宿主**确实**会对 MCP 工具触发（`action=computeruse_control_status`，
@@ -207,11 +204,11 @@
 显式安装：`.\scripts\install.ps1 -ComputerUse`（POSIX `bash scripts/install.sh --computer-use`）；
 主安装流程从不碰它。
 
-**升级只要一次重启——而一次重启就是下限**（带版本目录这套机制 main 已合入、发布安装器里还没有）。新版本写进它自己的、带版本号的独立目录，所以任何正在运行的
+**升级只要一次重启——而一次重启就是下限**（带版本目录这套机制自 **1.9.8** 的安装器起就是发布现实；1.9.7 及更早是两趟原地覆盖——历史）。新版本写进它自己的、带版本号的独立目录，所以任何正在运行的
 文件都不会被替换：安装这一步本身就能在 OpenCode 开着的时候做完。那一次重启只是为了让宿主加载新的
 command；完全零重启做不到——宿主只在启动时读 MCP 连接，而本安装器从不杀进程。
 
-另有两个用户可见旋钮在 main 上合入，将随**待发布的 computer-use 0.0.7** 到来——已发布的 0.0.6 里没有它们：`CU_AUDIT_MAX_BYTES`（默认 64 MiB——审计轨的总量上限，`0` = 不设上限）
+已发布的 **computer-use 0.0.7** 带来两个用户可见旋钮——0.0.6 里没有它们：`CU_AUDIT_MAX_BYTES`（默认 64 MiB——审计轨的总量上限，`0` = 不设上限）
 与 `CU_IMAGE_BUDGET_BYTES`（默认 4 MiB——本进程允许随回复附出的 JPEG 总预算；一张图没附出，既不等于屏幕是
 空的，也不等于画面没变化）。
 
@@ -270,7 +267,7 @@ command；完全零重启做不到——宿主只在启动时读 MCP 连接，�
 |---|---|---|
 | `defaultAgent` | `true` | 检查并报告安装器写的 `default_agent` 指向谁。2.x 插件 ctx 没有 `agent.default`，插件没法替你设默认角色；`false` 只是跳过这项检查。 |
 | `autoCreate` | `true` | 全局文件缺失时，启动写一份惰性模板。 |
-| `envProtect` | `true` | `false`/`"off"` 的管辖面：R6 **细粒度 ask 面 + extra-deny**。它**不**抬 env 文件路径红线与地址红线——红线没有同意路径。**这个范围是 main 已合入、尚未发布（`65f738f`）：当前发布版 1.9.7 里 `off` 仍会把路径面一并短路——那是 main 已修掉的缺陷。** |
+| `envProtect` | `true` | `false`/`"off"` 的管辖面：R6 **细粒度 ask 面 + extra-deny**。它**不**抬 env 文件路径红线与地址红线——红线没有同意路径。**自 1.9.8（`65f738f`）起这就是发布现实：更早的发布版里 `off` 会把路径面一并短路——那个缺陷已修。** |
 
 2.x 的条目是字符串**或**带 `package`、`options` 的对象；1.x 的元组写法会被直接拒绝。选项确实送得到——boot 行读的就是对象形式。保留期属于配置而不是插件选项：`blackboardTtlDays`（默认 7）同时决定黑板和句柄的 TTL。
 

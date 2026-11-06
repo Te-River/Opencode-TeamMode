@@ -18,7 +18,7 @@
 - [Why TeamMode?](#-why-teammode)
 - [Quick start](#-quick-start)
 - [The team](#-the-team)
-- [What's new in 1.9.7](#-whats-new-in-197)
+- [What's new in 1.9.8](#-whats-new-in-198)
 - [How the team works](#-how-the-team-works)
 - [Tools](#-tools)
 - [Optional: computer use](#-optional-computer-use-real-desktop)
@@ -115,24 +115,21 @@ Slash commands map onto the same specialists: `/team-plan` (Architect), `/team-i
 
 ---
 
-## ✨ What's new in 1.9.7
+## ✨ What's new in 1.9.8
 
-*1.9.7 is the current release.*
+*1.9.8 is the current release.*
 
-**1.9.7 — the goal feature, both halves.** Host 2.2.x ships an `opencode.goal` plugin whose RPC exposes exactly one method (`get`); a write RPC does not exist (verified by declaring `set`/`clear`/`pause` in a client and calling them — the host answers `Unknown RPC method: opencode.goal.set`). Its state lives in its own storage namespace, which `ctx.storage` cannot read. So:
+**1.9.8 — the enforcement batch.** Everything below is a shipped fact; each bullet names what a pre-1.9.8 build did.
 
-- `status` reads the host goal (objective, status, rounds, stalls, reason, boot). In a child session it walks up to the parent's goal (≤5 hops, cycle-guarded) — the contract that line of work inherits.
-- `set` / `pause` / `resume` / `clear` are **forwarded to the host's `/goal` command** and never awaited: that command runs a whole host turn, so awaiting it would park the caller. The reply therefore says **submitted, never active** — only the host's own `status:"active"` on the next turn is proof.
-- **A goal ends two ways, and `clear` is the rarer one.** The host's own reviewer reads your *last message* and may mark the goal `complete` by itself — so a confident "done" is how a user's contract ends. `status` reports that verdict as the host's, never as acceptance.
-- **Ending is gated**: `clear`/`pause` refuse while the ledger still has open items and name their ids; `resume` is never gated; an unreadable ledger is announced instead of being treated as empty.
-- **The Lead hears the change.** The host emits `events.changed` on every write; `tm_goal` subscribes, dedupes by state (our own `set` echoes back through the same event), writes one trajectory row per transition without the objective text, and leaves one line in the Lead's next state card: *"the host just marked this goal complete (round N) — that is the host's verdict, not your acceptance."*
-- Writes are **Lead-only**; reads are open to all roles. `set` refuses an empty objective, the host's measured 4000-character cap, an objective spelled exactly `pause`/`resume`/`clear` (the host would run it as a subcommand), and requires `replace:true` over a goal in any status other than `complete`.
-
-**computer-use 0.0.6 ships alongside**: every tool now accepts `window: "<title substring>"` — `screenshot` crops to that window and **never steals focus**, while `click` / `scroll` / `drag` / `type_text` / `key` focus it, act, and **restore your previous foreground window** afterwards. The tools' first 120 characters now carry the contract, because that is all the Code Mode catalog shows.
+- **The six specialists may no longer background their own work.** Three layers: a `SHARED_RULES` hard rule for every specialist, a self-awareness clause in the Lead's Delegation section, and a hard guard that rewrites a truthy `background` on a non-lead call to `false` and lets the call run in the foreground — enforcement, not a failure (the Lead is exempt: its own background wake-ups do come back). The mechanism: once a child settles, a later background wake-up reaches neither it nor the Lead, so the result would have no receiver. Every rewrite lands in `tm_stats` as `bg_forced_foreground`.
+- **`envProtect: "off"` no longer lifts the env-file path red line** (`65f738f` + `3df9c2e`). `off` now governs only R6's fine-grained ask face + extra-deny; the `.env` / shell-rc family stays denied under every value, for `read` / `write` / `edit` / `glob` / `grep` and for env-file-bearing input fields — and the shipped refusal text says so verbatim. Releases before 1.9.8 let `off` short-circuit the path faces: that was a bug, now fixed.
+- **A computer-use upgrade takes one restart — and one restart is the floor** (`b3393a3`). Each version installs into its own versioned directory, so no running file is replaced and the install completes while OpenCode is up; the one restart is only what lets the host load the new MCP command. The 1.9.7 and earlier installers did the in-place `uv tool install --force` two-pass dance (history).
+- **The plugin no longer gates the host's built-in browser.** The 2026-11-07 user decision deleted `v2-browser-gate.ts` whole. **Accepted and stated consequence:** a role offered the `browser_*` catalog can reach cloud-metadata and private-space addresses through the browser — no interception, and no dialog (2.x gives a plugin none). What stays: `tm_webfetch` / `tm_search`'s own address red lines, the permission matrix's role visibility, and snapshot capping-keeping-addressing in `v2-offload`.
+- **computer-use 0.0.7 is released** — `CU_AUDIT_MAX_BYTES` (default 64 MiB — the total-size cap on the audit trail, `0` = no cap) and `CU_IMAGE_BUDGET_BYTES` (default 4 MiB — the per-process budget for JPEGs allowed to ride replies) plus repeat-frame dedup are shipped capabilities now.
 
 **v2 registers nine governed tools:** `tm_fetch`, `tm_webfetch`, `tm_search`, `tm_memory`, `tm_join`, `tm_stats`, `tm_board_write`, `tm_ledger`, `tm_goal`.
 
-**Merged on `main`, not in any published release yet** (the next release after 1.9.7 / computer-use 0.0.6): the six specialists may no longer background their own work — a hard layer rewrites a truthy `background` on a non-lead call to `false` and the call runs in the foreground (enforcement, not a failure; the Lead is exempt); `envProtect: "off"` no longer lifts the env-file path red line — the published 1.9.7 still lets `off` short-circuit it, a bug already fixed on main; the one-restart computer-use upgrade; and the `CU_AUDIT_MAX_BYTES` / `CU_IMAGE_BUDGET_BYTES` knobs, which will ship with computer-use 0.0.7 (the tag does not exist yet). The sections below mark each of these in place.
+**Earlier (1.9.7)** — the goal feature in both halves (`tm_goal`: reads the host goal; writes forwarded to the host's `/goal` — **submitted, never active** — ending gated on the ledger, writes Lead-only) and computer-use 0.0.6 window scoping (`window:` on every tool): full text in the [CHANGELOG](./CHANGELOG.md).
 
 ---
 
@@ -167,7 +164,7 @@ Sub-agents cannot message each other live, so coordination is a **structured rep
 | `tm_ledger` | The Lead's task ledger in the host's `ctx.storage` — 2.x gives a plugin no `todowrite`. | Lead only |
 | `tm_goal` | Reads the host's goal; forwards set / pause / resume / clear to `/goal`. **已提交 ≠ 已生效.** | read: every role · write: Lead only |
 
-**There is no plugin-side dispatcher.** `tm_dispatch` was removed (this sentence is history, not a current option): a child a plugin creates is a session you can neither open from a card nor stop from the interface. Delegation goes through the host's own `task` — for the Lead, `{ background: true }` is the standard shape (the plugin forces it), the card is visible and stoppable in the host, and `tm_join` is the collect side. From the next release (**merged on `main`, not published yet**) the six specialists may not background their own work: a truthy `background` on a non-lead call is rewritten to `false` and the call proceeds in the foreground — enforcement, not a failure, because once a child settles, its later background wake-up reaches neither side, so the result would have no receiver.
+**There is no plugin-side dispatcher.** `tm_dispatch` was removed (this sentence is history, not a current option): a child a plugin creates is a session you can neither open from a card nor stop from the interface. Delegation goes through the host's own `task` — for the Lead, `{ background: true }` is the standard shape (the plugin forces it), the card is visible and stoppable in the host, and `tm_join` is the collect side. Since **1.9.8** the six specialists may not background their own work: a truthy `background` on a non-lead call is rewritten to `false` and the call proceeds in the foreground — enforcement, not a failure, because once a child settles, its later background wake-up reaches neither side, so the result would have no receiver.
 
 **Browser and network grants.** Interactive browsing is the host's `browser_*` catalog — the plugin stopped policing it with the 2026-11-07 decision that deleted `v2-browser-gate.ts`; who is offered the catalog at all stays the permission matrix's call. The Tester carries it for UI verification of your project; open web belongs to the Lead and the Researcher. Architect, Implementer and Reviewer have **no network grant** — a web question there is reported as a gap, never simulated. A host with no browser catalog (CLI / standalone) has no browser at all, and the agent says so.
 
@@ -176,7 +173,7 @@ Sub-agents cannot message each other live, so coordination is a **structured rep
 ## 🖱️ Optional: computer use (real desktop)
 
 An **optional** MCP server (`computeruse`, off by default, shipped as its own
-[release asset](https://github.com/Te-River/Opencode-TeamMode/releases/tag/computeruse-v0.0.6))
+[release asset](https://github.com/Te-River/Opencode-TeamMode/releases/tag/computeruse-v0.0.7))
 that lets `Team` (the lead) and the **ComputerUser** specialist take screenshots and drive the
 mouse/keyboard. `researcher`, `tester`, `architect`, `implementer` and `reviewer` are turned away
 at **three** layers — because the first one we built turned out to be a no-op on a live host:
@@ -220,13 +217,13 @@ What is and is not protected:
 Install it explicitly: `.\scripts\install.ps1 -ComputerUse` (POSIX
 `bash scripts/install.sh --computer-use`); the installer's main flow never touches it.
 
-**Upgrading takes one restart — and one restart is the floor** *(the versioned-directory mechanism is merged on `main`, not in the published installer yet)*. A new version is written into its
+**Upgrading takes one restart — and one restart is the floor** *(shipped since **1.9.8** — installs made by the 1.9.7 and earlier installers still do the two-pass in-place dance: history)*. A new version is written into its
 own versioned directory, so no file the host is running gets replaced: the install itself happens
 while OpenCode is up. That one restart is only what lets the host load the new command, and a
 fully zero-restart upgrade is impossible — the host reads its MCP connections at startup, and this
 installer never kills a process.
 
-Two more user-visible knobs are merged on `main` for the **pending computer-use 0.0.7 — the published 0.0.6 does not have them**: `CU_AUDIT_MAX_BYTES` (default 64 MiB — the total-size cap on
+**computer-use 0.0.7 (released)** adds two user-visible knobs — 0.0.6 does not have them: `CU_AUDIT_MAX_BYTES` (default 64 MiB — the total-size cap on
 the audit trail, `0` = no cap) and `CU_IMAGE_BUDGET_BYTES` (default 4 MiB — the per-process budget
 for JPEGs allowed to ride replies; an image left out of a reply is not a blank screen and not
 "nothing changed").
@@ -287,7 +284,7 @@ That walk and precedence are the host's own config-layering rule, copied rather 
 |---|---|---|
 | `defaultAgent` | `true` | Check and report which agent the installer's `default_agent` names. The 2.x plugin ctx has no `agent.default`, so the plugin cannot promote anything; `false` skips the check. |
 | `autoCreate` | `true` | Write the inert global `team-mode.jsonc` at boot when absent. |
-| `envProtect` | `true` | Scope of `false`/`"off"`: the R6 **fine-grained ask face + extra-deny**. It does NOT lift the env-file path red line or the address red lines — a red line has no consent path. **That scope is merged on `main` (`65f738f`), not published yet: the current release 1.9.7 still lets `off` short-circuit the path face — a bug, fixed on main.** |
+| `envProtect` | `true` | Scope of `false`/`"off"`: the R6 **fine-grained ask face + extra-deny**. It does NOT lift the env-file path red line or the address red lines — a red line has no consent path. **Shipped as of 1.9.8 (`65f738f`) — releases before 1.9.8 let `off` short-circuit the path face; that bug is fixed.** |
 
 On 2.x an entry is a string **or** an object with `package` and `options`; the 1.x tuple form is rejected outright. Options do arrive — the object form is what the boot row reads back. Retention is configuration rather than an option: `blackboardTtlDays` (default 7) sets the blackboard and handle TTL.
 

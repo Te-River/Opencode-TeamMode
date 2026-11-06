@@ -13,7 +13,7 @@
 |---|---|
 | Package | `computeruse-mcp` (Python), released as a **GitHub Release asset**, never on npm |
 | Tag / asset | `computeruse-v<ver>` / `computeruse_mcp-<ver>-py3-none-any.whl` |
-| Current | **0.0.6** —— 这是已发布的最新版。下面 **Budgets / 预算与回收旋钮** 那节的两个环境变量已在 `main` 合入、**尚未发版**（随 0.0.7 走）：装在 0.0.6 上的进程读不到它们 |
+| Current | **0.0.7** —— 已发布（tag `computeruse-v0.0.7`）。下面 **Budgets / 预算与回收旋钮** 那节的两个环境变量自 0.0.7 起随包发布；装在 0.0.6 上的进程读不到它们——0.0.6 里没有（历史） |
 | MCP server name | `computeruse` (one lowercase token — the host's action prefix stays stable) |
 | Tools | `screenshot` `click` `type_text` `key` `scroll` `drag` `control_status` |
 | Allowed roles | `Team` (lead) · `ComputerUser` — the dedicated specialist. `researcher` and `tester` are **not** allowed |
@@ -41,8 +41,8 @@ The installer downloads the pinned wheel, **verifies its sha256 before installin
 
 A hash that does not match installs nothing and writes zero config bytes. The entry path is
 VERSIONED, and that is the whole upgrade mechanism — see the **Upgrade / 升级** section below
-(that versioned layout is `main`, **待发布**; the released 1.9.7 entry still points into uv's
-own tool dir).
+(the versioned layout ships with the **1.9.8** installer; an entry left by 1.9.7 or earlier still
+points into uv's own tool dir until its next upgrade).
 
 安装器会先校验 sha256，再 `uv tool install`（写进 `<releases>/<版本>/` 这个独立目录），再跑
 `--selftest`，最后才写配置 —— 哈希不符、或 `--selftest` 不是 0，就什么都不装、一个配置字节都不写，
@@ -71,11 +71,11 @@ to the largest title match — an app window beats its own dialog.
 ## Upgrade / 升级 —— 一次重启（不是一步都不需要，也不是两次）
 
 > **发版状态 / release status:** 这一节（每版本一个 `<releases>/<version>/` 目录、一次重启是下限、
-> `-ComputerUseReclaim` 两趟回收）是 `main` 上安装器的行为，来自 `b3393a3`，**尚未发版**——已发布的
-> `1.9.7` 安装器仍是原地 `uv tool install --force`，Windows 上它换不掉宿主正占着的 exe（`os error 32/5`），
-> 所以那一版仍是下面"为什么以前非要两次重启"描述的那两趟。
-> This section describes the installer on `main` (`b3393a3`) and is **not in the released 1.9.7**;
-> that build installs in place and still needs the two-pass procedure explained further down.
+> `-ComputerUseReclaim` 两趟回收）自 **1.9.8** 起是发布安装器的行为（`b3393a3`）。1.9.7 及更早的安装器
+> 是原地 `uv tool install --force`——Windows 上它换不掉宿主正占着的 exe（`os error 32/5`），
+> 所以那些版本要走下面"为什么以前非要两次重启"描述的那两趟（历史）。
+> This section describes the installer **as shipped since 1.9.8** (`b3393a3`); 1.9.7 and earlier
+> installed in place and needed the two-pass procedure explained further down (history).
 
 Every version gets its OWN directory, and the upgrade is the single edit that moves the
 config entry onto it:
@@ -163,7 +163,7 @@ writes a versioned directory in its place.
 
 ---
 
-## Budgets / 预算与回收旋钮（main 已实现，**随 0.0.7 发布**）
+## Budgets / 预算与回收旋钮（**已随 computer-use 0.0.7 发布**）
 
 两个环境变量，都在**生成侧**生效，都遵循"非法值回落默认而非关掉闸门"：
 
@@ -184,8 +184,7 @@ writes a versioned directory in its place.
 
 两个值都只在**进程启动时读一次**：改完要重启这个 MCP 服务器才生效，正在跑的进程不会自己重置预算。
 实现事实源：`audit.py`（上限与 `usage()`）、`capture.py` + `server.py`（附图预算与去重）。
-0.0.6 发布版没有这两个旋钮；它们在 main（审计上限自 c6d2285 起）等待 0.0.7 —— 别把它们写进
-0.0.6 的安装说明里。
+这两个旋钮已随 **0.0.7** 发布（审计上限的实现自 `c6d2285` 起）；0.0.6 及更早没有它们——别把它们写进给 0.0.6 的安装说明里。
 
 ---
 
