@@ -595,6 +595,10 @@ export function renderStats(
         line.native_ours !== undefined ? `本会话族共 ${line.native_ours} 次调用` : "",
         line.native_unmatched ? `其中不在治理面 ${line.native_unmatched} 次（没碰，也不算治理过）` : "",
         line.native_offloaded !== undefined ? `卸载 ${line.native_offloaded} 次` : "",
+        // P2: the payloads that were deliberately NOT hidden because tm_fetch had
+        // just served them.  Printed for the same reason the rest of this block
+        // exists — a counter nobody can read is a counter that can rot silently.
+        line.native_fetch_passthrough ? `其中 ${line.native_fetch_passthrough} 次是刚取回的载荷直通（不二次隐藏）` : "",
         // Recognised is not the same as rewritten: this is the number that says
         // "we can read this host's envelope format", and its being 0 while
         // sub-agents clearly ran says the opposite.

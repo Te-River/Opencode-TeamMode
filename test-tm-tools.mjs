@@ -1147,13 +1147,54 @@ try {
     // projection REPLACES paging — only the projected values come back
     assert.ok(!projItems.includes("uuuu"), "raw json body stays behind the handle (projection only)")
 
-    // (c) non-json handle: fields IGNORED, classic paged mode serves
+    // (c) P1 (2026-11-07): a `fields` request that CANNOT run must not fall back to
+    // the raw payload.  The old branch did exactly that: asked for `items[].path`,
+    // got the whole 23 KB body — which then got governed a second time on its way
+    // out of Code Mode ("点两次取全文，两次都只拿到预览").  It now answers compactly
+    // and says why, and the body never rides along.
     const textOff = offRead(runtimeT, "a".repeat(16000), "text", "path=t4000.txt").output
     const tRef = refOf(textOff)
     const tTok = tokOf(textOff)
-    const stillLines = (await runtimeT.tools.tm_fetch.execute({ ref: tRef, access_token: tTok, fields: "items[]" }, ctx)).output
-    assert.ok(stillLines.includes("aaaa") && stillLines.includes("--- 内容 ---"), "text handle + fields -> classic lines mode (arg ignored)")
-    assert.ok(!stillLines.includes("mode: fields"), "no projection shape on a non-json handle")
+    const onText = (await runtimeT.tools.tm_fetch.execute({ ref: tRef, access_token: tTok, fields: "items[]" }, ctx)).output
+    assert.ok(onText.startsWith("mode: fields | fields: items[] | 未生效: 句柄类型不是 json（content_type=text）"), "content_type=text + fields -> 未生效 names the handle type")
+    assert.ok(!onText.includes("aaaa") && !onText.includes("--- 内容 ---"), "…and the payload does NOT come back (this is the 23 KB bug)")
+    assert.ok(onText.includes("total_lines: ") && onText.includes("结构摘要:"), "…it still reports size + structure, so the caller can decide")
+
+    // (c2) a handle INDEXED as json whose body is not strict JSON (hand-written
+    // single-quote object): same compact refusal, reason parse_failed.
+    const looseBody = `{ 'items': [ ${Array.from({ length: 400 }, (_, i) => `{'path': '/p${i}', 'n': ${i}}`).join(", ")} ] }`
+    const looseOff = offRead(runtimeT, looseBody, "json", "path=loose.json").output
+    assert.ok(looseOff.includes("content_type: json"), "fixture sanity: the handle IS indexed as json")
+    const looseFetch = (await runtimeT.tools.tm_fetch.execute({ ref: refOf(looseOff), access_token: tokOf(looseOff), fields: "items[].path" }, ctx)).output
+    assert.ok(looseFetch.startsWith("mode: fields | fields: items[].path | 未生效: 载荷不是可解析 JSON"), "json-indexed but unparseable body -> 未生效 names the parse failure")
+    assert.ok(!looseFetch.includes("/p0") && !looseFetch.includes("--- 内容 ---"), "…and no body comes back")
+    // a `matched: 0` on VALID json is NOT this branch — it keeps its own small reply
+    assert.ok(projMiss.includes("matched: 0") && projMiss.includes("--- 投影 ---"), "regression: an empty projection on valid json still serves its projected (empty) reply")
+    // the trajectory says WHY, and carries no payload bytes (R6口径)
+    const tjRows = fs.readFileSync(runtimeT.store.trajectoryFile(), "utf8").trim().split("\n").filter(Boolean).map((l) => JSON.parse(l))
+    const skipped = tjRows.filter((r) => r.mode === "fields_skipped")
+    assert.equal(skipped.length, 2, "both refusals are on the trajectory — a skip nobody can see is how this shipped")
+    assert.deepEqual(skipped.map((r) => r.skip_reason), ["non_json", "parse_failed"], "the two measured reasons, in order")
+    assert.ok(
+      skipped.every((r) => typeof r.fields === "string" && !JSON.stringify(r).includes("/p0") && !JSON.stringify(r).includes("aaaa")),
+      "the row records path + reason, never the payload (R6)",
+    )
+
+    // (e) P2: what tm_fetch just served is fingerprinted (exact bytes, bounded
+    // window on the ONE shared pipeline), so the native-offload layer can leave it
+    // alone on its way out of Code Mode without a string-shaped guess.
+    const pagedJson = (await runtimeT.tools.tm_fetch.execute({ ref: jRef, access_token: jTok, mode: "lines" }, ctx)).output
+    assert.ok(runtimeT.pipelines.isServedPayload(pagedJson), "the rendered page tm_fetch just served is fingerprinted")
+    assert.ok(runtimeT.pipelines.isServedPayload(jsonBig), "…and so is the raw paged body (a program may return either form)")
+    assert.ok(
+      runtimeT.pipelines.isServedPayload(projItems),
+      "🟡1: a PROJECTED reply is fingerprinted too — a wide projection (fetchMaxLines 2000) can pass the threshold, so leaving it out would re-open the same symptom through the fields door",
+    )
+    assert.ok(
+      !runtimeT.pipelines.isServedPayload(`${jsonBig}\n`) && !runtimeT.pipelines.isServedPayload(`prefix\n${pagedJson}`),
+      "concatenated / wrapped text is NOT a hit — a miss is governed as before (conservative direction)",
+    )
+    assert.ok(!runtimeT.pipelines.isServedPayload("never served by tm_fetch"), "and unrelated text never matches")
 
     // (d) T4 seed domains: merged into the DEFAULT list, never into a
     //     user-narrowed one (config.ts itself stays the single source).
@@ -1201,7 +1242,7 @@ try {
     }
     assert.ok(merged.length === tm.DEFAULT_WEBFETCH_DOMAINS.length + 2, "merge adds exactly two hosts")
   }
-  console.log("6m-t. T4 tiering + projection: OK (4000/2000 split boundaries, json fields projection incl. miss/malformed, non-json ignores fields, tm_webfetch honors fields on a JSON body + ignores it on non-JSON, seed merge default-only)")
+  console.log("6m-t. T4 tiering + projection: OK (4000/2000 split boundaries, json fields projection incl. miss/malformed, P1 fields unusable -> compact 未生效 reply with no body (non_json + parse_failed, trajectory reasons, R6-clean row), P2 served-payload fingerprints exact-byte only, tm_webfetch honors fields on a JSON body + ignores it on non-JSON, seed merge default-only)")
 
   // ---------- 6m-c. URL TTL cache (item 6 of 2026-09-19) ----------
   // The web channel is the slowest thing the team does and the most

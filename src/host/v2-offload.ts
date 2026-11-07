@@ -115,6 +115,10 @@ export interface V2OffloadReport {
    *  apart from "this host's format is not the one we match" (which is exactly how
    *  the v1 `<task id=` matcher read as zero on v2). */
   envelopes: number
+  /** payloads tm_fetch had JUST served out of the run store, left verbatim because
+   *  hiding them would answer "取全文" with a preview of the page already in hand
+   *  (P2, 2026-11-07).  Counted so "we knowingly did not govern" is a number. */
+  passthroughFetch: number
   degraded: number
   tokensSaved: number
   byTool: Record<string, { seen: number; offloaded: number }>
@@ -125,6 +129,17 @@ interface OffloadDeps {
   pipelines: {
     nextStepId: () => string
     govern: (stepId: string, tool: string, content: string, opts: { contentType: ReturnType<typeof detectContentType>; clue?: string }) => unknown
+    /** P2: is this EXACT text a payload tm_fetch just served out of the store?
+     *  Optional — a partial/stub pipeline simply governs as before (fail closed
+     *  means "govern", never "serve"). */
+    isServedPayload?: (text: string) => boolean
+    /** Would `govern` actually offload this content?  The SAME threshold table,
+     *  asked before the passthrough may be claimed — a payload that could never be
+     *  hidden is not "knowingly left alone", it is simply not a decision. */
+    wouldOffload?: (content: string, contentType: ReturnType<typeof detectContentType>) => boolean
+    /** The shared run store, used ONLY for the passthrough row.  Optional for the
+     *  same reason: observability may never be the thing that breaks a call. */
+    store?: { appendTrajectory: (event: Record<string, unknown>) => void }
   }
   env?: Record<string, string | undefined>
   /** The resolved runtime config (nativeOffload + the two token budgets). */
@@ -240,7 +255,7 @@ export function applyV2NativeOffload(
 ): { registrations: Promise<V2Registration>[]; report: V2OffloadReport; active: boolean } {
   const cfg = deps.config ?? resolveConfig()
   const off = cfg.nativeOffload === "off"
-  const report: V2OffloadReport = { seen: 0, ours: 0, unmatched: 0, considered: 0, offloaded: 0, capped: 0, reportCapped: 0, envelopes: 0, degraded: 0, tokensSaved: 0, byTool: {} }
+  const report: V2OffloadReport = { seen: 0, ours: 0, unmatched: 0, considered: 0, offloaded: 0, capped: 0, reportCapped: 0, envelopes: 0, passthroughFetch: 0, degraded: 0, tokensSaved: 0, byTool: {} }
   const hook = (ctx as { tool?: { hook?: unknown } })?.tool?.hook
   if (typeof hook !== "function") {
     // No seam at all: report it, do not silently pretend the promise holds.
@@ -271,6 +286,40 @@ export function applyV2NativeOffload(
     if (off) return
     const found = locatableText(event?.result)
     if (!found) return
+    // Content class is inferred from the BODY, not from a path we do not have:
+    // that is the same basis tm_bash uses, so a 30 KB JSON stdout gets the data
+    // tier here and there too.  It is computed BEFORE the P2 test now, because the
+    // threshold question below needs the same class the govern call will use.
+    const contentType = detectContentType(found.text)
+    // P2 (2026-11-07): bytes tm_fetch JUST served out of the run store are the
+    // answer, not a payload to hide.  Governing them again is how "点两次取全文,
+    // 两次都只拿到预览" happened: the page became an `execute` result, `execute`
+    // is on the governed surface, so the body was replaced by a preview of itself.
+    // Identity is exact (sha256 of the whole text, in a bounded window on the ONE
+    // shared pipeline instance) — a program that concatenates, decorates or wraps
+    // the page misses and is governed exactly as before.  Conservative by design:
+    // a miss costs a preview; a false hit would dump arbitrary output ungoverned.
+    //
+    // `wouldOffload` gates the claim, not the effect: a page that is under the
+    // threshold could never have been hidden, so it is NOT "knowingly left alone"
+    // — it falls through to the normal path (considered + a no-op govern) and the
+    // passthrough counter stays for decisions that actually were made.
+    if (deps.pipelines.wouldOffload?.(found.text, contentType) && deps.pipelines.isServedPayload?.(found.text)) {
+      report.passthroughFetch++
+      try {
+        deps.pipelines.store?.appendTrajectory({
+          tool: "host",
+          step_id: "v2-offload",
+          event: "passthrough_fetch",
+          api: 2,
+          native_tool: tool,
+          tokens: estimateTokens(found.text),
+        })
+      } catch {
+        // observability may never be the thing that fails a tool call
+      }
+      return
+    }
     report.considered++
     // A sub-agent reply arrives wrapped in the host's own envelope.  Offloading it
     // means replacing the BODY and reproducing the wrapper: the host and the UI key
@@ -279,10 +328,6 @@ export function applyV2NativeOffload(
     const envelope = tool === "subagent" ? parseHostEnvelope(found.text) : null
     if (envelope) report.envelopes++
     const stepId = deps.pipelines.nextStepId()
-    // Content class is inferred from the BODY, not from a path we do not have:
-    // that is the same basis tm_bash uses, so a 30 KB JSON stdout gets the data
-    // tier here and there too.
-    const contentType = detectContentType(found.text)
     let governed: unknown
     try {
       governed = deps.pipelines.govern(stepId, `native:${tool}`, found.text, {

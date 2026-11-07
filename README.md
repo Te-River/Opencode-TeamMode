@@ -117,7 +117,7 @@ Slash commands map onto the same specialists: `/team-plan` (Architect), `/team-i
 
 ## ✨ What's new in 1.9.8
 
-*1.9.8 is the current release.*
+*1.9.8 is the feature batch below; **1.9.9** is the current release — a patch fixing tm_fetch's two hiding bugs (see the CHANGELOG).*
 
 **1.9.8 — the enforcement batch.** Everything below is a shipped fact; each bullet names what a pre-1.9.8 build did.
 

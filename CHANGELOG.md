@@ -7,6 +7,29 @@ registry saw 1.5.0 as the install-script fix release).
 
 ## [Unreleased]
 
+## [1.9.9] - 2026-11-08
+
+### Fixed
+
+- **`tm_fetch` 的两处"把它藏起来"（用户现场缺陷修复）。** 现场链条：`execute` 程序里
+  `tm_fetch {ref, fields:"items[].path"}` → ①句柄载荷不是可解析严格 JSON 时 **`fields` 被静默忽略**、
+  回退 `lines` 把整段 23KB 原文返回；②那段原文又作为 `execute` 的结果被 JIT **二次卸载**成新句柄——
+  用户点了两次"取全文"，两次都只拿到预览。
+  **P1**：`fields` 给了但用不上（句柄非 json / 载荷非严格 JSON）时**不再回退正文**，改回紧凑自述
+  （`未生效: <原因>` + `total_lines` + 结构摘要 + 下一步），轨迹落 `fetch/fields_skipped`
+  （只记 path 与 `parse_failed|non_json`，不记载荷字节）。`matched:0` 的合法 JSON 走原有小回复，语义未变。
+  **P2**：`tm_fetch` **实际交给调用方的字节**（分页正文、structure 渲染、以及 `fields` 的成功投影回复）
+  在共享 pipeline 上登记 sha256（64 槽 FIFO，只存哈希不存正文、不落盘）；`execute` 结果若与之**逐字节相等**
+  且**本来会被卸载**，则放行原文、计 `native_fetch_passthrough`、轨迹 `passthrough_fetch`——隐藏它的是
+  `execute` 层（内置浏览器 JIT 的同一层），这一条是唯一豁免：**拼接/包裹/切片即失配 → 照常治理**（保守方向），
+  `shell`/`read`/浏览器快照的治理一字未松（回归钉在，20KB 快照仍 capped）。注册表随进程消失：重启后取旧句柄
+  = 回到旧行为（该页会重新被治理）——注释写明，非泄漏。观察面：`tm_stats` 的启动小节会打印
+  `其中 N 次是刚取回的载荷直通（不二次隐藏）`（0 不打印）。
+  两轮独立验证：tester 端到端复现原症状（16.9KB 非严格 JSON + fields → 160B 自述；取回文本经 execute →
+  逐字直通、`passthroughFetch=1`、无新句柄；同尺寸任意文本/拼接 → 照常卸载；`browser_snapshot` → 仍 cap），
+  reviewer 两轮 approve（0C/0M，3🟡+3🔵 全修：投影回复也登记、豁免只在"本会卸载"时计数且阈值表单源、
+  容量 64+淘汰语义、diff 内死码清零、stats 打印、真实实例端到端）。无新依赖。
+
 ## [1.9.8] - 2026-11-07
 
 ### Fixed

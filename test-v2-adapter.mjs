@@ -1959,6 +1959,168 @@ console.log("7d2. the native snapshot stays ADDRESSABLE under the cap")
 }
 console.log("   OK (snapshot refs stay addressable under the cap; the kept/dropped arithmetic closes)")
 
+console.log("7d3. P2 — a payload tm_fetch already served is not hidden a second time")
+{
+  const { createServedPayloadRegistry } = await import("./dist/tm/pipelines.js")
+  // What tm_fetch hands back IS store bytes. Returning it from a Code Mode program
+  // made those bytes the `execute` RESULT, and `execute` is governed — so the body
+  // was replaced by a preview of itself ("点两次取全文，两次都只拿到预览").
+  const PAGE = "line " + "y".repeat(9000)
+  const reg = createServedPayloadRegistry()
+  reg.remember(PAGE)
+  const build = () => {
+    const calls = []
+    const rows = []
+    const f = makeFakeCtx({ directory: workspace("off"), agents: [] })
+    const o = applyV2NativeOffload(f.ctx, {
+      env: {},
+      pipelines: {
+        nextStepId: (() => { let n = 0; return () => `s${String(++n).padStart(4, "0")}` })(),
+        govern: (stepId, tool, content) => {
+          calls.push({ tool, len: content.length })
+          // Mirrors the real seam: under the threshold govern hands the content
+          // straight back (`offloaded:false`), over it, a handle.
+          return content.length >= 8000
+            ? { offloaded: true, ref: "tm://runs/r/steps/s0001/result", access_token: "tok", expire_at: 1777000000000, tokens: 2400, preview: "PREVIEW≤80" }
+            : { offloaded: false }
+        },
+        // Size stand-in for the real table (which is exercised end-to-end in (g)):
+        // this group tests THIS layer's decisions, and the point here is only that
+        // the threshold question is asked at all.
+        wouldOffload: (t) => t.length >= 8000,
+        isServedPayload: (t) => reg.has(t),
+        store: { appendTrajectory: (r) => rows.push(r) },
+      },
+    })
+    return { f, o, calls, rows }
+  }
+  const fire = (h, tool, text) => {
+    const ev = { tool, sessionID: "ses_p2", agent: "team", result: { content: [{ type: "text", text }] } }
+    h.f.hook("tool.execute.after").handlers.forEach((fn) => fn(ev))
+    return ev
+  }
+  // (a) the bug
+  {
+    const h = build()
+    const ev = fire(h, "execute", PAGE)
+    assert.equal(ev.result.content[0].text, PAGE, "a served payload reaches the context byte-exact")
+    assert.equal(h.calls.length, 0, "…and govern was never called on it")
+    assert.equal(h.o.report.offloaded, 0, "no second handle is minted…")
+    assert.equal(h.o.report.passthroughFetch, 1, "…and the passthrough is a COUNTER, not a silent skip")
+    assert.equal(h.o.report.seen, 1, "the call still counts as seen: coverage did not shrink")
+    assert.equal(h.rows.length, 1, "the skip lands on the trajectory")
+    assert.equal(h.rows[0].event, "passthrough_fetch", "the row names itself")
+    assert.equal(h.rows[0].native_tool, "execute", "and names the tool it skipped")
+    assert.ok(Number(h.rows[0].tokens) > 2000, "the row states how big the page was")
+    assert.ok(!JSON.stringify(h.rows[0]).includes("yyy"), "the row carries no payload bytes (R6口径)")
+  }
+  // (a2) 🟡2: a SMALL served page could never have been hidden, so passing it
+  // through is not a decision — it must not be counted as one, and it must stay
+  // visible as a considered payload on the normal path.
+  {
+    const small = "tiny page " + "y".repeat(180)
+    reg.remember(small)
+    const h = build()
+    const ev = fire(h, "execute", small)
+    assert.equal(ev.result.content[0].text, small, "a small served page still arrives byte-exact")
+    assert.equal(h.o.report.passthroughFetch, 0, "…but NO passthrough is claimed: it was never a candidate")
+    assert.equal(h.o.report.considered, 1, "…it counts as considered, like any other payload")
+    assert.equal(h.calls.length, 1, "…and govern really was asked (and answered 'not big enough')")
+    assert.equal(h.rows.length, 0, "…so no passthrough row is written for it")
+  }
+  // (b) regression nail: the same tool, anything else — still governed
+  {
+    const h = build()
+    const ev = fire(h, "execute", BIG)
+    assert.ok(ev.result.content[0].text.includes("tm_fetch") && ev.result.content[0].text.includes("PREVIEW≤80"), "an equally large non-fetch result is still offloaded")
+    assert.equal(h.o.report.offloaded, 1, "…counted as offloaded")
+    assert.equal(h.o.report.passthroughFetch, 0, "…and not as a passthrough")
+  }
+  // (c) conservative direction: wrapping changes the bytes -> a miss -> governed
+  {
+    const h = build()
+    fire(h, "execute", `${PAGE}\nextra line`)
+    assert.equal(h.o.report.passthroughFetch, 0, "concatenated text does not match the fingerprint")
+    assert.equal(h.o.report.offloaded, 1, "…so it is governed exactly as before")
+  }
+  // (d) the browser promise did not loosen: `execute` stays governed; only the
+  // EXACT bytes tm_fetch served skip, so a snapshot inside a program is still capped.
+  {
+    const { NATIVE_GOVERNED_TOOLS } = await import("./dist/host/v2-offload.js")
+    assert.ok(NATIVE_GOVERNED_TOOLS.has("execute"), "execute is still on the governed surface — P2 exempts bytes, not the tool")
+    const h = build()
+    const refs = Array.from({ length: 300 }, (_, i) => `  - button "n${i}" [ref=e${i + 1}]`).join(String.fromCharCode(10))
+    const ev = fire(h, "browser_snapshot", refs)
+    assert.ok(String(ev.result.content[0].text).includes("tm_fetch"), "a snapshot returned through a program is still capped with its handle")
+    assert.equal(h.o.report.capped, 1, "…and counted as capped")
+    assert.equal(h.o.report.passthroughFetch, 0, "…as a passthrough it is never counted")
+  }
+  // (f) 🟡3: capacity 64 — wide enough for a real paging run, and eviction puts a
+  // page back on the normal path (governed again), never into a permanent exemption.
+  {
+    const r2 = createServedPayloadRegistry()
+    for (let i = 0; i < 65; i++) r2.remember(`page-${i}`)
+    assert.ok(r2.has("page-64"), "the newest registration hits")
+    assert.ok(r2.has("page-1"), "…and everything inside the 64-slot window still hits")
+    assert.ok(!r2.has("page-0"), "the 65th registration evicted the oldest — eviction = governed again, never a leak")
+    const r9 = createServedPayloadRegistry()
+    for (let i = 0; i < 9; i++) r9.remember(`p-${i}`)
+    assert.ok(r9.has("p-0"), "a 9-page paging run then re-sending page 1 is still recognised (the 8-slot window was too small)")
+  }
+  // (g) 🔵6: the REAL pipeline instance wired into the REAL layer.  Both sides are
+  // individually consistent, so handing `applyV2NativeOffload` a DIFFERENT pipeline
+  // than the one `tm_fetch` registered into (v2.ts:530 builds it) leaves the stub
+  // tests green forever — this is the wiring, exercised end to end.
+  {
+    const tmMod = await import("./dist/tm/index.js")
+    const rt = await tmMod.createTmTools(
+      { directory: workspace("p2e2e"), client: {}, $: undefined },
+      { autoCreate: false, configRoots: { globalDir: workspace("p2e2e-cfg") } },
+    )
+    const BODY = Array.from({ length: 1400 }, (_, i) => `row ${i} ${"z".repeat(40)}`).join(String.fromCharCode(10))
+    const handle = rt.pipelines.govern(rt.pipelines.nextStepId(), "tm_read", BODY, { contentType: "text" })
+    assert.equal(handle.offloaded, true, "fixture: the payload really offloaded")
+    const page = (await rt.tools.tm_fetch.execute({ ref: handle.ref, access_token: handle.access_token }, { directory: "." })).output
+    assert.ok(page.length > 50000, "fixture: a real paged body, large enough that govern WOULD hide it")
+    assert.equal(rt.pipelines.wouldOffload(page, "text"), true, "the shared threshold predicate agrees it would be hidden")
+    const f = makeFakeCtx({ directory: workspace("p2e2e-ws"), agents: [] })
+    const o = applyV2NativeOffload(f.ctx, { pipelines: rt.pipelines, env: {} })
+    const ev = { tool: "execute", sessionID: "ses_e2e", agent: "team", result: { content: [{ type: "text", text: page }] } }
+    f.hook("tool.execute.after").handlers.forEach((fn) => fn(ev))
+    assert.equal(ev.result.content[0].text, page, "REAL pipeline + REAL layer: the fetched page reaches the context byte-exact")
+    assert.equal(o.report.passthroughFetch, 1, "…counted as a passthrough…")
+    assert.equal(o.report.offloaded, 0, "…with no second handle minted")
+  }
+  // (e) the counter reaches BOTH observation rows.  The shared definition is
+  // `observationCounters(source)`, which BOTH rows spread (#87: a count that only
+  // lands on teardown is invisible on a CLI run, which never reaches dispose); the
+  // surface row additionally spells its native_* fields out inline, so the field
+  // has to be there too or that literal drifts from its neighbours.
+  {
+    const v2src = fs.readFileSync(path.join(path.dirname(fileURLToPath(import.meta.url)), "src", "host", "v2.ts"), "utf8")
+    const surfaceBlock = v2src.slice(v2src.indexOf('step_id: "v2-surface"'), v2src.indexOf('...observationCounters("surface")'))
+    const ocStart = v2src.indexOf("observationCounters = (source) => ({")
+    const sharedBlock = v2src.slice(ocStart, v2src.indexOf("probe_chain_threw: probeChain.report.threw,", ocStart))
+    for (const [label, block] of [
+      ["v2-surface inline literal", surfaceBlock],
+      ["the shared observationCounters set (spread by v2-shutdown too)", sharedBlock],
+    ]) {
+      assert.ok(block.length > 0, `${label}: the block was located (an empty slice would fail the match for the wrong reason)`)
+      assert.match(
+        block,
+        /\bnative_fetch_passthrough: offload\.report\.passthroughFetch,/,
+        `${label} carries the P2 passthrough count, read off the report — never a literal`,
+      )
+    }
+    assert.equal(
+      (v2src.match(/\bnative_fetch_passthrough: offload\.report\.passthroughFetch,/g) ?? []).length,
+      2,
+      "exactly two places read it (the surface literal + the shared set) — a third copy is a second truth",
+    )
+  }
+}
+console.log("   OK (served bytes pass through byte-exact + counted + on the trajectory, only when govern WOULD have hidden them; other output, concatenations and browser snapshots are governed as before; 64-slot window; count rides BOTH observation rows off the same report field; real pipeline wired end to end)")
+
 console.log("8. the config projection — what the installer copies onto disk")
 const genRoot = workspace("gen")
 const GEN = fileURLToPath(new URL("./scripts/gen-v2-config.mjs", import.meta.url))

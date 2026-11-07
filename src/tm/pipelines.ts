@@ -17,6 +17,7 @@
  * failure degradation (governance faults never fail the task).
  */
 
+import { createHash } from "node:crypto"
 import type * as crypto from "node:crypto"
 import type { EnvProtectMode } from "../envprotect.js"
 import { estimateTokens, shouldOffload, shorten, type TmConfig } from "./config.js"
@@ -27,7 +28,7 @@ import {
   buildStructureSummary,
   detectContentType,
 } from "./preview.js"
-import { HANDLE_PAYLOAD_MISSING_MESSAGE, HANDLE_TOKEN_INVALID_MESSAGE, tmError } from "./result.js"
+import { HANDLE_PAYLOAD_MISSING_MESSAGE, HANDLE_TOKEN_INVALID_MESSAGE, toToolResult, tmError } from "./result.js"
 import { cleanShellError } from "./shell-bridge.js"
 
 // ---------- args coercion (pipelines are runtime-defensive) ------------------
@@ -40,6 +41,65 @@ function intArg(v: unknown, def: number): number {
   const n = typeof v === "number" ? v : Number.parseInt(String(v ?? ""), 10)
   return Number.isFinite(n) ? Math.trunc(n) : def
 }
+
+/** The text a ToolResult renders to.  `toToolResult` always answers `{output}`
+ *  (every branch of it does); the `string` member of the `ToolResult` union is
+ *  never produced there, so narrowing on it would be dead code. */
+function toolResultText(r: ReturnType<typeof toToolResult>): string {
+  return (r as { output: string }).output
+}
+
+// ---------- served-payload fingerprints (P2, 2026-11-07) ----------------------
+
+/**
+ * Identity of "bytes tm_fetch just handed back out of the run store".
+ *
+ * Why it exists: a Code Mode program that returns a fetched page makes those
+ * bytes the `execute` RESULT, and `execute` is on the native governed surface —
+ * so the layer that hides oversized output hid the very body the caller had just
+ * asked for ("取全文" answered with a preview of the page that was already in
+ * hand, then a second click the same way).  The user's ruling: what we served
+ * from our own store is not hidden again.
+ *
+ * Identity is EXACT — a sha256 over the whole returned text — never a prefix or
+ * a marker-shaped guess: a program that concatenates, decorates or wraps the page
+ * produces different bytes and is governed exactly as before (the conservative
+ * direction: a miss costs a preview, a false hit would dump arbitrary output).
+ * Only hashes are kept (R6: the registry is a fingerprint table, never a copy of
+ * the payload).
+ *
+ * 64 slots × 64 hex chars is a rounding error in memory, and the window has to
+ * cover a run of paging: a caller reading 9 pages then re-sending the first must
+ * still be recognised.
+ *
+ * `has()` deliberately does NOT refresh the entry (no MRU promotion): refreshing
+ * would make "come back to the same old page forever" an eternal exemption —
+ * exactly the kind of permanent widening this layer must not grow.  The cost of
+ * that choice is stated rather than hidden: a page that falls out of the window
+ * is simply governed again, i.e. the pre-P2 behaviour, never a leak.
+ */
+export function createServedPayloadRegistry(limit = 64): {
+  remember: (text: string) => void
+  has: (text: string) => boolean
+} {
+  const ring: string[] = []
+  const cap = Math.max(1, Math.trunc(limit) || 1)
+  const fingerprint = (text: string) => createHash("sha256").update(text, "utf8").digest("hex")
+  return {
+    remember(text) {
+      if (!text) return
+      const h = fingerprint(text)
+      const at = ring.indexOf(h)
+      if (at >= 0) ring.splice(at, 1) // same page again = newest, never a duplicate slot
+      ring.push(h)
+      if (ring.length > cap) ring.shift()
+    },
+    has(text) {
+      return Boolean(text) && ring.includes(fingerprint(text))
+    },
+  }
+}
+
 
 // ---------- dependencies ------------------------------------------------------
 
@@ -187,6 +247,9 @@ export function buildPipelines(deps: TmDeps) {
   // this async or defer the increment behind an await.
   let stepCounter = 0
   const nextStepId = () => `${deps.stepPrefix ?? ""}s${String(++stepCounter).padStart(4, "0")}`
+  // ONE registry per pipeline instance: tm_fetch registers what it serves, the
+  // native-offload layer (same instance, handed in by v2.ts) asks before governing.
+  const served = createServedPayloadRegistry()
 
   // (No `ctxDir(ctx)` helper here any more. Its doc carried fix batch T3 — prefer
   // the runtime's workspace root over the host process cwd, because the desktop
@@ -196,6 +259,28 @@ export function buildPipelines(deps: TmDeps) {
   // ctx directly (src/tm/dispatch.ts), so the fallback had no caller left.)
 
   /**
+   * THE threshold decision, in one place.  `govern` uses it on a payload it is
+   * about to store; the native-offload layer uses it (via `wouldOffload`) to ask
+   * whether a payload would be hidden at all — so the "is this big enough to
+   * govern" line cannot exist twice and drift apart.
+   */
+  function needsOffload(tokens: number, contentType: GovernOptions["contentType"]): boolean {
+    return shouldOffload(tokens, offloadThresholdFor(cfg, contentType))
+  }
+
+  /**
+   * Would `govern` offload this exact content?  Same table, same token口径, same
+   * answer — used by the native layer BEFORE it may claim "we knowingly did not
+   * govern this": a 200-byte page could never have been hidden, so passing it
+   * through is not a decision and must not be counted as one.
+   *
+   * `alwaysOffload` is not consulted: no caller of this predicate can force it.
+   */
+  function wouldOffload(content: string, contentType: GovernOptions["contentType"]): boolean {
+    return needsOffload(estimateTokens(content), contentType)
+  }
+
+  /**
    * Threshold governance.  Inline under the content-class threshold;
    * otherwise store full content + append trajectory and return the
    * handle.  A store failure degrades to truncated content + warning
@@ -203,8 +288,7 @@ export function buildPipelines(deps: TmDeps) {
    */
   function govern(stepId: string, tool: string, content: string, opts: GovernOptions): unknown {
     const tokens = estimateTokens(content)
-    const threshold = offloadThresholdFor(cfg, opts.contentType)
-    if (!opts.alwaysOffload && !shouldOffload(tokens, threshold)) {
+    if (!opts.alwaysOffload && !needsOffload(tokens, opts.contentType)) {
       store.appendTrajectory({ tool, step_id: stepId, event: "result", offloaded: false, tokens })
       return content
     }
@@ -251,7 +335,7 @@ export function buildPipelines(deps: TmDeps) {
         warning:
           `结果治理（黑板卸载）失败，已降级为截断返回：${shorten((err as Error)?.message ?? err, 120)}。` +
           `治理故障不使任务失败；需要全文请重跑原工具或缩小查询范围。`,
-        content: content.slice(0, Math.max(0, threshold) * 4),
+        content: content.slice(0, Math.max(0, offloadThresholdFor(cfg, opts.contentType)) * 4),
         tokens_estimate: tokens,
       }
     }
@@ -306,14 +390,17 @@ export function buildPipelines(deps: TmDeps) {
         // The token verified, so the handle IS ours — the file is what is missing.
         return tmError(tool, "store", `找不到载荷文件。${HANDLE_PAYLOAD_MISSING_MESSAGE}`)
       }
-      // T4 json field projection — `fields: "<dot-path>"` on a json handle
-      // returns ONLY the projected values.  A non-json handle IGNORES the
-      // arg (normal paged/structure serving); a json-indexed body that no
-      // longer parses (e.g. byte-capped truncation) likewise falls through.
+      // T4 json field projection — `fields: "<dot-path>"` returns ONLY the
+      // projected values.  P1 (2026-11-07): when `fields` is given but cannot run,
+      // this used to fall through to paged mode and ship the WHOLE payload — a
+      // 23 KB body in answer to a projection request, which then got governed
+      // again on its way out of Code Mode.  An unusable projection is now its own
+      // compact reply: the body never rides along, and the reason is stated.
       const fields = strArg(args.fields).trim()
-      const isJsonHandle = entry ? entry.content_type === "json" : true
-      if (fields && isJsonHandle) {
-        const proj = projectJsonFields(loaded.content, fields, cfg.fetchMaxLines)
+      if (fields) {
+        const contentType = entry?.content_type
+        const nonJson = contentType != null && contentType !== "json"
+        const proj = nonJson ? null : projectJsonFields(loaded.content, fields, cfg.fetchMaxLines)
         if (proj) {
           store.appendTrajectory({ tool, step_id: parsed.stepId, event: "fetch", ref, mode: "fields", fields })
           // rendered as a plain string: result.ts has no "fields" branch
@@ -329,14 +416,40 @@ export function buildPipelines(deps: TmDeps) {
               : `只回投影结果；取原始行用 mode:"lines"。`,
             "--- 投影 ---",
           ].join("\n")
-          return proj.values.length ? `${head}\n${proj.values.join("\n")}` : head
+          // P2: a PROJECTED reply is served store bytes too — and with
+          // `fetchMaxLines` at 2000 a wide projection can exceed the threshold, so
+          // leaving it unregistered would reintroduce the very symptom P2 removed,
+          // through the `fields` door.  Registering the tiny empty-projection reply
+          // as well is one hash of ~90 bytes: cheaper than a size branch, and it
+          // keeps the rule "anything tm_fetch served is fingerprinted" without
+          // exceptions to re-derive later.
+          const reply = proj.values.length ? `${head}\n${proj.values.join("\n")}` : head
+          served.remember(reply)
+          return reply
         }
+        // `fields` was asked for and could not be honored: say so, do NOT serve
+        // the payload.  Two reasons, both measured from the handle itself.
+        const skipReason = nonJson ? "non_json" : "parse_failed"
+        store.appendTrajectory({
+          tool, step_id: parsed.stepId, event: "fetch", ref, mode: "fields_skipped", fields, skip_reason: skipReason,
+        })
+        return [
+          `mode: fields | fields: ${fields} | 未生效: ${
+            nonJson
+              ? `句柄类型不是 json（content_type=${String(contentType)}）`
+              : "载荷不是可解析 JSON（可能被截断或非严格 JSON）"
+          }`,
+          `total_lines: ${loaded.content.split(/\r?\n/).length}`,
+          "结构摘要:",
+          buildStructureSummary(loaded.content, entry?.content_type ?? "text"),
+          `下一步：看键树用 mode:"structure"；确实要原文再用 mode:"lines"（可能很大，先想清楚要不要）。`,
+        ].join("\n")
       }
       const lines = loaded.content.split(/\r?\n/)
       const mode = strArg(args.mode).trim() === "structure" ? "structure" : "lines"
       store.appendTrajectory({ tool, step_id: parsed.stepId, event: "fetch", ref, mode })
       if (mode === "structure") {
-        return {
+        const page = {
           ref,
           mode: "structure",
           total_lines: lines.length,
@@ -346,6 +459,13 @@ export function buildPipelines(deps: TmDeps) {
             ? { ttl_expired: true, ttl_note: "已过 TTL 时点：下一次清扫可能回收此载荷，本轮请尽快聚合，别继续分页。" }
             : {}),
         }
+        // P2: remember the exact bytes this call hands back, in the two forms the
+        // caller can legitimately return from a Code Mode program — the summary
+        // text itself and the rendered page (SAME renderer that ships it, so the
+        // fingerprint cannot drift from the output).
+        served.remember(String(page.summary))
+        served.remember(toolResultText(toToolResult(page)))
+        return page
       }
       let offset = intArg(args.offset, 0)
       if (offset < 0) offset = 0
@@ -355,7 +475,7 @@ export function buildPipelines(deps: TmDeps) {
       const slice = lines.slice(offset, offset + limit)
       // offset past EOF must not produce a negative remaining (#9)
       const remaining = Math.max(0, lines.length - (offset + slice.length))
-      return {
+      const page = {
         ref,
         mode: "lines",
         offset,
@@ -373,13 +493,19 @@ export function buildPipelines(deps: TmDeps) {
         ...(ttlPast ? { ttl_expired: true } : {}),
         content: slice.join("\n"),
       }
+      // P2: the paged body and the rendered page are both "bytes we just served",
+      // remembered by exact fingerprint so a program returning either one is not
+      // hidden a second time on its way out through `execute`.
+      served.remember(page.content)
+      served.remember(toolResultText(toToolResult(page)))
+      return page
     } catch (err) {
       const info = cleanShellError(err)
       return tmError(tool, "execute", info.message, info.line)
     }
   }
 
-  return { nextStepId, govern, tmFetch, store }
+  return { nextStepId, govern, tmFetch, store, isServedPayload: (text: string) => served.has(text), wouldOffload }
 }
 
 /** The shared governance seam + tm_fetch retrieval (v2 native-offload + every

@@ -692,6 +692,10 @@ export const v2Personality: V2Plugin = {
             native_ours: offload.report.ours,
             native_unmatched: offload.report.unmatched,
             native_offloaded: offload.report.offloaded,
+            // P2: payloads we knowingly did NOT govern because tm_fetch had just
+            // served them out of the store.  Without this count, "we skipped on
+            // purpose" and "we never saw the call" print the same row.
+            native_fetch_passthrough: offload.report.passthroughFetch,
             native_envelopes: offload.report.envelopes,
             native_tokens_saved: offload.report.tokensSaved,
             native_offload_active: offload.active && offload.registrations.length > 0,
@@ -1388,6 +1392,7 @@ export const v2Personality: V2Plugin = {
       native_ours: offload.report.ours,
       native_unmatched: offload.report.unmatched,
       native_offloaded: offload.report.offloaded,
+      native_fetch_passthrough: offload.report.passthroughFetch,
       native_envelopes: offload.report.envelopes,
       native_tokens_saved: offload.report.tokensSaved,
       native_capped: offload.report.capped,
