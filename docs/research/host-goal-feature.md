@@ -189,3 +189,41 @@ carries the same warning.
 
 Still open (not built): subscribing to `changed` so a rewrite reaches the lead without a
 poll; rendering `boot`.
+
+## 2026-11-08 · re-verification on host 2.2.6 (binary + zero-token probe)
+
+Same method, newer host (`opencode v2.2.6`): a throwaway plugin declared
+`get/set/clear/pause/resume` on the `opencode.goal` client and called each one under
+`--model nope/nope` (no session, no request), plus a windowed read of the shipped
+binary:
+
+```
+get    = ok:null
+set    = reject: Unknown RPC method: opencode.goal.set
+clear  = reject: Unknown RPC method: opencode.goal.clear
+pause  = reject: Unknown RPC method: opencode.goal.pause
+resume = reject: Unknown RPC method: opencode.goal.resume
+storage("plugin:<utf16hex('opencode.goal')>:session:<sid>") = undefined
+```
+
+Binary (read-only window at the goal-plugin registration): `ZZ({id:"opencode.goal",
+methods:{get:{…}}, events:{changed:{…}}})` and `rpc.register(Nfe,{get:…})` — **still
+exactly one method**. The write path remains the host's own command
+(`usage: /goal <objective> | pause | resume | clear`), and `ctx.session` on 2.2.6
+exposes no goal-shaped key (`hook list create get remove switchAgent switchModel
+prompt generate command compact synthetic interrupt update move wait context
+instructions`).
+
+| claim | status on 2.2.6 |
+|---|---|
+| no write RPC (`set`/`clear`/`pause`/`resume` absent) | **still true** |
+| goal state unreadable through `ctx.storage` | **still true** (`undefined`) |
+| only write path = the `/goal` command via `ctx.session.command` | **still true** (both halves exist on 2.2.6) |
+| `events.changed` registered | **still true** in the registration shape |
+| `tm_goal` needs a code change for 2.2.6 | **no** — its seam set is identical |
+
+The two "still open" items of the 2.2.5 section were closed by TeamMode 1.9.7
+(`watchGoalChanges` subscribes to `changed`; `status` renders `boot`), so nothing in
+this file is pending on the plugin side — only the host's missing write RPC remains,
+and that is the host's call.
+
