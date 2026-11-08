@@ -33,6 +33,7 @@
  */
 
 import { createHash } from "node:crypto"
+import { readFileSync } from "node:fs"
 
 import { isExpired } from "../tm/refs.js"
 import { agents } from "../agents.js"
@@ -85,6 +86,29 @@ function directoryOf(ctx: V2Context): string {
   if (typeof loc?.directory === "string" && loc.directory) return loc.directory
   if (typeof loc?.project?.directory === "string" && loc.project.directory) return loc.project.directory
   return process.cwd()
+}
+
+/**
+ * The plugin's own build version, for the boot row — "which personality ran"
+ * gains "which build ran", so a user reporting a bug can name the install.
+ *
+ * Resolved from THIS module's URL (`dist/host/v2.js` sits two levels under the
+ * package root), never from `process.cwd()`: the cwd is the user's workspace,
+ * which is a different package or none at all.  Every failure path (manifest
+ * missing, torn JSON, a `version` that is not a non-empty string) answers
+ * `"unknown"` — the boot row is a diagnostic, and a diagnostic that can fail
+ * the boot is worse than one that admits it does not know.  Only the version
+ * string is returned; the path it was read from never leaves this function.
+ */
+function readPluginVersion(): string {
+  try {
+    const manifest = JSON.parse(readFileSync(new URL("../../package.json", import.meta.url), "utf8")) as {
+      version?: unknown
+    }
+    return typeof manifest.version === "string" && manifest.version.trim() ? manifest.version : "unknown"
+  } catch {
+    return "unknown"
+  }
 }
 
 /** The live seams the host's own goal feature exposes (measured on host 2.2.1):
@@ -153,6 +177,9 @@ export const v2Personality: V2Plugin = {
     }
 
     const directory = directoryOf(ctx)
+    // Same value on every row this process writes (boot / surface / shutdown), read
+    // once: the build cannot change under a live process.
+    const pluginVersion = readPluginVersion()
     // ---------- Team-scope isolation (#22, the user's requirement 2026-09-25) ----------
     // Every v2 hook fires for EVERY agent on this host.  This one object is what
     // each layer asks before it mutates a request, a result, or a permission —
@@ -671,6 +698,9 @@ export const v2Personality: V2Plugin = {
      *  as "never fired". */
     let observationCounters: (source: "surface" | "shutdown") => Record<string, unknown> = () => ({
       counters_at: "attach",
+      // The build is known at this point even though no counter is: an attach row
+      // that stayed silent about it would print 未记录 beside a boot row that has it.
+      plugin_version: pluginVersion,
       counters_note:
         "观察计数器还没接上（请求层与事件流当时尚未注册）——这一行里缺失的字段是「没有地方去读」，不是 0 次，别把它读成「宿主从没调用过」",
     })
@@ -1232,6 +1262,10 @@ export const v2Personality: V2Plugin = {
     }
     observationCounters = (source) => ({
       counters_at: source,
+      // The build that wrote this row. It rides the shared counter set (boot /
+      // surface / shutdown) so a reader never has to cross-reference two rows to
+      // learn the version of the process a snapshot came from.
+      plugin_version: pluginVersion,
       guard_seen: guards.report.seen,
       guard_actions: Object.entries(guards.report.byAction).map(([k, v]) => `${k}=${v}`).join(" "),
       guard_shell_matched: guards.report.shellMatched,
@@ -1413,6 +1447,10 @@ export const v2Personality: V2Plugin = {
         step_id: "v2-boot",
         event: "personality",
         api: 2,
+        // Which BUILD is answering, not just which personality — "用 status 看版本"
+        // was unanswerable from this section before. `unknown` is a real answer
+        // (manifest unreadable); it is never omitted or guessed.
+        plugin_version: pluginVersion,
         directory,
         tools_registered: registeredNames.length,
         tools_v1_only: [...V2_UNREGISTERED].join(","),

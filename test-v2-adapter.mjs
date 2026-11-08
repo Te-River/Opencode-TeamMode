@@ -349,6 +349,41 @@ const readDeathRows = (root) =>
   clearCfg()
 }
 
+console.log("1c. the boot row names the BUILD, not just the personality")
+// "用 status 看版本" had no answer: the boot row said which personality ran and
+// never which build.  The value is read from the package manifest at boot, so the
+// assertion reads the SAME manifest rather than hard-coding a version — a bump
+// must not turn a real assertion into a chore.
+{
+  const root = workspace("boot-version")
+  const tjRoot = path.join(root, "tj")
+  writeCfg({ trajectoryDir: tjRoot, dynamicTail: "off" })
+  try {
+    const dir = workspace("boot-version-ws")
+    const f = makeFakeCtx({ directory: dir, agents: allAgents })
+    const b = await withCapturedConsole(() => plugin.setup(f.ctx))
+    await b.value?.()
+    const boot = readDeathRows(tjRoot)
+      .filter((e) => e.step_id === "v2-boot" && path.basename(String(e.directory ?? "")) === path.basename(dir))
+      .pop()
+    assert.ok(boot, "the boot row is written")
+    const manifest = JSON.parse(fs.readFileSync(new URL("./package.json", import.meta.url), "utf8"))
+    const expected = typeof manifest.version === "string" && manifest.version ? manifest.version : "unknown"
+    assert.equal(
+      boot.plugin_version,
+      expected,
+      `the boot row carries the package version (${expected}), so "which build" has an answer`,
+    )
+    assert.ok(
+      !String(boot.plugin_version).includes("/"),
+      "…and it is the version string, never the path it was read from",
+    )
+    console.log("   OK (version comes from the package manifest at boot; unknown on any failure)")
+  } finally {
+    clearCfg()
+  }
+}
+
 // How our tools reach the model AT ALL.  The 2.0.16 binary decides it with
 // `options.codemode`: not-false means "catalog only", where the host keeps the
 // first line of the description (≤120 chars).  That is the real explanation for a

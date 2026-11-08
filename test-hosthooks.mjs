@@ -134,7 +134,7 @@ console.log("  7. capability probe: SKIPPED — v1 createCapabilityProbe removed
     // loaded and here is what it could not do" stayed a claim the user could not
     // check from inside a session — which is the whole reason tm_stats exists.
     const boot = summarizeEvents([
-      { ts: iso(0), tool: "host", step_id: "v2-boot", event: "personality", api: 2, tools_registered: 12, tools_total: 12, tools_v1_only: "tm_ptc_run", agents_default: "team", request_hooks: 2, subagent_background: "forced-true", guard_hooks: 1, note: "参数表是推导的" },
+      { ts: iso(0), tool: "host", step_id: "v2-boot", event: "personality", api: 2, plugin_version: "1.2.3", tools_registered: 12, tools_total: 12, tools_v1_only: "tm_ptc_run", agents_default: "team", request_hooks: 2, subagent_background: "forced-true", guard_hooks: 1, note: "参数表是推导的" },
       { ts: iso(1), tool: "host", step_id: "v2-shutdown", event: "personality", api: 2, counters_at: "shutdown", guard_seen: 7, guard_actions: "shell=5 read=2", guard_shell_matched: 1, subagent_seen: 2, subagent_forced: 2, tools_removed: "architect=19 team=8" },
       { ts: iso(2), run_id: "rA", tool: "host", step_id: "v2-surface", event: "personality", api: 2, counters_at: "surface", native_offload_active: true, native_seen: 1, native_offloaded: 1, native_fetch_passthrough: 2, native_tokens_saved: 12824, scope_ours: 9, scope_foreign: 2, scope_unknown: 1, guard_foreign_skipped: 1, probe_tool_count: 6, probe_agents: "team", probe_executed: "shell", probe_actions: "shell", probe_evaluations: 1, prune_enabled: true, prune_at_percent: 70, prune_keep_tail_percent: 40, prune_checked: 5, prune_pruned_messages: 3, prune_pruned_tokens: 4200, prune_below: 1, prune_no_limit: 2, prune_foreign_skipped: 1, prune_threw: 0, prune_last_percent: 82 },
       { ts: iso(3), run_id: "rA", tool: "host", step_id: "v2-agents", event: "personality", api: 2, agents_default: "team", agents_normalized: true },
@@ -144,6 +144,24 @@ console.log("  7. capability probe: SKIPPED — v1 createCapabilityProbe removed
     ok(bmd.includes("人格 **v2**") && bmd.includes("工具 12/12"), "…naming the personality that ran and how many tools landed")
     ok(bmd.includes("v1 独有 `tm_ptc_run`"), "…and saying out loud which tool v2 does NOT ship")
     ok(bmd.includes("子代理 forced-true"), "…plus the request-layer promise")
+    // "用 status 看版本": the row said WHICH personality, never WHICH build.  Both
+    // absence shapes have to stay readable: a legacy row (no field) says 未记录, and
+    // an unreadable manifest says unknown — neither crashes, neither reads as current.
+    ok(bmd.includes("插件版本 **1.2.3**"), "…and names the BUILD beside the personality")
+    {
+      const legacy = summarizeEvents([{ ts: iso(0), tool: "host", step_id: "v2-boot", event: "personality", api: 2 }])
+      ok(
+        renderStats(legacy, { runDirs: 1, roots: [] }).includes("插件版本 未记录"),
+        "a row written before the field existed says 未记录 instead of looking current",
+      )
+      const unknown = summarizeEvents([
+        { ts: iso(0), tool: "host", step_id: "v2-boot", event: "personality", api: 2, plugin_version: "unknown" },
+      ])
+      ok(
+        renderStats(unknown, { runDirs: 1, roots: [] }).includes("插件版本 unknown"),
+        "an unreadable manifest prints unknown as-is, never omitted",
+      )
+    }
     // 🔵5: the P2 passthrough count was recorded on both rows and printed by
     // neither — "recorded but never printed" is the exact defect this section was
     // added to remove, so the sentence has to be reachable from a surface row.

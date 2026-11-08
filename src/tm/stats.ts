@@ -626,8 +626,19 @@ export function renderStats(
         if (vis) out.push(`  - ${vis}`)
         continue
       }
+      // Which BUILD, beside which personality: the boot row carries the plugin
+      // package's own version. `unknown` prints as-is (a failed manifest read is a
+      // measured fact, not something to hide), and a row written before the field
+      // existed says 未记录 instead of silently reading as the current install.
+      const ver = typeof line.plugin_version === "string" ? line.plugin_version.trim() : ""
+      const versionBit = !ver
+        ? "插件版本 未记录"
+        : ver === "unknown"
+          ? "插件版本 unknown（读或解析包清单失败）"
+          : `插件版本 **${ver}**`
       const bits = [
         `人格 **${api}**`,
+        versionBit,
         // A3: label WHERE the counters on this row were read. The shutdown row is the
         // final total, a surface row a value-in-progress, and the attach row has none —
         // three different readings of the same absent field, so the row says which.
