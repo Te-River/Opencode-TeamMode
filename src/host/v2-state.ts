@@ -83,8 +83,6 @@ export interface StateCardRenderInput {
   ledger: Ledger | null
   children: StateCardChild[]
   boardRoot: string
-  /** 距上一张卡片以来卸载的消息数；0 / 缺省时整行省略。 */
-  pruneDelta?: number
   /**
    * 只算这个会话的子代理。  缺省 / 空 = 不渲染 children 行（见 `runningChildren`），
    * 绝不退化成「列全部」——那是别人的会话。
@@ -103,8 +101,6 @@ export interface StateCardInput {
   scope?: TeamScope
   loadLedger: (sessionID: string) => Promise<Ledger | null>
   children: () => StateCardChild[]
-  /** 累计离载条数（读 prune 报告的 `offloaded`）。  只取差量，所以「上轮」是可信的。 */
-  pruneCount?: () => number
   /** 读一次并消费掉「目标变更」提示；缺省 = 没有这条通道。 */
   goalNote?: (sessionID: string) => string | undefined
   /**
@@ -257,7 +253,6 @@ function childrenLine(runs: StateCardChild[], shown: number): string {
 function renderBody(
   input: StateCardRenderInput,
   rendered: LedgerItem[],
-  withPrune: boolean,
   childrenShown: number,
 ): string {
   const all = openish(input.ledger?.items ?? [])
@@ -272,8 +267,6 @@ function renderBody(
   // 目标被宿主改写时的一次性提示。  放在看板行之前：它是这一轮最该先看到的一条。
   if (input.goalNote) lines.push(`🎯 ${input.goalNote}`)
   lines.push(`看板：${shorten(input.boardRoot, STATE_CARD_BOARD_CHARS)}`)
-  const pruneDelta = Math.max(0, Math.floor(Number(input.pruneDelta ?? 0)) || 0)
-  if (withPrune && pruneDelta > 0) lines.push(`上轮修剪：${pruneDelta} 条消息已卸载（tm_fetch 可取回）`)
   return lines.join("\n")
 }
 
@@ -287,27 +280,17 @@ export function renderStateCard(input: StateCardRenderInput): string | null {
   if (!items.length && !runs.length) return null
   // 预算不够时的让位顺序，两者都不许说谎：
   //   ① 账本项从最旧一项开始裁（账本是追加序）；
-  //   ② `上轮修剪` 整行让位；
-  //   ③ children 行从尾部删，但计数保留（`运行子代理（N，仅列前 K）`）。
+  //   ② children 行从尾部删，但计数保留（`运行子代理（N，仅列前 K）`）。
   let rendered = items.slice()
-  let withPrune = true
   let childrenShown = runs.length
-  let card = assemble(input, rendered, withPrune, childrenShown)
+  let card = assemble(input, rendered, childrenShown)
   while (estimateTokens(card) > STATE_CARD_MAX_TOKENS && rendered.length > 0) {
     rendered = rendered.slice(1)
-    card = assemble(input, rendered, withPrune, childrenShown)
-  }
-  if (estimateTokens(card) > STATE_CARD_MAX_TOKENS && withPrune) {
-    // 让位顺序就是上面那三步：账本项（最旧先，上一个 while）→ `上轮修剪` 行（这里）
-    // → children 列表长度（下一个 while，计数保留）。绝不为凑预算先动 children。
-    // 最坏情况 ≈150 token：`看板：` ≤120 字符（shorten 上限）+ children 只留计数行，
-    // 两项叠加仍远低于 300 的上限。
-    withPrune = false
-    card = assemble(input, rendered, withPrune, childrenShown)
+    card = assemble(input, rendered, childrenShown)
   }
   while (estimateTokens(card) > STATE_CARD_MAX_TOKENS && childrenShown > 0) {
     childrenShown--
-    card = assemble(input, rendered, withPrune, childrenShown)
+    card = assemble(input, rendered, childrenShown)
   }
   return card
 }
@@ -315,10 +298,9 @@ export function renderStateCard(input: StateCardRenderInput): string | null {
 function assemble(
   input: StateCardRenderInput,
   rendered: LedgerItem[],
-  withPrune: boolean,
   childrenShown: number,
 ): string {
-  const body = renderBody(input, rendered, withPrune, childrenShown)
+  const body = renderBody(input, rendered, childrenShown)
   return `${STATE_CARD_MARKER}\nhash:${stateCardHash(body)}\n${body}`
 }
 
@@ -385,8 +367,6 @@ export async function applyV2StateCard(ctx: V2Context, input: StateCardInput): P
   }
   /** 每会话只记一次失败——否则一个坏 store 会按请求刷屏。 */
   const skippedLogged = new Set<string>()
-  /** 上一张卡片看到的累计修剪条数，用来算「上轮」的差量。 */
-  const pruneSeen = new Map<string, number>()
 
   registrations.push(
     await session.hook("context", async (event: V2SessionContext) => {
@@ -494,22 +474,10 @@ export async function applyV2StateCard(ctx: V2Context, input: StateCardInput): P
           }
           return
         }
-        let pruneDelta: number | undefined
-        let pruneNow: number | undefined
-        if (input.pruneCount) {
-          try {
-            pruneNow = Math.max(0, Math.floor(Number(input.pruneCount()) || 0))
-            const before = pruneSeen.get(sessionID) ?? 0
-            pruneDelta = Math.max(0, pruneNow - before)
-          } catch {
-            /* 没有修剪数据 = 这一行整行省略 */
-          }
-        }
         const card = renderStateCard({
           ledger,
           children: input.children(),
           boardRoot: input.boardRoot,
-          pruneDelta,
           sessionID,
           goalNote: input.goalNote?.(sessionID),
         })
@@ -526,7 +494,6 @@ export async function applyV2StateCard(ctx: V2Context, input: StateCardInput): P
           }
           input.sink?.set(sessionID, "state", card)
           report.injected++
-          if (pruneNow !== undefined) pruneSeen.set(sessionID, pruneNow)
           return
         }
         if (!card) {
@@ -543,14 +510,9 @@ export async function applyV2StateCard(ctx: V2Context, input: StateCardInput): P
           return
         }
         const at = event.system.findIndex(isMarkerEntry)
-        // m4: `pruneSeen` advances ONLY after the card actually lands.  Advancing
-        // before rendering swallowed the delta whenever the render was dropped
-        // (empty state, or a budget cut that removed the very line carrying it) —
-        // the next card then read "上轮 = 0" for work that really happened.
         if (at < 0) {
           event.system.push({ type: "text", text: card })
           report.injected++
-          if (pruneNow !== undefined) pruneSeen.set(sessionID, pruneNow)
           return
         }
         const prev = cardTextOf(event.system[at])
@@ -563,7 +525,6 @@ export async function applyV2StateCard(ctx: V2Context, input: StateCardInput): P
         const slot = event.system[at] as { text: string }
         slot.text = card
         report.replaced++
-        if (pruneNow !== undefined) pruneSeen.set(sessionID, pruneNow)
       } catch {
         report.threw++
       }

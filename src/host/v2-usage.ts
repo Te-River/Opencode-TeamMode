@@ -20,9 +20,9 @@
  * `ctx.session.compact({sessionID})` on its own once a session crossed 75% of the
  * window. That AUTOMATIC compaction was removed in 1.7.1 — a plugin that summarizes a
  * live conversation by itself is a context-losing action the user did not ask for, and
- * the host owns when a session is summarized. The readers stayed because
- * `v2-prune.ts` still needs the same formula and the same denominator for ITS OWN
- * percent: one definition of "how full is this window", not two that can drift.
+ * the host owns when a session is summarized. The readers stayed because the
+ * window-occupancy entry (`v2-state.ts`) still needs the same formula and the same
+ * denominator: one definition of "how full is this window", not two that can drift.
  *
  * WHY THE READERS LOOK THIS DEFENSIVE (evidence kept from the removed layer, because it
  * is the reason for every branch below): the live 2.0.23 request payload carries NO usage

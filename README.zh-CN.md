@@ -38,12 +38,24 @@
 > 安装 OpenCode 插件 @te-river/opencode-team-mode：本包**只支持 OpenCode 2.x**——1.18.x 人格已在 1.7.0 线里整体移除。
 > 按 https://raw.githubusercontent.com/Te-River/Opencode-TeamMode/main/docs/installation-v2.md 操作
 > （2.x 的插件不能创建 agent，七个角色和六条 `/team-*` 命令要靠那份指南里的生成步骤落到配置目录——
-> 这一步不是可选的）。然后跑一遍该指南里的验证检查。
+> 这一步不是可选的）。然后跑一遍该指南里的验证检查——验证必须零会话：不要执行 opencode run、不要开新会话（那会给用户留下一堆空会话），改用重启服务后读 boot 日志/trajectory 的方式核对。
 > URL 打不开（国内网络常见）就在同一路径前加镜像前缀 https://ghproxy.net/；npm 慢或不通就先
 > `npm config set registry https://registry.npmmirror.com`。
 > ```
 >
 > **装好之后只需要记住一条命令：** `/team-run <任务>` —— Team Lead 先出计划给你看，等你批准，然后调度整个团队。
+
+> **升级路径：** 已经装过、想升到最新版，把这段话粘给任意编码 agent：
+>
+> ```text
+> 升级 OpenCode 插件 @te-river/opencode-team-mode 到最新版（只支持 OpenCode 2.x）。
+> 按 https://raw.githubusercontent.com/Te-River/Opencode-TeamMode/main/docs/installation-v2.md 的「更新」一节操作。
+> 优先重跑安装器 scripts/install.ps1 / install.sh——它是唯一带迁移的路径：替换而非追加插件条目、重写并回读 default_agent、顺带重新生成角色文件。
+> 若手工升级，必须重跑 node <pkg>/scripts/gen-v2-config.mjs 重新生成七个角色和六条 /team-* 命令（角色文件里是提示词，新版可能改过）。
+> 最后 opencode service restart 让新版本生效（勿用 opencode reload），并跑指南里的验证检查：default_agent 仍是 Team、没静默退回 build。验证必须零会话：不要执行 opencode run、不要开新会话（那会给用户留下一堆空会话），改用重启后读 boot 日志/trajectory 的方式核对。
+> URL 打不开就在同一路径前加镜像前缀 https://ghproxy.net/；npm 慢或不通就先 npm config set registry https://registry.npmmirror.com。
+> 若 npm 装完版本没变，多半是 caret 区间 + lockfile 钉住了旧版——改装已发布的精确版本。
+> ```
 
 ---
 

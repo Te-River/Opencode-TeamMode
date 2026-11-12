@@ -412,6 +412,9 @@ const eq = (a, b, msg) => assert.strictEqual(a, b, msg)
 //     parses to `{}`, and resolveConfig({}) == registry default.
 // ---------------------------------------------------------------------------
 {
+  // The registry count is pinned here: the 6 prune keys left with the
+  // context-prune feature (65 → 59); a silent re-add must fail loudly.
+  assert.equal(CONFIG_KEYS.length, 59, "the registry carries 59 keys (the 6 prune keys were removed with the context-prune feature)")
   const text = renderConfigTemplate()
   // The template is INERT: every key is a COMMENT, so the file sets nothing.
   const parsed = parseJsonc(text)

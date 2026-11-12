@@ -85,8 +85,8 @@ export function makeFakeCtx({
   const instructionPutCalls = []
   const instructionRemoveCalls = []
   const instructionListCalls = []
-  /** How many times the catalog was listed — the prune layer's denominator read, so a
-   *  per-request catalog re-read is a number and not a shrug. */
+  /** How many times the catalog was listed — the window-occupancy reader's denominator
+   *  read, so a per-request catalog re-read is a number and not a shrug. */
   const modelListCalls = []
   /** The host goal bridge (`opencode.goal`, host 2.2.x): which client definitions were
    *  asked for, and what each `get` was actually called with.  `rpcData` is seeded only
@@ -209,9 +209,9 @@ export function makeFakeCtx({
         : { hook: mkHook("session") },
       shell: { hook: mkHook("shell") },
       // `model.list()` measured on 2.0.23: `{location, data:[{id, modelID, providerID,
-      // …, limit:{context, output}}]}`. The shape below is that shape, because the prune
-      // layer reads `limit.context` as the denominator and a fake with a friendlier
-      // shape would test the reading, not the contract.
+      // …, limit:{context, output}}]}`. The shape below is that shape, because the
+      // window-occupancy reader reads `limit.context` as the denominator and a fake
+      // with a friendlier shape would test the reading, not the contract.
       model: {
         async list(opts = {}) {
           modelListCalls.push({ ...(opts ?? {}) })

@@ -902,12 +902,15 @@ function Install-V2 {
     }
     Write-Host ""
     Write-Host "✔  Done! Restart OpenCode to activate (or run: opencode service restart)." -ForegroundColor Green
-    Write-Host "   Then check, in this order:" -ForegroundColor DarkGray
-    Write-Host "     1. opencode agents            → team, architect, implementer, reviewer," -ForegroundColor DarkGray
-    Write-Host "                                     tester, researcher" -ForegroundColor DarkGray
-    Write-Host "     2. a NEW session is Team      → ask it to run tm_stats and read its" -ForegroundColor DarkGray
-    Write-Host "                                     启动与人格 (boot & personality) section." -ForegroundColor DarkGray
-    Write-Host '     3. tm_ledger {action:"add",text:"smoke"} → an id + 已写入 ctx.storage' -ForegroundColor DarkGray
+    Write-Host "   Then check — all session-free (no 'opencode run', no new session):" -ForegroundColor DarkGray
+    Write-Host "     1. opencode agents            → Team, architect, implementer, reviewer," -ForegroundColor DarkGray
+    Write-Host "                                     tester, researcher, computerUser" -ForegroundColor DarkGray
+    Write-Host "     2. boot evidence              → the host log's 'loading plugin' line, or the" -ForegroundColor DarkGray
+    Write-Host "                                     newest v2-boot row in the workspace's" -ForegroundColor DarkGray
+    Write-Host "                                     .git/opencode-team/trajectory/runs/*/steps.jsonl" -ForegroundColor DarkGray
+    Write-Host "                                     (tools_registered / hooks / storage_probe)." -ForegroundColor DarkGray
+    Write-Host "   Optional, only if the user wants it: in a session THEY start themselves" -ForegroundColor DarkGray
+    Write-Host "   (it creates a session), tm_stats 启动与人格 + a tm_ledger smoke test." -ForegroundColor DarkGray
     Write-Host ""
 }
 
@@ -1135,7 +1138,9 @@ if ($bgSkip) {
 # ── done ────────────────────────────────────────────────────────────────────
 Write-Host ""
 Write-Host "✔  Done! Restart OpenCode Desktop to activate." -ForegroundColor Green
-Write-Host "   Self-check after the restart, in any session: ask the agent to run tm_stats" -ForegroundColor DarkGray
-Write-Host "   and look for the row '宿主后台 task 注入' — it proves which plugin build loaded" -ForegroundColor DarkGray
-Write-Host "   and whether the background sub-agent channel is live." -ForegroundColor DarkGray
+Write-Host "   Self-check after the restart — session-free: read the host log for the plugin's" -ForegroundColor DarkGray
+Write-Host "   'loading plugin' line (no 'opencode run', no new session needed)." -ForegroundColor DarkGray
+Write-Host "   Optional: in a session YOU start yourself (it creates a session), tm_stats shows" -ForegroundColor DarkGray
+Write-Host "   '宿主后台 task 注入' — which plugin build loaded / whether the background" -ForegroundColor DarkGray
+Write-Host "   sub-agent channel is live." -ForegroundColor DarkGray
 Write-Host ""

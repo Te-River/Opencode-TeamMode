@@ -7,6 +7,24 @@ registry saw 1.5.0 as the install-script fix release).
 
 ## [Unreleased]
 
+## [1.9.10] - 2026-11-12
+
+### Removed
+
+- **上下文裁剪（prune）功能整体移除（用户决策：缓存命中率 > 上下文缩短）。** 现场测量坐实其代价：prune 每轮改写历史中段，供应商前缀缓存从第一条被改的消息起整段失效——某真实会话 prune 活跃期平均命中 ~14%（对照期 ~96%），多烧约 4650 万输入 token；把裁剪集冻结的那一轮命中立刻回到 99.8%。曾实现滞回版（高水位触发 / 低水位目标）缓解，但用户拍板**直接删除**：宿主自身 compaction 足以兜底，而任何改写历史中段的操作都在制造本不存在的缓存重置。删除 `src/host/v2-prune.ts` 整层及全部接线、sha256 句柄去重机制、能力矩阵 Context Pruning 行、状态卡「上轮修剪」行、`tm_stats` 裁剪渲染、surface/shutdown 观测行全部 `prune_*` 字段。**配置注册表 65→59**，移除 6 键：`prune` / `pruneAtPercent` / `pruneKeepTailPercent` / `pruneOffload` / `pruneProtectPatterns` / `pruneFallbackContextTokens`。旧 `team-mode.jsonc` 残留的 prune 键按 unknown key 警告并忽略（设计行为，未加 deprecated 空操作键）。保护项完好：v2-usage 读取器（窗口占用仍用）、`pipelines.govern`（原生卸载）、compaction 存活清单、宿主自身压缩。顺带清除 prune 删除后失去唯一调用方的 `pipelines.alwaysOffload` 死选项。验证：全套件 8/8 绿 + correctness 评审五焦点通过 + 反例仪式；净删约 2100 行，无新依赖。
+
+### Added
+
+- **升级提示词（README 中英 TL;DR）。** 复用安装提示词的「粘给任意编码 agent」范式，指向安装指南「更新」节：优先重跑安装器（唯一带迁移）、手工升级必须重跑生成器、`opencode service restart` 生效、核对 `default_agent` 仍是 Team。
+
+### Changed
+
+- **安装/升级后验证改为零会话（用户决策：不许给用户留空会话）。** 安装指南 Step 4 与「安装 agent 指令 5. Verify」不再用 `opencode run`（连 `nope/nope` 探针也不行）、不再要求开新会话；必做核对改为三项——7 角色文件、配置回读（跨 json+jsonc 恰一条插件条目、`default_agent="Team"`）、启动证据（宿主日志 `loading plugin` 行或最新 run 的 `v2-boot` 轨迹行）。原 tm_stats / JIT 演示 / tm_ledger 冒烟移入「可选——活会话核对」节并标注会创建会话。install.ps1 / install.sh 自检打印同步（顺带修正过时角色列表 team→Team、补 computerUser）。安装 + 升级提示词也写入该零会话约束。`scripts/acceptance.mjs` 沙箱隔离、不污染用户会话，豁免。
+
+### Docs
+
+- **goal 功能 2.2.7 复核（host-goal-feature.md 新增 dated 节）。** 文档面四页（server/effect/rpc/overview）+ 只读二进制窗口扫描双重确认：`opencode.goal` 仍只注册 `get` 一个 RPC 方法，无写 RPC，写路径仍是 `/goal` 命令；事件订阅 live-only（官方引文）坐实「下一轮 status 拉取兜底」是必需。`tm_goal` 无需改码。
+
 ## [1.9.9] - 2026-11-08
 
 ### Fixed

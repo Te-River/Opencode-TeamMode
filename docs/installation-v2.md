@@ -134,20 +134,26 @@ returning cleanly is not evidence the plugin loaded.
    plugin loaded.
 4. Set `default_agent: "Team"` **last** (Step 3) — a default naming agents that are not on
    disk makes the host fall back to `build` silently.
-5. Verify, in this order, and report what you actually saw:
-   - `opencode-cli … run --standalone --print-logs` (or restart the desktop and read the
-     log) → exactly **one** line `msg="loading plugin" id=<our entry>
-     entrypoint=file:///…/index.js`, and **no** `failed to load plugin` naming us.
-   - a new Team session → `tm_stats`, section `启动与人格`: `tools_registered: 9`, and the
-     `作用域` line. The role check is the visibility line, not a
-      missing-names field (the boot row's `agents_missing` is gone): it distinguishes 已装而看不见 —
-      `agents_editor_unseen` with `agents_resolved_in_request` non-empty, because the host really
-      resolved those ids in a request — from 本进程无法区分, since `ctx.agent.transform` is a
-      snapshot from BEFORE the config directory merges. "Step 3 has not run" shows up at the host
-      (`--agent Team` does not resolve), never as a row in this table.
+5. Verify, in this order, and report what you actually saw. **Every check here is
+   session-free: do NOT run `opencode run` (not even a `--model nope/nope` boot probe)
+   and do NOT start a session to verify — each one leaves an empty session in the
+   user's desktop list.**
+   - `opencode service restart` (or restart the desktop), then read the evidence the
+     boot already wrote — no turn needed:
+     - the host log → exactly **one** line `msg="loading plugin" id=<our entry>
+       entrypoint=file:///…/index.js`, and **no** `failed to load plugin` naming us;
+     - the newest run's `steps.jsonl` under the workspace's
+       `.git/opencode-team/trajectory/runs/` → a `v2-boot` row (`step_id:"v2-boot"`,
+       written at `setup()` before any session exists) with `tools_registered: 9`,
+       `request_hooks` / `guard_hooks` attached, and `storage_probe: round-trip`
+       (the `ctx.storage` write-read round-trip that `tm_ledger` depends on).
    - If the log shows nothing at all about our id, the entry is under a key the host does
      not read (`plugin`, singular) or the directory has neither a `server` nor an `index` module. Both failures
      are silent by design; the absence of an error is not a success signal.
+   - The live-session view (`tm_stats` section `启动与人格` with the role-visibility line,
+     the JIT-offload demo, a `tm_ledger` smoke test) is OPTIONAL — Step 4 segregates it.
+     Run it only in a session the USER starts themselves, and say out loud that this
+     creates a session.
 6. Say which of the two spellings you left installed, and whether the package came from
    npm or from a local path — the Extensions panel cannot tell them apart (a loader file
    named `team-mode.js` and a directory whose plugin id is `@te-river/opencode-team-mode` print identically).
@@ -202,7 +208,7 @@ working in a new session and nothing explaining why it stopped. Note also that
 `default_agent` does not change the agent already stored on an existing conversation;
 it applies to new sessions.
 
-### Step 4 — Restart and verify
+### Step 4 — Restart and verify (session-free)
 
 ```bash
 opencode service restart   # official: restart the background server (the desktop
@@ -210,22 +216,52 @@ opencode service restart   # official: restart the background server (the deskto
 # path (upstream anomalyco/opencode#57719). Vars: `opencode service status` to check.
 ```
 
-Four checks, in this order:
+**The mandatory checks below create NO session.** Do not run `opencode run` — not even
+the `--model nope/nope` boot probe — and do not open a session to verify: every run
+leaves an empty session in the user's desktop list. The plugin writes its boot evidence
+at `setup()`, before any session exists; read that evidence directly.
+
+Three checks, in this order:
 
 1. `ls ~/.config/opencode/agents` shows the **seven** role files (`Team`, `architect`,
    `implementer`, `reviewer`, `tester`, `researcher`, `computerUser`). The picker itself
    lists `Team` only — every specialist is `mode: subagent`, so it runs in a child session
    rather than appearing as a picker entry. `opencode agents` prints the whole set.
-2. A new session starts as Team. Ask: `tm_stats` — the reply has a
-   **启动与人格** section showing the v2 boot line: which tools were registered, whether
-   `tool.execute.after` / `permission.evaluate` / `session.context` attached, the probe's
-   counts, and `storage_probe` (the `ctx.storage` round-trip that `tm_ledger` depends on).
-3. **JIT actually governs the host's tools**: ask Team to run a command that prints a lot
-   (e.g. `dir /s` / `ls -R` on a large tree). The tool result should come back as a short
-   preview with an offload handle, not the whole dump. If it comes back verbatim, the
-   offload layer is not attached — `tm_stats` says so.
-4. `tm_ledger { action:"add", text:"smoke test" }` answers with an id and
-   `已写入 ctx.storage`. That is the v2 ledger being live.
+2. Config, read back from disk: exactly **one** plugin entry pointing at our package
+   across `opencode.json` + `opencode.jsonc` (two entries load the plugin twice), and
+   `default_agent: "Team"`.
+3. Boot evidence — either source counts, neither needs a turn:
+   - the host log: exactly one `msg="loading plugin" id=<our entry>
+     entrypoint=file:///…/index.js` line, and no `failed to load plugin` naming us;
+   - the newest run's `steps.jsonl` under the workspace's
+     `.git/opencode-team/trajectory/runs/` (non-git workspaces use the sharded tmpdir
+     fallback): a `v2-boot` row with `tools_registered: 9`, `request_hooks` /
+     `guard_hooks` attached, `agents_default: installer:Team`, and
+     `storage_probe: round-trip` (the `ctx.storage` write-read round-trip that
+     `tm_ledger` depends on).
+
+#### Optional — live-session checks (only if the user wants them)
+
+**These create a session.** They are NOT part of the automated post-install verification:
+run them only in a session the USER starts themselves, after telling them it will appear
+in their session list.
+
+- A new session starts as Team. Ask: `tm_stats` — the reply has a
+  **启动与人格** section showing the v2 boot line: which tools were registered, whether
+  `tool.execute.after` / `permission.evaluate` / `session.context` attached, the probe's
+  counts, and `storage_probe`, plus the `作用域` line. The role check is the visibility
+  line, not a missing-names field (the boot row's `agents_missing` is gone): it
+  distinguishes 已装而看不见 — `agents_editor_unseen` with `agents_resolved_in_request`
+  non-empty, because the host really resolved those ids in a request — from 本进程无法区分,
+  since `ctx.agent.transform` is a snapshot from BEFORE the config directory merges.
+  "Step 3 has not run" shows up at the host (`--agent Team` does not resolve), never as a
+  row in this table.
+- **JIT actually governs the host's tools**: ask Team to run a command that prints a lot
+  (e.g. `dir /s` / `ls -R` on a large tree). The tool result should come back as a short
+  preview with an offload handle, not the whole dump. If it comes back verbatim, the
+  offload layer is not attached — `tm_stats` says so.
+- `tm_ledger { action:"add", text:"smoke test" }` answers with an id and
+  `已写入 ctx.storage`. That is the v2 ledger being live.
 
 ### Optional — computer use (real desktop)
 
@@ -276,8 +312,10 @@ Also check for the decline marker `<config dir>/team-mode.computeruse-declined`.
   directory it wrote (`<releases>/<version>/computeruse-mcp/Scripts/computeruse.exe`, POSIX
   `.../computeruse-mcp/bin/computeruse`; a 1.9.7-era entry points at
   `<uv tool dir>/computeruse-mcp/Scripts/computeruse.exe`) and writes **zero config bytes** if
-  that exited non-zero. Then `tm_stats`: the new **计算机使用** section must name the
-  tool ids it actually saw.
+  that exited non-zero. The remaining check is OPTIONAL and creates a session: only in
+  a session the USER starts themselves, ask for `tm_stats` — the new **计算机使用**
+  section must name the tool ids it actually saw (the install itself is already verified
+  session-free by Step 4's boot evidence).
   **The tool names are measured at runtime, never assumed** — the plugin records what actually
   arrived (the measured spelling is `computeruse.control_status`), so do not write a specific
   name into any summary of yours before `tm_stats` has shown it. The role split is enforced at
@@ -531,14 +569,21 @@ OpenCode 2.x（桌面版或 CLI），以及 PATH 上可用的 Node.js（插件�
    Team 就不存在，插件加载得再好也没用。
 4. 最后一步才写 `default_agent: "Team"`（第 3 步）——默认值指向不存在的 agent 会让宿主
    静默退回 `build`。
-5. 验证，按顺序，并且把你真正看到的说出来：
-   - `opencode-cli … run --standalone --print-logs`（或重启桌面端后读日志）→
-     **恰好一条** `msg="loading plugin" id=<我们的条目> entrypoint=file:///…/index.js`，
-     并且**没有**指名我们的 `failed to load plugin`。
-   - 新建一个 Team 会话 → `tm_stats` 的 `启动与人格`：`tools_registered: 9`，以及 `作用域`
-     那一行。角色这一项看的是可见性行，不再是缺名字段（boot 行的 `agents_missing` 已经去掉）：它区分"已装而看不见"——`agents_editor_unseen` 有值，且 `agents_resolved_in_request` 也有值，说明宿主在真实请求里解析过这些 id——和"本进程无法区分"，因为 `ctx.agent.transform` 拿到的是配置目录合并**之前**的角色集。"第 3 步没做"要到宿主那边才看得见（`--agent Team` 解析不到），不会在这张表里变成一行结论。
+5. 验证，按顺序，并且把你真正看到的说出来。**这里的每一项都不创建会话：不要跑
+   `opencode run`（连 `--model nope/nope` 的启动探针也不行），也不要为了验证去开新会话——
+   每跑一次，用户的桌面会话列表里就多一个空会话。**
+   - `opencode service restart`（或重启桌面端），然后直接读启动时已经写下的证据——不需要任何回合：
+     - 宿主日志 → **恰好一条** `msg="loading plugin" id=<我们的条目> entrypoint=file:///…/index.js`，
+       并且**没有**指名我们的 `failed to load plugin`；
+     - 工作区 `.git/opencode-team/trajectory/runs/` 下最新一个 run 的 `steps.jsonl` →
+       一行 `v2-boot`（`step_id:"v2-boot"`，在 `setup()` 里、任何会话存在之前就写了）：
+       `tools_registered: 9`、`request_hooks` / `guard_hooks` 已挂上、
+       `storage_probe: round-trip`（`tm_ledger` 依赖的那次 `ctx.storage` 写读回环）。
    - 日志里关于我们的 id 一个字都没有 → 条目写在了宿主不读的键下（单数 `plugin`），或者那个
      目录里既没有 `server` 也没有 `index` 模块。这两种失败都是设计上静默的，所以"没报错"不是成功信号。
+   - 活会话里的视图（`tm_stats` 的 `启动与人格` 与角色可见性行、JIT 卸载演示、`tm_ledger`
+     冒烟测试）是**可选**的——第 4 步把它们单独隔开。只在用户**自己**开的会话里做，
+     并且事先说明这会创建一个会话。
 6. 明确说清你留下的是哪种写法、包来自 npm 还是本地路径 —— 扩展面板分不出来：一个叫
    `team-mode.js` 的 loader 文件，和一个插件 id 恰好是 `@te-river/opencode-team-mode` 的目录条目，显示出来一模一样。
 
@@ -581,7 +626,7 @@ Windows 上的路径是
 时，宿主会**静默回落到 `build`**——你会看到新会话不是 Team，而现场没有任何解释。另外
 `default_agent` 不会改动已经存在的会话所用过的 agent，它只作用于新会话。
 
-### 第 4 步 — 重启并核对
+### 第 4 步 — 重启并核对（不创建会话）
 
 ```bash
 # 重启后台服务（官方指令；桌面端会自动重连）。不要用 `opencode reload`——
@@ -590,20 +635,43 @@ Windows 上的路径是
 opencode service restart
 ```
 
-按顺序做四项核对：
+**下面的必做核对一项会话都不创建。** 不要跑 `opencode run`——连 `--model nope/nope`
+的启动探针也不行——也不要开新会话来验证：每跑一次，用户的桌面会话列表里就多一个空会话。
+插件在 `setup()` 里、任何会话存在之前就写好了启动证据；直接去读那份证据。
+
+按顺序做三项核对：
 
 1. `ls ~/.config/opencode/agents` 里应有**七个**角色文件（`Team`、`architect`、`implementer`、
    `reviewer`、`tester`、`researcher`、`computerUser`）。选择器本身只列 `Team`——六个专家都是
    `mode: subagent`，它们在子会话里运行，不会成为选择器条目；`opencode agents` 打出来的是全集。
-2. 新会话默认是 Team。在里面跑 `tm_stats` —— 回复里应有**启动与人格**一段，展示 v2 的启动
-   快照：注册了哪些工具、`tool.execute.after` / `permission.evaluate` / `session.context`
-   有没有挂上、探针计到的东西，以及 `storage_probe`（`tm_ledger` 依赖的那次
-   `ctx.storage` 写读回环）。
-3. **JIT 真的在治理宿主工具**：让 Team 跑一条输出很多的命令（大目录树的 `ls -R` /
-   `dir /s`）。结果应该以"短预览 + 卸载句柄"回来，而不是整坨灌进上下文。若原样回来了，
-   说明卸载层没挂上——`tm_stats` 会直说。
-4. `tm_ledger { action:"add", text:"冒烟测试" }` 应该回你一个编号，并写明
-   `已写入 ctx.storage`。这就是 v2 清单活着的样子。
+2. 配置，从磁盘回读：`opencode.json` + `opencode.jsonc` 两个文件里指向本包的条目加起来
+   **恰好一条**（两条 = 插件被装载两次），且 `default_agent: "Team"`。
+3. 启动证据——两个来源任选其一，都不需要回合：
+   - 宿主日志：恰好一条 `msg="loading plugin" id=<我们的条目> entrypoint=file:///…/index.js`，
+     且没有指名我们的 `failed to load plugin`；
+   - 工作区 `.git/opencode-team/trajectory/runs/` 下最新一个 run 的 `steps.jsonl`
+     （非 git 工作区走 tmpdir 分片回退）：一行 `v2-boot`，带着 `tools_registered: 9`、
+     `request_hooks` / `guard_hooks` 已挂上、`agents_default: installer:Team`、
+     `storage_probe: round-trip`（`tm_ledger` 依赖的那次 `ctx.storage` 写读回环）。
+
+#### 可选 —— 活会话核对（仅当用户想要时）
+
+**这些会创建会话。** 它们不属于安装后的自动化必做验证：只在用户**自己**开的会话里做，
+并且事先说明这会出现在他的会话列表里。
+
+- 新会话默认是 Team。在里面跑 `tm_stats` —— 回复里应有**启动与人格**一段，展示 v2 的启动
+  快照：注册了哪些工具、`tool.execute.after` / `permission.evaluate` / `session.context`
+  有没有挂上、探针计到的东西，以及 `storage_probe`，还有 `作用域` 那一行。角色这一项看的是
+  可见性行，不再是缺名字段（boot 行的 `agents_missing` 已经去掉）：它区分"已装而看不见"——
+  `agents_editor_unseen` 有值，且 `agents_resolved_in_request` 也有值，说明宿主在真实请求里
+  解析过这些 id——和"本进程无法区分"，因为 `ctx.agent.transform` 拿到的是配置目录合并**之前**
+  的角色集。"第 3 步没做"要到宿主那边才看得见（`--agent Team` 解析不到），不会在这张表里
+  变成一行结论。
+- **JIT 真的在治理宿主工具**：让 Team 跑一条输出很多的命令（大目录树的 `ls -R` /
+  `dir /s`）。结果应该以"短预览 + 卸载句柄"回来，而不是整坨灌进上下文。若原样回来了，
+  说明卸载层没挂上——`tm_stats` 会直说。
+- `tm_ledger { action:"add", text:"冒烟测试" }` 应该回你一个编号，并写明
+  `已写入 ctx.storage`。这就是 v2 清单活着的样子。
 
 ### 可选 —— 计算机使用（真实桌面）
 
@@ -645,8 +713,9 @@ opencode service restart
   Windows 不会替换宿主正占着的 exe，所以那一版走的是老的两趟：删条目 → 重启 → 装 → 再重启。1.9.8
   的安装器还会对它写入的目录先跑 `--selftest`（`<releases>/<版本>/computeruse-mcp/Scripts/computeruse.exe`，
   POSIX 为 `.../computeruse-mcp/bin/computeruse`；1.9.7 时代的布局是 `<uv tool dir>/computeruse-mcp/Scripts/computeruse.exe`），
-  非 0 就**一个配置字节都不写**。最后 `tm_stats`——新的**计算机使用**小节会
-  列出它**实际看到**的工具名。**工具名是运行时量出来的，不是假设的**：插件记录真实到达的名字
+  非 0 就**一个配置字节都不写**。剩下这一步是**可选**的，而且会创建会话：只在用户**自己**
+  开的会话里跑 `tm_stats`——新的**计算机使用**小节会列出它**实际看到**的工具名
+  （安装本身已由第 4 步的启动证据做过不创建会话的核对）。**工具名是运行时量出来的，不是假设的**：插件记录真实到达的名字
   （实测拼写是 `computeruse.control_status`），所以在 `tm_stats` 给出名字之前，不要在你自己写的
   任何总结里写死某个工具名。角色划分由**三层**执行，只有前两层是硬的：`permission.evaluate`
   （宿主会对 MCP 动作触发）、内层 `execute` 事件、以及一层程序文本扫描——拼名能绕过最后一层，

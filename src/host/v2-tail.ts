@@ -10,8 +10,8 @@
  * 形状：
  *  - 生产者（状态卡 / 窗口 / 重试指令 / 拆分建议）`set(sid, key, text)` 写进
  *    进程内 sink；每个 key 每会话只有一格（后者覆盖前者）。
- *  - 本层注册**最后**一个 `session.hook("context")`（在 prune 之后，所以它追加
- *    的消息不会被同一请求的修剪看见）：`take(sid)` 取出并清空，按
+ *  - 本层注册**最后**一个 `session.hook("context")`（在所有生产者之后）：
+ *    `take(sid)` 取出并清空，按
  *    state → window → retry → advice 的顺序渲染成**一条**消息：
  *    `{ id: "team-dynamic", role: "user", content: [{ type: "text", text }] }`。
  *  - 宿主会跨请求复用 `event.messages`，所以追加前先剥掉以 `[Team 动态上下文]`
@@ -171,8 +171,7 @@ export interface DynamicTailLayer {
 
 /**
  * 注册请求尾部层。**必须是最后一个 `session.hook("context")`**：四个生产者都在
- * 它之前写入 sink，prune 也在它之前看过消息数组，它负责把 sink 的内容收成一条
- * 消息并在同一次请求里剥掉旧尾部。
+ * 它之前写入 sink，它负责把 sink 的内容收成一条消息并在同一次请求里剥掉旧尾部。
  */
 export async function applyV2DynamicTail(ctx: V2Context, input: DynamicTailInput): Promise<DynamicTailLayer> {
   const report: DynamicTailReport = {

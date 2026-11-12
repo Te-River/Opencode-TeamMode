@@ -32,10 +32,8 @@
  * the v2-worded refusal set below.
  */
 
-import { createHash } from "node:crypto"
 import { readFileSync } from "node:fs"
 
-import { isExpired } from "../tm/refs.js"
 import { agents } from "../agents.js"
 import { normalizeAgentName } from "../identity.js"
 import { DEFAULT_TTL_DAYS, resolveTtlMs, startBlackboardMaintenance } from "../blackboard.js"
@@ -58,7 +56,6 @@ import { v2CapabilityRows } from "./v2-capabilities.js"
 import { applyV2SessionLayer, removalPlan, resolveSplitConfig } from "./v2-session.js"
 import { applyV2RetryGovernor, createRetryGovernor, resolveRetryConfig, roleOfSession, sessionIDOf } from "./v2-retry.js"
 import type { RedriveRequest } from "./v2-retry.js"
-import { applyV2ContextPrune, resolvePruneConfig } from "./v2-prune.js"
 import { applyV2StateCard } from "./v2-state.js"
 import { applyV2DynamicTail, createDynamicSink, resolveDynamicTailConfig } from "./v2-tail.js"
 import { applyV2SessionInstructions, resolveSessionInstructionsConfig, sessionInstructionsSeamOf } from "./v2-session-instructions.js"
@@ -963,8 +960,8 @@ export const v2Personality: V2Plugin = {
     // running children and the board root — as ONE ≤300-token entry whose sections
     // the tail layer renders into the request's LAST message.  It reads the SAME
     // `LedgerStore` instance `tm_ledger` writes through, and it registers after the
-    // session layer (board note already on the request) and BEFORE the retry/prune
-    // layers, so the tail layer — registered last — sees every producer's section.
+    // session layer (board note already on the request) and BEFORE the retry
+    // layer, so the tail layer — registered last — sees every producer's section.
     // The ledger gate: `clear`/`pause` refuse while our own ledger still has open
     // items.  Wired here because this is where the store is in scope — the tool
     // holds this same deps object, so assigning after construction is enough.
@@ -1003,13 +1000,6 @@ export const v2Personality: V2Plugin = {
       sink: volatileSink,
       loadLedger: (sid) => ledgerStore.load(sid),
       children: () => tmRuntime.hostChildren(),
-      // The prune layer keeps a CUMULATIVE count; the card renders the delta since
-      // its own previous card, because "上轮" is the only span that means anything.
-      // M1: only bodies that really WENT to the store are "已卸载（tm_fetch 可取回）"
-      // — a pruned message with an echo stub (offload off / failed) and a child
-      // report (recovered via tm_join) are different things, so counting
-      // prunedMessages here overstated what the card promised.
-      pruneCount: () => prune.report.offloaded,
       onEvent: (row) => {
         try {
           tmRuntime.pipelines.store.appendTrajectory({ tool: "host", step_id: "v2-state", api: 2, ...row })
@@ -1063,59 +1053,6 @@ export const v2Personality: V2Plugin = {
         })
       : { registrations: [], report: retryGovernor.report, cancelRedrive: () => {} }
     registrations.push(...retry.registrations)
-    // Context Pruning (plan 功能 1, #49): the request layer trims the tool
-    // surface, the HOST decides WHEN to summarize — the plugin's own 75% trigger was
-    // removed in 1.7.1 (see CHANGELOG), and this layer
-    // shrinks the HISTORY itself — settled messages become one-line pointers
-    // (handle / child id / re-run hint) once the session crosses a fraction of
-    // its window.  Registered AFTER the session layer so its `context` hook runs
-    // on the same assembled request, and it never touches a message outside its
-    // plan (the newest message and every hard-protected one stay byte-exact).
-    // 内容级去重 (M2)：宿主每次请求都从历史重建消息数组，消息内的 sentinel 只
-    // 挡得住同一份数组被重放，挡不住「同一段正文再离载一次」——实测两次请求 =
-    // 两份载荷、两个 stepId。这里按 sha256(正文) 记住首次签发的句柄：命中直接
-    // 复用（不取新步号、不重复落盘），500 条 FIFO 淘汰，进程级（载荷在磁盘上，
-    // 这里记住的只是一个地址）。
-    const pruneHandles = new Map<string, { ref: string; accessToken: string; expireAt: number }>()
-    const PRUNE_HANDLE_CACHE_MAX = 500
-    const offloadPrunedBody = async (text: string) => {
-      const key = createHash("sha256").update(text, "utf8").digest("hex")
-      const hit = pruneHandles.get(key)
-      // R1: 命中也得确认句柄还活着。载荷被 TTL 清扫后复用，桩就指向一份不存在的
-      // 原文——那是过度声明，比多落一次盘糟得多。过期即丢弃、重新离载。
-      if (hit && !isExpired(hit.expireAt)) return { ...hit, reused: true }
-      if (hit) pruneHandles.delete(key)
-      // 此处不得引入 await：get→set 必须在同一微任务内完成，否则并发请求会各写一份。
-      const stepId = tmRuntime.pipelines.nextStepId()
-      // 共享管线 + alwaysOffload：预览/句柄/落盘路径原样复用，只跳过阈值判定。
-      const g = tmRuntime.pipelines.govern(stepId, "prune:message", text, {
-        contentType: "text",
-        alwaysOffload: true,
-      }) as any
-      if (!g || !g.offloaded) return null
-      const handle = { ref: g.ref, accessToken: g.access_token, expireAt: g.expire_at }
-      pruneHandles.set(key, handle)
-      if (pruneHandles.size > PRUNE_HANDLE_CACHE_MAX) {
-        const oldest = pruneHandles.keys().next().value
-        if (oldest !== undefined) pruneHandles.delete(oldest)
-      }
-      return handle
-    }
-    const prune = await applyV2ContextPrune(ctx, {
-      config: resolvePruneConfig(cfg),
-      scope,
-      // 修剪前先离载：被剪的消息体先落 run store，stub 里带完整 tm_fetch 句柄，
-      // 否则「裁剪」就是永久删正文。pruneOffload:"off" 时整段不挂载，行为与
-      // 改动前逐字节一致。
-      offload: cfg.pruneOffload !== "off" ? offloadPrunedBody : undefined,
-      onEvent: (row) => {
-        try {
-          tmRuntime.pipelines.store.appendTrajectory({ tool: "host", step_id: "v2-prune", event: "prune", api: 2, ...row })
-        } catch {
-          /* a diagnostic that cannot be written never breaks the request it describes */
-        }
-      },
-    })
     // `sessionInstructions` 层 — 生产者已经把四段易变上下文写进同一个 sink，本层把
     // 它 drain 成宿主的 keyed 指令（`team-state` / `team-window` / `team-retry` /
     // `team-advice`），只在内容真的变了时 put。先于尾层注册：两者同时开启时本层先
@@ -1133,8 +1070,7 @@ export const v2Personality: V2Plugin = {
         }
       },
     })
-    // 易变注入的尾巴 — registered LAST, after the prune layer, so the message it
-    // appends is not a pruning candidate in the same request and every producer
+    // 易变注入的尾巴 — registered LAST, after every producer, so every producer
     // has already written its section.  `dynamicTail: "off"` registers nothing.
     const dynamicTail = await applyV2DynamicTail(ctx, {
       scope,
@@ -1158,23 +1094,6 @@ export const v2Personality: V2Plugin = {
         backgroundForced: true,
         offload,
         sessionHooks: 2,
-        // The prune layer's counters, handed to the matrix so its row can earn `ok` on a
-        // process that actually pruned something. Without this the row could only ever read
-        // `declared`, which is the "wired but never observed" shape the matrix exists to
-        // distinguish from "it ran".
-        prune: {
-          enabled: prune.report.enabled,
-          atPercent: prune.report.atPercent,
-          keepTailPercent: prune.report.keepTailPercent,
-          checked: prune.report.checked,
-          prunedMessages: prune.report.prunedMessages,
-          prunedTokens: prune.report.prunedTokens,
-          below: prune.report.below,
-          noLimit: prune.report.noLimit,
-          foreignSkipped: prune.report.foreignSkipped,
-          threw: prune.report.threw,
-          lastPercent: prune.report.lastPercent,
-        },
         // Both derived, not asserted: "we think v2 has no X" has to come from the
         // object we were handed, so a host that grows the seam shows up here
         // automatically instead of leaving a stale "missing" row forever.
@@ -1197,7 +1116,6 @@ export const v2Personality: V2Plugin = {
         scope,
       })
     registrations.push(...session.registrations)
-    registrations.push(...prune.registrations)
     registrations.push(...stateCard.registrations)
     registrations.push(...sessionInstructions.registrations)
     registrations.push(...dynamicTail.registrations)
@@ -1326,29 +1244,6 @@ export const v2Personality: V2Plugin = {
       instructions_removed: sessionInstructions.report.removed,
       instructions_failed: sessionInstructions.report.failed,
       instructions_absent: sessionInstructions.report.absent,
-      // #49 Context Pruning — the history-shrinking half of the budget work.
-      prune_enabled: prune.report.enabled,
-      prune_at_percent: prune.report.atPercent,
-      prune_keep_tail_percent: prune.report.keepTailPercent,
-      prune_checked: prune.report.checked,
-      prune_pruned_messages: prune.report.prunedMessages,
-      prune_pruned_tokens: prune.report.prunedTokens,
-      prune_unknown_parts: prune.report.unknownParts,
-      prune_skipped_protected: prune.report.skippedProtected,
-      prune_below: prune.report.below,
-      prune_no_limit: prune.report.noLimit,
-      // 目录缺当前模型时用回退窗口顶上的请求条数（阈值用的替代分母，不是测量值）。
-      prune_limit_fallback: prune.report.limitFallback,
-      prune_foreign_skipped: prune.report.foreignSkipped,
-      prune_threw: prune.report.threw,
-      prune_last_percent: prune.report.lastPercent,
-      // #49 无损修剪：修剪前离载成功 / 复用已有句柄 / 失败（退回纯注记）的条数。
-      prune_offloaded: prune.report.offloaded,
-      prune_reused: prune.report.reused,
-      prune_offload_failed: prune.report.offloadFailed,
-      // 保护模式的编译条数与命中条数：空串时两者恒为 0，行为与改动前逐字节一致。
-      prune_protect_patterns: prune.report.protectPatterns,
-      prune_protect_matched: prune.report.protectMatched,
       // 任务状态卡 — one entry per lead request, and every outcome is its own
       // number: injected / replaced / unchanged / empty / skipped never collapse
       // into one silent count.
@@ -1572,32 +1467,6 @@ export const v2Personality: V2Plugin = {
           // #49 feature 4: 拆分任务 — the same counter set as the surface row.
           split_seen: session.report.splitSeen,
           split_advised: session.report.splitAdvised,
-          // #49 Context Pruning — per-outcome, so "we pruned nothing" is
-          // distinguishable from "we never found a denominator" (`no_limit`).
-          prune_enabled: prune.report.enabled,
-          prune_at_percent: prune.report.atPercent,
-          prune_keep_tail_percent: prune.report.keepTailPercent,
-          prune_checked: prune.report.checked,
-          prune_pruned_messages: prune.report.prunedMessages,
-          prune_pruned_tokens: prune.report.prunedTokens,
-          prune_unknown_parts: prune.report.unknownParts,
-          prune_skipped_protected: prune.report.skippedProtected,
-          prune_below: prune.report.below,
-          prune_no_limit: prune.report.noLimit,
-          // 回退窗口计数：与 surface 行同一口径（两处必须一致）。
-          prune_limit_fallback: prune.report.limitFallback,
-          prune_no_messages: prune.report.noMessages,
-          prune_foreign_skipped: prune.report.foreignSkipped,
-          prune_threw: prune.report.threw,
-          prune_last_percent: prune.report.lastPercent,
-          // #49 无损修剪：与 surface 行同一口径（两处必须一致）——
-          // 修剪前离载成功 / 复用已有句柄 / 失败（退回纯注记）的条数。
-          prune_offloaded: prune.report.offloaded,
-          prune_reused: prune.report.reused,
-          prune_offload_failed: prune.report.offloadFailed,
-          // 保护模式：与 surface 行同一口径（两处必须一致）。
-          prune_protect_patterns: prune.report.protectPatterns,
-          prune_protect_matched: prune.report.protectMatched,
           state_card_injected: stateCard.report.injected,
           state_card_replaced: stateCard.report.replaced,
           state_card_unchanged: stateCard.report.unchanged,

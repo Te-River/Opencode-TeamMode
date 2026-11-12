@@ -1,5 +1,4 @@
 import type { CapabilityRow } from "../capabilities.js"
-import { resolvePruneConfig } from "./v2-prune.js"
 
 /**
  * The host-capability matrix, built from what THIS v2 session observed.
@@ -45,22 +44,6 @@ interface Inputs {
   /** The `ctx.event.subscribe()` feed (#8).  `received` is the observation that
    *  makes this row `ok` rather than `declared`: an event that actually arrived. */
   eventFeed?: { active: boolean; received: number; forwarded: number; unknown: Record<string, number>; stopped?: string }
-  /** #49 Context Pruning: the `v2-prune` layer's counters, read off the layer that
-   *  runs it.  `prunedMessages > 0` is the only observation that earns `ok`; an
-   *  operator who set `TM_PRUNE=off` says so in the note instead of looking broken. */
-  prune?: {
-    enabled: boolean
-    atPercent: number
-    keepTailPercent: number
-    checked: number
-    prunedMessages: number
-    prunedTokens: number
-    below: number
-    noLimit: number
-    foreignSkipped: number
-    threw: number
-    lastPercent: number
-  }
   /** #33 — what `tm_join { cancel: true }` actually got from `ctx.session.interrupt`.
    *  Absent means the bridge never wrapped the seam, which is itself the row's story:
    *  for a whole release v2 had no stop path at all, and nothing printed that fact. */
@@ -225,24 +208,6 @@ export function v2CapabilityRows(i: Inputs): CapabilityRow[] {
         ? `已试 ${i.stop.tried} 次：宿主确认中断 ${i.stop.confirmed} · idle no-op ${i.stop.refused} · 未回布尔 ${i.stop.unknown}` +
           (i.stop.error ? `（最后一次宿主错误：${i.stop.error}）` : "")
         : "缝已接上（POST /api/session/{id}/interrupt 的契约是 interrupted=true / false=idle no-op），本进程还没被 cancel:true 用过",
-  })
-  // #49: Context Pruning. `ok` requires an actual prune (`prunedMessages > 0`) — a layer
-  // that ran but found nothing over the threshold is `declared`, and the two zeroes a
-  // reader must not confuse are "we looked and it was under" (`below`) and "we could not
-  // compute the threshold" (`noLimit`). An operator who turned it off says so in the note
-  // instead of looking like a broken host. When the counters were never handed in, the
-  // row still appears (the seam is installed) but says it has no observation to judge.
-  const pruneEnabled = i.prune ? i.prune.enabled : resolvePruneConfig().enabled
-  rows.push({
-    seam: "Context Pruning（v2-prune 层）",
-    feature: "会话历史越过窗口的 N% 后，已结算的消息变成一行指针（句柄 / 子会话 id / 重跑提示），最新一条与硬保护消息逐字不动",
-    state: !pruneEnabled ? "declared" : i.prune && i.prune.prunedMessages > 0 ? "ok" : "declared",
-    evidence: i.prune && i.prune.prunedMessages > 0 ? "runtime" : "static",
-    note: !pruneEnabled
-      ? "prune: \"off\"：操作员关掉了裁剪，不是坏"
-      : i.prune
-        ? `已测 ${i.prune.checked} 次请求装配 · 裁掉 ${i.prune.prunedMessages} 条消息（省 ${i.prune.prunedTokens} token，估算）· 未到阈值 ${i.prune.below} · 读不到上限 ${i.prune.noLimit} · 非本会话跳过 ${i.prune.foreignSkipped} · 抛错 ${i.prune.threw}`
-        : "层已装（v2.ts 注册了 prune 的 context 钩子），但本进程没有把它的计数交给能力矩阵——这一格只能读 declared",
   })
   if (!i.hasTodoSeam) {
     rows.push({

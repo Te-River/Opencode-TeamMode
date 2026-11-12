@@ -227,3 +227,35 @@ The two "still open" items of the 2.2.5 section were closed by TeamMode 1.9.7
 this file is pending on the plugin side — only the host's missing write RPC remains,
 and that is the host's call.
 
+## 2026-11-12 · re-verification on host 2.2.7 (docs face + read-only binary scan)
+
+Docs face (all four pages read live today, not the older local research):
+- `/docs/build/plugins/server` (64 325 chars): 24 ctx domains, **no `ctx.goal`**, 0 goal hits.
+- Host event bus (`openapi.json`, 31 001 lines): **no `goal.*` event**; goal's `changed` rides the
+  plugin RPC event surface, not the bus.
+- New dedicated RPC page `/docs/build/plugins/rpc`: `Rpc.define` / `ctx.rpc.register` /
+  `events.emit|on|subscribe` — the same shape reverse-engineered here; method calls are awaited
+  request/response, but **no goal write method is announced**.
+- RPC page, verbatim: **"Event subscriptions are live only, so disconnected subscribers miss
+  events."** → `watchGoalChanges` missing `changed` across a reload/disconnect is by host design;
+  the next-turn `status` pull fallback is REQUIRED, not redundant (official justification).
+
+Binary (read-only windowed `indexOf` scan of `opencode-cli.exe`, 265 672 584 bytes, v2.2.7;
+no opencode process, no session): 3 occurrences of `opencode.goal`, 2 registration-shaped.
+- off=183416269: `ZZ({id:"opencode.goal",methods:{get:{input:…,output:…}},events:{changed:{schema:…}}})`
+  — **still exactly one method (`get`)**.
+- off=183937744: `rpc.register(upe,{get:…})` registers only `get`; the write path
+  (`GoalPlugin.write`) is internal `storage.set` + `events.emit("changed")`, driven by the
+  `/goal` command (`Usage: /goal <objective> | pause | resume | clear`), NOT an RPC method.
+- `Goal.State` now also carries a `stalls` field (`parseGoalState` passes unknown fields through — no impact).
+
+| claim | status on 2.2.7 |
+|---|---|
+| no write RPC (`set`/`clear`/`pause`/`resume` absent) | **still true — measured, not extrapolated** |
+| only write path = the `/goal` command via `ctx.session.command` | **still true** |
+| `events.changed` registered (live-only) | **still true** |
+| `tm_goal` needs a code change for 2.2.7 | **no** — its seam set is identical |
+
+Upgrades the 2.2.6 extrapolation to a measured fact. No new seam; the current bridge
+(get RPC + fire-and-forget `/goal` + `changed` subscription + pull fallback) remains the right shape.
+

@@ -39,13 +39,34 @@
 > only** — the 1.18.x personality was removed in the 1.7.0 line. Follow
 > https://raw.githubusercontent.com/Te-River/Opencode-TeamMode/main/docs/installation-v2.md
 > (a 2.x plugin cannot create an agent, so the seven roles and six `/team-*` commands come from
-> a generator step in that guide — that step is not optional.) Then run its verification checks.
+> a generator step in that guide — that step is not optional.) Then run its verification checks — they must be
+> session-free: do NOT run `opencode run` or start a new session (that leaves empty sessions in the user's
+> list); verify by reading the boot log/trajectory after a service restart instead.
 > If a URL is unreachable — common on mainland-China networks — retry with the mirror prefix
 > https://ghproxy.net/ + the same path. If `npm` is slow or blocked, run
 > `npm config set registry https://registry.npmmirror.com`.
 > ```
 >
 > **The one command to remember afterwards:** `/team-run <task>` — the Team Lead plans it, shows you the plan, waits for your approval, then runs the whole team.
+
+> **The upgrade path:** already installed and want the latest release? Paste this to any coding agent:
+>
+> ```text
+> Upgrade the OpenCode plugin @te-river/opencode-team-mode to the latest release (OpenCode 2.x only).
+> Follow the "Updating" section of
+> https://raw.githubusercontent.com/Te-River/Opencode-TeamMode/main/docs/installation-v2.md
+> Prefer re-running the installer (scripts/install.ps1 / install.sh) — the only path that carries migrations:
+> it replaces (never appends) the plugin entry, rewrites + reads back default_agent, and regenerates the role files.
+> If you upgrade by hand, you MUST re-run node <pkg>/scripts/gen-v2-config.mjs to regenerate the seven roles and
+> six /team-* commands (the role files carry the prompts, which a release may have changed).
+> Finish with opencode service restart to pick up the new version (do not use opencode reload) and the guide's
+> verification checks: default_agent must still be Team, not silently fallen back to build. Verification must be
+> session-free: do NOT run `opencode run` or start a new session (that leaves empty sessions in the user's list);
+> verify by reading the boot log/trajectory after the restart instead.
+> If a URL is unreachable, retry with the mirror prefix https://ghproxy.net/ + the same path. If npm is slow or
+> blocked, run npm config set registry https://registry.npmmirror.com. If the version did not change after npm
+> install, a caret range + lockfile is likely pinning the old copy — install the exact published version.
+> ```
 
 ---
 
