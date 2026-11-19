@@ -144,7 +144,7 @@ export const CONFIG_KEYS: readonly ConfigKeySpec[] = [
   // ---- offload / preview / store ----
   { key: "offloadThreshold", type: "number", default: 2000, min: 0, max: 10_000_000, doc: "卸载阈值（估算 token；等于阈值也卸载）。" },
   { key: "previewLines", type: "number", default: 20, min: 1, max: 1000, doc: "预览构建器最多扫描的原始行数。" },
-  { key: "previewMaxTokens", type: "number", default: 80, min: 10, max: 100_000, doc: "预览的硬上限（估算 token）。" },
+  { key: "previewMaxTokens", type: "number", default: 120, min: 10, max: 100_000, doc: "预览的硬上限（估算 token）。" },
   { key: "fetchMaxLines", type: "number", default: 2000, min: 1, max: 1_000_000, doc: "tm_fetch 单段最多返回的行数。" },
   { key: "blackboardDir", type: "string", default: "", doc: "运行载荷存储目录；空 = 自动（<repo>/.git/opencode-team/blackboard）。" },
   { key: "trajectoryDir", type: "string", default: "", doc: "轨迹存储目录；空 = 自动（<repo>/.git/opencode-team/trajectory）。" },

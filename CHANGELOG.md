@@ -7,6 +7,10 @@ registry saw 1.5.0 as the install-script fix release).
 
 ## [Unreleased]
 
+### Changed
+
+- **`previewMaxTokens` 默认 80 → 120（预览变宽，代价是每次卸载多付固定开销）。** 用户在 2.3.2 主机上核完 `read` 的治理链路后决定放宽预览：硬上限落在单一真源 `src/tm/config-layers.ts` 注册表（`preview.ts` 的 `?? 120` 兜底同步对齐，避免两条默认值漂移），提示词 / 工具描述 / 两份 README / 安装指南 / AGENTS.md 同步改写。`src/tm/stats.ts` 的 `PREVIEW_FALLBACK_TOKENS` 仍为 80：那是老轨迹事件（未记录 `preview_tokens`）按当时上限记账的估算兜底，跟本旋钮无关。
+
 ## [1.9.10] - 2026-11-12
 
 ### Removed

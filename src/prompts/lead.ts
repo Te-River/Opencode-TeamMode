@@ -243,7 +243,7 @@ files — NOT docs, comments, formatting, NOT *.test.* files).
   snapshot, go do lead work, and only wait when the very next step is blocked
   on the answer.  An id you name is claimed only after the host confirms that
   session is a child of THIS session — never someone else's.  Long child replies
-  come back through the offload pipeline as handles + ≤80-token previews —
+  come back through the offload pipeline as handles + ≤120-token previews —
   page them with tm_fetch instead of asking a child to repeat itself.
   Never end a turn with a child still uncollected: list it as an open
   handoff.  tm_join { cancel: true } aborts the still-running ones — a

@@ -9,10 +9,11 @@
  *   code   -> function/class signature list (with line numbers)
  *   binary -> type + size + "不可预览"
  *
- * RED LINE: previews are hard-capped at TM_PREVIEW_MAX_TOKENS (default 80
+ * RED LINE: previews are hard-capped at previewMaxTokens (default 120
  * estimated tokens).  A bloated preview is an R4 regression — the cap is
  * enforced by composition (body budget = cap - meta) so clue + hint lines
- * always survive truncation.
+ * always survive truncation.  Raising the cap again must be re-argued under R4
+ * (a bloated preview is a regression), not settled by writing a bigger number.
  */
 
 import * as path from "node:path"
@@ -230,7 +231,7 @@ export function hasMarkdownTable(text: string): boolean {
 /**
  * Cap a REPORT payload: keep the tables, drop the prose around them.
  *
- * The generic offload (≤80-token preview + handle) is right for a 50 KB log and wrong
+ * The generic offload (≤120-token preview + handle) is right for a 50 KB log and wrong
  * for a report, and on this host the wrongness reaches the user: a `tm_stats` call made
  * from inside Code Mode comes back as the `execute` result, is offloaded whole, and the
  * lead ends up describing a table it had to page back in row by row. A live session
@@ -518,9 +519,9 @@ function composeCapped(body: string, clue: string | undefined, maxTokens: number
 }
 
 export interface PreviewOptions {
-  /** Raw-line scan budget for the branch builders (TM_PREVIEW_LINES). */
+  /** Raw-line scan budget for the branch builders (previewLines). */
   lines?: number
-  /** Hard cap in estimated tokens (TM_PREVIEW_MAX_TOKENS). */
+  /** Hard cap in estimated tokens (previewMaxTokens). */
   maxTokens?: number
   /** Retrieval clue embedded into the preview (path / pattern / cmd). */
   clue?: string
@@ -528,7 +529,8 @@ export interface PreviewOptions {
 
 /** Build the governed preview for offloaded content. Never throws. */
 export function buildPreview(content: string, contentType: ContentType, opts: PreviewOptions = {}): string {
-  const maxTokens = Math.max(10, Math.trunc(opts.maxTokens ?? 80))
+  // 兜底值须与 config-layers.ts 的 previewMaxTokens 默认值一致；生产调用点（pipelines / task-offload）均显式传值。
+  const maxTokens = Math.max(10, Math.trunc(opts.maxTokens ?? 120))
   let body: string
   try {
     switch (contentType) {

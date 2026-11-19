@@ -6,7 +6,7 @@
  *   2. run identity + HMAC handles + ref grammar + expiry (fail-closed)
  *   3. run store layout (index.jsonl fields) + trajectory append-only +
  *      TTL sweep with tree-activity idleness (M2/E1 regression-pinned)
- *   4. five-branch content-aware previews, hard-capped at 80 tokens
+ *   4. five-branch content-aware previews, hard-capped at 120 tokens
  *   5. P3 read-only allowlist (incl. command-substitution escapes) + P2 path
  *      scope with realpath fail-closed (junction escape)
  *   6. tool pipelines: ToolResult contract ({output}, BUG#1), threshold
@@ -91,7 +91,7 @@ try {
     const cfg = tm.resolveConfig({})
     assert.equal(cfg.offloadThreshold, 2000, "default offload threshold")
     assert.equal(cfg.previewLines, 20, "default preview lines")
-    assert.equal(cfg.previewMaxTokens, 80, "default preview max tokens")
+    assert.equal(cfg.previewMaxTokens, 120, "default preview max tokens")
     assert.equal(cfg.fetchMaxLines, 2000, "default fetch max lines")
     assert.equal(cfg.blackboardDir, "", "default blackboard dir = AUTO (git-aware, resolved in createTmTools)")
     assert.equal(cfg.trajectoryDir, "", "default trajectory dir = AUTO (git-aware, resolved in createTmTools)")
@@ -364,7 +364,11 @@ try {
 
   /* ---------- 4. five-branch previews, hard-capped ---------- */
   {
-    const cap = 80
+    // Deliberately NOT the registry default (120): the explicit argument must
+    // be respected, so a group green under a 120 fallback cannot hide here.
+    // 100 (not 60) because the code branch's "更多签名省略" marker is itself cut
+    // below ~80 — a cap that truncates the assertion targets proves nothing.
+    const cap = 100
     const check = (preview, label) =>
       assert.ok(tm.estimateTokens(preview) <= cap, `${label} preview <= ${cap} tokens`)
     // json: first 3 keys with type + magnitude (padding lives INSIDE a key —
@@ -437,9 +441,22 @@ try {
     assert.match(sLog, /ERROR 行: /, "structure error line numbers")
     const sCode = tm.buildStructureSummary(codeContent, "code")
     assert.ok(tm.estimateTokens(sCode) <= 100, "structure code <= 100 tokens")
+    // M1: the fallback literal in preview.ts must track the registry default.
+    // A CJK log is used on purpose — an ASCII log body is structurally bounded
+    // (~70 tokens: 3 head lines + stats + refs), which would make this pass
+    // whatever the fallback says.
+    const cfg0 = tm.resolveConfig({})
+    const driftText = Array.from({ length: 3 }, (_, i) =>
+      `日志行${i} ` + "错误详情需要持续输出 ".repeat(8)).join("\n")
+      + "\n" + Array.from({ length: 2000 }, (_, i) => `填充行 ${i}`).join("\n")
+    assert.ok(tm.estimateTokens(tm.buildPreview(driftText, "log")) <= cfg0.previewMaxTokens,
+      "默认预览不得超过注册表默认上限")
+    assert.equal(tm.buildPreview(driftText, "log"),
+      tm.buildPreview(driftText, "log", { maxTokens: cfg0.previewMaxTokens }),
+      "默认预览的兜底值须等于注册表 previewMaxTokens")
     assert.match(sCode, /共 \d+ 行/, "structure code line count")
+    console.log(`4. previews: OK (5 branches, <=${cap} tokens each, clues+hint embedded, structure <=100)`)
   }
-  console.log("4. previews: OK (5 branches, <=80 tokens each, clues+hint embedded, structure <=100)")
 
   /* ---------- 5. P3 allowlist + P2 path scope ---------- */
   {

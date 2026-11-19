@@ -88,7 +88,7 @@ this before treating any sentence above as platform-neutral.
   for v2 is wrong.
 - **Goal 4 is now the hard floor, and it has to cover the host's own tools.**
   `tool.hook("execute.after")` takes a mutable `result` (docs example reassigns
-  it; a live probe confirmed the write lands), so offload + ≤80-token preview +
+  it; a live probe confirmed the write lands), so offload + ≤120-token preview +
   HMAC handle must extend to native `read`/`grep`/`shell`/`webfetch`. A promise
   that only holds while the model happens to pick `tm_*` is not a promise.
   **Both halves are now in:** `src/host/v2-session.ts` removes every tool a role
@@ -763,3 +763,9 @@ true: a plugin still cannot INTERCEPT the model's own retry — it can only re-d
 seams the host itself admits. `prompt` exists too and is deliberately unused: a plugin writing
 a user-role message would impersonate the user, where synthetic input is the designed non-user
 channel.
+
+## 2026-11-19 · 预览上限默认 80 → 120
+
+`previewMaxTokens` 的默认值在 2026-11-19 从 80 提到 120（单一真源 `src/tm/config-layers.ts`）。
+本文件更早处出现的 `≤80-token` 字样（如 :178 那次"表格被压成预览"的事故记录）是**当时的实测**，
+不回写；当前默认以上述注册表为准。

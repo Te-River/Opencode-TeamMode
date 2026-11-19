@@ -9,7 +9,7 @@ import { estimateTokens, resolveConfig } from "../tm/config.js"
  *
  * The whole product rests on one promise: an oversized tool result never enters
  * the context window — it lands in the run store and the model gets an
- * ≤80-token preview plus a handle.  That promise was true only inside our own
+ * ≤120-token preview plus a handle.  That promise was true only inside our own
  * `tm_*` tools, which is what made `tm_read`/`tm_grep`/`tm_bash` load-bearing
  * rather than merely nicer.  The moment a role is allowed the native `read` or
  * `shell` (which is the retirement plan for those three), an un-governed native
@@ -374,7 +374,7 @@ export function applyV2NativeOffload(
       return
     }
     if (!envelope && hasMarkdownTable(found.text)) {
-      // A report is not a log. Offloading `tm_stats` down to an 80-token preview
+      // A report is not a log. Offloading `tm_stats` down to a 120-token preview
       // (measured live, on a report that came back through Code Mode's `execute` at
       // 2 917 tokens) leaves the lead describing a table it cannot see and the user
       // reading prose about numbers instead of the numbers. So the tables stay, the

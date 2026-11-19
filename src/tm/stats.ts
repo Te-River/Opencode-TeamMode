@@ -153,7 +153,10 @@ function tsMs(e: TrajEvent): number {
   return Number.isFinite(t) ? t : 0
 }
 
-/** The preview that DID reach the context — fall back to the 80-token cap. */
+/** The preview that DID reach the context — fall back to the 80-token cap.
+ *  Deliberately NOT tied to `previewMaxTokens`: an older trajectory event recorded no
+ *  `preview_tokens`, and its preview was produced under the cap in force back then, so
+ *  re-basing this estimate on today's default would rewrite history's accounting. */
 const PREVIEW_FALLBACK_TOKENS = 80
 
 export function summarizeEvents(events: readonly TrajEvent[]): TmStats {

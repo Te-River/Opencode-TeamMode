@@ -76,7 +76,7 @@ One agent doing everything ends the way you have seen it: a context window stuff
 
 | Pain | What is actually enforced |
 |---|---|
-| 🔥 **Context flooding** | Every result above its content-class boundary (prose 4000 / data 2000 tokens, CJK-aware) is offloaded to a local run store and replaced by an ~80-token preview plus an HMAC handle. `tm_fetch` pages back only what is needed. |
+| 🔥 **Context flooding** | Every result above its content-class boundary (prose 4000 / data 2000 tokens, CJK-aware) is offloaded to a local run store and replaced by an ~120-token preview plus an HMAC handle. `tm_fetch` pages back only what is needed. |
 | 🐌 **Round-trip overhead** | The host's own `execute` (Code Mode): one program, N governed calls, zero LLM round-trips in between. |
 | 🕳️ **Silent side effects** | R6: a Team role reading a `.env` is **denied** with no consent path; an env-reading shell command goes to the host's own prompt. Every guard can only make a rule stricter — the plugin never self-allows. |
 | 🌫️ **Hallucinated research** | The web is a two-role grant over allowlisted tools with per-hop redirect checks; a fact that could not be fetched is reported as a gap, never simulated. |
@@ -329,7 +329,7 @@ Your own definitions win; the plugin never clobbers them. The one rule that make
 
 ## ❓ Troubleshooting
 
-**Will this eat my tokens?** The opposite is the point. Offload, ~80-token previews and Code Mode exist because a seven-role pipeline naively bolted onto one context window *would* eat your tokens. The governance is the token-saver; `tm_stats` shows the count.
+**Will this eat my tokens?** The opposite is the point. Offload, ~120-token previews and Code Mode exist because a seven-role pipeline naively bolted onto one context window *would* eat your tokens. The governance is the token-saver; `tm_stats` shows the count.
 
 **A `TM_*` variable I set does nothing.** Correct — configuration moved to JSON. Move the value into the matching registry key in `team-mode.jsonc`, then run `tm_stats`: its layered-config section names each key's source file, so a value you thought was accepted shows up as coming from somewhere you did not edit.
 
