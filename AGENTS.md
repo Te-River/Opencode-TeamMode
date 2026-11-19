@@ -279,7 +279,7 @@ re-deriving any of this, and append findings there (dated, with an evidence tag)
   and byte-exact (`aborted on request`) — the new seam is a fallback, and a test asserts
   `interruptReached === 0` on an abort-capable client, because that ordering IS the frozen
   personality guard.
-- **The host's own goal feature is BRIDGED, not re-implemented (`tm_goal`, host 2.2.x;
+- **The host's own goal feature is BRIDGED, not re-implemented (`tm_goal`, host 2.2.x–2.3.2;
   evidence `docs/research/host-goal-feature.md`).** The host ships a built-in plugin
   `opencode.goal` and registers exactly ONE RPC method — `get({sessionID})` — through
   `ctx.rpc` (a client FACTORY, not a client). Its state (`objective / status / rounds /

@@ -452,3 +452,42 @@ registry is a closed 14-name set `[L]`.
 9. **`tm_pty` retirement** — the host-side capability is proven (§2.5); the *governance* delta (R6
    classification happens for `shell` at `evaluate`; `tm_pty` refused dangerous faces before even
    asking) is ours to re-implement, not the host's to provide. Marked as needing a decision.
+
+## 10. 2026-11-19 · host 2.3.2 — `read`'s media surface, and what 2.3.1 actually changed
+
+Measured on the local desktop build (`OpenCode.exe` 2.3.2.0, `opencode-cli.exe` 2.3.2, 259 702 664 B).
+Tags: `[B]` read-only binary, `[L]` live behaviour observed this run, `[D]` official docs.
+
+**2.3.1 changed the tool's OUTPUT union, not the model-facing parts `[B]`**
+`read`'s structured output became `TextContent{type:"text"}` / `DirectoryContent{type:"directory"}` /
+`MediaContent{type:"media",uri,mime,name?}` — the old `file` / `text-page` / `list-page` spellings are
+gone and a base64 string became `bytes`. The parts handed to the model did NOT change: text is still
+one numbered string; media is still
+`[{type:"text",text:"Image read successfully"|"PDF read successfully"},{type:"file",uri:"data:<mime>;base64,…"}]`.
+Because `src/host/v2-offload.ts` judges on `result.content` (`locatableText`, `:154-173`) and never
+reads `output`, JIT governance is unaffected — **verdict A**, not a silent failure.
+
+**The media allowlist is five mimes, and audio/video are not in it `[B]` `[D]`**
+`image/png`, `image/jpeg`, `image/gif`, `image/webp`, `application/pdf`, all sharing
+`MAX_MEDIA_INGEST_BYTES = 20 * 1024 * 1024`. In the binary those five sit adjacent to
+`ReadTool.BinaryFileError` / `ReadTool.MediaIngestLimitError`, and the refusal strings are
+`Cannot read binary file: ` and `Media exceeds … byte ingestion limit: `. Everything else — `audio/*`,
+`video/*`, HEIC/AVIF/BMP/TIFF, docx/xlsx/pptx — is refused. **This is not a 2.3.x regression: 2.2.x
+had the same five.** Docs agree: "passes PNG, JPEG, GIF, WebP, and PDF files to the model, up to
+20 MiB of source data. Other binary files fail."; the attachments page: "AVIF, BMP, audio, video, and
+other binary prompt attachments are not included in the model request."
+
+**No transcoding, frame extraction or transcription `[B]`**: the bytes ride as one `data:` file part, so
+the real gate is the provider's modality support. The documented fallback — "If the model does not
+support an attachment's type, OpenCode sends a short note in its place." — means an unsupported
+modality degrades to a placeholder, never to an error. The bundled IANA mime registry is full of
+`audio/*` and `video/*` strings; those are registry data, NOT evidence about `read`.
+
+**Live confirmation that the offload path still fires `[L]`**: a native `read` of 408 lines returned the
+governed notice plus a handle (`5937 token` kept out), and `tm_stats` recorded
+`native:read | 结果 11 | 卸载 1 | 原始 24,525 | 省下 5,857`.
+
+**Residual risk**: if a future host moves media bytes back into a `text` part, or emits `content` as
+anything other than `[{type:"text",…}]`, `locatableText` returns null and the layer passes the result
+through untouched. `report.unmatched` / `considered` are the only sentinels; a shape-regression
+assertion is recommended and NOT yet written.

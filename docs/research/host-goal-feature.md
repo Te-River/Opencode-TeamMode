@@ -259,3 +259,59 @@ no opencode process, no session): 3 occurrences of `opencode.goal`, 2 registrati
 Upgrades the 2.2.6 extrapolation to a measured fact. No new seam; the current bridge
 (get RPC + fire-and-forget `/goal` + `changed` subscription + pull fallback) remains the right shape.
 
+## 2026-11-19 · re-verification on host 2.3.2 (binary + zero-token probe + SDK type diff)
+
+Desktop install on this machine: `OpenCode.exe` **2.3.2.0**, `opencode-cli.exe` **2.3.2**
+(259 702 664 B, 2026-11-18). Note the PATH build is a DIFFERENT one:
+`C:\Users\<user>\.bun\bin\opencode.exe` reports **2.3.0**, so "the OpenCode I ran" needs naming.
+
+Zero-token sandbox probe (throwaway DIRECTORY plugin, `run --standalone --model nope/nope`;
+no session, no request, no tokens). The client declared `get/set/update/pause/resume/clear/remove`
+and every one was actually invoked — the declaration alone proves nothing, because
+`ctx.rpc(def)` always exposes the names the caller wrote:
+
+```
+get     = ok:null
+set     = reject:Unknown RPC method: opencode.goal.set
+update  = reject:Unknown RPC method: opencode.goal.update
+pause   = reject:Unknown RPC method: opencode.goal.pause
+resume  = reject:Unknown RPC method: opencode.goal.resume
+clear   = reject:Unknown RPC method: opencode.goal.clear
+remove  = reject:Unknown RPC method: opencode.goal.remove
+ctx.storage("plugin:<utf16hex('opencode.goal')>:session:<sid>") = undefined
+tool.list() = 21 ids, none goal-shaped
+```
+
+Binary (read-only windowed scan; 3 `opencode.goal` hits, same count as 2.2.7):
+
+```js
+qpe=gee({id:"opencode.goal",methods:{get:{input:…,output:…}},events:{changed:{schema:…}}});
+e.rpc.register(qpe,{get:(G)=>a(G.sessionID).pipe(…)})
+GoalPlugin.write = storage.set/remove → events.emit("changed")
+Usage: /goal <objective> | pause | resume | clear    · eS=4000 · MJ=50
+```
+
+| claim | status on 2.3.2 |
+|---|---|
+| exactly one RPC method, `get`; no write method | **still true — measured by invocation, not extrapolated** |
+| the only write path is `/goal` via `ctx.session.command` | **still true** |
+| `events.changed` still registered | **still true** |
+| goal state still unreadable through `ctx.storage` | **still true** (`undefined`) |
+| `tm_goal` needs a code change for 2.3.2 | **no** — its seam set is identical |
+
+SDK face (`@opencode/plugin` 2.2.7 vs 2.3.2, full `dist/promise/*.d.ts` diff, cross-checked
+against a live `Object.keys(ctx)` dump — the two agree exactly):
+
+- **No new ctx domain.** 26 domains, same names and order in both versions:
+  `app location options agent aisdk command credential event experimental integration mcp
+  model generate permission plugin provider reference rpc session shell skill storage tool
+  vcs websearch worktree`. `ctx.agent` still has no `default`.
+- Added at method level: `session`'s `fork` hook (`{sessionID}`); `SessionIdleBackground` gains
+  `{kind:"codemode", jobID}`; request `messages` become `Message & {metadata?}` (read-only, never
+  sent to the model); `ToolContext.signal: AbortSignal` (reading it opts into a cooperative stop).
+- Shrunk: `experimental.generate` becomes `Omit<…, "video">` (video is server-only now).
+- `permission` / `rpc` / `agent` / `command` / `storage` / `event` signatures unchanged; `gui/` and
+  `tui/` ship the same file set (comment wording only).
+- Docs: `/docs/build/plugins/server` is 65 599 chars with **zero** `goal` hits; `openapi.json` is
+  31 468 lines / `paths[142]` / 32 tags and carries no goal route.
+
